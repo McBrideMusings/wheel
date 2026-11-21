@@ -334,6 +334,9 @@ pub struct Client {
     pub title_menu: Option<TitleMenu>,
     /// What the body draws: one of `header::MODES`' ids (`WindowMode`).
     pub mode: String,
+    /// The space Spaces mode showed when Orchestrator mode put the Orchestrator space in its place;
+    /// leaving the mode shows it again.
+    spaces_mode_space: Option<String>,
     /// The Agents mode's surface: its camera, the drag on it and its menu.
     pub surface: agents::Surface,
     /// The title row's pin: the window floats over every other.
@@ -343,6 +346,10 @@ pub struct Client {
     usage_refreshing: bool,
     /// A `session_new` this window sent from its session menu, and the session to show once listed.
     session_show_req: Option<u64>,
+    /// The `orchestrator_start` Orchestrator mode's Start sent and wheeld has not answered, and
+    /// why wheeld refused the last one.
+    orchestrator_start_req: Option<u64>,
+    orchestrator_refused: Option<String>,
     session_to_show: Option<String>,
     /// SF Symbols the bridge drew, by name, size and colour; None for a name the system lacks.
     symbols: Symbols,
@@ -518,8 +525,8 @@ impl Client {
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
-            posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), surface, pinned: false, usage_open: false, usage_refreshing: false,
-            session_show_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
+            session_show_req: None, orchestrator_start_req: None, orchestrator_refused: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
@@ -771,6 +778,8 @@ impl Client {
             }
             Event::Down(reason) => {
                 self.link = Link::Down(reason);
+                // No answer comes over a dropped link, so Start is offered again.
+                self.orchestrator_start_req = None;
                 server::link(false);
                 false
             }
@@ -831,7 +840,15 @@ impl Client {
         if self.pane_menu.as_ref().is_some_and(|(pane, _, _, level)| self.header_menu(pane, *level).is_empty()) {
             self.close_pane_menu();
         }
-        if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
+        // Orchestrator mode shows the Orchestrator space as soon as wheeld makes it.
+        if self.orchestrator_space().is_some() {
+            self.orchestrator_refused = None;
+        }
+        if !self.little && self.mode == "orchestrator" && let Some(orchestrator) = self.orchestrator_space().map(str::to_owned) {
+            if self.space_id.as_deref() != Some(orchestrator.as_str()) {
+                self.spaces_mode_space = self.space_id.replace(orchestrator);
+            }
+        } else if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
         self.ask_space_settings();
@@ -896,8 +913,17 @@ impl Client {
     pub fn session_spaces(&self) -> Vec<&Space> {
         match self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()) {
             Some(session) => session.spaces.iter().filter_map(|id| self.spaces.iter().find(|s| &s.id == id)).collect(),
-            None => self.spaces.iter().collect(),
+            None => self.spaces.iter().filter(|s| !s.orchestrator).collect(),
         }
+    }
+    /// The Orchestrator space's id, once wheeld has made it.
+    pub fn orchestrator_space(&self) -> Option<&str> {
+        self.spaces.iter().find(|s| s.orchestrator).map(|s| s.id.as_str())
+    }
+    /// Whether the body draws something of its own in place of the shown space's grid: the Agents
+    /// surface, or Orchestrator mode's empty state while there is no Orchestrator space.
+    pub fn grid_off(&self) -> bool {
+        self.mode == "agents" || self.mode == "orchestrator" && self.orchestrator_space().is_none()
     }
     pub fn window_id(&self) -> &str {
         &self.window_id
@@ -929,6 +955,10 @@ impl Client {
     }
     /// Show `space` of the session shown.
     pub fn select_space(&mut self, space: &str) {
+        // A space picked from the sidebar or the tabs is a Spaces mode space.
+        if self.mode == "orchestrator" && self.session_spaces().iter().any(|s| s.id == space) {
+            self.set_mode("spaces");
+        }
         if !self.is_little() && self.space_id.as_deref() != Some(space) && self.session_spaces().iter().any(|s| s.id == space) {
             self.space_id = Some(space.to_owned());
             self.overrides.clear();
@@ -2392,8 +2422,8 @@ impl Render for Client {
         crate::crash_guard::mark_space(self.space_id.as_deref().unwrap_or(""));
         let space_held = self.space_id.as_deref().is_some_and(|s| self.quarantine.isolates_space(s));
         // A quarantined space opens none of its views and draws its card in place of its panes.
-        // Every mode but Spaces draws its own body in place of the grid.
-        let grid_off = self.mode != "spaces";
+        // The Agents surface and Orchestrator mode's empty state draw in place of the grid.
+        let grid_off = self.grid_off();
         // While the server is stopped from the menu, the window says so in place of the grid.
         let server_stopped = !self.is_little() && self.server_stopped_notice();
         let layers = if space_held || grid_off || server_stopped { vec![] } else { layers };
@@ -2457,7 +2487,7 @@ impl Render for Client {
         if server_stopped {
             root = root.child(self.server_stopped_element());
         } else if !little && grid_off && !space_held && !matches!(self.link, Link::Incompatible { .. }) {
-            root = root.child(if self.mode == "agents" { self.surface_element(&cards, window, cx) } else { self.mode_element() });
+            root = root.child(if self.mode == "agents" { self.surface_element(&cards, window, cx) } else { self.mode_element(cx) });
         }
         // While the grid moves or a pane is zoomed, panes slide past the grid's edge: they draw
         // clipped to it, in window coordinates inside a layer the grid's size.

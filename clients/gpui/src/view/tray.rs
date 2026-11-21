@@ -8,9 +8,9 @@ use wheel_proto::PaneSite;
 
 impl Client {
     /// The panes in the shown space's tray, in the order wheeld lists them; none while the grid
-    /// draws nothing of its own (a little window shows the space, a mode other than Spaces is up).
+    /// draws nothing of its own (a little window shows the space, the body draws its own: `grid_off`).
     pub fn tray_panes(&self) -> Vec<Leaf> {
-        if self.space_away() || self.mode != "spaces" {
+        if self.space_away() || self.grid_off() {
             return vec![];
         }
         self.space().map(|s| s.backgrounded.iter().flat_map(leaves_of).cloned().collect()).unwrap_or_default()

@@ -356,6 +356,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
     let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
+    let (run, debug, orchestrator_mode_report) = orchestrator_mode(run, grid.clone(), debug, bearer.clone(), cx).await?;
     let (run, debug, card_drops_report, tray_report) = card_drops_and_tray(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), area.clone(), cx).await?;
     let (run, debug, zoom_report) = zoom(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), cli.clone(), cx).await?;
     let (run, debug, header_report, new_space) = pane_header(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), cli.clone(), fixture_space.clone(), cx).await?;
@@ -365,6 +366,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     };
     let mut pane_grid_report = json!({"space": grid, "panes": [grid_a, grid_b, grid_c], "menu": menu_ids, "swap": {"from": a, "to": c}, "popped_card": popped_card_report, "tray": tray_report,
         "dock": {"second": frame(&docked, &grid_b), "first": frame(&docked, &grid_a)}, "moved_to": new_space});
+    pane_grid_report["orchestrator_mode"] = orchestrator_mode_report;
     pane_grid_report["zoom"] = zoom_report;
     pane_grid_report["card_drops"] = card_drops_report;
     pane_grid_report["header"] = header_report;
@@ -6026,6 +6028,127 @@ async fn debug_server_and_processes(run: Run, terms: Vec<&String>, cx: &mut Asyn
 }
 
 /// The pane grid: a space of its own, splits, a real header drag, dock, and a popped card.
+/// Orchestrator mode (wheel-eg4e.8): with no Orchestrator space it says so and Start makes one by
+/// starting the global orchestrator (case 5); then it draws that space's grid (case 1), which no
+/// session, sidebar row or tab holds (case 2); `wheel pane place` moves its popped pane (case 3)
+/// and a real header drag and corner drag move and resize it (case 4). Leaving the mode shows the
+/// Spaces mode space again.
+async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let auth: [(&str, &str); 1] = [("Authorization", &bearer)];
+    macro_rules! state {
+        () => { http(&mut debug, "GET", "/state", &auth, &mut connection, &mut layouts, window, cx).await?.1 };
+    }
+    macro_rules! until {
+        ($what:expr, $cond:expr) => {{
+            let mut got = Value::Null;
+            let mut held = false;
+            for _ in 0..100 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                draw(window, None, cx)?;
+                got = state!();
+                if got["grid_motion"]["moving"] != true && ($cond)(&got) {
+                    held = true;
+                    break;
+                }
+            }
+            ensure!(held, "{} never happened: {}", $what, got);
+            got
+        }};
+    }
+    let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
+    let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
+    let start = state!();
+    ensure!(start["active"] == grid.as_str() && start["orchestrator"]["space"].is_null(), "before Orchestrator mode the window shows {} with Orchestrator space {}", start["active"], start["orchestrator"]["space"]);
+    // Case 5: the empty state, with the Spaces mode space still the one the window holds.
+    pick_mode(window, "orchestrator", cx).await?;
+    let empty = until!("the empty state with its Start button", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["empty"] == true && s["orchestrator"]["start"].is_array());
+    ensure!(empty["active"] == grid.as_str() && empty["cards"].as_array().is_none_or(Vec::is_empty), "the empty state shows {} with cards {}", empty["active"], empty["cards"]);
+    let drawn = window.update(cx, |c, _, _| c.grid_drawn_count())?;
+    ensure!(drawn == 0, "the empty state drew {drawn} grid panes");
+    draw(window, Some(output.join("client-orchestrator-empty.png")), cx)?;
+    let button = four(&empty["orchestrator"]["start"]);
+    let at = [button[0] + button[2] / 2., button[1] + button[3] / 2.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    // Case 1: Start made the Orchestrator space, and the mode draws its grid.
+    let shown = until!("the Orchestrator space shown after Start", |s: &Value| s["orchestrator"]["space"].is_string() && s["active"] == s["orchestrator"]["space"] && s["orchestrator"]["empty"] == false
+        && s["orchestrator"]["starting"] == false);
+    let space = shown["orchestrator"]["space"].as_str().unwrap_or_default().to_owned();
+    let panes_of = |s: &Value| -> Vec<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == space.as_str())).and_then(|x| x["panes"].as_array())
+            .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    };
+    let shown = until!("an agent pane in the Orchestrator space's grid", |s: &Value| panes_of(s).iter().any(|p| s["panes"][p.as_str()]["kind"] == "agent" && s["panes"][p.as_str()]["frame"].is_array()));
+    let pane = panes_of(&shown).into_iter().find(|p| shown["panes"][p.as_str()]["kind"] == "agent").unwrap_or_default();
+    let area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
+    let pane_frame = four(&shown["panes"][pane.as_str()]["frame"]);
+    ensure!(pane_frame[0] >= area[0] - 0.5 && pane_frame[1] >= area[1] - 0.5 && pane_frame[2] > 100. && pane_frame[3] > 100., "the orchestrator pane draws at {pane_frame:?} in a grid at {area:?}");
+    ensure!(window.update(cx, |c, _, _| c.grid_drawn_count())? == panes_of(&shown).len(), "the mode drew {} of the space's {} panes", window.update(cx, |c, _, _| c.grid_drawn_count())?, panes_of(&shown).len());
+    draw(window, Some(output.join("client-orchestrator-space.png")), cx)?;
+    // Case 2: no session, sidebar row or tab holds the Orchestrator space.
+    let in_sessions = shown["sessions"].as_array().into_iter().flatten().any(|s| s["spaces"].as_array().is_some_and(|l| l.iter().any(|id| id == space.as_str())));
+    let in_sidebar = shown["sidebar"]["rows"].as_array().into_iter().flatten().any(|r| r["id"] == space.as_str());
+    let in_tabs = shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == format!("tab:{space}"));
+    let in_palette = window.update(cx, |c, _, _| c.session_spaces().iter().any(|s| s.id == space))?;
+    ensure!(!in_sessions && !in_sidebar && !in_tabs && !in_palette, "the Orchestrator space {space} is listed: sessions {in_sessions}, sidebar {in_sidebar}, tabs {in_tabs}, session spaces {in_palette}");
+    // Case 3: the orchestrator pane popped, then placed by `wheel pane place`.
+    let (ok, _, err) = run_pumped(&["pane", "pop", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane pop {pane} failed: {err}");
+    let card_now = |s: &Value| four(&s["cards"][0]["frame"]);
+    let popped = until!("the orchestrator pane in a card", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1) && s["cards"][0]["panes"] == json!([pane]));
+    let popped_at = card_now(&popped);
+    let (ok, _, err) = run_pumped(&["pane", "place", &pane, "--frame", "60,50,420,300"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane place {pane} failed: {err}");
+    let placed_at = [area[0] + 60., area[1] + 50., 420., 300.];
+    until!("the card at the frame wheel pane place set", |s: &Value| near(card_now(s), placed_at));
+    draw(window, Some(output.join("client-orchestrator-placed.png")), cx)?;
+    // Case 4: a real drag on the card's header moves it; its corner resizes it.
+    let header_at = [placed_at[0] + 40., placed_at[1] + 11.];
+    let moved_by = [90., 40.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":header_at}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    for step in 1..=4 {
+        let k = f64::from(step) / 4.;
+        native.call(json!({"op":"post_mouse","kind":"drag","point":[header_at[0] + moved_by[0] * k, header_at[1] + moved_by[1] * k]}));
+        pump(&mut connection, 60, &mut layouts, window, cx).await?;
+    }
+    native.call(json!({"op":"post_mouse","kind":"up","point":[header_at[0] + moved_by[0], header_at[1] + moved_by[1]]}));
+    let want = [placed_at[0] + moved_by[0], placed_at[1] + moved_by[1], placed_at[2], placed_at[3]];
+    let moved = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want));
+    let corner = four(&moved["cards"][0]["grip"]);
+    let at = [corner[0] + corner[2] / 2., corner[1] + corner[3] / 2.];
+    native.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"drag","point":[at[0] + 50., at[1] + 40.]}));
+    pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    native.call(json!({"op":"post_mouse","kind":"up","point":[at[0] + 50., at[1] + 40.]}));
+    let want = [want[0], want[1], want[2] + 50., want[3] + 40.];
+    until!("the card resized by its corner", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want));
+    draw(window, Some(output.join("client-orchestrator-dragged.png")), cx)?;
+    let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
+    let rows: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let f = rows.as_array().and_then(|r| r.iter().find(|r| r["pane"] == pane.as_str())).map(|r| r["frame"].clone()).unwrap_or(Value::Null);
+    let listed = [f["x"].as_f64().unwrap_or(-1.), f["y"].as_f64().unwrap_or(-1.), f["w"].as_f64().unwrap_or(-1.), f["h"].as_f64().unwrap_or(-1.)];
+    let in_grid = [want[0] - area[0], want[1] - area[1], want[2], want[3]];
+    ensure!(ok && near(listed, in_grid), "after the drags wheel pane ls --json lists {listed:?} for {pane}, not {in_grid:?} ({err})");
+    // Leaving the mode shows the Spaces mode space again; coming back shows the Orchestrator space.
+    pick_mode(window, "spaces", cx).await?;
+    until!("the Spaces mode space back", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
+    pick_mode(window, "orchestrator", cx).await?;
+    until!("the Orchestrator space shown again", |s: &Value| s["active"] == space.as_str() && s["cards"].as_array().is_some_and(|c| c.len() == 1));
+    // A space picked in the sidebar is a Spaces mode space: the mode ends.
+    window.update(cx, |c, _, _| c.select_space(&grid))?;
+    let back = until!("Spaces mode after a sidebar pick", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
+    ensure!(back["cards"].as_array().is_none_or(Vec::is_empty), "the Orchestrator space's card stayed over the Spaces mode space: {}", back["cards"]);
+    let (ok, _, err) = run_pumped(&["orchestrator", "stop", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
+    let report = json!({"space": space, "pane": pane, "start": button, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,
+        "listed_in": {"sessions": in_sessions, "sidebar": in_sidebar, "tabs": in_tabs}});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, report))
+}
+
 async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, String, String, String, String, [f64; 4], [f64; 4], Vec<String>, Value, [f64; 4], Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;

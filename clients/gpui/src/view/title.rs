@@ -139,6 +139,17 @@ impl Client {
                 self.take_usage_board(board);
                 true
             }
+            ServerMsg::OrchestratorStarted { req, pane, .. } if self.orchestrator_start_req == Some(*req) => {
+                self.orchestrator_start_req = None;
+                self.log(format!("orchestrator started in {pane}"));
+                true
+            }
+            ServerMsg::Error { req: Some(req), message, .. } if self.orchestrator_start_req == Some(*req) => {
+                self.orchestrator_start_req = None;
+                self.log(format!("orchestrator start refused: {message}"));
+                self.orchestrator_refused = Some(message.clone());
+                true
+            }
             ServerMsg::Created { req, id, .. } if self.session_show_req == Some(*req) => {
                 self.session_show_req = None;
                 self.session_to_show = Some(id.clone());
@@ -195,9 +206,29 @@ impl Client {
             self.log(format!("window mode {mode}: no such mode"));
             return;
         }
-        if self.mode != mode {
-            self.mode = mode.to_owned();
-            self.log(format!("window {}: mode {mode}", &self.window_id[..self.window_id.len().min(12)]));
+        if self.mode == mode {
+            return;
+        }
+        let was = std::mem::replace(&mut self.mode, mode.to_owned());
+        self.log(format!("window {}: mode {mode}", &self.window_id[..self.window_id.len().min(12)]));
+        // Orchestrator mode shows the Orchestrator space in the window's body like any space; the
+        // space Spaces mode showed comes back when the mode ends.
+        let orchestrator = self.orchestrator_space().map(str::to_owned);
+        let swapped = if mode == "orchestrator" && !self.little && let Some(o) = orchestrator {
+            self.spaces_mode_space = self.space_id.replace(o);
+            true
+        } else if was == "orchestrator" && orchestrator.is_some() && self.space_id == orchestrator {
+            let back = self.spaces_mode_space.take().filter(|s| self.session_spaces().iter().any(|x| &x.id == s));
+            self.space_id = back.or_else(|| self.session_spaces().first().map(|s| s.id.clone()));
+            true
+        } else {
+            false
+        };
+        if swapped {
+            self.overrides.clear();
+            self.menu = None;
+            self.ask_space_settings();
+            self.sync_view();
         }
     }
     /// The pin: the window floats over every other while it is on.
@@ -498,15 +529,53 @@ impl Client {
         Some(card)
     }
 
-    /// The Orchestrator mode's body: a placeholder until it draws its chat (wheel-eg4e.8).
-    pub(super) fn mode_element(&self) -> gpui::Div {
+    /// Orchestrator mode's body while wheeld has no Orchestrator space: Start makes one by starting
+    /// the global orchestrator, and the mode then shows its space (wheel-eg4e.8).
+    pub(super) fn mode_element(&self, cx: &mut Context<Self>) -> gpui::Div {
         let r = self.grid_area();
         let (_, title, icon) = header::MODES.iter().find(|m| m.0 == self.mode).copied().unwrap_or(header::MODES[0]);
-        let line = "The orchestrator's chat will be here.";
+        let offered = self.server_has("orchestrator_start");
+        let waiting = self.orchestrator_start_req.is_some();
+        let label = if waiting { "Starting…" } else { "Start" };
+        let start = if offered && !waiting {
+            button(label, cx.listener(|this, _, _, cx| {
+                this.start_orchestrator();
+                cx.stop_propagation();
+                cx.notify();
+            }))
+        } else {
+            div().px_2().py(px(2.)).rounded_sm().text_xs().bg(rgb(BOX)).text_color(rgb(DIM)).child(label)
+        };
+        let start = start.relative().child(super::recorded("", "orchestrator-start", &self.controls));
         div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(6.))
             .children(self.symbol(icon, 28., 0x5a7266))
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title))
-            .child(div().text_color(rgb(DIM)).child(line))
+            .child(div().text_color(rgb(DIM)).child(ORCHESTRATOR_EMPTY))
+            .child(start)
+            .children(self.orchestrator_refused.clone().map(|m| div().text_xs().text_color(rgb(0xd98a7a)).child(m)))
+    }
+    /// Start the global orchestrator, which wheeld runs in the Orchestrator space it makes.
+    pub fn start_orchestrator(&mut self) {
+        if self.orchestrator_start_req.is_some() || !self.server_has("orchestrator_start") {
+            return;
+        }
+        let req = self.next_req;
+        self.next_req += 1;
+        self.orchestrator_start_req = Some(req);
+        self.orchestrator_refused = None;
+        self.press("orchestrator start".into());
+        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, pull_after_secs: None, turn_limit_secs: None });
+    }
+    /// Orchestrator mode as `/state` `orchestrator` carries it: the Orchestrator space, the Start
+    /// button's frame while the empty state draws, and a start in flight or refused.
+    pub fn orchestrator_json(&self) -> Value {
+        json!({
+            "space": self.orchestrator_space(),
+            "empty": self.mode == "orchestrator" && self.grid_off(),
+            "start": self.control_bounds("", "orchestrator-start").filter(|_| self.mode == "orchestrator" && self.grid_off()).map(|(x, y, w, h)| [x, y, w, h]),
+            "starting": self.orchestrator_start_req.is_some(),
+            "refused": self.orchestrator_refused,
+        })
     }
 
     /// Whether the window shows the Server stopped notice in place of its grid: Stop Server ran
@@ -845,6 +914,9 @@ impl Client {
         self.header_chips().iter().filter_map(|c| header::frame_id(&c.hit).map(|id| (id, json!([c.rect.x, c.rect.y, c.rect.w, c.rect.h])))).collect()
     }
 }
+
+/// What Orchestrator mode says while there is no Orchestrator space.
+pub const ORCHESTRATOR_EMPTY: &str = "No orchestrator yet";
 
 /// The width of `text` at `size` in the window's font.
 pub(super) fn text_width(window: &Window, text: &str, size: f32) -> f32 {

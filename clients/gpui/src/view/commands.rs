@@ -607,8 +607,9 @@ impl Client {
         if self.command_palette.is_none() {
             return;
         }
-        let spaces: Vec<OpenSpace> = self.spaces.iter().map(|s| OpenSpace { id: s.id.clone(), name: s.name.clone(), dir: s.cwd.clone() }).collect();
-        let panes: Vec<OpenPane> = self.spaces.iter().flat_map(|s| leaves_of(&s.root).into_iter().map(|l| OpenPane { id: l.id.clone(), space: s.id.clone(), space_name: s.name.clone(), name: palette_name(l) })).collect();
+        // The Orchestrator space is Orchestrator mode's, never a space to switch to.
+        let spaces: Vec<OpenSpace> = self.spaces.iter().filter(|s| !s.orchestrator).map(|s| OpenSpace { id: s.id.clone(), name: s.name.clone(), dir: s.cwd.clone() }).collect();
+        let panes: Vec<OpenPane> = self.spaces.iter().filter(|s| !s.orchestrator).flat_map(|s| leaves_of(&s.root).into_iter().map(|l| OpenPane { id: l.id.clone(), space: s.id.clone(), space_name: s.name.clone(), name: palette_name(l) })).collect();
         let actions: Vec<PaletteAction> = self.all_actions().into_iter().chain(actions::runner_actions(&self.runners))
             .filter(|a| self.action_enabled(&a.id))
             .map(|a| PaletteAction { shortcut: self.keymap.symbol(&a.id), id: a.id, title: a.title })
