@@ -2426,7 +2426,9 @@ impl Render for Client {
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // A key with the composer's input focused went through `composer_key` before the
                 // input's own bindings.
+                // A key the window took goes no further: not to a focused input's text as well.
                 if !this.composer_focused(window, cx) && this.key(e, cx) {
+                    cx.stop_propagation();
                     cx.notify();
                 }
             }))
