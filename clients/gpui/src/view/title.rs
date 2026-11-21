@@ -369,9 +369,6 @@ impl Client {
                         this.open_space_menu(&menu_id, f32::from(e.position.x), f32::from(e.position.y));
                         cx.notify();
                     }));
-                    if let Some(err) = renaming.and_then(|rn| rn.error) {
-                        bar = bar.child(div().absolute().left(px(r.x + 6.)).top(px(r.y + r.h + 2.)).w(px(r.w.max(180.))).text_xs().text_color(rgb(super::sidebar::RED)).child(err));
-                    }
                 }
                 Hit::Title => {
                     // A double click names the window; a right press opens the title's menu.
@@ -444,7 +441,20 @@ impl Client {
             // The sidebar's bar colour, which stands out against the active tab's fill.
             bar = bar.child(div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).rounded_full().bg(rgb(super::sidebar::ACCENT)));
         }
-        bar.children(self.title_menu_element(cx))
+        bar
+    }
+
+    /// What the title row puts over the window: the open menu and a tab's rename refusal. The
+    /// root adds them after the grid and the sidebar, so neither draws over them or takes their presses.
+    pub(super) fn title_overlays(&self, cx: &mut Context<Self>) -> Vec<gpui::Div> {
+        let mut out: Vec<gpui::Div> = self.title_menu_element(cx).into_iter().collect();
+        let refusal = self.rename.as_ref().filter(|rn| rn.pane.is_none()).and_then(|rn| Some((rn.space.clone(), rn.error.clone()?)));
+        if let Some((space, err)) = refusal
+            && let Some(r) = self.title_row().chips.into_iter().find(|c| c.hit == Hit::Space(space.clone())).map(|c| c.rect)
+        {
+            out.push(div().absolute().left(px(r.x + 6.)).top(px(r.y + r.h + 2.)).w(px(r.w.max(180.))).text_xs().text_color(rgb(super::sidebar::RED)).child(err));
+        }
+        out
     }
 
     /// The open menu's card and its rows, each at its rectangle under the menu's button; what

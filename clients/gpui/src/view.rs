@@ -2473,7 +2473,7 @@ impl Render for Client {
         if !little && self.sidebar_open && self.session_id.is_some() && !matches!(self.link, Link::Incompatible { .. }) {
             root = root.child(self.sidebar_element(cx));
         }
-        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.space_drop_outline()).children(self.drag_chip()).children(self.space_drag_capture(cx));
+        root = root.children(self.preview_card()).children(self.space_menu_overlay(cx)).children(self.pane_menu_overlay(cx)).children(self.message_menu_overlay(cx)).children(self.title_overlays(cx)).children(self.space_drop_outline()).children(self.drag_chip()).children(self.space_drag_capture(cx));
         // While a card, a divider or a pane is dragged, a layer over the whole window takes the
         // pointer: a card's backdrop occludes the root, whose listeners hear only a pointer over nothing else.
         if self.card_drag.is_some() || self.drag.is_some() || self.pane_drag.is_some() || self.tray_drag.is_some() || self.surface_holds_pointer() {
