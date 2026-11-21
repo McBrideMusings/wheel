@@ -18,7 +18,7 @@ use wheel_proto::{
 };
 
 use crate::server::AppState;
-use crate::spaces::{space_find, space_panes, Spaces};
+use crate::spaces::{space_panes, Spaces};
 use wheel_proto::PaneKind;
 
 /// The manifest's file name.
@@ -617,11 +617,13 @@ fn plugin_panes_of(spaces: &Spaces) -> Vec<PluginPane> {
         .spaces
         .iter()
         .flat_map(|space| {
-            space_panes(space).into_iter().filter_map(|(pane, kind)| {
+            space_panes(space).into_iter().filter_map(|(pane, _)| {
+                // A mirror of a plugin pane is watched under its own id, in its source's space.
+                let (shown_space, kind) = crate::spaces::shown_in(spaces, pane)?;
                 let (plugin, plugin_pane) = shown_plugin(kind)?;
                 Some(PluginPane {
                     pane: pane.to_string(),
-                    cwd: space.cwd.clone(),
+                    cwd: shown_space.cwd.clone(),
                     plugin,
                     plugin_pane,
                 })
@@ -768,11 +770,7 @@ impl AppState {
     pub fn plugin_source(&self, pane: &str) -> Result<(String, String, Script), String> {
         let (cwd, plugin, plugin_pane) = {
             let spaces = self.spaces.lock().unwrap();
-            let (space, kind) = spaces
-                .spaces
-                .iter()
-                .find_map(|s| space_find(s, pane).map(|k| (s, k)))
-                .ok_or_else(|| format!("no pane {pane}"))?;
+            let (space, kind) = crate::spaces::shown_in(&spaces, pane).ok_or_else(|| format!("no pane {pane}"))?;
             let (plugin, plugin_pane) = shown_plugin(kind)
                 .ok_or_else(|| format!("{pane} is not a plugin or agent pane"))?;
             (space.cwd.clone(), plugin, plugin_pane)

@@ -176,6 +176,7 @@ fn term_of(space: &SpaceInfo, pane: &str) -> Option<String> {
                 | PaneKind::Web { .. }
                 | PaneKind::Browser { .. }
                 | PaneKind::Plugin { .. }
+                | PaneKind::Mirror { .. }
                 | PaneKind::Agent { .. }
                 | PaneKind::Unknown(_) => None,
             }),
@@ -8295,6 +8296,16 @@ async fn a_plugin_pane_resolves_serves_its_script_and_pushes_a_save() {
         }
         other => panic!("expected plugin_source, got {other:?}"),
     }
+    // A mirror of the plugin pane reads its source's script, resolved in the source's space.
+    let mirror = match call(&mut ws, ClientMsg::PaneMirror { req: Some(46), source: pane_a.clone(), space: a.id.clone() }).await {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    match call(&mut ws, ClientMsg::PluginSource { req: Some(47), pane: mirror.clone() }).await {
+        ServerMsg::PluginSource { chunk, .. } => assert_eq!(chunk, "demo/main.luau"),
+        other => panic!("a mirror of a plugin pane got {other:?}"),
+    }
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(48), pane: mirror }).await;
     assert!(matches!(
         call(&mut ws, ClientMsg::PluginSource { req: Some(44), pane: pane_b.clone() }).await,
         ServerMsg::Error { .. }
@@ -9025,5 +9036,48 @@ async fn a_pane_keeps_its_name_and_shows_the_title_its_program_sets() {
     ok(&mut ws, rename("")).await;
     let (spaces, _) = layout(&mut ws).await;
     assert_eq!(name_and_title_of(&spaces[0].root, &pane).and_then(|(n, _)| n), None, "an empty name clears it");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_of_a_web_pane_serves_its_sources_page() {
+    let dir = std::env::temp_dir().join(format!("wheel-mirror-web-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>source page</p>").unwrap();
+    register(&dir, "site", std::path::Path::new("site"), "");
+    let inst = dir.join("inst");
+    std::fs::create_dir_all(&inst).unwrap();
+    let (url, _) = start_daemon(Some(inst.join("spaces.json"))).await;
+    let addr = url.trim_start_matches("ws://").split('/').next().unwrap().to_string();
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    created(&mut ws, new_space(&dir.to_string_lossy())).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let source = first_pane(&spaces[0].root);
+    ok(
+        &mut ws,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(10),
+            pane: source.clone(),
+            kind: NewPaneKind::Web,
+            artifact: Some("site".into()),
+            scope: None,
+            url: None,
+            plugin: None,
+        },
+    )
+    .await;
+    let mirror = match call(&mut ws, ClientMsg::PaneMirror { req: Some(11), source: source.clone(), space: spaces[1].id.clone() }).await {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    // The mirror's own address serves the source's page: it holds no folder or page of its own.
+    let bearer = format!("Authorization: Bearer {TOKEN}\r\n");
+    let (status, response) = http_get(&addr, &format!("/artifacts/{mirror}/index.html"), &bearer).await;
+    assert_eq!(status, 200, "{response}");
+    assert!(response.ends_with("\r\n\r\n<p>source page</p>"), "{response}");
     let _ = std::fs::remove_dir_all(&dir);
 }

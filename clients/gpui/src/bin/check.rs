@@ -321,6 +321,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
     let (run, first_session_id, fixture_space, sidebar_report) = sidebar(run, click.clone(), cx).await?;
     let (run, title_report) = title_and_bottom_rows(run, first_session_id.clone(), fixture_space.clone(), native_panes.clone(), cx).await?;
+    let (run, mirrors_report) = mirrors(run, terms[0].clone(), agent_pane.clone(), cli_path.clone(), cx).await?;
     let (run, agents_report) = agents_surface(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, restore, first_session, first_space, both, distinct, hidden_native, second, second_session, native2, id1, id2, f1, f2, dragged, drag_dir, from2, over_window, window2_sees, after_window, desk, little_id, little_owner, little_frame, over_desk_floats, aim, chip_expect, chip_over_window) = second_window_and_space_drags(run, saved_file.clone(), native_panes.clone(), webs.clone(), cx).await?;
     let (run, card, card_hint, onto_tabs_after, over_card, over_tabs, window2_tabs) = space_drag_to_popover_and_tabs(run, dragged.clone(), f1.clone(), f2.clone(), first_session.clone(), from2.clone(), id2.clone(), native2.clone(), second.clone(), second_session.clone(), cx).await?;
@@ -404,6 +405,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
     report["cards"] = cards_report;
+    report["mirrors"] = mirrors_report;
     report["plugin_panes"] = plugin_panes_report;
     // Past the one `json!` the recursion limit allows.
     report["terminal"] = terminal_report;
@@ -742,6 +744,59 @@ async fn agent_turns(run: Run, rects: Vec<(String, Rect)>, cx: &mut AsyncApp) ->
     let agent_report = json!({"pane": agent_pane, "agent": agent_name, "sent_seen_by_wheeld": sent_seen_by_wheeld, "tool_rows": tool_rows, "failed_rows": failed_rows,
         "thought_rows": thought_rows, "diff_paths": diff_paths, "state_after": state_after, "rows_total": rows(cx)?.1.len()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, agent_pane, agent_name, agent_rect, cli_path, agent_report))
+}
+
+/// Mirror panes (wheel-eg4e.19.1): `wheel pane mirror` puts a mirror of a terminal and of an agent
+/// pane in the terminal's space; each draws as its source's kind, attached to the source's terminal
+/// or agent, with a header naming `<space> · <pane>`; its header button shows the source, and
+/// closing the source closes the mirror.
+async fn mirrors(mut run: Run, term_pane: String, agent_pane: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let cli = |args: &[&str]| -> Result<String> {
+        let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
+        ensure!(out.status.success(), "wheel {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let space = run.window.update(cx, |c, _, _| c.state_json()["panes"][term_pane.as_str()]["space"].as_str().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("{term_pane} has no space"))?;
+    ensure!(run.window.update(cx, |c, _, _| c.server_has("pane_mirror"))?, "wheeld does not list pane_mirror");
+    let term_mirror = cli(&["pane", "mirror", &term_pane, "--space", &space])?;
+    let agent_mirror = cli(&["pane", "mirror", &agent_pane, "--space", &space])?;
+    let (mut term_state, mut agent_state) = (Value::Null, Value::Null);
+    for _ in 0..100 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        draw(run.window, None, cx)?;
+        term_state = pane_state(run.window, &term_mirror, cx)?;
+        agent_state = pane_state(run.window, &agent_mirror, cx)?;
+        if term_state["mirror"]["source"] == term_pane.as_str() && agent_state["mirror"]["source"] == agent_pane.as_str() && term_state["visible"] == true && agent_state["visible"] == true {
+            break;
+        }
+    }
+    let source_term = pane_state(run.window, &term_pane, cx)?["term"].clone();
+    let source_agent = pane_state(run.window, &agent_pane, cx)?["agent"].clone();
+    ensure!(term_state["mirror"]["source"] == term_pane.as_str() && term_state["kind"] == "terminal" && term_state["term"] == source_term, "the terminal mirror is {term_state}");
+    ensure!(agent_state["mirror"]["source"] == agent_pane.as_str() && agent_state["kind"] == "agent" && agent_state["agent"] == source_agent, "the agent mirror is {agent_state}");
+    let status: Value = serde_json::from_str(&cli(&["status", "--json"])?)?;
+    let space_name = status["spaces"].as_array().and_then(|a| a.iter().find(|s| s["id"] == space.as_str())).and_then(|s| s["name"].as_str()).unwrap_or_default().to_owned();
+    let title = term_state["mirror"]["title"].as_str().unwrap_or_default().to_owned();
+    ensure!(title.starts_with(&format!("{space_name} · ")), "the mirror's header reads {title:?}");
+    draw(run.window, Some(run.output.join("client-mirrors.png")), cx)?;
+    // The header's button shows the source: a real press on it focuses the source pane.
+    press_named(&run.native, run.window, &agent_mirror, "mirror-source", cx).await?;
+    let focused = pane_state(run.window, &agent_pane, cx)?["focused"].clone();
+    ensure!(focused == true, "pressing the mirror's source button left {agent_pane} unfocused");
+    cli(&["pane", "close", &agent_mirror])?;
+    cli(&["pane", "close", &term_mirror])?;
+    for _ in 0..50 {
+        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
+        if pane_state(run.window, &term_mirror, cx)?.is_null() {
+            break;
+        }
+    }
+    draw(run.window, None, cx)?;
+    let report = json!({"terminal": {"pane": term_mirror, "source": term_pane, "kind": term_state["kind"], "term": term_state["term"], "title": title, "visible": term_state["visible"]},
+        "agent": {"pane": agent_mirror, "source": agent_pane, "kind": agent_state["kind"], "agent": agent_state["agent"], "title": agent_state["mirror"]["title"]},
+        "source_button_focused_source": focused, "closed_with_close": pane_state(run.window, &term_mirror, cx)?.is_null()});
+    std::fs::write(run.output.join("mirrors-report.json"), serde_json::to_vec_pretty(&report)?)?;
+    Ok((run, report))
 }
 
 /// The agent pane's pane state as `/state` reports it.

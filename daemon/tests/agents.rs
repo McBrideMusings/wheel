@@ -6601,3 +6601,155 @@ async fn a_reloaded_agent_pane_carries_on_its_conversation() {
     let listed = layout(&url).await;
     assert!(listed["spaces"][0]["root"].get("env").is_none(), "{listed}");
 }
+
+/// Every space as `status` lists it.
+async fn spaces_now(ws: &mut Ws) -> Vec<wheel_proto::SpaceInfo> {
+    send(ws, ClientMsg::Status { req: Some(97) }).await;
+    loop {
+        if let ServerMsg::Status { req: Some(97), spaces, .. } = recv(ws).await {
+            return spaces;
+        }
+    }
+}
+
+/// Make a mirror of `source` in `space`; the daemon's reply as it came.
+async fn mirror_reply(ws: &mut Ws, req: u64, source: &str, space: &str) -> Result<String, String> {
+    send(ws, ClientMsg::PaneMirror { req: Some(req), source: source.into(), space: space.into() }).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Created { req: r, id, .. } if r == req => return Ok(id),
+            ServerMsg::Error { req: Some(r), message, .. } if r == req => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+async fn set_kind(ws: &mut Ws, req: u64, pane: &str, kind: wheel_proto::NewPaneKind, url: Option<&str>) {
+    client_op(
+        ws,
+        req,
+        ClientMsg::PaneSetKind {
+            home: None,
+            req: Some(req),
+            pane: pane.into(),
+            kind,
+            artifact: None,
+            scope: None,
+            url: url.map(String::from),
+            plugin: None,
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_shows_its_terminal_source_takes_input_and_closes_with_it() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, source) = space(&url, "/tmp").await;
+    set_kind(&mut ws, 1, &source, wheel_proto::NewPaneKind::Terminal, None).await;
+    let wheel_proto::PaneKind::Terminal { term, .. } = pane_kind(&mut ws, &source).await else {
+        panic!("not a terminal")
+    };
+    term_attach(&mut ws, &term).await;
+    type_line(&mut ws, &term, "echo before-mirror").await;
+    output_until(&mut ws, "before-mirror\r\n", 30).await;
+
+    // Case 1: the mirror goes in another space's lone empty pane and shows the source's screen.
+    let (other, empty) = space(&url, "/tmp").await;
+    let mirror = mirror_reply(&mut ws, 2, &source, &other).await.unwrap();
+    assert_eq!(mirror, empty, "the mirror takes the space's lone empty pane");
+    let spaces = spaces_now(&mut ws).await;
+    let (shown, kind) = wheel_proto::shown_pane(&spaces, &mirror).unwrap();
+    assert_eq!(shown, source);
+    let wheel_proto::PaneKind::Terminal { term: through, .. } = kind else { panic!("{kind:?}") };
+    assert_eq!(through, &term);
+    let mut viewer = connect(&url).await;
+    term_attach(&mut viewer, through).await;
+    assert!(output_until(&mut viewer, "before-mirror", 30).await.contains("before-mirror"));
+
+    // Case 2 and 3: typed through the mirror, the line reaches the source, and both show its output.
+    type_line(&mut viewer, through, "echo typed-in-mirror").await;
+    assert!(output_until(&mut ws, "typed-in-mirror\r\n", 30).await.contains("typed-in-mirror"));
+    assert!(output_until(&mut viewer, "typed-in-mirror\r\n", 30).await.contains("typed-in-mirror"));
+
+    // Case 7: the listing carries the source and nothing else.
+    let layout = layout(&url).await;
+    let leaf = layout["spaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == other.as_str())
+        .unwrap()["root"]
+        .clone();
+    assert_eq!(leaf["kind"], "mirror");
+    assert_eq!(leaf["source"], source.as_str());
+    let fields: Vec<&str> = leaf.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(fields, ["id", "kind", "node", "source"], "a mirror holds no screen, transcript or page");
+
+    // A mirror of a mirror is refused.
+    let refused = mirror_reply(&mut ws, 3, &mirror, &other).await.unwrap_err();
+    assert!(refused.contains("is a mirror"), "{refused}");
+
+    // Case 8: closing the source closes the mirror.
+    client_op(&mut ws, 4, ClientMsg::PaneClose { req: Some(4), pane: source.clone() }).await;
+    let spaces = spaces_now(&mut ws).await;
+    assert!(
+        spaces.iter().all(|s| !s.site_of(&mirror).is_some()),
+        "the mirror closed with its source"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_of_an_agent_streams_its_transcript_and_sends_and_answers_for_it() {
+    let url = start_daemon().await;
+    let (source, agent) = agent_pane(&url, Some("hello")).await;
+    let (other, _) = space(&url, "/tmp").await;
+    let mut ws = connect(&url).await;
+    let mirror = mirror_reply(&mut ws, 1, &source, &other).await.unwrap();
+
+    // Case 4: attached by the mirror's id, the transcript is the source agent's.
+    let events = attach(&mut ws, &mirror, 2).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { turn: 1, .. })),
+        "{events:?}"
+    );
+    send(&mut ws, ClientMsg::AgentSend { req: Some(5), agent: mirror.clone(), text: "again".into() }).await;
+    let text = turn_text(&mut ws).await;
+    assert!(!text.is_empty(), "the source agent answered a message sent to its mirror");
+
+    // Case 5: a permission request answered through the mirror answers the source's.
+    send(&mut ws, ClientMsg::AgentSend { req: Some(3), agent: mirror.clone(), text: "needs permission".into() }).await;
+    let perm = next_perm(&mut ws).await;
+    assert_eq!(perm.agent, agent);
+    client_op(&mut ws, 4, ClientMsg::PermAnswer { req: Some(4), id: perm.id.clone(), choice: "allow".into() }).await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("permission: allow"), "{text:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_of_a_browser_pane_resolves_to_its_page() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (_, source) = space(&url, "/tmp").await;
+    set_kind(&mut ws, 1, &source, wheel_proto::NewPaneKind::Browser, Some("https://example.com/")).await;
+    let (other, first) = space(&url, "/tmp").await;
+    set_kind(&mut ws, 2, &first, wheel_proto::NewPaneKind::Terminal, None).await;
+    // Case 6: in a space that holds a pane already, the mirror splits it and shows the same page.
+    let mirror = mirror_reply(&mut ws, 3, &source, &other).await.unwrap();
+    assert_ne!(mirror, first);
+    let spaces = spaces_now(&mut ws).await;
+    let (shown, kind) = wheel_proto::shown_pane(&spaces, &mirror).unwrap();
+    assert_eq!(shown, source);
+    assert!(matches!(kind, wheel_proto::PaneKind::Browser { url, .. } if url == "https://example.com/"), "{kind:?}");
+    // A pane cannot mirror itself, even as its space's lone empty pane.
+    let (lone_space, lone) = space(&url, "/tmp").await;
+    let refused = mirror_reply(&mut ws, 5, &lone, &lone_space).await.unwrap_err();
+    assert!(refused.contains("cannot mirror itself"), "{refused}");
+    // Closing the source's whole space takes the mirror too.
+    let source_space = spaces.iter().find(|s| s.site_of(&source).is_some()).unwrap().id.clone();
+    client_op(&mut ws, 4, ClientMsg::SpaceClose { req: Some(4), id: source_space, if_empty: false }).await;
+    let spaces = spaces_now(&mut ws).await;
+    assert!(spaces.iter().all(|s| !s.site_of(&mirror).is_some()));
+    assert!(spaces.iter().any(|s| s.site_of(&first).is_some()), "the space's other pane stays");
+}

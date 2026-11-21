@@ -10,7 +10,7 @@ use wheel_proto::{PaneKind, AgentState};
 
 use crate::server::AppState;
 use crate::agent::Agent;
-use crate::spaces::{agent_panes, space_find};
+use crate::spaces::agent_panes;
 
 /// An agent and the pane that owns it; `pane` is unset once the pane has gone.
 pub(crate) struct AgentRef {
@@ -51,30 +51,26 @@ impl AppState {
         Ok(())
     }
 
-    /// The agent an agent pane names for `target` (the pane's id, or the agent's name) while that
-    /// agent is not running: a restore keeps it until the login shell answers.
+    /// The agent an agent pane names for `target` (the pane's id, a mirror of it, or the agent's
+    /// name) while that agent is not running: a restore keeps it until the login shell answers.
     pub(crate) fn unstarted_pane_agent(&self, target: &str) -> Option<String> {
         let name = {
             let spaces = self.spaces.lock().unwrap();
-            spaces.spaces.iter().find_map(|s| match space_find(s, target) {
-                Some(PaneKind::Agent { agent, .. }) => Some(agent.clone()),
-                _ => agent_panes(s).into_iter().find(|p| p.agent == target).map(|p| p.agent),
-            })?
+            match wheel_proto::shown_pane(&spaces.spaces, target) {
+                Some((_, PaneKind::Agent { agent, .. })) => agent.clone(),
+                _ => spaces.spaces.iter().find_map(|s| agent_panes(s).into_iter().find(|p| p.agent == target).map(|p| p.agent))?,
+            }
         };
         self.agent(&name).is_err().then_some(name)
     }
 
-    /// The agent `target` names: an agent pane's id, or an agent name.
+    /// The agent `target` names: an agent pane's id, a mirror of one, or an agent name.
     pub(crate) fn resolve_agent(&self, target: &str) -> Result<AgentRef, String> {
         let pane_agent = {
             let spaces = self.spaces.lock().unwrap();
-            match spaces
-                .spaces
-                .iter()
-                .find_map(|s| space_find(s, target))
-            {
-                Some(PaneKind::Agent { agent, .. }) => Some(Ok(agent.clone())),
-                Some(other) => {
+            match wheel_proto::shown_pane(&spaces.spaces, target) {
+                Some((pane, PaneKind::Agent { agent, .. })) => Some(Ok((pane.to_string(), agent.clone()))),
+                Some((_, other)) => {
                     let kind = serde_json::to_value(other)
                         .ok()
                         .and_then(|v| v["kind"].as_str().map(str::to_owned))
@@ -87,9 +83,9 @@ impl AppState {
             }
         };
         if let Some(agent) = pane_agent {
-            let agent = agent?;
+            let (pane, agent) = agent?;
             return Ok(AgentRef {
-                pane: Some(target.to_string()),
+                pane: Some(pane),
                 agent: self.agent(&agent)?,
             });
         }

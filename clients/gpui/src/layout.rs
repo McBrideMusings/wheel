@@ -26,6 +26,17 @@ pub struct Leaf {
     /// The name a person or an agent gave the pane, and the title its program set.
     pub name: Option<String>,
     pub title: Option<String>,
+    /// Set on a mirror (`PaneKind::Mirror`): every other field then describes the source it draws.
+    pub mirror: Option<Mirror>,
+}
+
+/// What a mirror pane says about its source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mirror {
+    /// The source pane's id.
+    pub source: String,
+    /// `<source space> · <source pane's name>`, the mirror's header title.
+    pub title: String,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tree {
@@ -131,7 +142,19 @@ impl From<&Node> for Tree {
                 b: Box::new(Tree::from(b.as_ref())),
             },
             Node::Pane { id, kind, status, name, title, .. } => {
-                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone(), name: name.clone(), title: title.clone() };
+                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone(), name: name.clone(), title: title.clone(), mirror: None };
+                leaf.show(kind);
+                Tree::Pane(leaf)
+            }
+        }
+    }
+}
+
+impl Leaf {
+    /// Fill in what the pane shows from its kind. A mirror is `mirror` until [`resolve_mirrors`]
+    /// fills it in from its source.
+    fn show(&mut self, kind: &PaneKind) {
+        let leaf = self;
                 match kind {
                     PaneKind::Empty { .. } => leaf.kind = "empty".into(),
                     PaneKind::Terminal { term, cwd, agent, .. } => {
@@ -160,12 +183,45 @@ impl From<&Node> for Tree {
                         leaf.kind = "plugin".into();
                         leaf.label = format!("{plugin}/{pane}");
                     }
+                    PaneKind::Mirror { .. } => leaf.kind = "mirror".into(),
                     PaneKind::Unknown(pane) => leaf.kind = pane.kind().to_owned(),
                 }
-                Tree::Pane(leaf)
-            }
-        }
     }
+}
+
+/// Draw each mirror as its source: the source's kind, terminal, agent, page or artifact, with the
+/// mirror's own id, so its views attach to the source's content and its header names the source.
+/// A mirror whose source is gone stays kind `mirror`, which draws as an unknown pane.
+fn resolve_mirrors(trees: &mut Tree, wire: &[SpaceInfo]) {
+    match trees {
+        Tree::Split { a, b, .. } => {
+            resolve_mirrors(a, wire);
+            resolve_mirrors(b, wire);
+        }
+        Tree::Pane(leaf) if leaf.kind == "mirror" => {
+            let Some((source, kind)) = wheel_proto::shown_pane(wire, &leaf.id).filter(|(s, _)| *s != leaf.id) else { return };
+            let space = wire.iter().find(|s| s.site_of(source).is_some());
+            let named = space.and_then(|s| s.trees().find_map(|t| named_in(t, source)));
+            let shown = named.unwrap_or_else(|| wire_kind(kind));
+            leaf.show(kind);
+            leaf.mirror = Some(Mirror { source: source.to_owned(), title: format!("{} · {shown}", space.map(|s| s.name.as_str()).unwrap_or_default()) });
+        }
+        Tree::Pane(_) => {}
+    }
+}
+
+/// The name or title of leaf `pane` in `node`.
+fn named_in(node: &Node, pane: &str) -> Option<String> {
+    match node {
+        Node::Pane { id, name, title, .. } if id == pane => name.clone().or_else(|| title.clone()),
+        Node::Pane { .. } => None,
+        Node::Split { a, b, .. } => named_in(a, pane).or_else(|| named_in(b, pane)),
+    }
+}
+
+/// The wire name of a kind, for a header with no name to show.
+fn wire_kind(kind: &PaneKind) -> String {
+    serde_json::to_value(kind).ok().and_then(|v| v["kind"].as_str().map(str::to_owned)).unwrap_or_default()
 }
 
 /// An artifact scope's wire name (`project`, `machine`).
@@ -194,10 +250,16 @@ pub struct Layout {
 
 impl Layout {
     fn new(spaces: &[SpaceInfo], sessions: &[SessionInfo]) -> Self {
-        Self {
+        let mut layout = Self {
             spaces: spaces.iter().map(|s| Space { id: s.id.clone(), name: s.name.clone(), cwd: s.cwd.clone(), root: Tree::from(&s.root), status: s.status.clone(), popped: s.popped.iter().map(Tree::from).collect(), backgrounded: s.backgrounded.iter().map(Tree::from).collect() }).collect(),
             sessions: sessions.iter().map(|s| Session { id: s.id.clone(), name: s.name.clone(), spaces: s.spaces.clone() }).collect(),
+        };
+        for space in &mut layout.spaces {
+            for tree in std::iter::once(&mut space.root).chain(space.popped.iter_mut()).chain(space.backgrounded.iter_mut()) {
+                resolve_mirrors(tree, spaces);
+            }
         }
+        layout
     }
 }
 
@@ -354,14 +416,14 @@ mod tests {
     #[test]
     fn every_kind_keeps_what_the_view_draws() {
         let leaves: Vec<_> = leaves_of(&tree()).into_iter().cloned().collect();
-        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None, name: None, title: None });
-        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None, name: None, title: None });
-        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None, name: None, title: None });
+        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None, name: None, title: None, mirror: None });
+        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None, name: None, title: None, mirror: None });
+        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None, name: None, title: None, mirror: None });
         let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
-        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None, name: None, title: None }));
+        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None, name: None, title: None, mirror: None }));
         // A shell running a coding agent carries the agent as its harness.
         let shell = node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","agent":{"name":"codex","conversation":"c1"}}));
-        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None, name: None, title: None }));
+        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None, name: None, title: None, mirror: None }));
     }
 
     #[test]
@@ -388,9 +450,25 @@ mod tests {
     }
 
     #[test]
+    fn a_mirror_draws_its_source_and_names_it() {
+        let spaces: Vec<SpaceInfo> = serde_json::from_value(json!([
+            {"id":"s1","name":"kennel","cwd":"/k","root":{"node":"pane","id":"p1","kind":"terminal","term":"t1","pane_name":"codex"}},
+            {"id":"s2","name":"orch","cwd":"/o","root":{"node":"split","id":"x1","axis":"horizontal","ratio":0.5,
+                "a":{"node":"pane","id":"p2","kind":"mirror","source":"p1"},
+                "b":{"node":"pane","id":"p3","kind":"mirror","source":"p9"}}}
+        ])).unwrap();
+        let layout = Layout::new(&spaces, &[]);
+        let leaves = leaves_of(&layout.spaces[1].root);
+        assert_eq!((leaves[0].id.as_str(), leaves[0].kind.as_str(), leaves[0].term.as_deref()), ("p2", "terminal", Some("t1")));
+        assert_eq!(leaves[0].mirror, Some(Mirror { source: "p1".into(), title: "kennel · codex".into() }));
+        // A mirror whose source is gone stays a mirror, drawn as a kind this client cannot show.
+        assert_eq!((leaves[1].kind.as_str(), leaves[1].mirror.is_none()), ("mirror", true));
+    }
+
+    #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = node(json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, mirror: None }));
     }
 
     #[test]

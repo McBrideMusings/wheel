@@ -2265,6 +2265,7 @@ impl Client {
                         }
                     }));
                     title.child(match (p.leaf.kind.as_str(), self.browsers.get(&p.leaf.id)) {
+                        _ if p.leaf.mirror.is_some() => p.leaf.mirror.as_ref().map(|m| m.title.clone()).unwrap_or_default(),
                         _ if named.is_some() => format!("{} · {}", named.unwrap(), p.leaf.id),
                         ("browser", Some(state)) => format!("{} · {}", browser::title(state), p.leaf.id),
                         ("plugin", _) => format!("{} · {}", p.leaf.label, p.leaf.id),
@@ -2273,6 +2274,20 @@ impl Client {
                     }).child(recorded(&p.leaf.id, "pane-title", &self.controls)).into_any_element()
                     }
                 })
+                .children(p.leaf.mirror.as_ref().map(|m| {
+                    // A mirror's header shows its source in one click.
+                    let (pane, source) = (p.leaf.id.clone(), m.source.clone());
+                    let icon = self.symbol("arrow.up.forward.square", 11., 0xb7cbc1).unwrap_or_else(|| div().text_xs().child("↗").into_any_element());
+                    div().id(gpui::ElementId::Name(format!("hdr-mirror-source-{pane}").into())).relative().ml_1().w(px(18.)).h(px(18.)).flex_none().rounded_sm().flex().items_center().justify_center().cursor_pointer()
+                        .hover(|s| s.bg(rgb(0x31483e))).tooltip(crate::tooltip::tip("Show the source pane")).child(icon)
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.log(format!("mirror {pane}: show source {source}"));
+                            this.show_pane(&source);
+                            cx.notify();
+                        }))
+                        .child(recorded(&p.leaf.id, "mirror-source", &self.controls))
+                }))
                 .children(self.plugin_errors.get(&p.leaf.id).cloned().flatten().filter(|_| p.leaf.kind == "plugin").map(|error| {
                     div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).relative().ml_2().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
                         .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error).child(recorded(&p.leaf.id, "plugin-error", &self.controls))

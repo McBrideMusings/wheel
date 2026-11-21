@@ -1003,6 +1003,16 @@ enum PaneCommand {
     },
     /// Close a pane; closing a space's last pane leaves the space with one new empty pane.
     Close { pane: String },
+    /// Make a mirror of a pane in a space: a pane that draws the source's live content, where
+    /// typing and answering act on the source. It holds only the source's id and closes when the
+    /// source does. Prints the mirror's id.
+    Mirror {
+        /// The pane to show, in any space of the same session.
+        source: String,
+        /// The space the mirror goes in (an id or a name).
+        #[arg(long)]
+        space: String,
+    },
     /// Start a terminal or an agent in a pane, whatever it showed going. Prints the pane and, for
     /// an agent, its agent name and state.
     ///
@@ -2501,13 +2511,8 @@ async fn terminal_id(conn: &mut Conn, id: String) -> Result<String, Fail> {
     else {
         return Err(Fail::Other("unexpected reply to status".into()));
     };
-    fn find<'a>(node: &'a wheel_proto::Node, pane: &str) -> Option<&'a wheel_proto::PaneKind> {
-        match node {
-            wheel_proto::Node::Pane { id, kind, .. } => (id == pane).then_some(kind),
-            wheel_proto::Node::Split { a, b, .. } => find(a, pane).or_else(|| find(b, pane)),
-        }
-    }
-    match spaces.iter().find_map(|s| s.trees().find_map(|t| find(t, &id))) {
+    // A mirror reads and types into its source's terminal.
+    match wheel_proto::shown_pane(&spaces, &id).map(|(_, kind)| kind) {
         Some(wheel_proto::PaneKind::Terminal { term, .. }) => Ok(term.clone()),
         Some(_) => Err(Fail::Daemon(format!("{id} is not a terminal pane"))),
         None => Err(Fail::Daemon(format!("no pane {id}"))),
@@ -5419,7 +5424,7 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
-    type Row = (String, String, Option<String>, Option<String>);
+    type Row = (String, String, Option<String>, Option<String>, Option<String>);
     fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
             wheel_proto::Node::Pane { id, kind, name, title, .. } => {
@@ -5427,7 +5432,11 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind, name.clone(), title.clone()));
+                let source = match node {
+                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Mirror { source, .. }, .. } => Some(source.clone()),
+                    _ => None,
+                };
+                out.push((id.clone(), kind, name.clone(), title.clone(), source));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -5447,11 +5456,15 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         for tree in space.trees() {
             walk(tree, &mut panes);
         }
-        for (pane, kind, name, title) in panes {
+        for (pane, kind, name, title, source) in panes {
             let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
-            rows.push(serde_json::json!({
+            let mut row = serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind, "site": site, "name": name, "title": title,
-            }));
+            });
+            if let Some(source) = source {
+                row["source"] = source.into();
+            }
+            rows.push(row);
         }
     }
     if as_json {
@@ -5460,11 +5473,17 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     }
     for row in &rows {
         let named = row["name"].as_str().or(row["title"].as_str());
+        let kind = row["kind"].as_str().unwrap_or_default();
+        // A mirror names its source in the kind column, so the columns stay where scripts read them.
+        let kind = match row["source"].as_str() {
+            Some(source) => format!("{kind}:{source}"),
+            None => kind.to_owned(),
+        };
         println!(
             "{} {} {} {}{}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
-            row["kind"].as_str().unwrap_or_default(),
+            kind,
             row["site"].as_str().unwrap_or_default(),
             named.map(|n| format!(" {n}")).unwrap_or_default(),
         );
@@ -5481,6 +5500,7 @@ fn pane_shows(kind: &wheel_proto::PaneKind) -> String {
     let text = |key: &str| v[key].as_str().map(str::to_owned);
     match v["kind"].as_str().unwrap_or_default() {
         "browser" => text("url").unwrap_or_default(),
+        "mirror" => text("source").map(|s| format!("mirror of {s}")).unwrap_or_default(),
         "web" => match (text("scope"), text("name")) {
             (Some(scope), Some(name)) => format!("artifact {name} ({scope})"),
             (None, Some(name)) => format!("artifact {name}"),
@@ -5880,6 +5900,15 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 to,
             })
             .await
+        }
+        PaneCommand::Mirror { source, space } => {
+            let space = resolve_space(conn, &space).await?;
+            let req = conn.req();
+            match conn.call(ClientMsg::PaneMirror { req: Some(req), source, space }, req).await? {
+                ServerMsg::Created { id, .. } => println!("{id}"),
+                other => return Err(Fail::Other(format!("unexpected reply {other:?}"))),
+            }
+            Ok(())
         }
         PaneCommand::Close { pane } => {
             simple(conn, |req| ClientMsg::PaneClose {

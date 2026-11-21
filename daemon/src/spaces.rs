@@ -881,11 +881,35 @@ impl AppState {
 
     /// Save and broadcast the layout. Called with the spaces lock held, so clients see changes in
     /// the order they happened.
-    pub(crate) fn changed(&self, spaces: &Spaces) {
+    pub(crate) fn changed(&self, spaces: &mut Spaces) {
+        self.close_lost_mirrors(spaces);
         self.save_state(spaces);
         self.broadcast_layout(spaces);
         self.sync_settings_watch_with(spaces);
         self.sync_plugin_watch();
+    }
+
+    /// Close every mirror whose source is no longer a pane of the mirror's own session, or is itself
+    /// a mirror: a mirror never shows a dead pane. Runs on every layout change ([`AppState::changed`]),
+    /// so a source that closes, leaves with its space, or moves to another session takes its mirrors.
+    fn close_lost_mirrors(&self, spaces: &mut Spaces) {
+        loop {
+            let lost = spaces.spaces.iter().find_map(|space| {
+                let session = spaces.session_holding(&space.id);
+                space_panes(space).into_iter().find_map(|(pane, kind)| {
+                    let PaneKind::Mirror { source, .. } = kind else { return None };
+                    let alive = spaces.spaces.iter().any(|other| {
+                        spaces.session_holding(&other.id) == session
+                            && space_find(other, source).is_some_and(|k| !matches!(k, PaneKind::Mirror { .. }))
+                    });
+                    (!alive).then(|| (space.id.clone(), pane.to_string(), source.clone()))
+                })
+            });
+            let Some((space_id, pane, source)) = lost else { return };
+            let Ok(index) = spaces.index(&space_id) else { return };
+            take_leaf(&mut spaces.spaces[index], &pane, &mut || self.new_id('p'));
+            tracing::info!(space = %space_id, %pane, %source, "mirror closed with its source");
+        }
     }
 
     /// Send the layout to every client without writing it: for a change a restart need not keep,
@@ -931,7 +955,8 @@ impl AppState {
             // data directory, no watch, no refresh, no terminal. The client's web view goes
             // with the pane.
             // A plugin pane owns no process; each client runs its script.
-            PaneKind::Plugin { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
+            // A mirror holds only its source's id; the source keeps what it shows.
+            PaneKind::Plugin { .. } | PaneKind::Mirror { .. } | PaneKind::Empty { .. } | PaneKind::Unknown(_) => {}
         }
     }
 
@@ -973,7 +998,7 @@ impl AppState {
         spaces.spaces.push(space.clone());
         tracing::info!(space = %id, %name, %cwd, background, "space created");
         self.record_recent(&cwd);
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(space)
     }
 
@@ -1028,7 +1053,7 @@ impl AppState {
             spaces: Vec::new(),
         });
         tracing::info!(session = %id, %name, "session created");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(id)
     }
 
@@ -1042,7 +1067,7 @@ impl AppState {
         let index = spaces.session_index(session)?;
         let from = std::mem::replace(&mut spaces.sessions[index].name, name.to_string());
         tracing::info!(session = %spaces.sessions[index].id, %from, to = %name, "session renamed");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1058,7 +1083,7 @@ impl AppState {
         }
         spaces.sessions.retain(|s| s.id != id);
         tracing::info!(session = %id, "session closed");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1070,7 +1095,7 @@ impl AppState {
         let to = index.min(spaces.sessions.len());
         tracing::info!(session = %moved.id, from, to, "session reordered");
         spaces.sessions.insert(to, moved);
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1095,7 +1120,7 @@ impl AppState {
         if close_empty {
             self.close_if_empty(&mut spaces, from);
         }
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1132,7 +1157,7 @@ impl AppState {
         let index = spaces.index(id)?;
         let from = std::mem::replace(&mut spaces.spaces[index].name, name.to_string());
         tracing::info!(space = %id, %from, to = %name, "space renamed");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1154,7 +1179,7 @@ impl AppState {
         }
         tracing::info!(%pane, from = ?held, to = ?new, "pane renamed");
         *held = new;
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1206,7 +1231,7 @@ impl AppState {
         if close_empty {
             self.close_if_empty(&mut spaces, session);
         }
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1321,7 +1346,7 @@ impl AppState {
                 }
             };
             tracing::info!(space = %space.id, %pane, new = %new_id, site = placed.name(), "pane created apart from the grid");
-            self.changed(&spaces);
+            self.changed(&mut spaces);
             return Ok((new_id, None));
         }
         if space.site_of(pane) == Some(PaneSite::Backgrounded) {
@@ -1342,7 +1367,7 @@ impl AppState {
         };
         let space_id = space.id.clone();
         tracing::info!(space = %space_id, %pane, ?dir, placed_by = strategy.map(Placement::name), ?size, split = %split_id, new = %new_id, "pane split");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok((new_id, strategy))
     }
 
@@ -1378,7 +1403,7 @@ impl AppState {
             return Err(format!("{pane} cannot swap with itself"));
         }
         tracing::info!(space = %space.id, %pane, %with, "panes swapped");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1428,7 +1453,7 @@ impl AppState {
                     }
                 }
                 tracing::info!(space = %space.id, %pane, %target, ?dir, split = %split_id, "pane moved");
-                self.changed(&spaces);
+                self.changed(&mut spaces);
                 return Ok(());
             }
         }
@@ -1511,7 +1536,7 @@ impl AppState {
             (None, None) => unreachable!("a move without a space goes to a new one"),
         };
         tracing::info!(from = %from_id, to = %dest_id, %pane, split = %split_id, "pane moved to another space");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -1540,8 +1565,55 @@ impl AppState {
                 tracing::info!(space = %space.id, %pane, site = site.name(), "pane closed");
             }
         }
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
+    }
+
+    /// Make a mirror of `source` in space `space` (`pane_mirror`): it takes the space's lone empty
+    /// pane, else goes where `panes.placement` splits the space's last grid pane. Refused for a
+    /// source that is a mirror or sits in another session. Returns the mirror's id.
+    pub fn pane_mirror(&self, source: &str, space: &str) -> Result<String, String> {
+        let (lone_empty, last) = {
+            let spaces = self.spaces.lock().unwrap();
+            let target = spaces.index(space)?;
+            let from = spaces.holding(source)?;
+            if spaces.session_holding(&spaces.spaces[from].id) != spaces.session_holding(&spaces.spaces[target].id) {
+                return Err(format!("{source} is in another session than space {space}; a mirror shows a pane of its own session"));
+            }
+            if matches!(space_find(&spaces.spaces[from], source), Some(PaneKind::Mirror { .. })) {
+                return Err(format!("{source} is a mirror; mirror its source instead"));
+            }
+            let root = &spaces.spaces[target].root;
+            let lone_empty = match root {
+                Node::Pane { id, kind: PaneKind::Empty { .. }, .. } => Some(id.clone()),
+                _ => None,
+            };
+            (lone_empty, last_pane(root).to_string())
+        };
+        if lone_empty.as_deref() == Some(source) {
+            return Err(format!("{source} is space {space}'s only pane; a pane cannot mirror itself"));
+        }
+        let pane = match lone_empty {
+            Some(empty) => empty,
+            None => self.pane_split(&last, None, None)?.0,
+        };
+        let mut spaces = self.spaces.lock().unwrap();
+        let index = spaces.holding(&pane)?;
+        let slot = space_find_mut(&mut spaces.spaces[index], &pane).ok_or_else(|| format!("no pane {pane}"))?;
+        if !matches!(slot, PaneKind::Empty { .. }) {
+            return Err(format!("{pane} changed while the mirror was made; try again"));
+        }
+        *slot = PaneKind::Mirror {
+            source: source.to_string(),
+            extra: Extra::default(),
+        };
+        self.changed(&mut spaces);
+        // The source may have closed while the slot was made; then the change closed the mirror too.
+        if !matches!(spaces.holding(&pane).map(|i| space_find(&spaces.spaces[i], &pane)), Ok(Some(PaneKind::Mirror { .. }))) {
+            return Err(format!("{source} closed while its mirror was made"));
+        }
+        tracing::info!(%space, %pane, %source, "mirror made");
+        Ok(pane)
     }
 
     /// Split `pane` and show a page or an artifact in the new pane: a browser pane on `url`, or a
@@ -1745,7 +1817,7 @@ impl AppState {
             .cloned()
             .ok_or_else(|| format!("no pane {pane}"))?;
         tracing::info!(%pane, kind = ?now, "pane kind");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(now)
     }
 
@@ -2003,7 +2075,7 @@ impl AppState {
             .type_line(command)
             .map_err(|e| e.to_string())?;
         *kept = Some(command.to_string());
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -2455,7 +2527,7 @@ impl AppState {
         }
         tracing::info!(%pane, old = ?work, new = ?new, "pane work declared");
         *work = new;
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -2563,7 +2635,7 @@ impl AppState {
         let new = page(&wheel_proto::page_typed(text, &user_home)?)?;
         if *url != new {
             *url = new.clone();
-            self.changed(&spaces);
+            self.changed(&mut spaces);
         }
         tracing::info!(%pane, client = %by, home = %new, "browser pane home set");
         Ok(new)
@@ -2582,7 +2654,7 @@ impl AppState {
             return Err(format!("no split {split}"));
         }
         tracing::info!(%split, ratio, "split ratio");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 
@@ -2788,7 +2860,7 @@ impl AppState {
                 tracing::info!(sessions = spaces.sessions.len(), "sessions grouped on restore");
             }
             self.sync_conversations(&mut spaces);
-            self.changed(&spaces);
+            self.changed(&mut spaces);
         }
         self.watch_terminals();
         drop(held);
@@ -2949,7 +3021,7 @@ impl AppState {
             .unwrap()
             .retain(|term, _| live.contains(term.as_str()));
         if changed {
-            self.changed(&spaces);
+            self.changed(&mut spaces);
         } else if context_changed {
             self.broadcast_layout(&spaces);
         }
@@ -2960,7 +3032,7 @@ impl AppState {
     pub(crate) fn conversations_changed(&self) {
         let mut spaces = self.spaces.lock().unwrap();
         if self.sync_conversations(&mut spaces) {
-            self.changed(&spaces);
+            self.changed(&mut spaces);
         }
     }
 
@@ -3072,6 +3144,7 @@ fn pane_kind_name(kind: &PaneKind) -> &str {
         PaneKind::Browser { .. } => "browser",
         PaneKind::Plugin { .. } => "plugin",
         PaneKind::Agent { .. } => "agent",
+        PaneKind::Mirror { .. } => "mirror",
         PaneKind::Unknown(unknown) => unknown.kind(),
     }
 }
@@ -3152,6 +3225,14 @@ fn saved_place(space: &SpaceInfo, pane: &str) -> wheel_proto::AgentPlace {
 }
 
 /// Every pane of a space, wherever it is: the grid, a popped tree or the tray.
+/// The space and kind of what `pane` shows: its own, or for a mirror its source's. A plugin or
+/// agent view drawn in a mirror resolves its plugin in the source's space.
+pub(crate) fn shown_in<'a>(spaces: &'a Spaces, pane: &str) -> Option<(&'a SpaceInfo, &'a PaneKind)> {
+    let (shown, kind) = wheel_proto::shown_pane(&spaces.spaces, pane)?;
+    let space = spaces.spaces.iter().find(|s| s.site_of(shown).is_some())?;
+    Some((space, kind))
+}
+
 pub fn space_panes(space: &SpaceInfo) -> Vec<(&str, &PaneKind)> {
     space.trees().flat_map(panes).collect()
 }

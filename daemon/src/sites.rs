@@ -72,7 +72,7 @@ impl AppState {
             }
         }
         tracing::info!(space = %space.id, %pane, from = from.name(), to = site.name(), placed_by = strategy.map(Placement::name), "pane site changed");
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         Ok(())
     }
 }

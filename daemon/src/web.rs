@@ -1212,6 +1212,37 @@ async fn mcp_read(
     }
 }
 
+/// A request under `/artifacts/<mirror>/` goes to the same path under the mirror's source, so a
+/// mirror of a web pane shows the source's page and talks to its page channel: the mirror holds
+/// no page of its own.
+pub(crate) async fn mirror_to_source(
+    State(state): State<Arc<AppState>>,
+    mut req: axum::extract::Request,
+) -> axum::extract::Request {
+    let Some((pane, rest)) = req.uri().path().strip_prefix("/artifacts/").and_then(|p| p.split_once('/')) else {
+        return req;
+    };
+    let source = {
+        let spaces = state.spaces.lock().unwrap();
+        match wheel_proto::shown_pane(&spaces.spaces, pane) {
+            Some((source, _)) if source != pane => source.to_owned(),
+            _ => return req,
+        }
+    };
+    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let mut parts = req.uri().clone().into_parts();
+    match format!("/artifacts/{source}/{rest}{query}").parse() {
+        Ok(path) => {
+            parts.path_and_query = Some(path);
+            if let Ok(uri) = axum::http::Uri::from_parts(parts) {
+                *req.uri_mut() = uri;
+            }
+        }
+        Err(e) => tracing::warn!(%pane, %source, error = %e, "mirror path did not parse"),
+    }
+    req
+}
+
 /// `GET /artifacts/<pane>/<path>`: a file from web pane `pane`'s artifact folder, or from the
 /// pane's own data directory for a path under `data/`.
 pub fn router(state: Arc<AppState>) -> Router {

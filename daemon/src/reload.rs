@@ -153,6 +153,7 @@ impl AppState {
                 PaneKind::Plugin { .. } => Some("a plugin pane runs no process of its own: its script runs in each client, per plugin"),
                 PaneKind::Browser { .. } => Some("a browser pane runs no process for wheeld to start"),
                 PaneKind::Empty { .. } => Some("an empty pane runs no process"),
+                PaneKind::Mirror { .. } => None,
                 PaneKind::Unknown(_) => Some("wheeld does not know this kind of pane"),
             };
             if let Some(why) = why {
@@ -184,6 +185,9 @@ impl AppState {
                 Ok(Reloaded::Done)
             }
             PaneKind::Empty { .. } => Ok(Reloaded::Done),
+            PaneKind::Mirror { source, .. } => Err(format!(
+                "{pane} is a mirror and holds nothing to reload; reload its source, {source}"
+            )),
             PaneKind::Unknown(_) => Err(format!(
                 "{pane} is a kind of pane this wheeld does not know, so it cannot reload it"
             )),
@@ -303,7 +307,7 @@ impl AppState {
                     }
                     self.kept_agents.lock().unwrap().insert(old.clone());
                     let message = format!("agent {old} in pane {pane} stopped and could not start again: {e}");
-                    self.changed(&spaces);
+                    self.changed(&mut spaces);
                     lost_behind(pane, &behind);
                     return Err(message);
                 }
@@ -318,7 +322,7 @@ impl AppState {
                 }
             }
             self.sync_conversations(&mut spaces);
-            self.changed(&spaces);
+            self.changed(&mut spaces);
         }
         if !options.is_empty() {
             self.carry_options(pane, &name, options);
@@ -529,7 +533,7 @@ impl AppState {
         };
         // The new shell may have set its title before the pane held it.
         self.sync_conversations(&mut spaces);
-        self.changed(&spaces);
+        self.changed(&mut spaces);
         result
     }
 

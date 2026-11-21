@@ -113,11 +113,7 @@ impl AppState {
     pub(crate) fn plugin_embed(&self, pane: &str, name: &str) -> Result<(ArtifactRef, String), String> {
         let cwd = {
             let spaces = self.spaces.lock().unwrap();
-            let (space, kind) = spaces
-                .spaces
-                .iter()
-                .find_map(|s| crate::spaces::space_find(s, pane).map(|k| (s, k)))
-                .ok_or_else(|| format!("no pane {pane}"))?;
+            let (space, kind) = crate::spaces::shown_in(&spaces, pane).ok_or_else(|| format!("no pane {pane}"))?;
             if crate::plugins::shown_plugin(kind).is_none() {
                 return Err(format!("{pane} shows no plugin, so it embeds no artifact"));
             }

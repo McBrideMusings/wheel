@@ -1148,11 +1148,15 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
 /// The routes every listener serves, the local one and the remote one alike, so a token means the
 /// same thing on both.
 pub(crate) fn app(state: Arc<AppState>, listener: Listener) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/ws", get(upgrade))
         .with_state(state.clone())
         .merge(crate::web::router(state.clone()))
-        .merge(crate::uploads::router(state))
+        .merge(crate::uploads::router(state.clone()));
+    // The rewrite runs before `routes` routes, so a mirror's page requests reach its source's.
+    Router::new()
+        .fallback_service(routes)
+        .layer(axum::middleware::map_request_with_state(state, crate::web::mirror_to_source))
         .layer(axum::Extension(listener))
 }
 
@@ -2068,6 +2072,7 @@ async fn handle(
             done(req, moved)
         }
         ClientMsg::PaneClose { req, pane } => done(req, state.pane_close(&pane)),
+        ClientMsg::PaneMirror { req, source, space } => created(req, state.pane_mirror(&source, &space)),
         ClientMsg::PaneSetKind {
             req,
             pane,

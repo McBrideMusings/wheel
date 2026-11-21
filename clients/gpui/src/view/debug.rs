@@ -667,6 +667,7 @@ impl Client {
                     "palette": self.palettes.get(&leaf.id).map(|p| json!({"query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})),
                     "browser": self.browsers.get(&leaf.id).map(|b| json!({"address": b.address, "failure": b.failure})),
                     "bridge": native["panes"][leaf.id.as_str()],
+                    "mirror": leaf.mirror.as_ref().map(|m| json!({"source": m.source, "title": m.title})),
                 });
                 if leaf.kind == "agent" {
                     entry["agent_view"] = json!(if self.agent_views.contains(&leaf.id) { "luau" } else { "native" });

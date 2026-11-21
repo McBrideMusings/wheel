@@ -1120,6 +1120,16 @@ pub enum ClientMsg {
         pane: String,
         to: MoveTarget,
     },
+    /// Make a mirror of `source` in `space`: a pane that draws the source's live content and holds
+    /// only its id. It takes the space's lone empty pane, else goes where `panes.placement` puts a
+    /// split of the space's last grid pane. `source` must be in the same session and not be a
+    /// mirror. Replies `created` with the mirror's id.
+    PaneMirror {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        source: String,
+        space: String,
+    },
     /// Close a pane, killing its terminal. Closing a space's last pane leaves the space with one new empty pane; closing a space's only pane when it is already empty changes nothing.
     PaneClose {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3738,7 +3748,34 @@ impl SpaceInfo {
     }
 }
 
+/// The pane `pane` names in `spaces` and the pane whose content it shows: itself, or a mirror's
+/// source. None when `pane` is in no space, or is a mirror whose source is gone or is itself a
+/// mirror. Every reader of a pane's content (wheeld, the CLI, each client) resolves through this.
+pub fn shown_pane<'a>(spaces: &'a [SpaceInfo], pane: &str) -> Option<(&'a str, &'a PaneKind)> {
+    let find = |id: &str| {
+        spaces
+            .iter()
+            .flat_map(|s| s.trees())
+            .find_map(|t| t.leaf(id))
+    };
+    match find(pane)? {
+        (_, PaneKind::Mirror { source, .. }) => match find(source)? {
+            (_, PaneKind::Mirror { .. }) => None,
+            shown => Some(shown),
+        },
+        shown => Some(shown),
+    }
+}
+
 impl Node {
+    /// The id and kind of the leaf `pane` in this tree.
+    pub fn leaf(&self, pane: &str) -> Option<(&str, &PaneKind)> {
+        match self {
+            Node::Pane { id, kind, .. } => (id == pane).then_some((id.as_str(), kind)),
+            Node::Split { a, b, .. } => a.leaf(pane).or_else(|| b.leaf(pane)),
+        }
+    }
+
     /// Whether a pane `pane` is a leaf of this tree.
     pub fn holds(&self, pane: &str) -> bool {
         match self {
@@ -4613,6 +4650,11 @@ pub enum PaneKind {
         login: Option<Box<AgentLogin>>,
         extra: Extra,
     },
+    /// Another pane's live content drawn in a second place (`pane_mirror`): `source` is that
+    /// pane's id, the only thing a mirror holds. Each client draws the source's kind, attached to
+    /// the source's terminal, agent or page, so typing or answering in a mirror acts on the
+    /// source. wheeld closes a mirror when its source is gone from the mirror's session.
+    Mirror { source: String, extra: Extra },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.
     Unknown(UnknownPane),
@@ -4734,6 +4776,9 @@ enum KnownPaneKind {
         plugin: String,
         pane: String,
     },
+    Mirror {
+        source: String,
+    },
     Agent {
         agent: String,
         /// A pane saved before panes named their agent ran Claude Code.
@@ -4807,6 +4852,12 @@ impl Serialize for PaneKind {
                 },
                 extra,
             ),
+            PaneKind::Mirror { source, extra } => (
+                KnownPaneKind::Mirror {
+                    source: source.clone(),
+                },
+                extra,
+            ),
             PaneKind::Agent {
                 agent,
                 harness,
@@ -4860,7 +4911,7 @@ impl<'de> Deserialize<'de> for PaneKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
         match raw.get("kind").and_then(|k| k.as_str()) {
-            Some("empty" | "terminal" | "web" | "browser" | "plugin" | "agent") => {}
+            Some("empty" | "terminal" | "web" | "browser" | "plugin" | "mirror" | "agent") => {}
             Some(_) => return Ok(PaneKind::Unknown(UnknownPane(raw))),
             None => return Err(serde::de::Error::custom("pane has no string `kind`")),
         }
@@ -4911,6 +4962,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 pane,
                 extra,
             },
+            KnownPaneKind::Mirror { source } => PaneKind::Mirror { source, extra },
             KnownPaneKind::Agent {
                 agent,
                 harness,
