@@ -7,7 +7,7 @@ import AppKit
 // MARK: Canvas — a display list the server draws with, a camera the client moves, and hit regions the server names (ADR-0029)
 //
 // A `commands` array instead of `ops` is the other mode: a Canvas 2D command list a pane script recorded, replayed with no camera
-// or controls by CanvasCommandStage (A2UICanvasCommands.swift), which also names `height`, `canvasKey` and `pointerAction`.
+// or controls by CanvasCommandStage (PaneCanvasCommands.swift), which also names `height`, `canvasKey` and `pointerAction`.
 //
 // props:
 //   ops     [{op, minZoom?, maxZoom?, fill?, stroke?, width?, dash?, opacity?, px?, ...shapes}] drawn in order, in scene units:
@@ -247,10 +247,10 @@ func canvasColor(_ name: String?) -> Color? {
     }
 }
 
-struct A2UICanvasView: View {
+struct PaneCanvasView: View {
     let node: ViewNode
     let tree: ViewTree
-    @Environment(\.a2uiViewport) private var viewport
+    @Environment(\.paneViewport) private var viewport
     var body: some View {
         let p = node.props
         if let commands = p["commands"]?.arrayValue {

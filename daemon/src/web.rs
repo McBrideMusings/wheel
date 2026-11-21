@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post, put};
 use axum::Extension;
 use axum::Router;
+use tower_http::services::ServeFile;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -1563,28 +1564,26 @@ async fn artifact(
         )
             .into_response();
     }
-    let opened = match tokio::fs::File::open(&file).await {
-        Ok(f) => f.metadata().await.map(|m| (f, m.len())),
-        Err(e) => Err(e),
-    };
-    let (handle, bytes) = match opened {
-        Ok(opened) => opened,
+    // ServeFile answers a `Range` with 206 and only those bytes: a video player loads its file in
+    // ranges, and a whole file for each range has it fetch the file over and over.
+    let served = match ServeFile::new(&file).try_call(req).await {
+        Ok(served) => served,
         Err(e) => {
             tracing::warn!(via, file = %file.display(), error = %e, "artifact read failed");
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
     };
-    tracing::debug!(via, file = %file.display(), bytes, "artifact served");
-    let mime = mime_guess::from_path(&file).first_or_octet_stream();
-    (
-        [
-            (header::CONTENT_TYPE, mime.as_ref().to_string()),
-            (header::CACHE_CONTROL, "no-store".to_string()),
-            (header::CONTENT_LENGTH, bytes.to_string()),
-        ],
-        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(handle)),
-    )
-        .into_response()
+    let status = served.status();
+    if status == StatusCode::NOT_FOUND {
+        tracing::warn!(via, file = %file.display(), "artifact read failed: not found");
+    }
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    tracing::debug!(via, file = %file.display(), status = status.as_u16(), range, "artifact served");
+    let mut response = served.map(axum::body::Body::new);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[cfg(test)]

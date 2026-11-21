@@ -75,7 +75,7 @@ final class Slot: NSView {
     /// for: its store and scheme handler are bound to both, so another of either is another view.
     var artifact: String?
     var cwd: String?
-    /// A plugin pane (ADR-0041): its Luau script drawn as A2UI components, and the plugin and pane it runs, as wheeld names them.
+    /// A plugin pane (ADR-0041): its Luau script drawn as WheelUI components, and the plugin and pane it runs, as wheeld names them.
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
@@ -451,6 +451,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     let pageDaemon = PageDaemon()
     /// The artifacts plugin pages embed (`WebView{artifact}`), over the page connection.
     var artifactEmbeds: ArtifactEmbeds?
+    var videoStreams: VideoStreams?
     /// The plugin panes' own connection to wheeld: it asks for each pane's script and hears every change to one. Unlike the
     /// terminal socket it is opened again when it drops, and asks for every script again, as long as a plugin pane exists;
     /// the last plugin pane closing closes it.
@@ -904,7 +905,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 self?.sendAction(pane: id, action: action, args: args)
             }
             let surface = PluginPaneView(pane: plugin)
-                .environment(\.a2uiPaneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
+                .environment(\.paneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
+                .environment(\.paneVideoStream, { [weak self] stream, input in self?.streamView(stream, input: input, hostPane: id) })
             let view: NSHostingView<AnyView>
             if value["agent"] as? Bool == true {
                 let target = HostAgentTarget(agent: paneTargets[id]?["agent"])
@@ -1035,7 +1037,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
     /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a native A2UI page and a terminal are their views' pixels.
+    /// `full`, the whole document); a plugin pane and a terminal are their views' pixels.
     func render(_ value: [String: Any]) {
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
@@ -1151,7 +1153,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageDaemon.token = token
     }
     /// What a plugin page's embedded pane draws as: the pane's terminal, or its agent's conversation.
-    func embedView(_ embed: A2UIPaneEmbed, hostPane: String) -> AnyView? {
+    func embedView(_ embed: PaneEmbed, hostPane: String) -> AnyView? {
         switch embed.kind {
         case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
         case .agentChat: return AnyView(EmbeddedAgentChat(native: self, hostPane: hostPane, pane: embed.pane))
@@ -1165,6 +1167,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             if case let .string(dir)? = panes[hostPane]?.plugin?.context["cwd"] { cwd = dir }
             return embeds.view(pane: hostPane, name: embed.pane, cwd: cwd)
         }
+    }
+    /// Video stream `stream` inside plugin pane `hostPane`'s page (ADR-0053), asked for over the page connection.
+    func streamView(_ stream: String, input: Bool, hostPane: String) -> AnyView? {
+        guard let ws = pluginURL, let client = pages(ws) else { return nil }
+        let streams = videoStreams ?? VideoStreams(send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
+        videoStreams = streams
+        return streams.view(pane: hostPane, stream: stream, input: input)
     }
     /// `agent`'s chat, attached over the page connection the first time an embed asks for it.
     func agentChat(_ agent: String) -> AgentChat {
@@ -1339,11 +1348,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             agentMessage(status)
             for (agent, chat) in chats { chat.error = nil; attachAgent(agent) }
             artifactEmbeds?.connected()
+            videoStreams?.connected()
         }
         client.onMessage = { [weak self] message in
             guard let self else { return }
             agentMessage(message)
             artifactEmbeds?.handle(message)
+            videoStreams?.handle(message)
         }
         client.log = { [weak self] in self?.errors.append("pages: " + $0) }
         client.start()
@@ -1502,11 +1513,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "plugin":
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's value
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
-            // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`.
+            // `agent_send` the text `value` through the composer of the agent chat embedding pane `component`, `stream_key` type the
+            // characters `value` on the VideoStream of stream `component` as its view takes a key, `stream_click` click its middle,
+            // `hover` hold a pointer on `component` (no component takes it away; the client's hover state, with no call to the script).
+            // The reply's `hover.lit` is what the last draw lit; the held node shows in it from the next `state`, after SwiftUI draws.
             guard let pane = value["pane"] as? String, let plugin = panes[pane]?.plugin else { return ["ok": false, "message": "no plugin pane"] }
             var ok = true
             switch value["action"] as? String {
             case "press": ok = (value["component"] as? String).map { plugin.press(component: $0) } ?? false
+            case "hover": ok = plugin.hover(component: value["component"] as? String)
             case "set":
                 ok = (value["component"] as? String).flatMap { c in value["value"].map { plugin.set(component: c, value: $0) } } ?? false
             case "raise":
@@ -1527,10 +1542,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 // The embedded agent chat of pane `component` sends `value` as its composer's Send would.
                 let embed = agentEmbeds.values.first { $0.hostPane == pane && $0.pane == value["component"] as? String }
                 if let chat = embed?.chat, let text = value["value"] as? String { chat.draft = text; sendAgent(chat) } else { ok = false }
+            case "stream_key":
+                ok = (value["component"] as? String).flatMap { s in (value["value"] as? String).map { videoStreams?.type(pane: pane, stream: s, characters: $0) ?? false } } ?? false
+            case "stream_click":
+                ok = (value["component"] as? String).map { videoStreams?.click(pane: pane, stream: $0) ?? false } ?? false
             default: break
             }
             return ["ok": ok, "state": plugin.stateJSON, "error": plugin.error ?? NSNull(), "reloads": plugin.reloads, "restarts": plugin.restarts, "components": plugin.componentTexts, "feeds": plugin.feedJSON,
-                "fills": plugin.fillsPane,
+                "fills": plugin.fillsPane, "hover": ["held": plugin.tree.hover.held ?? NSNull(), "lit": plugin.tree.hover.lit.sorted()] as [String: Any],
                 "perf": ["update_ms": plugin.perf.updateMs, "view_ms": plugin.perf.viewMs, "reconcile_ms": plugin.perf.reconcileMs,
                          "nodes": plugin.perf.nodes, "renders": plugin.perf.renders, "bodies": ViewPerf.bodies, "cells": ViewPerf.cells] as [String: Any],
                 "scroll": (plugin.fillsPane ? nil : plugin.scrollMetrics).map { ["offset": $0.offset, "content": $0.content, "visible": $0.visible] as [String: Any] } ?? NSNull(),
@@ -1540,7 +1559,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                     + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
                         ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
                          "items": embed.chat?.displayItems.count ?? 0, "draft": embed.chat?.draft ?? "", "error": embed.chat?.error ?? NSNull()] as [String: Any] }
-                    + (artifactEmbeds?.state(pane: pane) ?? [])]
+                    + (artifactEmbeds?.state(pane: pane) ?? []) + (videoStreams?.state(pane: pane) ?? [])]
         case "plugin_endpoint":
             if let ws = value["ws"] as? String { pluginEndpoint(ws) }
         case "disconnect":
@@ -1681,7 +1700,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // every event made this way), so a context menu is asked for with `control: true` on a
             // left press, as a Mac control-click asks for one.
             let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : kind == "move" ? .mouseMoved : .leftMouseUp
-            let flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
+            var flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
+            if value["command"] as? Bool == true { flags.insert(.command) }
             mouseNumber += 1
             // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit
             // does after its own step: hit test, then the view gets the NSEvent. A drag or release

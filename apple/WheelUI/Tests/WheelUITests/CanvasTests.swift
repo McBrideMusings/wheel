@@ -3,7 +3,7 @@ import Testing
 import WheelKit
 @testable import WheelUI
 
-@Suite struct A2UICanvasTests {
+@Suite struct CanvasTests {
     @Test func pathDataBecomesAPathWithItsCurvesAndClose() {
         let path = canvasPath("M0 0 L10 0 C 10 5 5 10 0 10 Z")
         #expect(path.boundingRect == CGRect(x: 0, y: 0, width: 10, height: 10))

@@ -26,7 +26,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
-mime_guess = "2.0.5"
+tower-http = { version = "0.6", features = ["fs"] }
 notify = "7.0.0"
 ghostty-vt = "=0.7.0"
 portable-pty = "0.9"
@@ -52,6 +52,7 @@ wheel-proto = { path = "../proto" }
 similar = "3.2.0"
 tokio-tungstenite = "0.28"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [build-dependencies]
 sha2 = "0.10"

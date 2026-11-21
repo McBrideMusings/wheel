@@ -141,7 +141,7 @@ const ROW_BG_ACTIVE: u32 = 0x31483e;
 const CARD_BG: u32 = 0x17201c;
 const CARD_BORDER: u32 = 0x2c3d34;
 const DIM: u32 = 0x8fa89b;
-const RED: u32 = 0xe07070;
+pub(super) const RED: u32 = 0xe07070;
 
 impl Client {
     /// The sidebar's rectangle: under the title row, down the left edge, over the bottom row.
@@ -198,7 +198,7 @@ impl Client {
         }
         self.press(format!("space row {space} at ({x:.0},{y:.0})"));
         self.close_space_menu();
-        if self.rename.as_ref().is_some_and(|r| r.space != space) {
+        if self.rename.as_ref().is_some_and(|r| r.space != space || r.pane.is_some()) {
             self.cancel_rename();
         }
         self.select_space(space);
@@ -880,6 +880,9 @@ impl Client {
     }
     /// A pane's name for the chip that follows the pointer (AppModel.paneLabel).
     pub fn pane_label(&self, leaf: &Leaf) -> String {
+        if let Some(named) = leaf.name.as_ref().or(leaf.title.as_ref()) {
+            return named.clone();
+        }
         let capitalized = |s: &str| { let mut c = s.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() };
         match leaf.kind.as_str() {
             "terminal" => "Terminal".into(),
@@ -991,7 +994,20 @@ impl Client {
         self.close_space_menu();
         // One name field at a time: the window's or a session's goes.
         self.cancel_name_edit();
-        self.rename = Some(Rename { space: space.to_owned(), draft: name, error: None, req: None });
+        self.rename = Some(Rename { space: space.to_owned(), pane: None, draft: name, error: None, req: None });
+    }
+    /// Edit `pane`'s name in its header, starting from the name it shows.
+    pub fn begin_pane_rename(&mut self, pane: &str) {
+        let Some(space) = self.space_holding(pane).map(|s| s.id.clone()) else { return };
+        let Some(leaf) = self.leaf(pane) else { return };
+        self.close_pane_menu();
+        self.cancel_name_edit();
+        let draft = leaf.name.clone().or(leaf.title.clone()).unwrap_or_default();
+        self.rename = Some(Rename { space, pane: Some(pane.to_owned()), draft, error: None, req: None });
+    }
+    /// The pane whose name is being edited.
+    pub fn renaming_pane(&self) -> Option<&str> {
+        self.rename.as_ref().and_then(|r| r.pane.as_deref())
     }
     pub fn cancel_rename(&mut self) {
         self.rename = None;
@@ -1020,8 +1036,25 @@ impl Client {
         if rename.req.is_some() {
             return;
         }
-        match sidebar::rename_check(&rename.draft, self.link == Link::Up) {
+        match sidebar::rename_check(&rename.draft, self.link == Link::Up, rename.pane.is_some()) {
             Err(why) => self.rename.as_mut().unwrap().error = Some(why),
+            Ok(name) if rename.pane.is_some() => {
+                let pane = rename.pane.clone().unwrap();
+                let leaf = self.leaf(&pane);
+                let held = leaf.as_ref().and_then(|l| l.name.clone()).unwrap_or_default();
+                // The draft starts from the title; sent unchanged it would pin the title as a name.
+                let title = leaf.and_then(|l| l.title).unwrap_or_default();
+                if held == name || (held.is_empty() && name == title) {
+                    self.rename = None;
+                    return;
+                }
+                let req = self.req();
+                let rename = self.rename.as_mut().unwrap();
+                rename.error = None;
+                rename.req = Some(req);
+                self.log(format!("rename pane {pane} to {name:?}"));
+                self.send(&ClientMsg::PaneRename { req: Some(req), pane, name });
+            }
             Ok(name) => {
                 let space = rename.space.clone();
                 if self.space_name(&space).as_deref() == Some(name.as_str()) {
@@ -1228,7 +1261,7 @@ impl Client {
                 "screen": d.screen.map(|(x, y)| [x, y]), "measured": self.pane_out.world.as_ref().map(|w| w.windows.iter().filter(|d| !d.little).map(|d| d.id.clone()).collect::<Vec<_>>()),
                 "hold": self.pane_out.hold.as_ref().map(|(w, s)| json!([w, s])), "switched": PANE_APP.with(|a| a.borrow().switched.clone()).iter().map(|(w, s)| json!([w, s])).collect::<Vec<_>>()})),
             "pane_hover": pane_hover().as_ref().map(describe_away), "pane_new_space": self.pane_is_over_new_space(),
-            "renaming": self.rename.as_ref().map(|r| json!({"space": r.space, "draft": r.draft, "error": r.error})),
+            "renaming": self.rename.as_ref().map(|r| json!({"space": r.space, "pane": r.pane, "draft": r.draft, "error": r.error})),
             "menu": self.space_menu.as_ref().map(|(space, _, _)| json!({"space": space, "items": self.space_menu_items(space).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled, "section": i.section, "destructive": i.destructive})).collect::<Vec<_>>()})),
             "preview": self.preview.as_ref().map(|space| json!({"space": space, "frame": self.preview_rect().map(|r| [r.x, r.y, r.w, r.h]),
                 "panes": self.preview_panes(space).iter().map(|(pane, kind, status, last)| json!({"pane": pane, "kind": kind, "status": status, "last": last})).collect::<Vec<_>>(),
@@ -1255,7 +1288,7 @@ impl Client {
             let away = self.little_showing(&id).is_some();
             let dimmed = dragged.as_deref() == Some(id.as_str());
             let caption = space.status.as_ref().filter(|s| self.status_dots.contains(status::rank(s))).and_then(status::caption);
-            let renaming = self.rename.as_ref().filter(|rn| rn.space == id).cloned();
+            let renaming = self.rename.as_ref().filter(|rn| rn.space == id && rn.pane.is_none()).cloned();
             let (press_id, menu_id, close_id) = (id.clone(), id.clone(), id.clone());
             let mut el = div().absolute().left(px(rr.x - r.x)).top(px(rr.y - r.y)).w(px(rr.w)).h(px(rr.h)).px(px(6.)).rounded_md().flex().items_center().gap(px(4.))
                 .bg(rgb(if active { ROW_BG_ACTIVE } else { CARD_BG })).cursor_pointer()
@@ -1263,7 +1296,7 @@ impl Client {
                 .when(away && !dimmed, |d| d.opacity(super::little::AWAY_OPACITY))
                 .when(self.pane_is_over(&id), |d| d.border_2().border_color(rgb(ACCENT)))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    if this.rename.as_ref().is_some_and(|rn| rn.space == press_id) {
+                    if this.rename.as_ref().is_some_and(|rn| rn.space == press_id && rn.pane.is_none()) {
                         cx.stop_propagation();
                         return;
                     }
@@ -1312,7 +1345,7 @@ impl Client {
                 }))
                 .child(if away { "↩" } else { "×" }));
             bar = bar.child(el);
-            if let Some(err) = self.rename.as_ref().filter(|rn| rn.space == id).and_then(|rn| rn.error.clone()) {
+            if let Some(err) = self.rename.as_ref().filter(|rn| rn.space == id && rn.pane.is_none()).and_then(|rn| rn.error.clone()) {
                 bar = bar.child(div().absolute().left(px(rr.x - r.x + 6.)).top(px(rr.y - r.y + rr.h)).w(px(rr.w - 12.)).text_xs().text_color(rgb(RED)).child(err));
             }
         }

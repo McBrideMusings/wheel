@@ -31,7 +31,7 @@ extension AppModel {
         askArtifacts(pane)
     }
 
-    /// List again for `pane`'s palette: the `pane = true` artifacts of the space the pane is in.
+    /// List again for `pane`'s palette: the artifacts of the space the pane is in.
     func askArtifacts(_ pane: String) {
         guard let palette = palettes[pane] else { return }
         palette.state.relisting()
@@ -44,7 +44,7 @@ extension AppModel {
         let req = client.req()
         paletteReqs[req] = pane
         Log.info("palette \(pane): artifact ls for space \(space.id)")
-        client.send(.artifactLs(req: req, space: space.id, paneOnly: true))
+        client.send(.artifactLs(req: req, space: space.id))
     }
 
     func closePalette(_ pane: String) {

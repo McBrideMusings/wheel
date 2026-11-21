@@ -8,7 +8,7 @@ use wheel_proto::{ArtifactInfo, ArtifactScope};
 pub enum Listing {
     /// `artifact_ls` is out and unanswered.
     Loading,
-    /// The daemon's `pane = true` artifacts for this pane's space.
+    /// The daemon's artifacts for this pane's space.
     Ready(Vec<ArtifactInfo>),
     /// The daemon refused; its message, verbatim.
     Failed(String),
@@ -55,9 +55,8 @@ pub const PLACEHOLDER: &str = "Search artifacts by title or name";
 pub const NO_ARTIFACTS_FIELD: &str = "No artifacts to search";
 pub const UNAVAILABLE_FIELD: &str = "Search unavailable";
 pub const EMPTY_TITLE: &str = "No artifacts for this space";
-pub const EMPTY_HELP: &str = "An artifact is offered here when its wheel.toml entry says pane = true.";
 pub const EMPTY_ASK: &str = "Ask an agent to make one, or run";
-pub const EMPTY_COMMAND: &str = "wheel artifact new dash --pane";
+pub const EMPTY_COMMAND: &str = "wheel artifact new dash";
 pub const FAILED_TITLE: &str = "Couldn’t list artifacts";
 pub const FAILED_LEAD: &str = "wheeld refused the request and said:";
 pub const RETRY: &str = "Try Again";
@@ -243,7 +242,7 @@ mod tests {
     use super::*;
 
     fn info(scope: ArtifactScope, name: &str, title: Option<&str>) -> ArtifactInfo {
-        serde_json::from_value(serde_json::json!({"scope": scope_name(scope), "name": name, "entry": "/w/wheel.toml", "dir": format!("/w/{name}"), "title": title.unwrap_or(name), "pane": true})).unwrap()
+        serde_json::from_value(serde_json::json!({"scope": scope_name(scope), "name": name, "entry": "/w/wheel.toml", "dir": format!("/w/{name}"), "title": title.unwrap_or(name)})).unwrap()
     }
     fn listed() -> Palette {
         let mut p = Palette::new("empty");

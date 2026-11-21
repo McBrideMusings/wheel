@@ -452,6 +452,14 @@ enum PluginCommand {
         #[arg(long, value_name = "FILE")]
         args_file: Option<String>,
     },
+    /// Print the unix socket a plugin's backend serves video stream STREAM on, as plugin pane
+    /// PANE's `VideoStream` asks for it (ADR-0053). Starts the plugin's backend if it is not running.
+    Stream {
+        /// A plugin pane whose `reads` match the stream; it names the space the plugin is resolved in.
+        pane: String,
+        /// The stream: `<plugin>.<name>`.
+        stream: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -461,10 +469,6 @@ enum ArtifactCommand {
     New {
         /// One plain name, never a path.
         name: String,
-        /// Write `pane = true` into the entry: offer this artifact in a pane picker. Leave it off
-        /// for a one-off nobody needs to find in a menu.
-        #[arg(long)]
-        pane: bool,
         /// Which root to put it under: project (in the project's directory, the default) or machine
         /// (every project on this machine).
         #[arg(long, value_parser = wheel_proto::from_wire::<ArtifactScope>)]
@@ -537,9 +541,6 @@ enum ArtifactCommand {
         /// Seconds between timed refreshes; needs --command.
         #[arg(long)]
         every: Option<u64>,
-        /// Offer this artifact in a pane picker.
-        #[arg(long)]
-        pane: bool,
         /// Print the record as JSON.
         #[arg(long)]
         json: bool,
@@ -555,7 +556,7 @@ enum ArtifactCommand {
         space: Option<String>,
     },
     /// Make an ad hoc artifact permanent in the `project` or `machine` scope: its entry stops
-    /// expiring and is offered in the pane picker, and its folder stays where it is. Waits for a
+    /// expiring, and its folder stays where it is. Waits for a
     /// person to allow it in Wheel; a denial changes nothing.
     Promote {
         name: String,
@@ -575,9 +576,6 @@ enum ArtifactCommand {
     Ls {
         #[arg(long)]
         space: Option<String>,
-        /// Only the artifacts whose entry says `pane = true`: what a pane picker offers.
-        #[arg(long)]
-        pane: bool,
         /// Print the records as JSON.
         #[arg(long)]
         json: bool,
@@ -881,9 +879,9 @@ enum WindowCommands {
 #[derive(Subcommand)]
 enum PaneCommand {
     /// Print every pane, one per line: its space, id, kind and site (grid, popped or
-    /// backgrounded).
+    /// backgrounded), then its name, or the title its program set, when it has one.
     Ls {
-        /// Print the panes as a JSON array of {space, pane, kind, site}.
+        /// Print the panes as a JSON array of {space, pane, kind, site, name, title}.
         #[arg(long)]
         json: bool,
     },
@@ -1298,6 +1296,14 @@ enum PaneCommand {
     Focus { pane: String },
     /// Set the share of a split its first pane takes (0.1 to 0.9).
     Ratio { split: String, ratio: f64 },
+    /// Name a pane; the name is saved and every client shows it in place of the title its
+    /// program set. With no name, clear it. An agent keeps its own pane's name current with
+    /// `wheel pane rename "$WHEEL_PANE" "<what it is for>"`.
+    Rename {
+        pane: String,
+        /// The name; omit it to clear the pane's name.
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2769,8 +2775,11 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
             id,
             status,
             work,
+            name,
+            title,
             kind: wheel_proto::PaneKind::Agent { agent, harness, model, place, .. },
         } => out.push(serde_json::json!({
+            "name": name.as_ref().or(title.as_ref()),
             "space": space.name,
             "cwd": place.as_ref().and_then(|p| p.cwd.as_deref()).unwrap_or(&space.cwd),
             "pane": id,
@@ -3687,10 +3696,7 @@ async fn space_status(conn: &mut Conn) -> Result<(), Fail> {
 /// wheel.toml holds its entry, what the entry asks for, and every problem it has — a problem is part of the record, so it
 /// prints here as well as in `--json`, never only in the daemon's log.
 fn print_artifact(a: &wheel_proto::ArtifactInfo) {
-    // The flag is on the name's own line, because what it answers — would a pane picker offer
-    // this? — is a property of the artifact rather than a line of its configuration.
-    let offered = if a.pane { "  (in the pane picker)" } else { "" };
-    println!("{} {} — {}{offered}", a.scope.name(), a.name, a.title);
+    println!("{} {} — {}", a.scope.name(), a.name, a.title);
     if let Some(description) = &a.description {
         println!("  {description}");
     }
@@ -3767,7 +3773,6 @@ fn parse_duration(text: &str) -> Result<u64, String> {
 async fn artifact_new(
     conn: &mut Conn,
     name: String,
-    pane: bool,
     scope: Option<ArtifactScope>,
     space: Option<String>,
     path: Option<PathBuf>,
@@ -3784,7 +3789,6 @@ async fn artifact_new(
     let files = post_files(files)?;
     let artifact = artifact_of(conn, |req| ClientMsg::ArtifactNew {
         req: Some(req),
-        pane,
         name,
         scope,
         space,
@@ -3979,7 +3983,6 @@ async fn artifact_add(
     description: Option<String>,
     command: Option<String>,
     every: Option<u64>,
-    pane: bool,
     json: bool,
 ) -> Result<(), Fail> {
     let path = from_here(path)?.display().to_string();
@@ -3993,7 +3996,6 @@ async fn artifact_add(
         description,
         command,
         every,
-        pane,
     })
     .await?;
     if json {
@@ -4619,10 +4621,22 @@ async fn plugin_action(conn: &mut Conn, pane: String, action: String, args: Stri
     Ok(())
 }
 
+/// Print the socket path `wheeld` answers `plugin_stream` with for `stream` in plugin pane `pane`.
+async fn plugin_stream(conn: &mut Conn, pane: String, stream: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::PluginStream { socket, .. } = conn
+        .call(ClientMsg::PluginStream { req: Some(req), pane, stream }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to plugin_stream".into()));
+    };
+    println!("{socket}");
+    Ok(())
+}
+
 async fn artifact_ls(
     conn: &mut Conn,
     space: Option<String>,
-    pane: bool,
     json: bool,
 ) -> Result<(), Fail> {
     let req = conn.req();
@@ -4635,7 +4649,6 @@ async fn artifact_ls(
             ClientMsg::ArtifactLs {
                 req: Some(req),
                 space,
-                pane,
             },
             req,
         )
@@ -4649,11 +4662,7 @@ async fn artifact_ls(
         return Ok(());
     }
     if artifacts.is_empty() {
-        if pane {
-            eprintln!("[no artifact in any scope asks for the pane picker]");
-        } else {
-            eprintln!("[no artifacts in any scope]");
-        }
+        eprintln!("[no artifacts in any scope]");
         return Ok(());
     }
     for artifact in &artifacts {
@@ -5410,14 +5419,15 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
-    fn walk(node: &wheel_proto::Node, out: &mut Vec<(String, String)>) {
+    type Row = (String, String, Option<String>, Option<String>);
+    fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
-            wheel_proto::Node::Pane { id, kind, .. } => {
+            wheel_proto::Node::Pane { id, kind, name, title, .. } => {
                 let kind = serde_json::to_value(kind)
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                out.push((id.clone(), kind));
+                out.push((id.clone(), kind, name.clone(), title.clone()));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -5437,10 +5447,10 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         for tree in space.trees() {
             walk(tree, &mut panes);
         }
-        for (pane, kind) in panes {
+        for (pane, kind, name, title) in panes {
             let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
             rows.push(serde_json::json!({
-                "space": space.id, "pane": pane, "kind": kind, "site": site,
+                "space": space.id, "pane": pane, "kind": kind, "site": site, "name": name, "title": title,
             }));
         }
     }
@@ -5449,12 +5459,14 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         return Ok(());
     }
     for row in &rows {
+        let named = row["name"].as_str().or(row["title"].as_str());
         println!(
-            "{} {} {} {}",
+            "{} {} {} {}{}",
             row["space"].as_str().unwrap_or_default(),
             row["pane"].as_str().unwrap_or_default(),
             row["kind"].as_str().unwrap_or_default(),
             row["site"].as_str().unwrap_or_default(),
+            named.map(|n| format!(" {n}")).unwrap_or_default(),
         );
     }
     if rows.is_empty() {
@@ -6313,6 +6325,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
             })
             .await
         }
+        PaneCommand::Rename { pane, name } => {
+            simple(conn, |req| ClientMsg::PaneRename {
+                req: Some(req),
+                pane,
+                name: name.unwrap_or_default(),
+            })
+            .await
+        }
     }
 }
 
@@ -6572,7 +6592,6 @@ async fn main() -> ExitCode {
             Command::File(command) => file(&mut conn, command).await,
             Command::Artifact(ArtifactCommand::New {
                 name,
-                pane,
                 scope,
                 space,
                 path,
@@ -6595,7 +6614,7 @@ async fn main() -> ExitCode {
                 } else {
                     None
                 };
-                artifact_new(&mut conn, name, pane, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description, url).await
+                artifact_new(&mut conn, name, scope, space, path, ends_with_pane, expires, renderer, files, reply_to, notify, description, url).await
             }
             Command::Artifact(ArtifactCommand::Add {
                 path,
@@ -6606,12 +6625,11 @@ async fn main() -> ExitCode {
                 description,
                 command,
                 every,
-                pane,
                 json,
             }) => {
                 let space = default_space(&mut conn, space).await?;
                 artifact_add(
-                    &mut conn, path, name, scope, space, title, description, command, every, pane, json,
+                    &mut conn, path, name, scope, space, title, description, command, every, json,
                 )
                 .await
             }
@@ -6629,9 +6647,9 @@ async fn main() -> ExitCode {
                 let space = default_space(&mut conn, space).await?;
                 artifact_promote(&mut conn, name, to, scope, space, from).await
             }
-            Command::Artifact(ArtifactCommand::Ls { space, pane, json }) => {
+            Command::Artifact(ArtifactCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space).await?;
-                artifact_ls(&mut conn, space, pane, json).await
+                artifact_ls(&mut conn, space, json).await
             }
             Command::Plugin(PluginCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space).await?;
@@ -6665,6 +6683,7 @@ async fn main() -> ExitCode {
                 };
                 plugin_action(&mut conn, pane, action, args).await
             }
+            Command::Plugin(PluginCommand::Stream { pane, stream }) => plugin_stream(&mut conn, pane, stream).await,
             Command::Stream(command) => stream(&mut conn, command).await,
             Command::Title(TitleCommand::Ls { space, json }) => {
                 let space = default_space(&mut conn, space)

@@ -149,6 +149,26 @@ struct FineGrainedPaneTests {
         #expect(pane.tree.modals.isEmpty)
     }
 
+    @Test func boundModalsStackInViewOrder() throws {
+        let source = """
+        local function init(p) return p or { open = ui.state(false) } end
+        local function update(state) state.open:set(true) end
+        local function view(state)
+            return ui.Column{
+                ui.Button{ label = "Open", action = { type = "open" } },
+                ui.Modal{ presented = state.open, content = ui.Text("first") },
+                ui.Modal{ key = "a", presented = state.open, content = ui.Text("second") },
+            }
+        end
+        return { init = init, update = update, view = view }
+        """
+        let pane = PluginPane()
+        pane.load(source: source, chunk: "t.luau")
+        #expect(pane.press(component: "root/Button0"))
+        #expect(pane.perf.renders == 1)
+        #expect(pane.tree.modals.map(\.id) == ["root/Modal0", "root/=a"])
+    }
+
     @Test func aFeedChangeRewritesItsReader() throws {
         let source = """
         local function view(state, data)

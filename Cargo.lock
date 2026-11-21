@@ -937,6 +937,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-range-header"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2910,10 +2916,19 @@ checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
+ "futures-core",
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
@@ -3056,6 +3071,7 @@ dependencies = [
  "tokio",
  "toml_edit",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3332,6 +3348,7 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "wheel-proto",
  "wheeld",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3375,6 +3392,7 @@ dependencies = [
  "toml_edit",
  "ureq",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3395,7 +3413,6 @@ dependencies = [
  "jiff",
  "json-patch",
  "libc",
- "mime_guess",
  "notify",
  "portable-pty",
  "rcgen",
@@ -3414,6 +3431,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "toml_edit",
+ "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -3422,6 +3440,7 @@ dependencies = [
  "webpki-roots",
  "wheel-plugin-sdk",
  "wheel-proto",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3441,6 +3460,7 @@ dependencies = [
  "toml_edit",
  "url",
  "wheel-plugin-sdk",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3778,6 +3798,56 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bitflags 2.13.2",
+ "clap",
+ "clap_builder",
+ "form_urlencoded",
+ "futures",
+ "futures-channel",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "http",
+ "httparse",
+ "hyper",
+ "hyper-util",
+ "indexmap",
+ "jiff",
+ "libc",
+ "log",
+ "memchr",
+ "once_cell",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "rmcp",
+ "rustls",
+ "rustls-webpki",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "slab",
+ "smallvec",
+ "syn 2.0.119",
+ "syn 3.0.8",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "tower",
+ "tracing",
+ "tracing-core",
+ "url",
+ "winnow",
+]
 
 [[package]]
 name = "writeable"

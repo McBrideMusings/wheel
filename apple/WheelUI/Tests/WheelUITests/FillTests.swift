@@ -3,7 +3,7 @@ import Testing
 @testable import WheelUI
 
 @MainActor
-struct A2UIFillTests {
+struct FillTests {
     private func pane(_ view: String) -> PluginPane {
         let pane = PluginPane()
         pane.load(source: "return { view = function() return \(view) end }", chunk: "fill.luau")

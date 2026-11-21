@@ -226,7 +226,7 @@ public final class ChatLinkResolver {
             listedAt[space] = nil
         }
         guard asked.insert(key).inserted else { return }
-        let sent = request { .artifactLs(req: $0, space: space, paneOnly: false) }
+        let sent = request { .artifactLs(req: $0, space: space) }
         if let sent { waitingArtifacts[sent] = space } else { asked.remove(key) }
     }
 

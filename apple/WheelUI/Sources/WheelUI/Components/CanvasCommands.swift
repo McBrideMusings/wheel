@@ -383,7 +383,7 @@ let canvasSizePrefix = "canvas-size:"
 extension EnvironmentValues {
     /// Whether the surface takes a command Canvas's size report: a plugin pane does (its runtime hands the size to `draw`); a page
     /// whose server would get an action it never asked for does not.
-    @Entry var a2uiCanvasSizes = false
+    @Entry var paneCanvasSizes = false
 }
 
 /// A Canvas drawn from a recorded command list: `height` tall, as wide as it is offered, clipped to its rect, with no camera,
@@ -401,7 +401,7 @@ struct CanvasCommandStage: View {
     @State private var stageFrame = CGRect.zero
     @State private var players = CanvasPlayerCache()
     @State private var coalescer = CanvasPointerCoalescer()
-    @Environment(\.a2uiCanvasSizes) private var reportsSize
+    @Environment(\.paneCanvasSizes) private var reportsSize
 
     init(commands: [JSONValue], height: Double, key: String, pointerAction: String?, fire: @escaping (String, [String: JSONValue]) -> Void) {
         self.commands = commands

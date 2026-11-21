@@ -1,0 +1,14 @@
+# Grant this project access to the local Voxl checkout without disabling its sandbox.
+default_permissions = "voxl-access"
+
+[permissions.voxl-access]
+extends = ":workspace"
+
+[permissions.voxl-access.filesystem]
+"/Users/pierce/Upstream/voxl" = "write"
+"/Users/pierce/Upstream/voxl/.git" = "write"
+"/Users/pierce/Upstream/voxl/.codex" = "write"
+"/Users/pierce/Upstream/voxl/.agents" = "write"
+
+[permissions.voxl-access.network]
+enabled = true

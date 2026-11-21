@@ -1,10 +1,11 @@
 # The GPUI client, its own workspace. The root `make deploy-client` and `make deploy-dev` install it
 # as /Applications/Wheel.app and /Applications/Wheel Dev.app (ADR-0040).
-.PHONY: build build-dev fixture-binaries test check run compare compare-swift help
+.PHONY: build build-dev build-check fixture-binaries test check run compare compare-swift help
 
 help:
 	@echo "build       build the binaries, the Swift bridge and target/app/Wheel.app"
 	@echo "build-dev   the same as target/app/Wheel Dev.app (DEV icon, .dev id, its own wheeld on 7422)"
+	@echo "build-check build, then target/app/check/Wheel.app: the bundle plus the hidden check"
 	@echo "test        unit tests (layout)"
 	@echo "fixture-binaries  build the programs the fixture wheeld runs"
 	@echo "check       hidden regression check against a fixture wheeld (no window shown)"
@@ -18,6 +19,9 @@ build:
 build-dev:
 	python3 tools/build.py dev
 
+build-check:
+	python3 tools/build.py release --check
+
 test:
 	cargo +stable test --manifest-path Cargo.toml --lib
 
@@ -25,7 +29,7 @@ test:
 fixture-binaries:
 	python3 tools/fixture.py
 
-check: build fixture-binaries
+check: build-check fixture-binaries
 	python3 tools/check.py
 
 run: build fixture-binaries

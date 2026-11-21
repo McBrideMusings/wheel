@@ -618,7 +618,7 @@ impl AppState {
     /// and the pane's brief file (`WHEEL_BRIEF_FILE`) written with it. A listing that cannot be
     /// read is said so in the section, not left out.
     pub(crate) fn pane_brief(&self, pane: &str, space_cwd: &str) -> String {
-        let section = match self.artifact_ls_in(space_cwd, false) {
+        let section = match self.artifact_ls_in(space_cwd) {
             Ok((artifacts, _)) => crate::brief::artifacts_section(&artifacts),
             Err(e) => {
                 tracing::warn!(%pane, error = %e, "the brief cannot list the artifacts");
@@ -715,10 +715,18 @@ impl AppState {
             self.pane_brief(pane, space_cwd);
         }
         let launch = self.term_launch(shell, seat.map(|(pane, _)| pane), picked);
+        let on_title: crate::pty::OnTitle = Box::new({
+            let (me, term) = (self.me.clone(), id.clone());
+            move |title| {
+                if let Some(state) = me.upgrade() {
+                    state.retitle(title, |kind| matches!(kind, wheel_proto::PaneKind::Terminal { term: t, .. } if *t == term));
+                }
+            }
+        });
         let spawned = {
             let (id, cwd) = (id.clone(), cwd.clone());
             tokio::task::spawn_blocking(move || {
-                Term::spawn(id, cwd, launch, cols.max(1), rows.max(1))
+                Term::spawn(id, cwd, launch, cols.max(1), rows.max(1), on_title)
             })
             .await
         };
@@ -1100,6 +1108,7 @@ const ARTIFACT_SWEEP: Duration = Duration::from_secs(30);
 /// Serve clients on `listener` until the process ends.
 pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Result<()> {
     crate::status::follow(state.clone());
+    state.follow_agent_titles();
     crate::push::follow(state.clone());
     state.sync_settings_watch();
     state.sync_plugin_watch();
@@ -2023,6 +2032,7 @@ async fn handle(
             roots: state.dir_roots(),
         }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
+        ClientMsg::PaneRename { req, pane, name } => done(req, state.pane_rename(&pane, &name)),
         ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
         ClientMsg::Focus { req, space, pane } => done(
             req,
@@ -2578,7 +2588,6 @@ async fn handle(
         ClientMsg::SplitRatio { req, split, ratio } => done(req, state.split_ratio(&split, ratio)),
         ClientMsg::ArtifactNew {
             req,
-            pane,
             name,
             scope,
             space,
@@ -2597,7 +2606,6 @@ async fn handle(
                 &name,
                 scope,
                 space.as_deref(),
-                pane,
                 path.as_deref(),
                 (ends_with_pane.as_deref(), expires_in),
                 crate::artifacts::Post {
@@ -2621,7 +2629,6 @@ async fn handle(
             description,
             command,
             every,
-            pane,
         } => one_artifact(
             req,
             state.artifact_add(
@@ -2634,7 +2641,6 @@ async fn handle(
                     description,
                     command,
                     every,
-                    pane,
                     ..Default::default()
                 },
             ),
@@ -2998,6 +3004,16 @@ async fn handle(
                 Some(failed(req, message))
             }
         },
+        ClientMsg::PluginStream { req, pane, stream } => match state.plugin_stream(&pane, &stream).await {
+            Ok(socket) => {
+                tracing::info!(%peer, %pane, %stream, socket = %socket.display(), "plugin stream");
+                req.map(|req| ServerMsg::PluginStream { req, pane, stream, socket: socket.to_string_lossy().into_owned() })
+            }
+            Err(message) => {
+                tracing::warn!(%peer, %pane, %stream, %message, "plugin stream refused");
+                Some(failed(req, message))
+            }
+        },
         ClientMsg::PluginAction {
             req,
             pane,
@@ -3105,8 +3121,8 @@ async fn handle(
                 }
             }
         }
-        ClientMsg::ArtifactLs { req, space, pane } => {
-            match state.artifact_ls(space.as_deref(), pane) {
+        ClientMsg::ArtifactLs { req, space } => {
+            match state.artifact_ls(space.as_deref()) {
                 Ok((artifacts, resolves)) => req.map(|req| ServerMsg::Artifacts {
                     req,
                     artifacts,

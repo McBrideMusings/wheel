@@ -29,14 +29,13 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 17] = [
+const KEYS: [&str; 16] = [
     "path",
     "url",
     "title",
     "description",
     "command",
     "every",
-    "pane",
     "ends_with_pane",
     "expires_at",
     "renderer",
@@ -65,9 +64,6 @@ pub(crate) struct Entry {
     description: Option<String>,
     pub(crate) command: Option<String>,
     pub(crate) every: Option<u64>,
-    /// Whether this artifact asks to be offered in a pane picker. Absent is a one-off: still
-    /// openable by name, by a person or an agent, and listed by no picker.
-    pane: bool,
     /// The agent pane whose closing deletes this artifact, written by `artifact new`.
     ends_with_pane: Option<String>,
     /// When the daemon deletes this artifact, in seconds since the Unix epoch, written by
@@ -104,7 +100,6 @@ pub struct Declared {
     pub description: Option<String>,
     pub command: Option<String>,
     pub every: Option<u64>,
-    pub pane: bool,
     pub ends_with_pane: Option<String>,
     pub expires_at: Option<u64>,
     pub renderer: Option<String>,
@@ -138,7 +133,6 @@ impl Declared {
             // than wrapped round into one it would take.
             t.insert("every".into(), i64::try_from(every).unwrap_or(-1).into());
         }
-        t.insert("pane".into(), self.pane.into());
         if let Some(pane) = &self.ends_with_pane {
             t.insert("ends_with_pane".into(), pane.as_str().into());
         }
@@ -237,7 +231,6 @@ impl Entry {
             description: None,
             command: None,
             every: None,
-            pane: false,
             ends_with_pane: None,
             expires_at: None,
             renderer: None,
@@ -332,8 +325,6 @@ impl Entry {
                 ("expires_at", _) => e
                     .problems
                     .push("expires_at is not a positive whole number of seconds".into()),
-                ("pane", toml::Value::Boolean(pane)) => e.pane = *pane,
-                ("pane", _) => e.problems.push("pane is not true or false".into()),
                 (key, _) => e.problems.push(format!("{key} is not a string")),
             }
         }
@@ -734,7 +725,6 @@ impl AppState {
             description: entry.description,
             command: entry.command,
             every: entry.every,
-            pane: entry.pane,
             ends_with_pane: entry.ends_with_pane,
             expires_at: entry.expires_at,
             renderer: entry.renderer,
@@ -788,7 +778,6 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
-        pane: bool,
         path: Option<&str>,
         (ends_with_pane, expires_in): (Option<&str>, Option<u64>),
         post: Post<'_>,
@@ -812,7 +801,7 @@ impl AppState {
             {
                 return Err("a url registers a page that is already served, so it cannot be combined with --path, a lifetime, a post or a Send target".into());
             }
-            return self.artifact_new_url(name, scope, space, pane, url);
+            return self.artifact_new_url(name, scope, space, url);
         }
         if let Some(url) = webhook {
             webhook_url(url)?;
@@ -914,7 +903,6 @@ impl AppState {
         })
         .and_then(|()| {
             let declared = Declared {
-                pane,
                 ends_with_pane: ends_with_pane.map(str::to_string),
                 expires_at,
                 renderer: renderer.map(str::to_string),
@@ -955,7 +943,6 @@ impl AppState {
         name: &str,
         scope: Option<ArtifactScope>,
         space: Option<&str>,
-        pane: bool,
         url: &str,
     ) -> Result<ArtifactInfo, String> {
         let cwd = self.artifact_space(space)?;
@@ -964,7 +951,6 @@ impl AppState {
         let file = self.artifact_registry(scope, &cwd);
         let declared = Declared {
             url: Some(crate::settings::page(url)?),
-            pane,
             ..Declared::default()
         };
         if entry(&file, name)?.is_some() {
@@ -1115,7 +1101,7 @@ impl AppState {
     }
 
     /// Make an ad hoc artifact permanent in scope `to`, once a person allows it: the entry is
-    /// rewritten there with no `ends_with_pane`, no `expires_at` and `pane = true`, and the entry it
+    /// rewritten there with no `ends_with_pane` and no `expires_at`, and the entry it
     /// leaves in another scope is deleted. The artifact's folder stays where it is. A denial, or a
     /// request withdrawn unanswered, changes nothing. The request is shown under `from` (the asking
     /// agent pane) when given, so a client puts it on that pane.
@@ -1131,7 +1117,7 @@ impl AppState {
         self.promotion_refusal(&was, to)?;
         let agent = from.map_or_else(|| "wheel".to_string(), |pane| self.asking_agent(pane));
         let title = format!(
-            "Keep the {} artifact {name} as a {} artifact? It stops expiring and is offered in the pane picker.",
+            "Keep the {} artifact {name} as a {} artifact? It stops expiring.",
             was.scope.name(),
             to.name()
         );
@@ -1162,7 +1148,7 @@ impl AppState {
 
     /// Why `was` cannot be promoted to `to`, before anyone is asked.
     fn promotion_refusal(&self, was: &ArtifactInfo, to: ArtifactScope) -> Result<(), String> {
-        let ad_hoc = !was.pane || was.ends_with_pane.is_some() || was.expires_at.is_some();
+        let ad_hoc = was.ends_with_pane.is_some() || was.expires_at.is_some();
         if was.scope == to && !ad_hoc {
             return Err(format!(
                 "{} is already a permanent {} artifact",
@@ -1208,7 +1194,6 @@ impl AppState {
             description: old.description.clone(),
             command: old.command.clone(),
             every: old.every,
-            pane: !keep || old.pane,
             ends_with_pane: old.ends_with_pane.clone().filter(|_| keep),
             expires_at: old.expires_at.filter(|_| keep),
             renderer: old.renderer.clone(),
@@ -1581,17 +1566,15 @@ impl AppState {
     pub fn artifact_ls(
         &self,
         space: Option<&str>,
-        pane_only: bool,
     ) -> Result<(Vec<ArtifactInfo>, BTreeMap<String, ArtifactScope>), String> {
         let cwd = self.artifact_space(space)?;
-        self.artifact_ls_in(&cwd, pane_only)
+        self.artifact_ls_in(&cwd)
     }
 
     /// [`Self::artifact_ls`] for the space whose directory is `cwd`.
     pub(crate) fn artifact_ls_in(
         &self,
         cwd: &str,
-        pane_only: bool,
     ) -> Result<(Vec<ArtifactInfo>, BTreeMap<String, ArtifactScope>), String> {
         let mut all = Vec::new();
         let mut resolves = BTreeMap::new();
@@ -1606,14 +1589,7 @@ impl AppState {
                     continue;
                 };
                 let info = self.artifact_info(&artifact, Entry::read(&file, value), cwd);
-                // `resolves` answers what a bare name means, which is a property of the entries and
-                // not of this filter: an unflagged artifact still shadows a flagged one of the same
-                // name in a later scope, and a caller asking for a picker's list has to be told
-                // that rather than shown a name that would open something else.
                 resolves.entry(name).or_insert(scope);
-                if pane_only && !info.pane {
-                    continue;
-                }
                 all.push(info);
             }
         }
@@ -1906,19 +1882,14 @@ mod tests {
             );
         }
 
-        // An entry that is not a table, a pane that is not a boolean.
+        // An entry that is not a table, and the `pane` an older entry may still carry.
         assert_eq!(
             read(&dir, "[artifacts]\nx = \"site\"\n", "x").problems,
             ["the entry is a string, not a table"]
         );
         assert_eq!(
-            read(
-                &dir,
-                "[artifacts.x]\npath = \"site\"\npane = \"yes\"\n",
-                "x"
-            )
-            .problems,
-            ["pane is not true or false"]
+            read(&dir, "[artifacts.x]\npath = \"site\"\npane = true\n", "x").problems,
+            ["unknown key pane, which nothing reads"]
         );
 
         // A file that is not HTML is not a page, and its folder is no root.

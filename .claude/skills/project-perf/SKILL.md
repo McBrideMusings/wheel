@@ -23,7 +23,8 @@ keeps each table.
 | hidden turns | `bash .claude/skills/project-verify/tools/perf-hidden-turns.sh` | anything that animates or ticks in `apple/WheelUI` or `apple/Mac`; a change to how a hidden space is hidden |
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
-| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `A2UI`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
+| transcript links | `python3 clients/gpui/tools/check.py` (its `chat_links` step; `target/check/links-cost.json`) | `clients/gpui/src/chat_links.rs`, `clients/gpui/src/view/links.rs`, or how the GPUI transcript caches and measures rows |
+| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `Components`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
 
 ## chat
 
@@ -96,7 +97,8 @@ pane's; each wait ends 1 s after the surface's last report.
 ## build
 
 `perf-build.sh` runs one `wheel-cli` integration test and `cargo build` once each to fill the
-target, then the same test and `cargo build` again, and counts the crates those last two compile. The `cli` tests build the fake agent with an inner
+target, then the same test, `cargo build`, `cargo build -p wheelhouse` and `cargo build -p wheeld`,
+counts the crates those last four compile, and counts the `libwheeld` and `libclap` rlibs the run wrote. The `cli` tests build the fake agent with an inner
 `cargo build` (`fake_agent()` in `cli/tests/cli.rs`); a variable Cargo sets for the test process
 reaching that build makes a build script see a changed environment, and the two builds then
 recompile each other's crates on every run.
@@ -105,6 +107,28 @@ recompile each other's crates on every run.
 | --- | --- | --- | --- |
 | crates the test run compiles | 0 | 0 | 15 (ring, rustls, rcgen, ureq, wheeld …: `CARGO_MANIFEST_DIR` passed on) |
 | crates the build after it compiles | 0 | 0 | 7 |
+| crates `cargo build -p wheelhouse` then `-p wheeld` compile after it | 0 | 0 and 0 | 42 for `-p wheelhouse` on main (`-p wheeld` alone not measured there) |
+| `libwheeld` and `libclap` rlibs the run writes | 1 each | 1 and 1 | 5 and 4 in the main checkout's `target/debug/deps` |
+
+Every build compiles each dependency with one set of features because every workspace member
+depends on `workspace-hack` (cargo-hakari, `.config/hakari.toml`). After adding or changing a
+dependency, run `cargo hakari generate && cargo hakari manage-deps --yes`; `make vet` fails while
+the hack is out of date. `wheel-proto` and `wheel-plugin-sdk` stay out of it: the GPUI client and
+plugins in other repos depend on them by path and would compile the daemon's tree.
+
+## transcript links
+
+The GPUI transcript caches each reply's linked blocks and each row's height under one links
+generation (`LinkState::generation`); a move makes every reply's links again and measures every
+row of every agent column from the first. After the `chat_links` step's clicks, the hidden check
+sets a split to the ratio it has (a layout broadcast that changes no pane's chip) and sends a
+second message naming the same file and pane, then reads `/state` `links` before and after.
+
+| Measure | Limit | Now | Broken |
+| --- | --- | --- | --- |
+| generation moves, two layout broadcasts and one turn | 0 | 0 | 8 (a move on every layout and every repeated file answer) |
+| columns measured again from the first row, same | 0 | 0 | 8 |
+| replies whose links were made again, same | | 1 (the new reply) | 24 |
 
 ## plugin keystroke
 

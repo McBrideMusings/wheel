@@ -23,6 +23,9 @@ against it; it holds no design itself.
 5. **Render every state**: `tools/shots.sh <surface>` (surfaces `window` and `chat`; the script
    lists their states), then look at each PNG, light and dark. A state the script does not
    reach yet gets added to it in the same change. A state never rendered is not designed.
+   A page that will show on the phone is checked at 390 pt first: set its split with
+   `wheel pane ratio <split> <share>` until `wheel pane shot` is about 780 px wide, and look at
+   every section.
 6. **Lint**: `tools/lint.sh` exits 0.
 
 `tools/shots.sh` needs `make build-client` (the Debug app in `WHEEL_DERIVED_DATA`) and

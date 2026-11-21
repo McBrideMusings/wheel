@@ -7,7 +7,7 @@ internal import WheelLuau
 // renders. `ViewTree.reconcile` takes each new `view` and writes only what changed, so SwiftUI redraws only the components whose
 // node changed (each component view observes its own node).
 //
-// Identity: the root is `root`; a child is `<parent>/<key>` when it has a `key`, else `<parent>/<Component><n>` with n its
+// Identity: the root is `root`; a child is `<parent>/=<key>` when it has a `key` (`%`, `/` and `@` in it percent-escaped), else `<parent>/<Component><n>` with n its
 // place among siblings of the same component; a component inside a property is `<parent>@<property path>` (`root@child`,
 // `root/Table0/b-12@cells.2.view`); a Table's row is `<table>/<row path, else row id, else section.row>`. A node whose
 // component changes is built again.
@@ -67,6 +67,8 @@ public final class ViewTree {
     public private(set) var modals: [ViewNode] = []
     /// Whether the view takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
     public private(set) var fillsPane = false
+    /// Which nodes show hover feedback, and the pointer a check holds on one.
+    @ObservationIgnored public let hover = PaneHoverProbe()
     /// Every node the last render reached, by id.
     @ObservationIgnored private var index: [String: ViewNode] = [:]
     /// A table a control raised, with its event fields added: the pane sends it to the script's `update`.
@@ -110,7 +112,8 @@ public final class ViewTree {
 
     /// The Modals shown and whether the view fills the pane, after the tree changed.
     private func finish() {
-        let presented = index.values.filter { $0.component == "Modal" && $0.props["presented"]?.boolValue == true }.sorted { $0.id < $1.id }
+        var presented: [ViewNode] = []
+        if let root { Self.collectPresented(root, into: &presented) }
         if presented.map(\.id) != modals.map(\.id) || zip(presented, modals).contains(where: { $0 !== $1 }) { modals = presented }
         let fills = root.map(Self.fills) ?? false
         if fills != fillsPane { fillsPane = fills }
@@ -172,7 +175,7 @@ public final class ViewTree {
                     UILog.info("viewtree duplicate key \(parent.id) \(key)")
                     continue
                 }
-                id = "\(parent.id)/\(key)"
+                id = Self.childID(parent.id, key: key)
             } else {
                 let n = counts[pane.component, default: 0]
                 counts[pane.component] = n + 1
@@ -240,12 +243,27 @@ public final class ViewTree {
         touched.insert(node.id)
     }
 
+    /// A keyed child's id: `=` and the key with `%`, `/` and `@` escaped, so it never equals a generated `<Component><n>`
+    /// segment or reads as a deeper path or a property.
+    nonisolated static func childID(_ parent: String, key: String) -> String {
+        let escaped = key.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: "/", with: "%2F").replacingOccurrences(of: "@", with: "%40")
+        return "\(parent)/=\(escaped)"
+    }
+
     private static func keyText(_ v: JSONValue) -> String {
         switch v {
         case let .string(s): s
         case let .number(n): n == n.rounded() ? String(Int(n)) : String(n)
         default: v.text
         }
+    }
+
+    /// The presented Modals under `n` in the order a render places them: a node's properties, its rows, itself, its children.
+    private static func collectPresented(_ n: ViewNode, into out: inout [ViewNode]) {
+        for key in n.embedded.keys.sorted() { collectPresented(n.embedded[key]!, into: &out) }
+        n.rows.forEach { collectPresented($0, into: &out) }
+        if n.component == "Modal", n.props["presented"]?.boolValue == true { out.append(n) }
+        n.children.forEach { collectPresented($0, into: &out) }
     }
 
     private static func same(_ a: [ViewNode], _ b: [ViewNode]) -> Bool {

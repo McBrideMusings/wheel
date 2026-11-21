@@ -180,7 +180,7 @@ ok=1; for _ in $(seq 1 50); do sent && { ok=0; break; }; sleep 0.2; done
 
 # The gallery: the WebView{artifact} row, scrolled into view.
 w pane kind "$PANE" plugin --plugin gallery --plugin-pane gallery > /dev/null
-wait_for 40 'any(t == "A2UI component gallery" for t in texts)' && pass "the gallery draws" || fail "gallery: $(q 'texts[:4]')"
+wait_for 40 'any(t == "Component gallery" for t in texts)' && pass "the gallery draws" || fail "gallery: $(q 'texts[:4]')"
 # gallery_row <name> <scroll arg> <text the row draws>: scrolls the pane (to=top|bottom, or dy=<points> from the top), then snapshots.
 gallery_row() {
   scroll_to top; sleep 1

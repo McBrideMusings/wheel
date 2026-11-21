@@ -2,6 +2,7 @@
 pub mod actions;
 pub mod browser;
 pub mod cards;
+pub mod chat_links;
 pub mod command_palette;
 pub mod composer;
 pub mod conversations;

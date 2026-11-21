@@ -35,6 +35,8 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
     /// started leaves the later one's scripts alone.
     @ObservationIgnored private var scriptGeneration = 0
     @ObservationIgnored private var watches: [NSKeyValueObservation] = []
+    /// Keeps every drag that starts on the page for the page: the pane pager waits for it to fail.
+    @ObservationIgnored private let pagerBlock = PagerBlock()
     /// Whether the web view has a page behind and ahead of this one.
     private(set) var canGoBack = false
     private(set) var canGoForward = false
@@ -65,7 +67,7 @@ final class PhoneBrowser: NSObject, WKNavigationDelegate {
         }
         handler.onCookies = { [weak self] in self?.cookiesChanged() }
         view.navigationDelegate = self
-        view.allowsBackForwardNavigationGestures = true
+        view.addGestureRecognizer(pagerBlock)
         // A page that moves itself (history.pushState) changes the URL with no navigation.
         watches.append(view.observe(\.url, options: [.new]) { [weak self] web, _ in
             MainActor.assumeIsolated { self?.landed(web.url) }
@@ -337,6 +339,29 @@ private struct BrowserContent: View {
                     }
             }
         }
+    }
+}
+
+/// A drag recogniser on the web view that every scroll view around it (the pane pager) must wait
+/// to fail. It recognises any drag on the page and never fails one, so a sideways drag stays with
+/// the page; it cancels no touches and runs beside the page's own gestures.
+private final class PagerBlock: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
+    init() {
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        delegate = self
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        true
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        guard let page = view, let scroller = other.view as? UIScrollView else { return false }
+        // The web view's own scroll view is inside it; only one around it is the pager.
+        return !scroller.isDescendant(of: page) && page.isDescendant(of: scroller)
     }
 }
 

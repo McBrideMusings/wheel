@@ -266,6 +266,7 @@ impl Client {
             items.push(item("kind:artifact".into(), "Change Type ▸ Artifact…".into(), true));
             items.push(item("kind:empty".into(), "Change Type ▸ Empty".into(), leaf.kind != "empty"));
         }
+        items.push(item("rename".into(), "Rename Pane…".into(), self.server_has("pane_rename")));
         items.push(item("move-new-space".into(), "Move Pane to New Space".into(), true));
         items.push(item("move-new-little".into(), "Move Pane to New Little Window".into(), false));
         if !layout.is_off(Control::Close, kind) {
@@ -308,6 +309,7 @@ impl Client {
             }
             "browser:home" => self.browser_press(&pane, Press::Home),
             "close" => self.ask_close_pane(&pane),
+            "rename" => self.begin_pane_rename(&pane),
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
             "kind:empty" => self.ask_set_kind(&pane, NewPaneKind::Empty),

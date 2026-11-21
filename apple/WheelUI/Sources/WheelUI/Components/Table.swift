@@ -15,10 +15,10 @@ import SwiftUI
 // too: the rows whose ids are in `selected` draw selected, a click, a shift-click range, a ⌘-click, a click on empty ground
 // or Escape raises `selectAction` with {ids} (every row selected now), and a double-click or Return raises `rowAction` with
 // the row's {id}; without one a plain click raises `rowAction`.
-struct A2UITableView: View {
+struct PaneTableView: View {
     let node: ViewNode
     let tree: ViewTree
-    @Environment(\.a2uiPane) private var pane
+    @Environment(\.paneSize) private var pane
 
     /// One line of the table: a section's title, or a row.
     private struct Line: Identifiable {
@@ -120,7 +120,7 @@ struct A2UITableView: View {
         // A Table fills the height it is given and scrolls itself; a `frame` modifier on it sets that height.
         .frame(maxHeight: .infinity)
         .frame(minHeight: 120)
-        .accessibilityIdentifier("a2ui.table")
+        .accessibilityIdentifier("pane.table")
     }
 
     /// A column with a width: that width fixed, shrinkable to 40 pt. nil for a column that fills what is left.
@@ -155,7 +155,7 @@ struct A2UITableView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first, let row = lines.first(where: { $0.id == id })?.row { A2UIRowMenu(row: row, tree: tree) }
+            if let id = ids.first, let row = lines.first(where: { $0.id == id })?.row { PaneRowMenu(row: row, tree: tree) }
         } primaryAction: { ids in open(ids) }
         // Escape clears a selection the page owns.
         .onExitCommand { if !selected.wrappedValue.isEmpty { selected.wrappedValue = [] } }
@@ -174,7 +174,7 @@ struct A2UITableView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { fire(rowAction, ["id": .string(line.row?.rowID ?? "")]) }
-                .contextMenu { if let row = line.row { A2UIRowMenu(row: row, tree: tree) } }
+                .contextMenu { if let row = line.row { PaneRowMenu(row: row, tree: tree) } }
             }
         }
         .listStyle(.plain)
@@ -187,13 +187,13 @@ struct A2UITableView: View {
         if let title = line.title {
             if key == first { Text(title).font(.system(size: 13, weight: .semibold)) } else { Text("") }
         } else if let row = line.row {
-            A2UITableCell(row: row, column: c, tree: tree, table: node, foldAction: foldAction)
+            PaneTableCell(row: row, column: c, tree: tree, table: node, foldAction: foldAction)
         }
     }
 }
 
 /// A row's context menu: each item raises its own `action` on the row, with its `context`.
-private struct A2UIRowMenu: View {
+private struct PaneRowMenu: View {
     let row: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -205,7 +205,7 @@ private struct A2UIRowMenu: View {
 }
 
 /// One cell of one row. It reads only its row's node, so another row changing never draws it again.
-private struct A2UITableCell: View {
+private struct PaneTableCell: View {
     let row: ViewNode
     let column: [String: JSONValue]
     let tree: ViewTree
@@ -230,7 +230,7 @@ private struct A2UITableCell: View {
                 } else { Color.clear.frame(width: 16, height: 1) }
             }
             if let view = index.flatMap({ row.embedded["cells.\($0).view"] }) {
-                A2UIChildView(node: view, tree: tree)
+                PaneNodeView(node: view, tree: tree)
             } else {
                 Text(cell["text"]?.text ?? "")
                     // Point sizes, not text styles: a text style is 17 pt on a phone and 13 pt on a Mac.

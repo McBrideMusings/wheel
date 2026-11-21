@@ -387,6 +387,14 @@ public final class PluginPane {
         return out
     }
 
+    /// Holds a pointer on node `id`, as a check's stand-in for a real one, or takes it away with nil. False when the view has no node `id`.
+    @discardableResult
+    public func hover(component id: String?) -> Bool {
+        if let id, tree.node(id) == nil { return false }
+        tree.hover.held = id
+        return true
+    }
+
     /// Presses the component as its button would; false when the view has no node `id`.
     @discardableResult
     public func press(component id: String) -> Bool {
@@ -455,11 +463,11 @@ public struct PluginPaneView: View {
             Group {
                 // A frame-less Table or vertical List takes the pane's height and scrolls itself; any other view scrolls as a whole.
                 if pane.tree.fillsPane {
-                    A2UISurfaceView(tree: pane.tree)
+                    PaneTreeView(tree: pane.tree)
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
                 } else {
                     ScrollView {
-                        A2UISurfaceView(tree: pane.tree)
+                        PaneTreeView(tree: pane.tree)
                             .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .scrollPosition($position)
@@ -477,9 +485,10 @@ public struct PluginPaneView: View {
                     }
                 }
             }
-            .environment(\.a2uiPane, geo.size)
-            .environment(\.a2uiCanvasSizes, true)
-            .overlay { A2UIPresentedModals(tree: pane.tree) }
+            .environment(\.paneSize, geo.size)
+            .environment(\.paneCanvasSizes, true)
+            .overlay { PanePresentedModals(tree: pane.tree) }
+            .environment(\.paneHoverProbe, pane.tree.hover)
         }
         .background(palette.bg)
         .accessibilityIdentifier("plugin.pane")

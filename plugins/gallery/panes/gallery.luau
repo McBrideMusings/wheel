@@ -1,4 +1,4 @@
--- The A2UI gallery pane: one page with a table per class of control. It draws the basic catalog's components with every
+-- The component gallery pane: one page with a table per class of control. It draws the basic components with every
 -- option, the SwiftUI controls, the Table, the modifiers, then Wheel's own components. Nothing on it is wired to a
 -- backend; every control raises `{ type = "act" }`, which `update` ignores, except the Bound state class's Add and Reverse,
 -- which set its two ui.state values. Those bindings mount the page: `view` runs once.
@@ -53,8 +53,17 @@ local function concat(into, more)
     return into
 end
 
--- ---- table layout: fixed-width cells so the columns line up
+-- ---- table layout: fixed-width cells so the columns line up, where the pane is wide enough for them; a narrower pane
+-- (a phone) gets each row stacked: its names, its option, then its example, so nothing runs off the pane's edge.
 local W = { 130, 130, 230 }
+
+local function fits(wide, narrow)
+    return put("ViewThatFits", { wide, narrow }, { ["in"] = "horizontal" })
+end
+
+local function stacked(children)
+    return col({ col(children, { align = "start", modifiers = { { padding = { vertical = 8 } }, { frame = { maxWidth = "infinity", alignment = "leading" } } } }), put("Divider") })
+end
 
 local function cell(content, i)
     local mods
@@ -72,7 +81,7 @@ local function header()
     for i, t in ipairs({ "Component", "SwiftUI", "Option", "Example" }) do
         table.insert(cells, cell(secondary(t, "caption", { modifiers = { { fontWeight = "semibold" } } }), i - 1))
     end
-    return col({ row(cells, { justify = "start", align = "start" }), put("Divider") })
+    return fits(col({ row(cells, { justify = "start", align = "start" }), put("Divider") }), col({}))
 end
 
 -- One table row per option; the component's name and SwiftUI class on its first row only.
@@ -86,7 +95,13 @@ local function comp_rows(name, swiftui, options)
             cell(secondary(opt, "caption"), 2),
             cell(ex, 3),
         }
-        table.insert(rows, col({ row(cells, { justify = "start", align = "start" }), put("Divider") }))
+        local narrow = {}
+        if k == 1 then
+            table.insert(narrow, row({ txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), secondary(swiftui) }, { justify = "start", align = "start" }))
+        end
+        table.insert(narrow, secondary(opt, "caption"))
+        table.insert(narrow, ex)
+        table.insert(rows, fits(col({ row(cells, { justify = "start", align = "start" }), put("Divider") }), stacked(narrow)))
     end
     return rows
 end
@@ -353,14 +368,14 @@ local function mcell(content, i)
 end
 
 local function mrow(name, args, ex)
-    return col({
+    return fits(col({
         row({
             mcell(txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), 0),
             mcell(secondary(args, "caption"), 1),
             mcell(ex, 2),
         }, { justify = "start", align = "start" }),
         put("Divider"),
-    })
+    }), stacked({ txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), secondary(args, "caption"), ex }))
 end
 
 local function modifiers_class()
@@ -373,7 +388,7 @@ local function modifiers_class()
         table.insert(colours, mod(c, { foregroundStyle = c }))
     end
     local mrows = {
-        col({ row(head, { justify = "start", align = "start" }), put("Divider") }),
+        fits(col({ row(head, { justify = "start", align = "start" }), put("Divider") }), col({})),
         mrow("font", "a text style (caption, headline...) or {size, weight, design}", mod("monospaced 13", { font = { size = 13, design = "monospaced" } })),
         mrow("fontWeight", "light ... heavy", mod("semibold", { fontWeight = "semibold" })),
         mrow("monospacedDigit", "true", col({ mod("1111", { monospacedDigit = true }), mod("8888", { monospacedDigit = true }) }, { align = "start" })),
@@ -403,8 +418,15 @@ local function modifiers_class()
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
-        mrow("hoverEffect", "highlight: a rounded fill while hovered", put("Button", nil, { child = txt("Hover me"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" } } })),
-        mrow("hoverEffect (disabled)", "a disabled control never lights", put("Button", nil, { child = txt("Disabled"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "highlight" }, { disabled = true } } })),
+        mrow("(no hoverEffect)", "every control shows hover, pressed and focus with no call to the script; a borderless Button lights a rounded fill on macOS", row({
+            put("Button", nil, { key = "hover-default", child = txt("Hover me"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } } } }),
+            put("Button", nil, { child = txt("Bordered"), action = act() }),
+            put("Button", nil, { child = txt("Disabled"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { disabled = true } } }),
+        }, { justify = "start" })),
+        mrow("hoverEffect", "none: no hover feedback; highlight: the fill on any view, where the list puts it", row({
+            put("Button", nil, { key = "hover-none", child = txt("No hover"), variant = "borderless", action = act(), modifiers = { { padding = { 2, 5 } }, { hoverEffect = "none" } } }),
+            mod("Highlighted text", { padding = { 2, 5 } }, { hoverEffect = "highlight" }),
+        }, { justify = "start" })),
         mrow("pointerStyle", "link: the pointing hand (macOS)", put("Button", nil, { child = txt("Pointing hand"), variant = "borderless", action = act(), modifiers = { { pointerStyle = "link" } } })),
         mrow("(unknown name)", "draws a red marker", mod("bad modifier", { frobnicate = 1 })),
     }
@@ -619,7 +641,10 @@ local CANVAS_COMMANDS = {
     { "set", "font", "10px sans-serif" }, { "set", "fillStyle", "faint" }, { "fillText", "drawImage: 16x16 RGBA, 1x and 3x", 110, 214 },
 }
 
-local function own_class()
+local function own_class(data)
+    local input = data.feed("gallery.input", {})
+    local last = "no input yet"
+    if type(input) == "table" and input.last then last = input.count .. " events; last: " .. input.last end
     return klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", {
         { "Canvas", "Canvas", {
             { "a display list with a camera and hit regions; needs a scene, not shown",
@@ -640,6 +665,13 @@ local function own_class()
                 put("WebView", nil, { url = "https://example.com", height = 220 }) },
             { "artifact: an artifact's name, resolved in this space as `wheel artifact` does (project, then machine); its page as a web pane shows it, reloading when its files change. \"gallery-sample\" is no artifact in most spaces, so wheeld's refusal shows in place; a space with that artifact shows its page",
                 put("WebView", nil, { artifact = "gallery-sample", height = 220 }) },
+        } },
+        { "VideoStream", "VideoStream", {
+            { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall (default 320), as wide as it is offered, the picture fitted to it. input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 200 }) },
+            { "input = false: the picture and sound only; nothing is sent",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 120, input = false }) },
+            { "what the backend got: its gallery.input feed", secondary(last) },
         } },
     })
 end
@@ -669,8 +701,8 @@ end
 
 local function view(state, data)
     local page = col({
-        txt("A2UI component gallery", "h1"),
-        secondary("A table per class of control: the basic catalog's components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
+        txt("Component gallery", "h1"),
+        secondary("A table per class of control: the basic components with every option, the SwiftUI controls, modifiers, then Wheel's own component."),
         secondary("Updated with every change to a component or modifier. Body text is 13 pt on the Mac and the phone."),
         content_class(),
         controls_class(),
@@ -681,7 +713,7 @@ local function view(state, data)
         system_class(),
         table_class(),
         modifiers_class(),
-        own_class(),
+        own_class(data),
     }, { align = "start", modifiers = { { padding = 28 } } })
     return ui.Column{ align = "stretch", page }
 end

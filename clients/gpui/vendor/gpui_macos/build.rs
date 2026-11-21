@@ -96,9 +96,40 @@ mod macos_build {
         output_path
     }
 
-    /// Locate the gpui crate directory relative to this crate.
+    /// The gpui package's directory, as the workspace's resolved graph names it. Asking cargo
+    /// instead of reading `gpui::GPUI_MANIFEST_DIR` keeps gpui out of this crate's
+    /// build-dependencies, which compiled all of gpui a second time for this script.
     fn find_gpui_crate_dir() -> PathBuf {
-        gpui::GPUI_MANIFEST_DIR.into()
+        let here = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        let workspace = here
+            .ancestors()
+            .skip(1)
+            .map(|dir| dir.join("Cargo.toml"))
+            .find(|manifest| {
+                std::fs::read_to_string(manifest)
+                    .is_ok_and(|text| text.lines().any(|line| line.trim() == "[workspace]"))
+            })
+            .expect("gpui_macos sits inside a cargo workspace");
+        let output = std::process::Command::new(env::var("CARGO").unwrap())
+            .args(["metadata", "--format-version", "1", "--offline", "--locked", "--manifest-path"])
+            .arg(&workspace)
+            .output()
+            .expect("cargo metadata runs");
+        assert!(
+            output.status.success(),
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("cargo metadata prints JSON");
+        let manifest = metadata["packages"]
+            .as_array()
+            .expect("cargo metadata lists packages")
+            .iter()
+            .find(|package| package["name"] == "gpui")
+            .and_then(|package| package["manifest_path"].as_str())
+            .expect("the workspace depends on gpui");
+        PathBuf::from(manifest).parent().unwrap().to_path_buf()
     }
 
     /// To enable runtime compilation, we need to "stitch" the shaders file with the generated header

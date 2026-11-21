@@ -188,9 +188,10 @@ impl Client {
                 None
             }
             // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`
-            // (or `json=<JSON value>` for a CheckBox, ChoicePicker, ...), `raise&component=<id>&key=<rowAction|hits.0.action>&context=<JSON object>`.
+            // (or `json=<JSON value>` for a CheckBox, ChoicePicker, ...), `raise&component=<id>&key=<rowAction|hits.0.action>&context=<JSON object>`,
+            // `hover&component=<id>` (a pointer held on it; no component takes it away).
             "/plugin" => {
-                let (Some(pane), Some(action)) = (q("pane"), q("action")) else { return refuse(BAD, "pane= and action=state|press|set|raise are required") };
+                let (Some(pane), Some(action)) = (q("pane"), q("action")) else { return refuse(BAD, "pane= and action=state|press|set|raise|hover are required") };
                 let parse = |name: &str| q(name).map(|t| serde_json::from_str::<Value>(&t)).transpose();
                 let (Ok(json_value), Ok(context)) = (parse("json"), parse("context")) else { return refuse(BAD, "json= and context= must be JSON") };
                 let value = json_value.or_else(|| q("value").map(Value::String));
@@ -738,6 +739,8 @@ impl Client {
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
+        out["last_link"] = json!(self.links.last);
+        out["links"] = json!({"generation": self.links.generation(), "relinked": self.links.relinked.get(), "remeasured": self.links.remeasured.get()});
         out["card_views"] = self.card_views_json();
         out["agents"] = self.agents_json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.

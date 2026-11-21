@@ -167,7 +167,7 @@ mod tests {
     use crate::layout::{Leaf, Tree};
 
     fn leaf(id: &str, status: Option<PaneStatus>) -> Tree {
-        Tree::Pane(Leaf { id: id.into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some(id.into()), harness: None, status })
+        Tree::Pane(Leaf { id: id.into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some(id.into()), harness: None, status, name: None, title: None })
     }
     fn split(a: Tree, b: Tree) -> Tree {
         Tree::Split { id: "x".into(), horizontal: true, ratio: 0.5, a: Box::new(a), b: Box::new(b) }

@@ -6,17 +6,17 @@ import SwiftUI
 // SwiftUI's own controls under their SwiftUI names (ADR-0031, ADR-0032). A property is the SwiftUI initializer's argument of the
 // same name; a component's children are the initializer's content closure. Nothing here restyles a control: a page styles one with
 // `modifiers`. A control that holds a value (Stepper, ColorPicker) shows its node's `value` and writes through `ViewTree.change`,
-// as the basic catalog's inputs do.
+// as the basic inputs do.
 
 @MainActor @ViewBuilder
 private func child(_ node: ViewNode, _ i: Int, _ tree: ViewTree) -> some View {
     let parts = node.parts
-    if i < parts.count { A2UIChildView(node: parts[i], tree: tree) }
+    if i < parts.count { PaneNodeView(node: parts[i], tree: tree) }
 }
 
 @MainActor @ViewBuilder
 private func kids(_ node: ViewNode, _ tree: ViewTree, from: Int = 0) -> some View {
-    ForEach(Array(node.parts.dropFirst(from))) { k in A2UIChildView(node: k, tree: tree) }
+    ForEach(Array(node.parts.dropFirst(from))) { k in PaneNodeView(node: k, tree: tree) }
 }
 
 @MainActor
@@ -26,7 +26,7 @@ private func fire(_ node: ViewNode, _ tree: ViewTree, _ key: String = "action", 
 }
 
 // MARK: ProgressView(_ title:, value:, total:) — a spinner when `value` is absent
-struct A2UIProgressViewView: View {
+struct PaneProgressViewView: View {
     let node: ViewNode
     var body: some View {
         let title = node.string("title") ?? ""
@@ -39,7 +39,7 @@ struct A2UIProgressViewView: View {
 }
 
 // MARK: Gauge(value:, in:) { label } — `value`, `min`, `max`, `title`, `style` (linearCapacity, accessoryLinear, accessoryCircular, accessoryCircularCapacity)
-struct A2UIGaugeView: View {
+struct PaneGaugeView: View {
     let node: ViewNode
     var body: some View {
         let g = Gauge(value: node.number("value") ?? 0, in: (node.number("min") ?? 0)...(node.number("max") ?? 1)) { Text(node.string("title") ?? "") }
@@ -53,12 +53,12 @@ struct A2UIGaugeView: View {
 }
 
 // MARK: Menu(_ title:) { content } — the children are the menu's items (Button, Divider, Menu)
-struct A2UIMenuView: View {
+struct PaneMenuView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
         // `keepOpen` leaves the menu open after an item is chosen, for ticking several (SwiftUI's menuActionDismissBehavior).
-        Menu(node.string("title") ?? "") { kids(node, tree).environment(\.a2uiInMenu, true) }
+        Menu(node.string("title") ?? "") { kids(node, tree).environment(\.paneInMenu, true) }
             #if os(iOS)
             .menuActionDismissBehavior(node.bool("keepOpen") == true ? .disabled : .automatic)
             #endif
@@ -66,7 +66,7 @@ struct A2UIMenuView: View {
 }
 
 // MARK: Link(_ title:, destination:)
-struct A2UILinkView: View {
+struct PaneLinkView: View {
     let node: ViewNode
     var body: some View {
         if let dest = node.string("destination").flatMap(URL.init(string:)) {
@@ -76,11 +76,11 @@ struct A2UILinkView: View {
 }
 
 // MARK: Form { content } — `style` (automatic, columns, grouped)
-struct A2UIFormView: View {
+struct PaneFormView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
-        let f = Form { kids(node, tree).environment(\.a2uiInForm, true) }
+        let f = Form { kids(node, tree).environment(\.paneInForm, true) }
         switch node.string("style") {
         case "columns": f.formStyle(.columns)
         case "grouped": f.formStyle(.grouped)
@@ -91,7 +91,7 @@ struct A2UIFormView: View {
 
 // MARK: Section(_ title:) { content } — `title` text, or Section { content } header: { } footer: { } with `header` and `footer`
 // each a component (a List with `pinnedViews` keeps the header at its top while the rows scroll)
-struct A2UISectionView: View {
+struct PaneSectionView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -99,9 +99,9 @@ struct A2UISectionView: View {
         let footer = node.embedded["footer"]
         if header != nil || footer != nil {
             Section { kids(node, tree) } header: {
-                if let header { A2UIChildView(node: header, tree: tree) }
+                if let header { PaneNodeView(node: header, tree: tree) }
             } footer: {
-                if let footer { A2UIChildView(node: footer, tree: tree) }
+                if let footer { PaneNodeView(node: footer, tree: tree) }
             }
         } else {
             Section(node.string("title") ?? "") { kids(node, tree) }
@@ -110,7 +110,7 @@ struct A2UISectionView: View {
 }
 
 // MARK: LabeledContent(_ title:) { content } — `value` text, or children as the content
-struct A2UILabeledContentView: View {
+struct PaneLabeledContentView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -124,7 +124,7 @@ struct A2UILabeledContentView: View {
 }
 
 // MARK: Grid(alignment:, horizontalSpacing:, verticalSpacing:) { GridRow }
-struct A2UIGridView: View {
+struct PaneGridView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -146,14 +146,14 @@ private func gridAlignment(_ name: String?) -> Alignment {
 }
 
 // MARK: GridRow { cells }
-struct A2UIGridRowView: View {
+struct PaneGridRowView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View { GridRow { kids(node, tree) } }
 }
 
 // MARK: Stepper(_ title:, value:, in:, step:) — `value`, `min`, `max`, `step`
-struct A2UIStepperView: View {
+struct PaneStepperView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -170,7 +170,7 @@ struct A2UIStepperView: View {
 }
 
 // MARK: ColorPicker(_ title:, selection:, supportsOpacity:) — `value` "#RRGGBB"
-struct A2UIColorPickerView: View {
+struct PaneColorPickerView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -195,7 +195,7 @@ private func hexString(_ c: Color) -> String {
 }
 
 // MARK: Popover — children[0] is the trigger label of a button that opens a popover holding children[1]: `arrowEdge`
-struct A2UIPopoverView: View {
+struct PanePopoverView: View {
     let node: ViewNode
     let tree: ViewTree
     @State private var open = false
@@ -217,7 +217,7 @@ private func edge(_ name: String?) -> Edge {
 }
 
 // MARK: Alert and ConfirmationDialog — `title`, `message`, `presented`, `buttons` [{title, role, action}]; closing raises `dismissAction`
-private struct A2UIPresentedButtons: View {
+private struct PanePresentedButtons: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -237,31 +237,31 @@ private func presentedBinding(_ node: ViewNode, _ tree: ViewTree) -> Binding<Boo
             set: { open in if !open { fire(node, tree, "dismissAction") } })
 }
 
-struct A2UIAlertView: View {
+struct PaneAlertView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
         Color.clear.frame(width: 0, height: 0)
             .alert(node.string("title") ?? "", isPresented: presentedBinding(node, tree)) {
-                A2UIPresentedButtons(node: node, tree: tree)
+                PanePresentedButtons(node: node, tree: tree)
             } message: { Text(node.string("message") ?? "") }
     }
 }
 
-struct A2UIConfirmationDialogView: View {
+struct PaneConfirmationDialogView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
         Color.clear.frame(width: 0, height: 0)
             .confirmationDialog(node.string("title") ?? "", isPresented: presentedBinding(node, tree), titleVisibility: .visible) {
-                A2UIPresentedButtons(node: node, tree: tree)
+                PanePresentedButtons(node: node, tree: tree)
             } message: { Text(node.string("message") ?? "") }
     }
 }
 
 // MARK: ViewThatFits(in:) { content } — `in` (horizontal, vertical; both when absent): the first child whose ideal size fits the
 // space it is offered on those axes, else the last
-struct A2UIViewThatFitsView: View {
+struct PaneViewThatFitsView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -275,7 +275,7 @@ struct A2UIViewThatFitsView: View {
 }
 
 // MARK: NavigationSplitView — children[0] sidebar, children[1] detail
-struct A2UINavigationSplitViewView: View {
+struct PaneNavigationSplitViewView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -284,7 +284,7 @@ struct A2UINavigationSplitViewView: View {
 }
 
 // MARK: NavigationStack — children[0] is the root; `title` is its navigationTitle
-struct A2UINavigationStackView: View {
+struct PaneNavigationStackView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -293,7 +293,7 @@ struct A2UINavigationStackView: View {
 }
 
 // MARK: HSplitView and VSplitView — children are the panes (a stack on iOS, which has neither)
-struct A2UIHSplitViewView: View {
+struct PaneHSplitViewView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -305,7 +305,7 @@ struct A2UIHSplitViewView: View {
     }
 }
 
-struct A2UIVSplitViewView: View {
+struct PaneVSplitViewView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -318,7 +318,7 @@ struct A2UIVSplitViewView: View {
 }
 
 // MARK: Toolbar — SwiftUI's `.toolbar` modifier on children[0]; the other children are its items: `placement` (automatic, principal, primaryAction, navigation, cancellationAction, confirmationAction)
-struct A2UIToolbarView: View {
+struct PaneToolbarView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {
@@ -340,7 +340,7 @@ private func placement(_ name: String?) -> ToolbarItemPlacement {
 }
 
 // MARK: Chart { marks } — `mark` (bar, line, point, area), `data` [{x, y, series}]; x is text
-struct A2UIChartView: View {
+struct PaneChartView: View {
     let node: ViewNode
     var body: some View {
         let rows = (node.props["data"]?.arrayValue ?? []).compactMap { $0.dictionaryValue }
@@ -361,7 +361,7 @@ struct A2UIChartView: View {
 }
 
 // MARK: Map — `latitude`, `longitude`, `span` (degrees), `markers` [{title, latitude, longitude}]
-struct A2UIMapView: View {
+struct PaneMapView: View {
     let node: ViewNode
     var body: some View {
         let center = CLLocationCoordinate2D(latitude: node.number("latitude") ?? 0, longitude: node.number("longitude") ?? 0)
@@ -377,7 +377,7 @@ struct A2UIMapView: View {
 }
 
 // MARK: ShareLink(item:, subject:, message:) — `item` text, `title` its label
-struct A2UIShareLinkView: View {
+struct PaneShareLinkView: View {
     let node: ViewNode
     var body: some View {
         let item = node.string("item") ?? ""
@@ -392,7 +392,7 @@ struct A2UIShareLinkView: View {
 }
 
 // MARK: PasteButton(payloadType: String.self) — raises `action` with the pasted text as `text`
-struct A2UIPasteButtonView: View {
+struct PanePasteButtonView: View {
     let node: ViewNode
     let tree: ViewTree
     var body: some View {

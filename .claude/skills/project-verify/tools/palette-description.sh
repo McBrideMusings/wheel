@@ -16,11 +16,11 @@ mkdir -p "$SCR/proj1"
 S1="$(w space new "$SCR/proj1")"
 LONG="Shows every build the swarm has run today with its result, the worker that ran it, how long it took and the commit it built, refreshed each minute."
 
-w artifact new described --pane --space "$S1" --description "Shows the swarm's builds." >/dev/null
-w artifact new plain --pane --space "$S1" >/dev/null
-w artifact new longone --pane --space "$S1" --description "$LONG" >/dev/null
-w artifact new onmachine --pane --scope machine --description "A viewer every project can open." >/dev/null
-printf '\n[artifacts.twolines]\npath = ".wheel/artifacts/described"\npane = true\ndescription = """first\nsecond"""\n' >>"$SCR/proj1/wheel.toml"
+w artifact new described --space "$S1" --description "Shows the swarm's builds." >/dev/null
+w artifact new plain --space "$S1" >/dev/null
+w artifact new longone --space "$S1" --description "$LONG" >/dev/null
+w artifact new onmachine --scope machine --description "A viewer every project can open." >/dev/null
+printf '\n[artifacts.twolines]\npath = ".wheel/artifacts/described"\ndescription = """first\nsecond"""\n' >>"$SCR/proj1/wheel.toml"
 
 echo "     ls --json: $(w artifact ls --space "$S1" --json | jq -c "(.artifacts // .) | [.[] | {name, description}]")"
 eq "ls --json gives the described entry its description" "$(w artifact ls --space "$S1" --json | jq -r "(.artifacts // .) | .[] | select(.name == \"described\") | .description")" "Shows the swarm's builds."

@@ -160,7 +160,7 @@ def fixture():
         pages.mkdir()
         (pages / 'one.html').write_text(browser_page('one', 'Fixture page one'))
         (pages / 'two.html').write_text(browser_page('two', 'Fixture page two'))
-        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\npane=true\n\n[artifacts.fixture-page]\npath="html"\npane=true\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
+        (project / 'wheel.toml').write_text(f'[artifacts.fixture-html]\npath="html"\n\n[artifacts.fixture-page]\npath="html"\n\n[runner]\nfixture-echo = "echo FIXTURE-RUNNER"\n' + TITLE_PROJECT)
         (root / 'machine.toml').write_text(machine_file())
         # The Wheelhouse and gallery packages, installed the way a machine installs one: a folder beside the machine file.
         (root / 'plugins').mkdir()

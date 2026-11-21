@@ -31,7 +31,7 @@ ln -s "$ROOT/plugins/wheelhouse" "$T/plugins/wheelhouse"
 : > "$T/machine.toml"
 
 git -C "$T/proj" init -q
-( cd "$T/proj" && bd init --quiet --prefix wheel > /dev/null 2>&1 )
+( cd "$T/proj" && bd init --quiet --prefix wheel < /dev/null > /dev/null 2>&1 )
 ( cd "$MAIN" && bd export > "$T/beads.jsonl" 2>/dev/null )
 ( cd "$T/proj" && bd import "$T/beads.jsonl" > "$T/import.out" 2>&1 )
 echo "imported $(wc -l < "$T/beads.jsonl") lines from $MAIN: $(tail -1 "$T/import.out")"
