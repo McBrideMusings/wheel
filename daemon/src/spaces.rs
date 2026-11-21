@@ -883,6 +883,7 @@ impl AppState {
     /// the order they happened.
     pub(crate) fn changed(&self, spaces: &mut Spaces) {
         self.close_lost_mirrors(spaces);
+        spaces.spaces.iter_mut().for_each(sync_frames);
         self.save_state(spaces);
         self.broadcast_layout(spaces);
         self.sync_settings_watch_with(spaces);
@@ -990,6 +991,7 @@ impl AppState {
             status: None,
             background,
             popped: Vec::new(),
+            frames: Default::default(),
             backgrounded: Vec::new(),
         };
         let mut spaces = self.spaces.lock().unwrap();
@@ -1478,6 +1480,7 @@ impl AppState {
         })
         .ok_or_else(|| format!("no pane {pane}"))?;
         let from_id = source.id.clone();
+        let frame = source.frames.remove(pane);
         let dest_id = match (dest, new_space) {
             (Some(dest), _) => {
                 let space = &mut spaces.spaces[dest];
@@ -1522,6 +1525,7 @@ impl AppState {
                         status: None,
                         background: false,
                         popped: Vec::new(),
+                        frames: Default::default(),
                         backgrounded: Vec::new(),
                     },
                 );
@@ -1535,6 +1539,10 @@ impl AppState {
             }
             (None, None) => unreachable!("a move without a space goes to a new one"),
         };
+        // The pane's floating window goes with it, so popped out there it opens where it was.
+        if let (Some(frame), Ok(index)) = (frame, spaces.index(&dest_id)) {
+            spaces.spaces[index].frames.insert(pane.to_owned(), frame);
+        }
         tracing::info!(from = %from_id, to = %dest_id, %pane, split = %split_id, "pane moved to another space");
         self.changed(&mut spaces);
         Ok(())
@@ -3231,6 +3239,22 @@ pub(crate) fn shown_in<'a>(spaces: &'a Spaces, pane: &str) -> Option<(&'a SpaceI
     let (shown, kind) = wheel_proto::shown_pane(&spaces.spaces, pane)?;
     let space = spaces.spaces.iter().find(|s| s.site_of(shown).is_some())?;
     Some((space, kind))
+}
+
+/// Keep `space.frames` true to its trees: drop the frames of panes the space no longer holds, and
+/// give every pane of a popped tree the tree's frame (its first pane's that has one), so two trees
+/// merged by a move draw and list as one.
+fn sync_frames(space: &mut SpaceInfo) {
+    let held: Vec<String> = space.frames.keys().filter(|p| space.site_of(p).is_some()).cloned().collect();
+    space.frames.retain(|p, _| held.contains(p));
+    for tree in &space.popped {
+        let ids: Vec<&str> = panes(tree).into_iter().map(|(id, _)| id).collect();
+        if let Some(frame) = ids.iter().find_map(|id| space.frames.get(*id).copied()) {
+            for id in ids {
+                space.frames.insert(id.to_owned(), frame);
+            }
+        }
+    }
 }
 
 pub fn space_panes(space: &SpaceInfo) -> Vec<(&str, &PaneKind)> {

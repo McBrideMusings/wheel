@@ -7924,6 +7924,80 @@ fn pane_ids(node: &Node) -> Vec<String> {
         .collect()
 }
 
+/// A popped pane's floating window has a frame wheeld keeps (wheel-eg4e.19.2): set by
+/// `pane_set_frame`, shared by its popped tree, kept through a visit to the grid, and refused for
+/// a pane that is not popped out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_popped_pane_keeps_the_frame_it_was_placed_at() {
+    use wheel_proto::{PaneFrame, PaneSite::{Grid, Popped}};
+    let (url, _daemon) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let a = first_pane(&spaces[0].root);
+    let b = created(&mut ws, split_msg(2, &a, Some(Dir::Right), None)).await;
+    ok(&mut ws, set_site(3, &b, Popped)).await;
+    let place = |req, pane: &str, frame| ClientMsg::PaneSetFrame { req: Some(req), pane: pane.into(), frame };
+    let frame = PaneFrame { x: 40., y: 40., w: 600., h: 400. };
+
+    // Case 1: the frame placed is the frame listed.
+    ok(&mut ws, place(4, &b, frame)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].frames.get(&b), Some(&frame));
+
+    // A pane split into the popped tree is placed with its tree.
+    let c = created(&mut ws, split_msg(5, &b, Some(Dir::Down), None)).await;
+    let moved = PaneFrame { x: 10., y: 20., w: 500., h: 300. };
+    ok(&mut ws, place(6, &c, moved)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].frames.get(&b), Some(&moved));
+    assert_eq!(spaces[0].frames.get(&c), Some(&moved));
+
+    // Case 4: into the grid and out again, the pane keeps its frame.
+    ok(&mut ws, set_site(7, &b, Grid)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].site_of(&b), Some(Grid));
+    ok(&mut ws, set_site(8, &b, Popped)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].site_of(&b), Some(Popped));
+    assert_eq!(spaces[0].frames.get(&b), Some(&moved));
+
+    // Case 5: a pane in the grid is refused, and the message names it.
+    let grid = first_pane(&spaces[0].root);
+    let refused = call(&mut ws, place(9, &grid, frame)).await;
+    let ServerMsg::Error { message, .. } = refused else { panic!("expected an error, got {refused:?}") };
+    assert!(message.contains(&grid) && message.contains("not popped out"), "{message}");
+
+    // A closed pane takes its frame with it.
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(10), pane: c.clone() }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].frames.get(&c), None);
+    assert_eq!(spaces[0].frames.get(&b), Some(&moved));
+
+    // A frame no window can have is refused over the socket too.
+    let bad = PaneFrame { x: 0., y: 0., w: -5., h: 0. };
+    assert!(matches!(call(&mut ws, place(11, &b, bad)).await, ServerMsg::Error { .. }));
+
+    // Two popped trees merged by a move share one frame, the first pane's.
+    let d = created(&mut ws, split_msg(12, &grid, None, Some(Popped))).await;
+    let other = PaneFrame { x: 300., y: 200., w: 400., h: 300. };
+    ok(&mut ws, place(13, &d, other)).await;
+    let beside = wheel_proto::MoveTarget::Beside { pane: b.clone(), dir: Dir::Left };
+    ok(&mut ws, ClientMsg::PaneMove { req: Some(14), pane: d.clone(), to: beside }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert_eq!(spaces[0].popped.len(), 1);
+    assert_eq!(spaces[0].frames.get(&b), Some(&other));
+    assert_eq!(spaces[0].frames.get(&d), Some(&other));
+
+    // A pane moved to another space takes its frame there.
+    let to = wheel_proto::MoveTarget::NewSpace { name: None, focus: false };
+    ok(&mut ws, ClientMsg::PaneMove { req: Some(15), pane: d.clone(), to }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let there = spaces.iter().find(|s| s.site_of(&d).is_some()).expect("d is in a space");
+    assert_eq!(there.frames.get(&d), Some(&other));
+    assert_eq!(spaces[0].frames.get(&d), None);
+}
+
 /// A pane is in the grid, popped out or in the tray; wheeld holds which, and the moves keep every
 /// pane's id.
 #[tokio::test(flavor = "multi_thread")]

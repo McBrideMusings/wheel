@@ -976,7 +976,9 @@ impl Client {
     }
     /// Where popped tree `index` draws over a grid at `area` (window coordinates), a drag on it included.
     fn card_frame(&self, tree: &Tree, index: usize, area: Rect) -> Rect {
-        let base = crate::popped::frame(self.popped_frames.borrow().remembered(tree), index, area.w, area.h);
+        // wheeld's frame wins; this client's own file is read only for a wheeld without `pane_set_frame`.
+        let held = self.space().and_then(|s| leaves_of(tree).iter().find_map(|l| s.frames.get(&l.id).copied()));
+        let base = crate::popped::frame(held.or_else(|| self.popped_frames.borrow().remembered(tree)), index, area.w, area.h);
         let drag = self.card_drag.as_ref().filter(|d| tree.holds(&d.pane));
         let (dx, dy) = drag.filter(|d| !d.resize).map_or((0., 0.), |d| d.delta);
         let grow = drag.filter(|d| d.resize).map_or((0., 0.), |d| d.delta);
@@ -1033,6 +1035,17 @@ impl Client {
         let (Some((_, tree)), Some(f)) = (held, frame) else { return };
         let left = Rect { x: f.x - area.x, y: f.y - area.y, w: f.w, h: f.h };
         self.popped_frames.borrow_mut().set(&tree, left);
+        if self.server_has("pane_set_frame") {
+            let frame = wheel_proto::PaneFrame { x: left.x.into(), y: left.y.into(), w: left.w.into(), h: left.h.into() };
+            let pane = drag.pane.clone();
+            self.send_layout(|req| ClientMsg::PaneSetFrame { req: Some(req), pane, frame });
+            // Drawn where it was left at once, not a round trip later; wheeld's next layout replaces it.
+            if let Some(space) = self.spaces.iter_mut().find(|s| Some(&s.id) == self.space_id.as_ref()) {
+                for leaf in leaves_of(&tree) {
+                    space.frames.insert(leaf.id.clone(), left);
+                }
+            }
+        }
         self.log(format!("popped card {}: {} to ({:.0},{:.0}) {:.0}x{:.0}", drag.pane, if drag.resize { "resized" } else { "moved" }, left.x, left.y, left.w, left.h));
     }
     /// Where the pointer is while a card is moved by its header.

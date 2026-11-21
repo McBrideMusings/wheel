@@ -238,6 +238,11 @@ enum StreamCommand {
 }
 
 /// `2s`, `2m`, `1h` or `500ms` as milliseconds.
+fn parse_frame(text: &str) -> Result<wheel_proto::PaneFrame, String> {
+    wheel_proto::PaneFrame::parse(text)
+        .ok_or_else(|| format!("{text:?} is not x,y,width,height with a width and height above 0"))
+}
+
 fn parse_since(text: &str) -> Result<u64, String> {
     let (number, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len()));
     let number: u64 = number
@@ -974,6 +979,16 @@ enum PaneCommand {
     /// `panes.placement` puts it. The pane keeps its id, process and scrollback. Prints where the
     /// pane is now.
     Background { pane: String },
+    /// Move and size a popped-out pane's floating window. The frame is in points from the top
+    /// left of the space's body; every pane of the popped tree takes it, every client moves the
+    /// window there, and it is kept while the pane visits the grid. A pane in the grid or the
+    /// tray is refused. `wheel pane ls --json` reports each popped pane's frame.
+    Place {
+        pane: String,
+        /// x,y,width,height, such as 40,40,600,400.
+        #[arg(long, value_parser = parse_frame)]
+        frame: wheel_proto::PaneFrame,
+    },
     /// Swap the places of two panes in one space.
     Swap { pane: String, with: String },
     /// Move a pane, keeping its id and its running process: beside a pane in any space, to the end
@@ -1990,13 +2005,17 @@ impl Conn {
 /// Add `site` (grid, popped or backgrounded) to every pane of a listing of spaces, so a reader
 /// need not know that `root`, `popped` and `backgrounded` are the three places.
 fn mark_sites(spaces: &mut serde_json::Value) {
-    fn mark(node: &mut serde_json::Value, site: &str) {
+    fn mark(node: &mut serde_json::Value, site: &str, frames: &serde_json::Value) {
         if node["node"] == "pane" {
             node["site"] = site.into();
+            let frame = node["id"].as_str().and_then(|id| frames.get(id)).cloned();
+            if let (true, Some(frame)) = (site == "popped", frame) {
+                node["frame"] = frame;
+            }
         }
         for child in ["a", "b"] {
             if node.get(child).is_some() {
-                mark(&mut node[child], site);
+                mark(&mut node[child], site, frames);
             }
         }
     }
@@ -2004,13 +2023,14 @@ fn mark_sites(spaces: &mut serde_json::Value) {
         return;
     };
     for space in spaces {
+        let frames = space["frames"].clone();
         if let Some(root) = space.get_mut("root") {
-            mark(root, "grid");
+            mark(root, "grid", &frames);
         }
         for (key, site) in [("popped", "popped"), ("backgrounded", "backgrounded")] {
             if let Some(trees) = space.get_mut(key).and_then(|t| t.as_array_mut()) {
                 for tree in trees {
-                    mark(tree, site);
+                    mark(tree, site, &frames);
                 }
             }
         }
@@ -5424,6 +5444,7 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
+    use wheel_proto::PaneSite;
     type Row = (String, String, Option<String>, Option<String>, Option<String>);
     fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
@@ -5463,6 +5484,9 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
             });
             if let Some(source) = source {
                 row["source"] = source.into();
+            }
+            if let (Some(PaneSite::Popped), Some(frame)) = (space.site_of(&pane), space.frames.get(&pane)) {
+                row["frame"] = serde_json::to_value(frame).map_err(other)?;
             }
             rows.push(row);
         }
@@ -5862,6 +5886,9 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 other => return Err(Fail::Other(format!("unexpected reply {other:?}"))),
             }
             Ok(())
+        }
+        PaneCommand::Place { pane, frame } => {
+            simple(conn, |req| ClientMsg::PaneSetFrame { req: Some(req), pane, frame }).await
         }
         PaneCommand::Swap { pane, with } => {
             simple(conn, |req| ClientMsg::PaneSwap {

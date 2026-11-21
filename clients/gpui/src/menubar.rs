@@ -176,7 +176,7 @@ mod tests {
         let mut leaves = panes.into_iter().map(Tree::Pane);
         let first = leaves.next().unwrap_or_else(|| Tree::Pane(leaf(&format!("{id}-p"), "terminal", None)));
         let root = leaves.fold(first, |a, b| Tree::Split { id: format!("{id}-split"), horizontal: true, ratio: 0.5, a: Box::new(a), b: Box::new(b) });
-        Space { id: id.into(), name: id.to_uppercase(), cwd: "/tmp".into(), root, status: None, popped: vec![], backgrounded: vec![] }
+        Space { id: id.into(), name: id.to_uppercase(), cwd: "/tmp".into(), root, status: None, popped: vec![], backgrounded: vec![], frames: Default::default() }
     }
     fn agent(pane: &str, agent: &str) -> Leaf {
         leaf(pane, "agent", Some(agent))
