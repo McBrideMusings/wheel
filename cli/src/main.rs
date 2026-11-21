@@ -236,12 +236,12 @@ enum StreamCommand {
     },
 }
 
-/// `2s`, `2m`, `1h` or `500ms` as milliseconds.
 fn parse_frame(text: &str) -> Result<wheel_proto::PaneFrame, String> {
     wheel_proto::PaneFrame::parse(text)
         .ok_or_else(|| format!("{text:?} is not x,y,width,height with a width and height above 0"))
 }
 
+/// `2s`, `2m`, `1h` or `500ms` as milliseconds.
 fn parse_since(text: &str) -> Result<u64, String> {
     let (number, unit) = text.split_at(text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len()));
     let number: u64 = number

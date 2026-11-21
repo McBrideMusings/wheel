@@ -4,4 +4,4 @@ wheeld holds, for each space, three places a pane can be: the grid (`root`, one 
 
 The tray holds leaves, not bare ids, because a client draws a tray entry from the pane's kind and status. A backgrounded pane keeps reporting: its status counts toward its space's, so tab status, the menu bar item and phone push fire as for any pane, and it is never moved by needing the person.
 
-Where a popped window sits and how big it is, and where the tray sits, belong to each client (ADR-0022); wheeld holds no geometry. The protocol version rose with the new fields and op (ADR-0020).
+wheeld holds where a popped window sits and how big it is: `SpaceInfo.frames` holds one frame per pane, set by `pane_set_frame` (`wheel pane place`, or a client reporting a drag) and kept while the pane visits the grid or the tray. Where the tray sits belongs to each client (ADR-0022). The protocol version rose with the new fields and op (ADR-0020).
