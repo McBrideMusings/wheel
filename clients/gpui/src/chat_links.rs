@@ -110,7 +110,7 @@ fn escape(s: &str, keep: &str) -> String {
     }
     out
 }
-fn unescape(s: &str) -> String {
+pub fn unescape(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -552,7 +552,7 @@ pub fn link_blocks(blocks: &[Block], settings: &Settings, knows: &Knowledge, fil
                 block: i.block.as_ref().map(|b| Box::new(walk(b, link))),
             }).collect()),
             Block::Table { header, rows } => Block::Table { header: header.iter().map(&mut *link).collect(), rows: rows.iter().map(|r| r.iter().map(&mut *link).collect()).collect() },
-            Block::Code { .. } | Block::Rule => b.clone(),
+            Block::Code { .. } | Block::Rule | Block::Image { .. } => b.clone(),
         }
     }
     blocks.iter().map(|b| walk(b, &mut link)).collect()

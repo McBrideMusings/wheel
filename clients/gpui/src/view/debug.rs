@@ -744,6 +744,7 @@ impl Client {
         out["links"] = json!({"generation": self.links.generation(), "relinked": self.links.relinked.get(), "remeasured": self.links.remeasured.get()});
         out["card_views"] = self.card_views_json();
         out["agents"] = self.agents_json();
+        out["chat_images"] = self.images.json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.
         out["plugins"] = self.plugins.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();
         out["plugin_errors"] = serde_json::json!(self.plugin_errors);

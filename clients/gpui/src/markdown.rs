@@ -55,6 +55,9 @@ pub enum Block {
     Quote(Text),
     Table { header: Vec<Text>, rows: Vec<Vec<Text>> },
     Rule,
+    /// A Markdown image on a line of its own, split out of the paragraph it sat in: `src` as
+    /// written, `alt` its text. One inside a heading, a quote or a table stays a link.
+    Image { src: String, alt: String },
 }
 
 /// A code block's syntax colours: one run per coloured stretch, by byte range into the code.
@@ -177,7 +180,8 @@ fn take_marker(lists: &mut [(bool, u64)], marked: &mut [bool]) -> String {
 fn flush_item(inline: &mut Option<Inline>, lists: &mut [(bool, u64)], marked: &mut [bool], items: &mut Vec<Item>) {
     let Some(i) = inline.take() else { return };
     let text = i.finish();
-    if text.text.is_empty() && marked.last() == Some(&true) {
+    // Blank text after an image (the space before the next) is no line of its own.
+    if text.text.trim().is_empty() && marked.last() == Some(&true) {
         return;
     }
     let marker = take_marker(lists, marked);
@@ -210,8 +214,25 @@ pub fn parse(markdown: &str) -> Vec<Block> {
     let mut marked: Vec<bool> = vec![];
     let mut code: Option<(Option<String>, String)> = None;
     let mut table: Option<TableBuild> = None;
+    // The image being read, (src, alt): its text is its alt, not the paragraph's.
+    let mut image: Option<(String, String)> = None;
     let parser = Parser::new_ext(markdown, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH);
     for event in parser {
+        // Inside an image everything is its alt text: words, code and breaks; its marks are dropped.
+        if let Some((_, alt)) = &mut image {
+            match event {
+                Event::End(TagEnd::Image) => {}
+                Event::Text(s) | Event::Code(s) => {
+                    alt.push_str(&s);
+                    continue;
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    alt.push(' ');
+                    continue;
+                }
+                _ => continue,
+            }
+        }
         match event {
             Event::Start(tag) => match tag {
                 Tag::Paragraph => {
@@ -268,6 +289,21 @@ pub fn parse(markdown: &str) -> Vec<Block> {
                 Tag::Strong => target(&mut inline, &mut quote_text).begin(Mark { bold: true, ..Mark::default() }),
                 Tag::Strikethrough => target(&mut inline, &mut quote_text).begin(Mark { strike: true, ..Mark::default() }),
                 Tag::Link { dest_url, .. } => target(&mut inline, &mut quote_text).begin(Mark { link: Some(dest_url.to_string()), ..Mark::default() }),
+                Tag::Image { dest_url, .. } if heading.is_none() && quote == 0 && table.is_none() => {
+                    // The text before it ends a paragraph of its own; an item's goes as its line.
+                    if let Some(i) = inline.take() {
+                        let t = i.finish();
+                        if !t.text.trim().is_empty() {
+                            if lists.is_empty() {
+                                blocks.push(Block::Paragraph(t));
+                            } else {
+                                inline = Some(Inline { text: t, open: vec![] });
+                                flush_item(&mut inline, &mut lists, &mut marked, &mut items);
+                            }
+                        }
+                    }
+                    image = Some((dest_url.to_string(), String::new()));
+                }
                 Tag::Image { dest_url, .. } => target(&mut inline, &mut quote_text).begin(Mark { link: Some(dest_url.to_string()), ..Mark::default() }),
                 _ => {}
             },
@@ -276,7 +312,11 @@ pub fn parse(markdown: &str) -> Vec<Block> {
                     if lists.is_empty() && table.is_none() && quote == 0 && heading.is_none()
                         && let Some(i) = inline.take()
                     {
-                        blocks.push(Block::Paragraph(i.finish()));
+                        // Blank when an image ended it, or only spaces sat between two images.
+                        let t = i.finish();
+                        if !t.text.trim().is_empty() {
+                            blocks.push(Block::Paragraph(t));
+                        }
                     }
                 }
                 TagEnd::Heading(_) => {
@@ -328,6 +368,13 @@ pub fn parse(markdown: &str) -> Vec<Block> {
                     if let Some(t) = table.take() {
                         emit(Block::Table { header: t.header, rows: t.rows }, &mut blocks, &mut inline, &mut lists, &mut marked, &mut items);
                     }
+                }
+                TagEnd::Image if image.is_some() => {
+                    if let Some((src, alt)) = image.take() {
+                        emit(Block::Image { src, alt }, &mut blocks, &mut inline, &mut lists, &mut marked, &mut items);
+                    }
+                    // Text after it on the same line is a paragraph, or the item's next line.
+                    inline = Some(Inline::default());
                 }
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image => target(&mut inline, &mut quote_text).end(),
                 _ => {}
@@ -434,6 +481,23 @@ mod tests {
         assert_eq!(rows[0].iter().map(plain).collect::<Vec<_>>(), vec!["1", "2"]);
         assert!(rows[0][1].runs[0].mark.bold);
         assert_eq!(blocks[1], Block::Quote(Text { text: "quoted words".into(), runs: vec![] }));
+    }
+
+    #[test]
+    fn an_image_splits_its_paragraph_and_stays_a_link_in_a_table() {
+        let blocks = parse("Before ![a *chart*](out/chart.png) after.\n\n![](/tmp/x.png)\n![two\nlines](y.png)\n\n- ![dot *b*](d.png) ![e](e.png)\n\n| ![t](t.png) |\n| - |\n| x |\n");
+        assert_eq!(blocks[0], Block::Paragraph(Text { text: "Before ".into(), runs: vec![] }));
+        assert_eq!(blocks[1], Block::Image { src: "out/chart.png".into(), alt: "a chart".into() });
+        assert_eq!(blocks[2], Block::Paragraph(Text { text: " after.".into(), runs: vec![] }));
+        assert_eq!(blocks[3], Block::Image { src: "/tmp/x.png".into(), alt: String::new() });
+        assert_eq!(blocks[4], Block::Image { src: "y.png".into(), alt: "two lines".into() });
+        let Block::List(items) = &blocks[5] else { panic!("{blocks:?}") };
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_eq!((items[0].marker.as_str(), items[0].block.as_deref()), ("•", Some(&Block::Image { src: "d.png".into(), alt: "dot b".into() })));
+        assert_eq!((items[1].marker.as_str(), items[1].block.as_deref()), ("", Some(&Block::Image { src: "e.png".into(), alt: "e".into() })));
+        let Block::Table { header, .. } = &blocks[6] else { panic!("{blocks:?}") };
+        assert_eq!(header[0].runs[0].mark.link.as_deref(), Some("t.png"));
+        assert_eq!(blocks.len(), 7);
     }
 
     #[test]

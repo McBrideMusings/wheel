@@ -13,6 +13,7 @@ mod composer_tests;
 mod conversations;
 mod debug;
 pub mod float;
+mod images;
 mod links;
 mod little;
 mod menubar;
@@ -225,6 +226,8 @@ pub struct Client {
     parsed: Parsed,
     /// Syntax colours by (language, code), kept across frames while a block streams in.
     highlights: Highlights,
+    /// The replies' inline images: what wheeld answered and what each reply drew.
+    images: images::ImageState,
     /// The ranks `status.dots` lists: the statuses that draw a dot. Every rank until the daemon says.
     pub status_dots: HashSet<&'static str>,
     /// What the line under an agent's composer shows, in order: `chat.footer.items`, as the
@@ -503,7 +506,7 @@ impl Client {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
-            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), parsed: RefCell::default(),
+            drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
@@ -563,6 +566,10 @@ impl Client {
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
                             }
+                            return false;
+                        }
+                        ServerMsg::FileImage { req, path, found, mime, data, error } => {
+                            self.on_file_image(*req, path, *found, mime.as_deref(), data.as_deref(), error.as_deref());
                             return false;
                         }
                         ServerMsg::FilePeek { req, path, found, .. } => {
@@ -735,6 +742,7 @@ impl Client {
                 // The kept plugin panes ask the new endpoint for their scripts.
                 self.native.plugin_endpoint(&self.endpoint.ws);
                 self.link = Link::Up;
+                self.images.reconnected();
                 server::link(true);
                 // The notice follows the next `status`; closing it stays closed for the same key
                 // (the bundled hash, else the protocol), as the Swift app keeps `serverBannerDismissed`.
@@ -2387,6 +2395,7 @@ impl Render for Client {
             self.open_link(&agent, &address, command, cx);
         }
         self.ask_probes();
+        self.ask_images();
         self.sync_columns();
         self.fill_selection_texts(cx);
         self.drawn.borrow_mut().clear();
@@ -2770,7 +2779,8 @@ impl Client {
         let queue = self.columns.get(agent).map(|c| &c.queue);
         let selection = self.selection.as_ref().filter(|s| s.agent == agent);
         let kept = (!self.texts_kept(agent, ix)).then(Vec::new);
-        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept };
+        let dir = self.agent_place(agent).map(|p| p.2).unwrap_or_default();
+        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, dir };
         let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
@@ -3028,6 +3038,9 @@ struct Texts<'a> {
     drawn: &'a Rc<RefCell<Vec<Drawn>>>,
     /// The row's texts in block order, when the row's are not kept yet.
     kept: Option<Vec<String>>,
+    /// The replies' images, and the directory this agent's relative paths start from.
+    images: &'a images::ImageState,
+    dir: String,
 }
 impl Texts<'_> {
     /// A text with `runs` already flat; `base` is its colour where no run says otherwise. It is
@@ -3155,5 +3168,6 @@ fn block_el(block: &Block, texts: &mut Texts, highlights: &Highlights, cx: &mut 
             table
         }
         Block::Rule => div().h(px(1.)).bg(rgb(0x2c3d34)),
+        Block::Image { src, alt } => images::image_el(src, alt, texts, cx),
     }
 }

@@ -302,6 +302,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, image_report) = inline_image(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, cards_report) = transcript_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, footer_report) = footer(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, links_report) = chat_links(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
@@ -404,6 +405,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
             "terminal_viewport_after": viewport(&typed_after, terms[0]), "banner_after": banner_after},
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
+    report["inline_image"] = image_report;
     report["cards"] = cards_report;
     report["mirrors"] = mirrors_report;
     report["plugin_panes"] = plugin_panes_report;
@@ -1029,6 +1031,60 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "wraps": wraps, "pane_right": pane_right, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
+}
+
+/// Inline images (wheel-eg4e.19.5): an echoed reply holding a Markdown image of a PNG on disk
+/// and one of a file that is not there draws the PNG between its paragraphs at its own size, the
+/// missing one as a line saying why, and `/state`'s `chat_images` lists both.
+async fn inline_image(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    // Zoomed, so the reply and its picture are on screen for the picture the step takes.
+    let mut run = run;
+    set_zoom(&mut run, &agent_pane, true, cx).await?;
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let png = output.join("inline-image.png");
+    image::RgbaImage::from_fn(160, 90, |x, y| image::Rgba([(x * 255 / 160) as u8, (y * 255 / 90) as u8, 160, 255])).save(&png)?;
+    let missing = output.join("no-such-image.png");
+    let message = format!("The chart:\n\n![a gradient]({})\n\nAnd one that is gone: ![gone]({})", png.display(), missing.display());
+    let sent = std::process::Command::new(&cli_path)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", &agent_pane, &message, "--timeout", "30"])
+        .output()?;
+    ensure!(sent.status.success(), "agent send failed: {}{}", String::from_utf8_lossy(&sent.stdout), String::from_utf8_lossy(&sent.stderr));
+    let source = png.to_string_lossy().into_owned();
+    let mut row = None;
+    let mut listed = Value::Null;
+    for _ in 0..200 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if row.is_none() {
+            row = window.update(cx, |c, _, _| c.transcripts.get(&agent_name).and_then(|t| t.rows.iter().position(|r| matches!(&r.kind, Kind::Reply(t) if t.contains("a gradient")))))?;
+            if let Some(r) = row {
+                window.update(cx, |c, _, _| c.reveal(&agent_name, r))?;
+            }
+        }
+        draw(window, None, cx)?;
+        listed = window.update(cx, |c, _, _| c.state_json()["chat_images"][agent_name.as_str()].clone())?;
+        let done = listed.as_array().is_some_and(|l| l.len() == 2 && l.iter().all(|i| i["loaded"] == true || !i["error"].is_null()));
+        if done {
+            break;
+        }
+    }
+    let row = row.ok_or_else(|| anyhow::anyhow!("no reply with the image arrived"))?;
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("client-inline-image.png")), cx)?;
+    let list = listed.as_array().cloned().unwrap_or_default();
+    let shown = list.iter().find(|i| i["source"] == json!(source)).ok_or_else(|| anyhow::anyhow!("/state chat_images does not list {source}: {listed}"))?;
+    ensure!(shown["row"] == json!(row) && shown["loaded"] == true && shown["width"] == 160 && shown["height"] == 90 && shown["drawn"] == json!([160., 90.]) && shown["bytes"].as_u64().unwrap_or(0) > 0,
+        "the PNG should load at 160x90 in row {row}: {shown}");
+    let gone = list.iter().find(|i| i["source"] == json!(missing.to_string_lossy())).ok_or_else(|| anyhow::anyhow!("/state chat_images does not list the missing image: {listed}"))?;
+    ensure!(gone["loaded"] == false && gone["error"].as_str().is_some_and(|e| !e.is_empty()), "the missing image should say why: {gone}");
+    // The image splits the reply: its paragraphs are drawn as texts, the alt text is not.
+    let drawn = window.update(cx, |c, _, _| c.drawn_texts(&agent_name))?;
+    let texts: Vec<String> = drawn.iter().filter(|d| d.row == row).map(|d| d.text.clone()).collect();
+    ensure!(texts.iter().any(|t| t.ends_with("The chart:")) && texts.iter().all(|t| !t.contains("a gradient")), "the reply's texts: {texts:?}");
+    let report = json!({"row": row, "images": listed, "texts": texts});
+    let mut run = Run { bridge, connection, layouts, window, native, markers, output };
+    set_zoom(&mut run, &agent_pane, false, cx).await?;
+    Ok((run, report))
 }
 
 /// Links in the transcript (wheel-6czg): an echoed reply naming a web page, a file that exists,
