@@ -1674,14 +1674,13 @@ async fn handle(
             None
         }
         // On a task of its own: the pane's agent starts as `pane_start`'s does.
-        ClientMsg::OrchestratorStart { req, space, scope, pull_after_secs, turn_limit_secs, if_none } => {
+        ClientMsg::OrchestratorStart { req, space, scope, turn_limit_secs, if_none } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
                 let started = state
                     .orchestrator_start(
                         space.as_deref(),
                         scope,
-                        pull_after_secs.map(std::time::Duration::from_secs),
                         turn_limit_secs.map(std::time::Duration::from_secs),
                         if_none,
                     )

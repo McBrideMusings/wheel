@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # The orchestrator's inbox (wheel-eg4e.13), through the wheel command against the fake agent: a
-# child agent that finishes while the orchestrator works on a turn adds an inbox item and sends
-# the orchestrator nothing; once the orchestrator has been idle `--pull-after` seconds it is sent
-# the item; two identical events from one agent are one item; `wheel inbox reply` delivers to the
-# item's agent and acks it.
+# child agent that finishes adds an inbox item and sends the orchestrator nothing, mid-turn or idle
+# (wheel-eg4e.19.28: the orchestrator reads its inbox); a listing marks the item told; two identical
+# events from one agent are one item; `wheel inbox reply` delivers to the item's agent and acks it.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap cleanup EXIT
 
@@ -17,7 +16,7 @@ first_pane() { w space ls | jq -r --arg s "$1" '[.spaces[] | select(.id == $s)][
 PANE_A="$(first_pane "$A")"
 PANE_B="$(first_pane "$B")"
 
-V="$(w orchestrator start --space "$A" --pull-after 1)"
+V="$(w orchestrator start --space "$A")"
 expect_out "^$A $V agent:orchestrator-space " "orchestrator start names its pane" w pane ls
 w agent wait "$V" --timeout 30 >/dev/null 2>&1
 check "an empty inbox lists nothing" bash -c "[ -z \"\$('$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$V')\" ]"
@@ -40,16 +39,16 @@ eq "the other space's agent is not in this inbox (no global orchestrator runs)" 
 MID="$(w agent read "$V" 2>&1)"
 check "mid-turn the orchestrator was sent nothing" bash -c "! grep -q 'Inbox:' <<<\"\$1\"" _ "$MID"
 
-# Case 2: idle for a second after its turn, the orchestrator is sent the item and mentions it.
-SEEN=""
+# Case 2: its turn over and idle past the old 15 s pull, the orchestrator is still sent nothing;
+# the listings above marked the item told.
 for _ in $(seq 1 120); do
-  SEEN="$(w agent read "$V" 2>&1)"
-  grep -q "echo: Inbox:" <<<"$SEEN" && break
+  w agent read "$V" 2>&1 | grep -q "echo: hold first 6000" && break
   sleep 0.1
 done
-echo "$SEEN" | grep -A2 "echo: Inbox:" | head -3
-check "the idle orchestrator was sent the item" grep -q "\[1\] $CHILD finished its turn" <<<"$SEEN"
-expect_out "^\[1\] $CHILD finished its turn \(told\)$" "the item is marked told" w inbox list "$V"
+sleep 16
+SEEN="$(w agent read "$V" 2>&1)"
+check "the idle orchestrator was sent nothing" bash -c "! grep -q 'Inbox:' <<<\"\$1\"" _ "$SEEN"
+expect_out "^\[1\] $CHILD finished its turn \(told\)$" "a listing marked the item told" w inbox list "$V"
 
 # Case 3: the same event again is the same item.
 w agent send "$CHILD" "hello again" --timeout 30 >/dev/null 2>&1

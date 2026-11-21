@@ -798,9 +798,9 @@ pub enum ClientMsg {
     /// its agent. Fails for a space that does not exist, a space orchestrator with no space, and a
     /// global one given a space.
     ///
-    /// wheeld sends the orchestrator the inbox items it has not been told once it has been idle
-    /// `pull_after_secs` (15 when absent), and adds an `over_time` item for a turn running past
-    /// `turn_limit_secs` (1800 when absent; 0 is refused).
+    /// wheeld never writes the inbox into the orchestrator's chat; the orchestrator reads it with
+    /// `inbox_list`. wheeld adds an `over_time` item for a turn running past `turn_limit_secs`
+    /// (1800 when absent; 0 is refused).
     OrchestratorStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -809,8 +809,6 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
         scope: OrchestratorScope,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pull_after_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_limit_secs: Option<u64>,
         /// For a global start: when a global orchestrator runs already, reply with it and start none.
@@ -3630,7 +3628,7 @@ pub enum InboxKind {
 
 /// One item in an orchestrator's inbox (`inbox_list`). wheeld keeps one item per agent and kind
 /// until it is acked: a repeat of the event raises `count`, replaces `text` and `at_ms`, and makes
-/// the item untold again.
+/// the item new (`told` false) again.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InboxItem {
     pub id: u64,
@@ -3642,7 +3640,7 @@ pub struct InboxItem {
     pub count: u32,
     /// When the event last happened, in milliseconds since the Unix epoch.
     pub at_ms: u64,
-    /// wheeld has sent the item to the orchestrator since it last happened.
+    /// `inbox_list` has returned the item since it last happened.
     pub told: bool,
     pub acked: bool,
 }

@@ -31,7 +31,7 @@ w pane start "$P1" agent >/dev/null
 agent_of() { w space ls | jq -r --arg p "$1" '[.spaces[].root | .. | select(.id? == $p)][0].agent'; }
 AGENT="$(agent_of "$P1")"
 check "wheeld started the agent pane" test -n "$AGENT" -a "$AGENT" != null
-ORCH="$(w orchestrator start --space "$WORK" --pull-after 3600)"
+ORCH="$(w orchestrator start --space "$WORK")"
 OAGENT=""
 for _ in $(seq 50); do OAGENT="$(agent_of "$ORCH")"; [ -n "$OAGENT" ] && [ "$OAGENT" != null ] && break; sleep 0.2; done
 check "wheeld started the orchestrator pane $ORCH" test -n "$OAGENT" -a "$OAGENT" != null

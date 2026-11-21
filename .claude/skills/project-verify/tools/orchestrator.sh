@@ -20,9 +20,9 @@ PANE_B="$(first_pane "$B")"
 fails() { ! "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" "$@" >/dev/null 2>&1; }
 
 check "a space that does not exist is refused" fails orchestrator start --space s-missing
-O1="$(w orchestrator start --space "$A" --pull-after 3600)"
+O1="$(w orchestrator start --space "$A")"
 expect_out "^$A $O1 agent:orchestrator-space " "case 1: pane ls shows an agent pane marked orchestrator" w pane ls
-O2="$(w orchestrator start --space "$A" --pull-after 3600)"
+O2="$(w orchestrator start --space "$A")"
 check "case 2: a second orchestrator in the space is another pane" test "$O2" != "$O1"
 check "case 2: each has its own inbox" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O1' && '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O2'"
 
@@ -45,7 +45,7 @@ eq "case 3 and 6: o1 holds only that agent" "$(agents_in "$O1")" "$CHILD_A"
 eq "case 3: the second space orchestrator gets nothing" "$(agents_in "$O2")" ""
 
 check "a global orchestrator naming a space is refused" fails orchestrator start --global --space "$T"
-G1="$(w orchestrator start --global --pull-after 3600)"
+G1="$(w orchestrator start --global)"
 ORCH="$(w space ls | jq -r '[.spaces[] | select(.orchestrator == true)] | if length == 1 then .[0].id else "none" end')"
 expect_out "^$ORCH $G1 agent:orchestrator-global " "wheel-eg4e.19.9: a global orchestrator goes in the one Orchestrator space" w pane ls
 ORCH_CWD="$(w space ls | jq -r --arg s "$ORCH" '.spaces[] | select(.id == $s) | .cwd')"

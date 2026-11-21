@@ -1548,10 +1548,6 @@ enum OrchestratorCommand {
         /// A global orchestrator rather than one for the space.
         #[arg(long)]
         global: bool,
-        /// Seconds the orchestrator is idle before the daemon sends it the inbox items it has
-        /// not been told (15 when not given).
-        #[arg(long)]
-        pull_after: Option<u64>,
         /// Seconds one agent turn runs before the inbox reports it over time (1800 when not
         /// given).
         #[arg(long)]
@@ -3274,7 +3270,6 @@ async fn orchestrator_start(
     conn: &mut Conn,
     space: Option<String>,
     scope: wheel_proto::OrchestratorScope,
-    pull_after_secs: Option<u64>,
     turn_limit_secs: Option<u64>,
 ) -> Result<(), Fail> {
     let space = match scope {
@@ -3285,7 +3280,7 @@ async fn orchestrator_start(
         },
     };
     let req = conn.req();
-    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, pull_after_secs, turn_limit_secs, if_none: false };
+    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, turn_limit_secs, if_none: false };
     match conn.call(start, req).await? {
         ServerMsg::OrchestratorStarted { pane, .. } => {
             println!("{pane}");
@@ -6628,9 +6623,9 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
-            Command::Orchestrator(OrchestratorCommand::Start { space, global, pull_after, turn_limit }) => {
+            Command::Orchestrator(OrchestratorCommand::Start { space, global, turn_limit }) => {
                 let scope = if global { wheel_proto::OrchestratorScope::Global } else { wheel_proto::OrchestratorScope::Space };
-                orchestrator_start(&mut conn, space, scope, pull_after, turn_limit).await
+                orchestrator_start(&mut conn, space, scope, turn_limit).await
             }
             Command::Inbox(InboxCommand::List { pane, all, json }) => inbox_list(&mut conn, pane, all, json).await,
             Command::Inbox(InboxCommand::Ack { pane, ids }) => {
