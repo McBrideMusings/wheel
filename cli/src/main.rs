@@ -1006,7 +1006,8 @@ enum PaneCommand {
     /// typing and answering act on the source. It holds only the source's id and closes when the
     /// source does. Prints the mirror's id.
     Mirror {
-        /// The pane to show, in any space of the same session.
+        /// The pane to show, in any space of the same session, or of any session when the mirror
+        /// goes in the Orchestrator space.
         source: String,
         /// The space the mirror goes in (an id or a name).
         #[arg(long)]
@@ -1521,10 +1522,13 @@ enum OrchestratorCommand {
     /// gets the events of its space's agents; a global one (`--global`) the events of every
     /// agent in a space with no orchestrator, and of each space orchestrator. Several may share
     /// a space; an event goes to the one started first. A space orchestrator runs in the
-    /// space's `orchestrator.dir` setting, else the space's folder.
+    /// space's `orchestrator.dir` setting, else the space's folder. A global one goes in the
+    /// Orchestrator space, made on first use in a session of its own, in the
+    /// `orchestrator.global.dir` setting (~/.wheel/orchestrator when empty).
     Start {
-        /// The space the pane goes in: this pane's space when not given.
-        #[arg(long)]
+        /// The space a space orchestrator's pane goes in: this pane's space when not given. A
+        /// global orchestrator takes none.
+        #[arg(long, conflicts_with = "global")]
         space: Option<String>,
         /// A global orchestrator rather than one for the space.
         #[arg(long)]
@@ -3253,8 +3257,12 @@ async fn orchestrator_start(
     pull_after_secs: Option<u64>,
     turn_limit_secs: Option<u64>,
 ) -> Result<(), Fail> {
-    let Some(space) = default_space(conn, space).await? else {
-        return Err(Fail::Other("no space: give --space, or run this in a Wheel pane".into()));
+    let space = match scope {
+        wheel_proto::OrchestratorScope::Global => None,
+        wheel_proto::OrchestratorScope::Space => match default_space(conn, space).await? {
+            Some(space) => Some(space),
+            None => return Err(Fail::Other("no space: give --space, or run this in a Wheel pane".into())),
+        },
     };
     let req = conn.req();
     let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, pull_after_secs, turn_limit_secs };

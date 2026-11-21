@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 /// a field an older client cannot do without. Adding an op, or a field with a default, is never one.
 pub const BREAKS: &[(u32, &str)] = &[
     (1, "wheeld lists the operations it handles"),
-    (2, "an orchestrator is an agent pane: orchestrator_start makes one and names its pane, and orchestrator_stop and the inbox ops take that pane"),
+    (2, "an orchestrator is an agent pane: orchestrator_start makes one (a global one in the Orchestrator space) and names its pane, and orchestrator_stop and the inbox ops take that pane"),
 ];
 
 /// This build's compatibility level: the last entry of [`BREAKS`].

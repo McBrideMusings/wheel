@@ -5735,16 +5735,16 @@ async fn a_cancel_stops_a_turn_the_agent_started_itself() {
     }
 }
 
-/// Start an orchestrator of `scope` as a new agent pane in `space`; its pane and agent, or the
-/// error's message.
+/// Start an orchestrator of `scope` as a new agent pane, a space one in `space`; its pane and
+/// agent, or the error's message.
 async fn orchestrator(
     ws: &mut Ws,
     req: u64,
-    space: &str,
+    space: Option<&str>,
     scope: wheel_proto::OrchestratorScope,
     pull_after_secs: Option<u64>,
 ) -> Result<(String, String), String> {
-    send(ws, ClientMsg::OrchestratorStart { req: Some(req), space: space.into(), scope, pull_after_secs, turn_limit_secs: None }).await;
+    send(ws, ClientMsg::OrchestratorStart { req: Some(req), space: space.map(String::from), scope, pull_after_secs, turn_limit_secs: None }).await;
     loop {
         match recv(ws).await {
             ServerMsg::OrchestratorStarted { req: r, pane, agent } if r == req => return Ok((pane, agent)),
@@ -5775,18 +5775,18 @@ async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
 
-    let refused = orchestrator(&mut ws, 70, "s-missing", Space, None).await.unwrap_err();
+    let refused = orchestrator(&mut ws, 70, Some("s-missing"), Space, None).await.unwrap_err();
     assert!(refused.contains("no space s-missing"), "{refused:?}");
 
     // 1. A pane in that space, marked as an orchestrator.
-    let (first, agent) = orchestrator(&mut ws, 71, &space_id, Space, None).await.unwrap();
+    let (first, agent) = orchestrator(&mut ws, 71, Some(&space_id), Space, None).await.unwrap();
     let listed = layout(&url).await;
     let space_json = listed["spaces"].as_array().unwrap().iter().find(|s| s["id"] == space_id.as_str()).unwrap().clone();
     let pane = pane_in(&space_json, &first).expect("the orchestrator's pane is in its space");
     assert_eq!((pane["kind"].as_str(), pane["agent"].as_str(), pane["orchestrator"].as_str()), (Some("agent"), Some(agent.as_str()), Some("space")), "{pane}");
 
     // 2. A second one in the same space runs too, with an inbox of its own.
-    let (second, other) = orchestrator(&mut ws, 72, &space_id, Space, None).await.unwrap();
+    let (second, other) = orchestrator(&mut ws, 72, Some(&space_id), Space, None).await.unwrap();
     assert!(second != first && other != agent);
     assert!(inbox(&mut ws, &first, 73).await.is_empty() && inbox(&mut ws, &second, 74).await.is_empty());
 
@@ -5819,7 +5819,7 @@ async fn closing_a_space_ends_its_orchestrator() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
-    let (pane, _) = orchestrator(&mut ws, 80, &space_id, wheel_proto::OrchestratorScope::Space, None).await.unwrap();
+    let (pane, _) = orchestrator(&mut ws, 80, Some(&space_id), wheel_proto::OrchestratorScope::Space, None).await.unwrap();
     client_op(&mut ws, 81, ClientMsg::SpaceClose { req: Some(81), id: space_id.clone(), if_empty: false }).await;
     send(&mut ws, ClientMsg::OrchestratorStop { req: Some(82), pane: pane.clone() }).await;
     loop {
@@ -5828,7 +5828,7 @@ async fn closing_a_space_ends_its_orchestrator() {
             break;
         }
     }
-    let refused = orchestrator(&mut ws, 83, &space_id, wheel_proto::OrchestratorScope::Space, None).await.unwrap_err();
+    let refused = orchestrator(&mut ws, 83, Some(&space_id), wheel_proto::OrchestratorScope::Space, None).await.unwrap_err();
     assert!(refused.contains(&format!("no space {space_id}")), "{refused:?}");
 }
 
@@ -5858,10 +5858,9 @@ async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
     let mut ws = connect(&url).await;
     let (here, here_pane) = space(&url, "/tmp").await;
     let (_, there_pane) = space(&url, "/tmp").await;
-    let (top, _) = space(&url, "/tmp").await;
     // A long pull, so no inbox message starts a turn in an orchestrator mid-check.
-    let (o1, a1) = orchestrator(&mut ws, 200, &here, Space, Some(3600)).await.unwrap();
-    let (o2, _) = orchestrator(&mut ws, 201, &here, Space, Some(3600)).await.unwrap();
+    let (o1, a1) = orchestrator(&mut ws, 200, Some(&here), Space, Some(3600)).await.unwrap();
+    let (o2, _) = orchestrator(&mut ws, 201, Some(&here), Space, Some(3600)).await.unwrap();
 
     // 6. With no global orchestrator, a space orchestrator's finished turn reaches nobody.
     let mut talk = connect(&url).await;
@@ -5915,8 +5914,8 @@ async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
     }
 
     // 4. The same event in a space with no orchestrator reaches the first global one.
-    let (g1, ga1) = orchestrator(&mut ws, 206, &top, Global, Some(3600)).await.unwrap();
-    let (g2, _) = orchestrator(&mut ws, 207, &top, Global, Some(3600)).await.unwrap();
+    let (g1, ga1) = orchestrator(&mut ws, 206, None, Global, Some(3600)).await.unwrap();
+    let (g2, _) = orchestrator(&mut ws, 207, None, Global, Some(3600)).await.unwrap();
     let theirs = start_agent(&url, &there_pane, Some("hello")).await;
     inbox_gets(&mut ws, &g1, &theirs, 208).await;
     assert_eq!(inbox_agents(&mut ws, &o1, 209).await, [mine.clone()]);
@@ -5934,6 +5933,195 @@ async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
     assert!(inbox_agents(&mut ws, &g2, 213).await.is_empty());
     let g1_agents = inbox_agents(&mut ws, &g1, 214).await;
     assert!(g1_agents.contains(&theirs) && g1_agents.contains(&a1) && !g1_agents.contains(&ga1), "{g1_agents:?}");
+}
+
+/// Every space and session as `status` lists them.
+async fn spaces_and_sessions(ws: &mut Ws) -> (Vec<wheel_proto::SpaceInfo>, Vec<wheel_proto::SessionInfo>) {
+    send(ws, ClientMsg::Status { req: Some(98) }).await;
+    loop {
+        if let ServerMsg::Status { req: Some(98), spaces, sessions, .. } = recv(ws).await {
+            return (spaces, sessions);
+        }
+    }
+}
+
+/// The one Orchestrator space and the session holding it, as `status` lists them.
+async fn orchestrator_space(ws: &mut Ws) -> (wheel_proto::SpaceInfo, wheel_proto::SessionInfo) {
+    let (spaces, sessions) = spaces_and_sessions(ws).await;
+    let mut marked = spaces.into_iter().filter(|s| s.orchestrator);
+    let space = marked.next().expect("an Orchestrator space");
+    assert!(marked.next().is_none(), "one Orchestrator space");
+    let session = sessions.into_iter().find(|n| n.spaces.contains(&space.id)).expect("a session holds it");
+    (space, session)
+}
+
+/// Global orchestrators run in the Orchestrator space (wheel-eg4e.19.9): the first global start
+/// makes it, in a session of its own, in its folder setting; it outlives every orchestrator and a
+/// restart; and a mirror in it may show a pane of any session, which no other space's may.
+#[tokio::test(flavor = "multi_thread")]
+async fn global_orchestrators_run_in_a_permanent_orchestrator_space() {
+    use wheel_proto::OrchestratorScope::Global;
+    let dir = std::env::temp_dir().join(format!("wheel-orchestrator-space-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_file = dir.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (main_space, _) = space(&url, "/tmp").await;
+
+    // 1. The first global start makes the space, in a session named Orchestrator, in the folder
+    // beside this machine's wheel.toml, and puts the pane in it.
+    let (g1, _) = orchestrator(&mut ws, 300, None, Global, Some(3600)).await.unwrap();
+    let (orch, session) = orchestrator_space(&mut ws).await;
+    let folder = dir.join("orchestrator");
+    assert_eq!((orch.name.as_str(), orch.cwd.as_str()), ("Orchestrator", folder.to_str().unwrap()));
+    assert!(folder.is_dir(), "wheeld made the folder");
+    assert_eq!((session.name.as_str(), session.spaces.clone()), ("Orchestrator", vec![orch.id.clone()]));
+    assert!(pane_in(&serde_json::to_value(&orch).unwrap(), &g1).is_some(), "{orch:?}");
+    // 3. The layout listing marks it.
+    let listed = layout(&url).await;
+    let marked: Vec<_> = listed["spaces"].as_array().unwrap().iter().filter(|s| s["orchestrator"] == true).collect();
+    assert_eq!(marked.len(), 1, "{listed}");
+    assert_eq!(marked[0]["id"], orch.id.as_str());
+
+    // The space and its session are permanent and hold nothing else: a space made from an
+    // orchestrator's pane joins an ordinary session, and the person cannot move or close either.
+    let made = match client_op(
+        &mut ws,
+        320,
+        ClientMsg::SpaceCreate {
+            req: Some(320),
+            cwd: "/tmp".into(),
+            name: None,
+            focus: false,
+            background: false,
+            pane: Some(g1.clone()),
+            session: None,
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let (_, sessions) = spaces_and_sessions(&mut ws).await;
+    let holder = sessions.iter().find(|n| n.spaces.contains(&made)).unwrap();
+    assert_ne!(holder.id, session.id, "a space made from the Orchestrator space joins another session");
+    let main_session = holder.id.clone();
+    for (req, msg, refusal) in [
+        (321, ClientMsg::SessionMove { req: Some(321), space: orch.id.clone(), session: main_session.clone(), index: None }, "is the Orchestrator space"),
+        (322, ClientMsg::SessionMove { req: Some(322), space: made.clone(), session: session.id.clone(), index: None }, "holds only the Orchestrator space"),
+        (323, ClientMsg::SpaceClose { req: Some(323), id: orch.id.clone(), if_empty: false }, "is the Orchestrator space"),
+        (324, ClientMsg::SessionClose { req: Some(324), session: session.id.clone() }, "holds only the Orchestrator space"),
+    ] {
+        send(&mut ws, msg).await;
+        loop {
+            match recv(&mut ws).await {
+                ServerMsg::Error { req: Some(r), message, .. } if r == req => {
+                    assert!(message.contains(refusal), "{req}: {message}");
+                    break;
+                }
+                ServerMsg::Ok { req: r } if r == req => panic!("{req} was not refused"),
+                _ => {}
+            }
+        }
+    }
+
+    // A second global start joins the same space; a global start naming a space is refused.
+    let (g2, _) = orchestrator(&mut ws, 301, None, Global, Some(3600)).await.unwrap();
+    let (again, _) = orchestrator_space(&mut ws).await;
+    assert_eq!(again.id, orch.id);
+    assert!(pane_in(&serde_json::to_value(&again).unwrap(), &g2).is_some(), "{again:?}");
+    let refused = orchestrator(&mut ws, 302, Some(&main_space), Global, None).await.unwrap_err();
+    assert!(refused.contains("takes no space"), "{refused}");
+
+    // 5. A mirror in the Orchestrator space may show a pane of another session; 6. a mirror in any
+    // other space may not.
+    let elsewhere = match client_op(&mut ws, 303, ClientMsg::SessionNew { req: Some(303), name: "Elsewhere".into() }).await {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let there = match client_op(
+        &mut ws,
+        304,
+        ClientMsg::SpaceCreate {
+            req: Some(304),
+            cwd: "/tmp".into(),
+            name: None,
+            focus: false,
+            background: false,
+            pane: None,
+            session: Some(elsewhere.clone()),
+        },
+    )
+    .await
+    {
+        ServerMsg::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let theirs = wheeld::spaces::first_pane(&spaces_now(&mut ws).await.into_iter().find(|s| s.id == there).unwrap().root).to_string();
+    set_kind(&mut ws, 305, &theirs, wheel_proto::NewPaneKind::Terminal, None).await;
+    let mirror = mirror_reply(&mut ws, 306, &theirs, &orch.id).await.unwrap();
+    let refused = mirror_reply(&mut ws, 307, &theirs, &main_space).await.unwrap_err();
+    assert!(refused.contains("another session"), "{refused}");
+
+    // 4. Stopping every orchestrator leaves the space, its mirror and its folder; so does a restart.
+    for (req, pane) in [(308, &g1), (309, &g2)] {
+        client_op(&mut ws, req, ClientMsg::OrchestratorStop { req: Some(req), pane: pane.clone() }).await;
+    }
+    let (kept, _) = orchestrator_space(&mut ws).await;
+    let kept = serde_json::to_value(&kept).unwrap();
+    assert!(pane_in(&kept, &mirror).is_some() && pane_in(&kept, &g1).is_none(), "{kept}");
+    assert!(folder.is_dir());
+    drop(ws);
+    first.abort();
+    let (url, _, _second) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (restored, session) = orchestrator_space(&mut ws).await;
+    assert_eq!((restored.id.as_str(), session.name.as_str()), (orch.id.as_str(), "Orchestrator"));
+    assert!(pane_in(&serde_json::to_value(&restored).unwrap(), &mirror).is_some(), "{restored:?}");
+
+    // 5. The mirror closes with its source.
+    client_op(&mut ws, 310, ClientMsg::PaneClose { req: Some(310), pane: theirs.clone() }).await;
+    let (after, _) = orchestrator_space(&mut ws).await;
+    assert!(pane_in(&serde_json::to_value(&after).unwrap(), &mirror).is_none(), "{after:?}");
+
+    // 2. With the folder setting changed, the next global start moves the space there.
+    let moved = dir.join("moved");
+    send(
+        &mut ws,
+        ClientMsg::SettingSet {
+            req: Some(311),
+            key: "orchestrator.global.dir".into(),
+            value: moved.to_str().unwrap().into(),
+            space: None,
+            machine: true,
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut ws).await {
+            ServerMsg::Settings { req: Some(311), .. } => break,
+            ServerMsg::Error { req: Some(311), message, .. } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    orchestrator(&mut ws, 312, None, Global, Some(3600)).await.unwrap();
+    let (moved_space, _) = orchestrator_space(&mut ws).await;
+    assert_eq!((moved_space.id.as_str(), moved_space.cwd.as_str()), (orch.id.as_str(), moved.to_str().unwrap()));
+    assert!(moved.is_dir(), "wheeld made the new folder");
+
+    // 6. Elsewhere the old rule holds: a mirror closes when its source's space moves to another
+    // session.
+    let (_, main_source) = space(&url, "/tmp").await;
+    set_kind(&mut ws, 313, &main_source, wheel_proto::NewPaneKind::Terminal, None).await;
+    let main_mirror = mirror_reply(&mut ws, 314, &main_source, &main_space).await.unwrap();
+    let source_space = spaces_now(&mut ws).await.into_iter().find(|s| pane_in(&serde_json::to_value(s).unwrap(), &main_source).is_some()).unwrap().id;
+    client_op(&mut ws, 315, ClientMsg::SessionMove { req: Some(315), space: source_space, session: elsewhere, index: None }).await;
+    let all = serde_json::to_value(spaces_now(&mut ws).await).unwrap();
+    assert!(pane_in(&all, &main_mirror).is_none(), "{all}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Orchestrator is owned by one connection at a time: a claim takes it from the holder, every connection
@@ -6036,7 +6224,7 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
     let (space_id, pane) = space(&url, "/tmp").await;
     let (_, other_pane) = space(&url, "/tmp").await;
     let (orchestrator_pane, orchestrator) =
-        orchestrator(&mut ws, 95, &space_id, wheel_proto::OrchestratorScope::Space, Some(1)).await.unwrap();
+        orchestrator(&mut ws, 95, Some(&space_id), wheel_proto::OrchestratorScope::Space, Some(1)).await.unwrap();
     // The orchestrator is mid-conversation: a turn that takes 6 s.
     let mut talk = connect(&url).await;
     attach_and_send(&mut talk, &orchestrator, "hold first 6000").await;

@@ -774,12 +774,14 @@ pub enum ClientMsg {
         agent: String,
         timeout_secs: f64,
     },
-    /// Start an orchestrator (ADR-0054): a new agent pane in `space`, run as any agent pane is,
+    /// Start an orchestrator (ADR-0054): a new agent pane, run as any agent pane is,
     /// with the orchestrator brief and an inbox keyed by its pane. `scope` says which agents'
     /// events reach it: `space` for the agents of the space it is in, `global` for the rest
     /// ([`OrchestratorScope`]). A space orchestrator runs in the `orchestrator.dir` setting of its
-    /// space, else the space's folder. Several may share a space. Replies `orchestrator_started`
-    /// naming the pane and its agent. Fails for a space that does not exist.
+    /// space, else the space's folder; a global one in the Orchestrator space, made at the first
+    /// global start. Several may share a space. Replies `orchestrator_started` naming the pane and
+    /// its agent. Fails for a space that does not exist, a space orchestrator with no space, and a
+    /// global one given a space.
     ///
     /// wheeld sends the orchestrator the inbox items it has not been told once it has been idle
     /// `pull_after_secs` (15 when absent), and adds an `over_time` item for a turn running past
@@ -787,7 +789,10 @@ pub enum ClientMsg {
     OrchestratorStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        space: String,
+        /// The space a space orchestrator goes in; none for a global one, which goes in the
+        /// Orchestrator space.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
         scope: OrchestratorScope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pull_after_secs: Option<u64>,
@@ -1124,8 +1129,8 @@ pub enum ClientMsg {
     },
     /// Make a mirror of `source` in `space`: a pane that draws the source's live content and holds
     /// only its id. It takes the space's lone empty pane, else goes where `panes.placement` puts a
-    /// split of the space's last grid pane. `source` must be in the same session and not be a
-    /// mirror. Replies `created` with the mirror's id.
+    /// split of the space's last grid pane. `source` must not be a mirror, and must be in the same
+    /// session unless `space` is the Orchestrator space. Replies `created` with the mirror's id.
     PaneMirror {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -3712,6 +3717,10 @@ pub struct SpaceInfo {
     /// they were backgrounded. Backgrounding is per pane, even out of a popped tree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backgrounded: Vec<Node>,
+    /// The Orchestrator space (ADR-0054): the one space, in a session of its own, where global
+    /// orchestrators run. Clients keep it out of the space tabs and Spaces mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orchestrator: bool,
 }
 
 /// Where a pane is in its space: in the grid, popped out, or in the tray.

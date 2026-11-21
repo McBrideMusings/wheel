@@ -459,13 +459,14 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("push.")
         || id.starts_with("spaces.")
         || id.starts_with("sessions.")
+        || id.starts_with("orchestrator.global.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 69] = [
+const KEYS: [Key; 70] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -525,6 +526,12 @@ const KEYS: [Key; 69] = [
         accepts: Accepts::Directory,
         default: "",
         help: "The directory a space orchestrator runs in (wheel orchestrator start); empty means the space's folder.",
+    },
+    Key {
+        id: crate::orchestrator::GLOBAL_DIR,
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The folder of the Orchestrator space, where global orchestrators run and keep their own notes, tools and code (wheel orchestrator start --global); wheeld makes it when missing, and a change moves the space for panes started afterwards. Empty means ~/.wheel/orchestrator. Read from this machine's file only.",
     },
     Key {
         id: "agent.claude.home",

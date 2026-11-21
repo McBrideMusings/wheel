@@ -3,7 +3,8 @@
 # `wheel orchestrator start` makes an ordinary agent pane with a scope and an inbox and prints its
 # pane; several may share a space; each agent event goes to the first space orchestrator of the
 # agent's space, else the first global one; a space orchestrator's own events go to the global one;
-# `wheel orchestrator stop <pane>` closes the pane.
+# `wheel orchestrator stop <pane>` closes the pane. A global orchestrator goes in the Orchestrator
+# space (wheel-eg4e.19.9), made at the first global start in a session of its own.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap cleanup EXIT
 
@@ -43,8 +44,14 @@ check "case 3: this space's agent reaches the first orchestrator started here" i
 eq "case 3 and 6: o1 holds only that agent" "$(agents_in "$O1")" "$CHILD_A"
 eq "case 3: the second space orchestrator gets nothing" "$(agents_in "$O2")" ""
 
-G1="$(w orchestrator start --global --space "$T" --pull-after 3600)"
-expect_out "^$T $G1 agent:orchestrator-global " "a global orchestrator is marked global" w pane ls
+check "a global orchestrator naming a space is refused" fails orchestrator start --global --space "$T"
+G1="$(w orchestrator start --global --pull-after 3600)"
+ORCH="$(w space ls | jq -r '[.spaces[] | select(.orchestrator == true)] | if length == 1 then .[0].id else "none" end')"
+expect_out "^$ORCH $G1 agent:orchestrator-global " "wheel-eg4e.19.9: a global orchestrator goes in the one Orchestrator space" w pane ls
+ORCH_CWD="$(w space ls | jq -r --arg s "$ORCH" '.spaces[] | select(.id == $s) | .cwd')"
+check "wheel-eg4e.19.9: the Orchestrator space's folder exists ($ORCH_CWD)" test -d "$ORCH_CWD"
+eq "wheel-eg4e.19.9: its session is Orchestrator and holds only it" "$(w session ls --json | jq -r --arg s "$ORCH" '.[] | select(.spaces | index($s)) | "\(.name) \(.spaces | length)"')" "Orchestrator 1"
+check "wheel-eg4e.19.9: the Orchestrator space cannot be closed" fails space close "$ORCH"
 w pane start "$PANE_B" agent --message hello >/dev/null
 CHILD_B="$(w agent wait "$PANE_B" --timeout 30 | awk '{print $2}')"
 check "case 4: a space with no orchestrator reports to the global one" inbox_has "$G1" "$CHILD_B"

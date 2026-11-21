@@ -1676,7 +1676,7 @@ async fn handle(
             tokio::spawn(async move {
                 let started = state
                     .orchestrator_start(
-                        &space,
+                        space.as_deref(),
                         scope,
                         pull_after_secs.map(std::time::Duration::from_secs),
                         turn_limit_secs.map(std::time::Duration::from_secs),
@@ -1684,7 +1684,7 @@ async fn handle(
                     .await;
                 let reply = match started {
                     Ok((pane, agent)) => {
-                        tracing::info!(%peer, %space, %pane, %agent, "orchestrator start");
+                        tracing::info!(%peer, ?space, %pane, %agent, "orchestrator start");
                         req.map(|req| ServerMsg::OrchestratorStarted { req, pane, agent })
                     }
                     Err(message) => Some(failed(req, message)),

@@ -1,7 +1,7 @@
 //! Orchestrators (ADR-0054): agent panes that wheeld gives the orchestrator brief and an inbox.
 //! `orchestrator_start` makes one in a space, as any agent pane is made and run, with a scope:
-//! `space` for the agents of the space its pane is in, `global` for the rest. Several may share a
-//! space. Each agent event goes to one orchestrator ([`AppState::orchestrator_for`]), and the
+//! `space` for the agents of the space its pane is in, `global` for the rest. A global one's pane
+//! goes in the Orchestrator space, made on first use. Several may share a space. Each agent event goes to one orchestrator ([`AppState::orchestrator_for`]), and the
 //! orchestrator acts on any space or pane through the wheel CLI. Closing the pane ends it.
 
 use std::sync::{Arc, Mutex};
@@ -20,6 +20,10 @@ const LONGEST: Duration = Duration::from_secs(7 * 86_400);
 
 /// The setting naming the directory a space orchestrator runs in.
 pub(crate) const DIR: &str = "orchestrator.dir";
+
+/// The setting naming the Orchestrator space's folder; empty means `orchestrator` beside this
+/// machine's `wheel.toml`.
+pub(crate) const GLOBAL_DIR: &str = "orchestrator.global.dir";
 
 /// One running orchestrator: its pane, the agent the pane runs, its scope and its inbox.
 pub(crate) struct Orchestrator {
@@ -68,12 +72,13 @@ pub(crate) fn brief(pane: &str, scope: OrchestratorScope) -> String {
 }
 
 impl AppState {
-    /// Start an orchestrator of `scope` as a new agent pane in `space`; returns its pane and agent.
+    /// Start an orchestrator of `scope` as a new agent pane; returns its pane and agent. A space
+    /// orchestrator goes in `space`, a global one in the Orchestrator space and takes no `space`.
     ///
     /// `pull_after` and `turn_limit` set its inbox's timers (`crate::inbox`).
     pub(crate) async fn orchestrator_start(
         &self,
-        space: &str,
+        space: Option<&str>,
         scope: OrchestratorScope,
         pull_after: Option<Duration>,
         turn_limit: Option<Duration>,
@@ -84,8 +89,19 @@ impl AppState {
         if [pull_after, turn_limit].into_iter().flatten().any(|d| d > LONGEST) {
             return Err(format!("an inbox timer is at most {} seconds", LONGEST.as_secs()));
         }
-        self.spaces.lock().unwrap().index(space)?;
-        let dir = Some(self.setting(DIR, Some(space))?).filter(|d| !d.is_empty());
+        let (space, dir) = match (scope, space) {
+            (OrchestratorScope::Space, None) => return Err("a space orchestrator needs a space".into()),
+            (OrchestratorScope::Global, Some(_)) => {
+                return Err("a global orchestrator runs in the Orchestrator space, so it takes no space".into())
+            }
+            (OrchestratorScope::Space, Some(space)) => {
+                self.spaces.lock().unwrap().index(space)?;
+                (space.to_string(), Some(self.setting(DIR, Some(space))?).filter(|d| !d.is_empty()))
+            }
+            // The space's own folder: `orchestrator.dir` is for space orchestrators.
+            (OrchestratorScope::Global, None) => (self.orchestrator_space()?, None),
+        };
+        let space = space.as_str();
         let started = self
             .pane_start(space, None, StartKind::Agent, StartOptions { dir, orchestrator: Some(scope), ..Default::default() })
             .await?;
@@ -100,6 +116,16 @@ impl AppState {
         }
         tracing::info!(%space, pane = %started.pane, %agent, ?scope, "orchestrator started");
         Ok((started.pane, agent))
+    }
+
+    /// The Orchestrator space's id, its folder made when missing (`orchestrator_space_in`).
+    pub(crate) fn orchestrator_space(&self) -> Result<String, String> {
+        let dir = Some(self.setting(GLOBAL_DIR, None)?)
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.machine_file().with_file_name("orchestrator"));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+        Ok(self.orchestrator_space_in(dir.to_string_lossy().into_owned()))
     }
 
     /// Close the orchestrator pane `pane`.
