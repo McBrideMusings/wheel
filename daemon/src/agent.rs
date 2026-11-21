@@ -322,8 +322,6 @@ pub struct AgentConfig {
     pub model: Option<String>,
     /// The permission mode and Codex sandbox the agent's first process starts with.
     pub permissions: AgentPermissions,
-    /// The agent is the orchestrator (`crate::orchestrator`).
-    pub orchestrator: bool,
     /// Called with the command when a build or test command the agent ran fails
     /// ([`build_command`]), for the orchestrator's inbox.
     pub on_build_failed: Option<OnBuildFailed>,
@@ -1669,7 +1667,6 @@ impl Agent {
             conversation,
             model: config.model.clone(),
             permissions,
-            orchestrator: config.orchestrator,
         });
         if let Ok(agent) = &launched {
             self.agent_pid.store(agent._group.0, Ordering::SeqCst);

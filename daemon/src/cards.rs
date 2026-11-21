@@ -24,7 +24,7 @@ pub(crate) struct CardPage {
 impl AppState {
     /// Put a card for `pane` or `artifact` (exactly one) in the transcript of the agent `target`
     /// names. An artifact is looked for in the project of the agent's space, then the machine's;
-    /// an agent with no space (the daemon's orchestrator) can name only a machine artifact.
+    /// an agent with no pane can name only a machine artifact.
     pub(crate) fn agent_card(
         &self,
         target: &str,
@@ -40,7 +40,7 @@ impl AppState {
             (None, Some(name)) => {
                 let space = match &found.pane {
                     Some(pane) => Some(self.space_holding(pane)?),
-                    None => self.orchestrator_space(&found.agent.name),
+                    None => None,
                 };
                 let (artifact, cwd, space) = match space {
                     Some(space) => {

@@ -1,62 +1,66 @@
 #!/usr/bin/env bash
-# The orchestrator (wheel-e1xk.7). `wheel orchestrator start <scope>` starts an agent that belongs to
-# no pane, for a space or `daemon`; it answers what the person says by running only the whitelisted
-# `wheel` commands, and `wheel orchestrator stop` ends it.
-#
-# Run it by name; all.sh does not. It runs real Claude Code on the account in ~/.claude (two short
-# prompts on Haiku), so it needs `claude` on PATH.
+# Orchestrators (wheel-eg4e.19.4, ADR-0054), through the wheel command against the fake agent.
+# `wheel orchestrator start` makes an ordinary agent pane with a scope and an inbox and prints its
+# pane; several may share a space; each agent event goes to the first space orchestrator of the
+# agent's space, else the first global one; a space orchestrator's own events go to the global one;
+# `wheel orchestrator stop <pane>` closes the pane.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 trap cleanup EXIT
 
-unset CLAUDECODE CLAUDE_CODE_CHILD_AGENT CLAUDE_CODE_AGENT_ID CLAUDE_CODE_ENTRYPOINT \
-  CLAUDE_CODE_EXECPATH CLAUDE_CODE_AGENT_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \
-  CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID
-command -v claude >/dev/null || { echo "needs claude on PATH" >&2; exit 2; }
-
+use_fake_agent
 start_daemon --state-file "$SCR/state.json"
-mkdir -p "$SCR/alpha"
+mkdir -p "$SCR/alpha" "$SCR/beta" "$SCR/top"
 A="$(w space new "$SCR/alpha")"
+B="$(w space new "$SCR/beta")"
+T="$(w space new "$SCR/top")"
+first_pane() { w space ls | jq -r --arg s "$1" '[.spaces[] | select(.id == $s)][0] | [.. | objects | select(.id? and .kind?) | .id] | first'; }
+PANE_A="$(first_pane "$A")"
+PANE_B="$(first_pane "$B")"
+fails() { ! "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" "$@" >/dev/null 2>&1; }
 
-check "a scope that names no space is refused" bash -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' orchestrator start s-missing 2>/dev/null"
-V="$(w orchestrator start "$A")"
-eq "orchestrator start names the orchestrator's agent" "$V" "orchestrator-$A"
-eq "a second start finds the same one" "$(w orchestrator start "$A")" "$V"
-eq "no pane holds it" "$(w space ls | grep -c "$V")" "0"
+check "a space that does not exist is refused" fails orchestrator start --space s-missing
+O1="$(w orchestrator start --space "$A" --pull-after 3600)"
+expect_out "^$A $O1 agent:orchestrator-space " "case 1: pane ls shows an agent pane marked orchestrator" w pane ls
+O2="$(w orchestrator start --space "$A" --pull-after 3600)"
+check "case 2: a second orchestrator in the space is another pane" test "$O2" != "$O1"
+check "case 2: each has its own inbox" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O1' && '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O2'"
 
-# It reads state through an allowed command.
-w agent wait "$V" --timeout 60 >/dev/null 2>&1
-w agent send "$V" "Run the command wheel space ls and tell me in one sentence how many spaces there are." --timeout 120 >/dev/null 2>&1
-OUT="$(w agent read "$V" 2>&1)"
-echo "$OUT" | tail -12
-eq "it ran the allowed command" "$([ "$(echo "$OUT" | grep -c 'wheel space ls')" -ge 1 ] && echo yes)" "yes"
-check "its reply names the space count" grep -qiE 'one|1' <<<"$OUT"
+# inbox_has <pane> <agent>: wait up to 10 s for an item about <agent> in <pane>'s inbox.
+inbox_has() {
+  for _ in $(seq 1 100); do
+    w inbox list "$1" --json | jq -e --arg a "$2" 'any(.[]; .agent == $a)' >/dev/null && return 0
+    sleep 0.1
+  done
+  return 1
+}
+agents_in() { w inbox list "$1" --json | jq -r '[.[].agent] | sort | join(",")'; }
 
-# The space's own settings allow `touch`; the orchestrator reads no settings file, so it still may not.
-# A control first: Claude Code with the same flags but the settings read does run it, so a refusal
-# below is the isolation and not the model declining.
-mkdir -p "$SCR/alpha/.claude"
-printf '{"permissions":{"allow":["Bash(touch:*)"]}}' >"$SCR/alpha/.claude/settings.json"
-( cd "$SCR/alpha" && claude -p --model haiku --tools Bash --allowedTools "Bash(wheel status:*)" --permission-mode dontAsk \
-    "Run exactly this command and nothing else: touch $SCR/alpha/control" >/dev/null 2>&1 )
-eq "control: with the settings read, the project's allow rule runs touch" "$([ -e "$SCR/alpha/control" ] && echo ran || echo refused)" "ran"
+# Case 6: no global orchestrator yet; a space orchestrator's finished turn reaches nobody.
+w agent send "$O1" hello --timeout 30 >/dev/null 2>&1
+w pane start "$PANE_A" agent --message hello >/dev/null
+CHILD_A="$(w agent wait "$PANE_A" --timeout 30 | awk '{print $2}')"
+check "case 3: this space's agent reaches the first orchestrator started here" inbox_has "$O1" "$CHILD_A"
+eq "case 3 and 6: o1 holds only that agent" "$(agents_in "$O1")" "$CHILD_A"
+eq "case 3: the second space orchestrator gets nothing" "$(agents_in "$O2")" ""
 
-ask() { w agent send "$V" "Run exactly this command and nothing else: $1" --timeout 120 >/dev/null 2>&1; sleep 1; }
-ask "touch $SCR/alpha/made-by-orchestrator"
-eq "a command the space's settings allow still did not run" "$([ -e "$SCR/alpha/made-by-orchestrator" ] && echo ran || echo refused)" "refused"
-ask "wheel status \$(touch $SCR/alpha/made-by-subshell)"
-eq "a subshell inside an allowed prefix did not run" "$([ -e "$SCR/alpha/made-by-subshell" ] && echo ran || echo refused)" "refused"
-ask "wheel status > $SCR/alpha/made-by-redirect"
-eq "a redirect on an allowed command did not write" "$([ -e "$SCR/alpha/made-by-redirect" ] && echo wrote || echo refused)" "refused"
-ask "wheel status | tee $SCR/alpha/made-by-pipe"
-eq "a pipe from an allowed command did not run" "$([ -e "$SCR/alpha/made-by-pipe" ] && echo ran || echo refused)" "refused"
+G1="$(w orchestrator start --global --space "$T" --pull-after 3600)"
+expect_out "^$T $G1 agent:orchestrator-global " "a global orchestrator is marked global" w pane ls
+w pane start "$PANE_B" agent --message hello >/dev/null
+CHILD_B="$(w agent wait "$PANE_B" --timeout 30 | awk '{print $2}')"
+check "case 4: a space with no orchestrator reports to the global one" inbox_has "$G1" "$CHILD_B"
+O1_AGENT="$(w agent wait "$O1" --timeout 30 | awk '{print $2}')"
+w agent send "$O1" "hello again" --timeout 30 >/dev/null 2>&1
+check "case 5: the space orchestrator's own turn reaches the global one" inbox_has "$G1" "$O1_AGENT"
+eq "case 5: not its own space's orchestrators" "$(agents_in "$O1")" "$CHILD_A"
 
-# Every agent function is open to it: it lists the permission requests.
-w agent send "$V" "Run exactly this command and nothing else: wheel perm list" --timeout 120 >/dev/null 2>&1
-check "it ran wheel perm list" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel perm list'"
+# Case 7: the orchestrator's pane runs the whole CLI: it closes a pane in another space.
+w pane split "$PANE_B" right >/dev/null
+SPARE="$(w pane ls | awk -v s="$B" -v p="$PANE_B" '$1 == s && $2 != p {print $2}' | tail -1)"
+check "case 7: a command outside the old list runs from the orchestrator's pane" env WHEEL_PANE="$O1" "$WHEEL" --url "ws://127.0.0.1:$PORT/ws" --token-file "$INST/token" pane close "$SPARE"
+eq "the pane in the other space is gone" "$(w pane ls | grep -c " $SPARE ")" "0"
 
-w agent send "$V" "Run exactly this command and nothing else: wheel inbox list $A" --timeout 120 >/dev/null 2>&1
-check "it ran wheel inbox list" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' agent read '$V' 2>&1 | grep -q 'wheel inbox list'"
-
-w orchestrator stop "$A"
-check "orchestrator stop ends it" bash -c "! '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' orchestrator stop $A 2>/dev/null"
+w orchestrator stop "$O1"
+eq "orchestrator stop closes its pane" "$(w pane ls | grep -c " $O1 ")" "0"
+check "a second stop is refused" fails orchestrator stop "$O1"
+check "a pane that is no orchestrator is refused" fails orchestrator stop "$PANE_A"
 finish

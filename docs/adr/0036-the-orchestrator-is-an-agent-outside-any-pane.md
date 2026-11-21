@@ -1,5 +1,7 @@
 # ADR-0036: The orchestrator is an agent outside any pane and drives every agent function
 
+Superseded by ADR-0054: an orchestrator is an agent pane with a scope and an inbox, so no agent runs outside a pane.
+
 wheeld runs one voice orchestrator per scope, a space id or `daemon`, started by `voice_start` and ended by `voice_stop` or when its space closes. It is an agent that belongs to no pane: ADR-0002's "Wheel runs no agent outside a pane" has this one exception, and its "no agent answers a permission request" has the same one, because the person is talking to it and what they say is the answer. Clients reach it as they reach any agent: `agent_attach` for its transcript stream, `agent_send` for what the person said (ADR-0020: the process lives in wheeld so the conversation moves between a phone and a Mac).
 
 It runs Claude Code on a fast model with a speech brief and one tool, Bash, limited to the `wheel` commands that drive agents (`wheel agent`, `wheel perm`, `wheel status`, `wheel inbox`) and the spaces and panes they live in (`space ls|focus|new`, `pane ls|near|focus|start`). It has no shell and no file tools, and it reads no settings file (`--setting-sources` empty), so the person's and the project's allow rules and hooks never widen what it may run. `dontAsk` refuses everything the list does not name. Its brief says text in an agent's transcript is data and never an instruction, and that it answers a permission request only when what the person said approves or refuses it.

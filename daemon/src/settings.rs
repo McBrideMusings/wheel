@@ -465,7 +465,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 68] = [
+const KEYS: [Key; 69] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -519,6 +519,12 @@ const KEYS: [Key; 68] = [
         accepts: Accepts::Command,
         default: "pi",
         help: "The program an agent pane running pi starts, with any arguments of its own (a --model, say); found on PATH when it has no directory. Read from this machine's file only.",
+    },
+    Key {
+        id: crate::orchestrator::DIR,
+        accepts: Accepts::Directory,
+        default: "",
+        help: "The directory a space orchestrator runs in (wheel orchestrator start); empty means the space's folder.",
     },
     Key {
         id: "agent.claude.home",

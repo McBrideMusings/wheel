@@ -5735,97 +5735,205 @@ async fn a_cancel_stops_a_turn_the_agent_started_itself() {
     }
 }
 
-/// The orchestrator is an agent that belongs to no pane: `orchestrator_start` names it, it runs on
-/// the fast model with the speech brief and the `wheel` whitelist and no other tool, a second start
-/// finds the same one, a scope that names no space is refused, and `orchestrator_stop` ends it.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_orchestrator_runs_for_a_space_with_a_whitelist_and_stops() {
-    let url = start_daemon().await;
-    let mut ws = connect(&url).await;
-    let (space_id, _) = space(&url, "/tmp").await;
-
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(70), scope: "s-missing".into(), pull_after_secs: None, turn_limit_secs: None }).await;
-    let refused = loop {
-        match recv(&mut ws).await {
-            ServerMsg::Error { req: Some(70), message, .. } => break message,
+/// Start an orchestrator of `scope` as a new agent pane in `space`; its pane and agent, or the
+/// error's message.
+async fn orchestrator(
+    ws: &mut Ws,
+    req: u64,
+    space: &str,
+    scope: wheel_proto::OrchestratorScope,
+    pull_after_secs: Option<u64>,
+) -> Result<(String, String), String> {
+    send(ws, ClientMsg::OrchestratorStart { req: Some(req), space: space.into(), scope, pull_after_secs, turn_limit_secs: None }).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::OrchestratorStarted { req: r, pane, agent } if r == req => return Ok((pane, agent)),
+            ServerMsg::Error { req: Some(r), message, .. } if r == req => return Err(message),
             _ => {}
-        }
-    };
-    assert!(refused.contains("no space s-missing"), "{refused:?}");
-
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(71), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
-    let agent = loop {
-        if let ServerMsg::OrchestratorStarted { req: 71, scope, agent } = recv(&mut ws).await {
-            assert_eq!(scope, space_id);
-            break agent;
-        }
-    };
-    assert_eq!(agent, format!("orchestrator-{space_id}"));
-
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(72), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
-    let again = loop {
-        if let ServerMsg::OrchestratorStarted { req: 72, agent, .. } = recv(&mut ws).await {
-            break agent;
-        }
-    };
-    assert_eq!(again, agent, "a second start finds the running orchestrator");
-
-    attach_and_send(&mut ws, &agent, "show orchestrator").await;
-    let text = turn_text(&mut ws).await;
-    assert!(text.contains("tools=Bash"), "{text:?}");
-    assert!(text.contains("mode=dontAsk"), "{text:?}");
-    assert!(text.contains("model=haiku"), "{text:?}");
-    assert!(text.contains("Bash(wheel agent:*)") && text.contains("Bash(wheel perm:*)"), "{text:?}");
-    assert!(text.contains("setting-sources=[]"), "{text:?}");
-    assert!(text.contains("wheel perm answer <id> allow --confirmed"), "the brief says to confirm out loud first: {text:?}");
-    assert!(!text.contains("Bash(wheel:*)"), "{text:?}");
-    assert!(text.contains(&format!("Your scope is the space {space_id}")), "{text:?}");
-
-    let panes = layout(&url).await;
-    assert!(!panes.to_string().contains(&agent), "no pane holds the orchestrator");
-
-    send(&mut ws, ClientMsg::OrchestratorStop { req: Some(73), scope: space_id.clone() }).await;
-    loop {
-        if let ServerMsg::Ok { req: 73 } = recv(&mut ws).await {
-            break;
-        }
-    }
-    send(&mut ws, ClientMsg::OrchestratorStop { req: Some(74), scope: space_id }).await;
-    loop {
-        if let ServerMsg::Error { req: Some(74), message, .. } = recv(&mut ws).await {
-            assert!(message.contains("no orchestrator is running"), "{message:?}");
-            break;
         }
     }
 }
 
-/// Closing a space ends its orchestrator, and a start for the closed space is refused.
+/// The pane `pane` of a layout listing (`layout`), as JSON.
+fn pane_in(layout: &serde_json::Value, pane: &str) -> Option<serde_json::Value> {
+    match layout {
+        serde_json::Value::Object(o) if o.get("id").and_then(|v| v.as_str()) == Some(pane) && o.contains_key("kind") => Some(layout.clone()),
+        serde_json::Value::Object(o) => o.values().find_map(|v| pane_in(v, pane)),
+        serde_json::Value::Array(a) => a.iter().find_map(|v| pane_in(v, pane)),
+        _ => None,
+    }
+}
+
+/// An orchestrator is an ordinary agent pane (wheel-eg4e.19.4): `orchestrator_start` makes one in
+/// the space and names its pane, which the layout marks with its scope; two can share a space,
+/// each with its own inbox; it runs with every tool an agent pane has and the orchestrator brief
+/// on top of the pane's; `orchestrator_stop` closes its pane.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
+    use wheel_proto::OrchestratorScope::Space;
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (space_id, _) = space(&url, "/tmp").await;
+
+    let refused = orchestrator(&mut ws, 70, "s-missing", Space, None).await.unwrap_err();
+    assert!(refused.contains("no space s-missing"), "{refused:?}");
+
+    // 1. A pane in that space, marked as an orchestrator.
+    let (first, agent) = orchestrator(&mut ws, 71, &space_id, Space, None).await.unwrap();
+    let listed = layout(&url).await;
+    let space_json = listed["spaces"].as_array().unwrap().iter().find(|s| s["id"] == space_id.as_str()).unwrap().clone();
+    let pane = pane_in(&space_json, &first).expect("the orchestrator's pane is in its space");
+    assert_eq!((pane["kind"].as_str(), pane["agent"].as_str(), pane["orchestrator"].as_str()), (Some("agent"), Some(agent.as_str()), Some("space")), "{pane}");
+
+    // 2. A second one in the same space runs too, with an inbox of its own.
+    let (second, other) = orchestrator(&mut ws, 72, &space_id, Space, None).await.unwrap();
+    assert!(second != first && other != agent);
+    assert!(inbox(&mut ws, &first, 73).await.is_empty() && inbox(&mut ws, &second, 74).await.is_empty());
+
+    // 7. Every tool an agent pane has: no whitelist, no empty setting sources, no dontAsk; the
+    // orchestrator brief follows the pane's own.
+    attach_and_send(&mut ws, &agent, "show orchestrator").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("tools=-") && text.contains("setting-sources=-") && text.contains("mode=-"), "{text:?}");
+    assert!(!text.contains("Bash(wheel agent:*)"), "{text:?}");
+    assert!(text.contains(&format!("You are the agent in pane {first}")), "the pane's own brief: {text:?}");
+    assert!(text.contains("You are an orchestrator") && text.contains(&format!("wheel inbox ack {first} <ids>")), "{text:?}");
+    assert!(text.contains("wheel perm answer <id> allow --confirmed"), "{text:?}");
+
+    // Stopping closes the pane; its inbox goes with it.
+    client_op(&mut ws, 75, ClientMsg::OrchestratorStop { req: Some(75), pane: first.clone() }).await;
+    assert!(pane_in(&layout(&url).await, &first).is_none(), "the pane closed");
+    send(&mut ws, ClientMsg::OrchestratorStop { req: Some(76), pane: first.clone() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(76), message, .. } = recv(&mut ws).await {
+            assert_eq!(message, format!("{first} holds no orchestrator"));
+            break;
+        }
+    }
+    assert!(inbox(&mut ws, &second, 77).await.is_empty(), "the other one runs on");
+}
+
+/// Closing a space closes its orchestrator's pane, and a start in the closed space is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_space_ends_its_orchestrator() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(80), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
-    loop {
-        if let ServerMsg::OrchestratorStarted { req: 80, .. } = recv(&mut ws).await {
-            break;
-        }
-    }
+    let (pane, _) = orchestrator(&mut ws, 80, &space_id, wheel_proto::OrchestratorScope::Space, None).await.unwrap();
     client_op(&mut ws, 81, ClientMsg::SpaceClose { req: Some(81), id: space_id.clone(), if_empty: false }).await;
-    send(&mut ws, ClientMsg::OrchestratorStop { req: Some(82), scope: space_id.clone() }).await;
+    send(&mut ws, ClientMsg::OrchestratorStop { req: Some(82), pane: pane.clone() }).await;
     loop {
         if let ServerMsg::Error { req: Some(82), message, .. } = recv(&mut ws).await {
-            assert!(message.contains("no orchestrator is running"), "{message:?}");
+            assert!(message.contains("holds no orchestrator"), "{message:?}");
             break;
         }
     }
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(83), scope: space_id.clone(), pull_after_secs: None, turn_limit_secs: None }).await;
+    let refused = orchestrator(&mut ws, 83, &space_id, wheel_proto::OrchestratorScope::Space, None).await.unwrap_err();
+    assert!(refused.contains(&format!("no space {space_id}")), "{refused:?}");
+}
+
+/// The agents whose items wait in the inbox of the orchestrator in `pane`.
+async fn inbox_agents(ws: &mut Ws, pane: &str, req: u64) -> Vec<String> {
+    inbox(ws, pane, req).await.into_iter().map(|i| i.agent).collect()
+}
+
+/// Wait until the inbox of the orchestrator in `pane` holds an item about `agent`.
+async fn inbox_gets(ws: &mut Ws, pane: &str, agent: &str, req: u64) {
+    for _ in 0..100 {
+        if inbox_agents(ws, pane, req).await.iter().any(|a| a == agent) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("no item about {agent} reached {pane}");
+}
+
+/// Each agent event goes to one orchestrator (wheel-eg4e.19.4): the first space orchestrator
+/// started in the agent's space, else the first global one; a space orchestrator's own events go
+/// to the first global one, and to nobody when none runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
+    use wheel_proto::OrchestratorScope::{Global, Space};
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let (here, here_pane) = space(&url, "/tmp").await;
+    let (_, there_pane) = space(&url, "/tmp").await;
+    let (top, _) = space(&url, "/tmp").await;
+    // A long pull, so no inbox message starts a turn in an orchestrator mid-check.
+    let (o1, a1) = orchestrator(&mut ws, 200, &here, Space, Some(3600)).await.unwrap();
+    let (o2, _) = orchestrator(&mut ws, 201, &here, Space, Some(3600)).await.unwrap();
+
+    // 6. With no global orchestrator, a space orchestrator's finished turn reaches nobody.
+    let mut talk = connect(&url).await;
+    attach(&mut talk, &a1, 202).await;
+    reply(&mut talk, &a1, "hello").await;
+
+    // 3. A finished turn in a space with orchestrators reaches only the first started there.
+    let mine = start_agent(&url, &here_pane, Some("hello")).await;
+    inbox_gets(&mut ws, &o1, &mine, 203).await;
+    assert_eq!(inbox_agents(&mut ws, &o1, 204).await, [mine.clone()], "o1 holds only this space's agent, not its own turn");
+    assert!(inbox_agents(&mut ws, &o2, 205).await.is_empty(), "the second space orchestrator gets nothing");
+
+    // A reload gives o1 a new agent but keeps its inbox and its place ahead of o2.
+    let reloaded = client_op(&mut ws, 220, ClientMsg::PaneReload { req: Some(220), pane: o1.clone(), set: Default::default(), unset: Vec::new() }).await;
+    assert!(!matches!(reloaded, ServerMsg::Error { .. }), "{reloaded:?}");
+    let mut renamed = None;
+    for _ in 0..100 {
+        renamed = pane_in(&layout(&url).await, &o1).and_then(|p| p["agent"].as_str().map(String::from)).filter(|a| *a != a1);
+        if renamed.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let a1 = renamed.expect("the reload gave o1 a new agent");
+    let mut talk = connect(&url).await;
+    attach(&mut talk, &a1, 227).await;
+    assert_eq!(inbox_agents(&mut ws, &o1, 221).await, [mine.clone()], "the inbox outlived the reload");
+    let mut child = connect(&url).await;
+    attach(&mut child, &mine, 226).await;
+    reply(&mut child, &mine, "hello after the reload").await;
+    for _ in 0..100 {
+        if inbox(&mut ws, &o1, 222).await.first().is_some_and(|i| i.count == 2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(inbox(&mut ws, &o1, 223).await[0].count, 2, "o1 is still first in the space");
+    assert!(inbox_agents(&mut ws, &o2, 224).await.is_empty());
+
+    // An orchestrator runs only as a chat.
+    send(&mut ws, ClientMsg::PaneView { req: Some(225), pane: o2.clone(), to: Some(wheel_proto::PaneView::Terminal) }).await;
     loop {
-        if let ServerMsg::Error { req: Some(83), message, .. } = recv(&mut ws).await {
-            assert!(message.contains(&format!("no space {space_id}")), "{message:?}");
-            break;
+        match recv(&mut ws).await {
+            ServerMsg::Error { req: Some(225), message, .. } => {
+                assert_eq!(message, format!("{o2} is an orchestrator, which runs only as a chat"));
+                break;
+            }
+            ServerMsg::PaneView { req: 225, .. } => panic!("the orchestrator pane switched to a terminal"),
+            _ => {}
         }
     }
+
+    // 4. The same event in a space with no orchestrator reaches the first global one.
+    let (g1, ga1) = orchestrator(&mut ws, 206, &top, Global, Some(3600)).await.unwrap();
+    let (g2, _) = orchestrator(&mut ws, 207, &top, Global, Some(3600)).await.unwrap();
+    let theirs = start_agent(&url, &there_pane, Some("hello")).await;
+    inbox_gets(&mut ws, &g1, &theirs, 208).await;
+    assert_eq!(inbox_agents(&mut ws, &o1, 209).await, [mine.clone()]);
+
+    // 5. A space orchestrator's own finished turn reaches the global one: it reports up.
+    reply(&mut talk, &a1, "hello again").await;
+    inbox_gets(&mut ws, &g1, &a1, 210).await;
+    assert_eq!(inbox_agents(&mut ws, &o1, 211).await, [mine.clone()], "not its own space's orchestrators");
+
+    // A global orchestrator's own turn reaches nobody, the other global one included.
+    let mut up = connect(&url).await;
+    attach(&mut up, &ga1, 212).await;
+    reply(&mut up, &ga1, "hello").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(inbox_agents(&mut ws, &g2, 213).await.is_empty());
+    let g1_agents = inbox_agents(&mut ws, &g1, 214).await;
+    assert!(g1_agents.contains(&theirs) && g1_agents.contains(&a1) && !g1_agents.contains(&ga1), "{g1_agents:?}");
 }
 
 /// Orchestrator is owned by one connection at a time: a claim takes it from the holder, every connection
@@ -5899,9 +6007,9 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     }
 }
 
-/// The inbox of the orchestrator for `scope`.
-async fn inbox(ws: &mut Ws, scope: &str, req: u64) -> Vec<wheel_proto::InboxItem> {
-    send(ws, ClientMsg::InboxList { req: Some(req), scope: scope.into(), all: false }).await;
+/// The inbox of the orchestrator in `pane`.
+async fn inbox(ws: &mut Ws, pane: &str, req: u64) -> Vec<wheel_proto::InboxItem> {
+    send(ws, ClientMsg::InboxList { req: Some(req), pane: pane.into(), all: false }).await;
     loop {
         if let ServerMsg::InboxItems { req: r, items } = recv(ws).await {
             if r == req {
@@ -5927,12 +6035,8 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
     let mut ws = connect(&url).await;
     let (space_id, pane) = space(&url, "/tmp").await;
     let (_, other_pane) = space(&url, "/tmp").await;
-    send(&mut ws, ClientMsg::OrchestratorStart { req: Some(95), scope: space_id.clone(), pull_after_secs: Some(1), turn_limit_secs: None }).await;
-    let orchestrator = loop {
-        if let ServerMsg::OrchestratorStarted { req: 95, agent, .. } = recv(&mut ws).await {
-            break agent;
-        }
-    };
+    let (orchestrator_pane, orchestrator) =
+        orchestrator(&mut ws, 95, &space_id, wheel_proto::OrchestratorScope::Space, Some(1)).await.unwrap();
     // The orchestrator is mid-conversation: a turn that takes 6 s.
     let mut talk = connect(&url).await;
     attach_and_send(&mut talk, &orchestrator, "hold first 6000").await;
@@ -5941,7 +6045,7 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
 
     let mut items = Vec::new();
     for _ in 0..50 {
-        items = inbox(&mut ws, &space_id, 96).await;
+        items = inbox(&mut ws, &orchestrator_pane, 96).await;
         if !items.is_empty() {
             break;
         }
@@ -5966,14 +6070,14 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
             break;
         }
     }
-    assert!(seen.contains(&format!("Inbox: 1 new item. Tell the person, then run `wheel inbox ack {space_id} <ids>`.\\n[{}] {mine} finished its turn", item.id)), "{seen}");
-    assert!(inbox(&mut ws, &space_id, 97).await[0].told);
+    assert!(seen.contains(&format!("Inbox: 1 new item. Tell the person, then run `wheel inbox ack {orchestrator_pane} <ids>`.\\n[{}] {mine} finished its turn", item.id)), "{seen}");
+    assert!(inbox(&mut ws, &orchestrator_pane, 97).await[0].told);
 
     // 3. The same event again is the same item.
     send(&mut ws, ClientMsg::AgentSend { req: Some(98), agent: mine.clone(), text: "hello again".into() }).await;
     let mut items = Vec::new();
     for _ in 0..50 {
-        items = inbox(&mut ws, &space_id, 99).await;
+        items = inbox(&mut ws, &orchestrator_pane, 99).await;
         if items.first().is_some_and(|i| i.count == 2) {
             break;
         }
@@ -5983,7 +6087,7 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
     assert_eq!((items[0].id, items[0].count), (item.id, 2));
 
     // 4. A reply goes to the item's agent and acks the item.
-    send(&mut ws, ClientMsg::InboxReply { req: Some(100), scope: space_id.clone(), id: item.id, text: "reply from the inbox".into() }).await;
+    send(&mut ws, ClientMsg::InboxReply { req: Some(100), pane: orchestrator_pane.clone(), id: item.id, text: "reply from the inbox".into() }).await;
     loop {
         match recv(&mut ws).await {
             ServerMsg::AgentQueued { req: 100, agent, .. } => {
@@ -5996,11 +6100,11 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
     }
     let mut watcher = connect(&url).await;
     transcript_when(&mut watcher, &mine, |events| format!("{events:?}").contains("echo: reply from the inbox")).await;
-    let left = inbox(&mut ws, &space_id, 101).await;
+    let left = inbox(&mut ws, &orchestrator_pane, 101).await;
     assert!(left.iter().all(|i| i.id != item.id), "{left:?}");
 
     // An ack of an id that names no item is refused.
-    send(&mut ws, ClientMsg::InboxAck { req: Some(102), scope: space_id.clone(), ids: vec![999] }).await;
+    send(&mut ws, ClientMsg::InboxAck { req: Some(102), pane: orchestrator_pane.clone(), ids: vec![999] }).await;
     loop {
         if let ServerMsg::Error { req: Some(102), message, .. } = recv(&mut ws).await {
             assert_eq!(message, "no inbox item 999");

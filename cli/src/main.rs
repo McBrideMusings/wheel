@@ -102,12 +102,11 @@ enum Command {
     /// Agents, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
-    /// The orchestrator: an agent that talks for a space, or for the whole daemon, and is
-    /// no pane's agent.
+    /// Orchestrators: agent panes that watch the other agents, each with a scope and an inbox.
     #[command(subcommand)]
     Orchestrator(OrchestratorCommand),
-    /// The orchestrator's inbox: agent events for a scope, queued in the daemon until the
-    /// orchestrator reads them.
+    /// An orchestrator's inbox: agent events, queued in the daemon until the orchestrator reads
+    /// them.
     #[command(subcommand)]
     Inbox(InboxCommand),
     /// Permission requests waiting on a person.
@@ -1518,12 +1517,18 @@ fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
 
 #[derive(Subcommand)]
 enum OrchestratorCommand {
-    /// Start the orchestrator for a scope, or find the one running, and print its agent's
-    /// name. Attach to that agent and send to it as to any agent (`wheel agent read`, `wheel agent
-    /// send`). Fails for a scope that names no space.
+    /// Start an orchestrator as a new agent pane and print the pane's id. A space orchestrator
+    /// gets the events of its space's agents; a global one (`--global`) the events of every
+    /// agent in a space with no orchestrator, and of each space orchestrator. Several may share
+    /// a space; an event goes to the one started first. A space orchestrator runs in the
+    /// space's `orchestrator.dir` setting, else the space's folder.
     Start {
-        /// A space id, or `daemon` for the whole daemon.
-        scope: String,
+        /// The space the pane goes in: this pane's space when not given.
+        #[arg(long)]
+        space: Option<String>,
+        /// A global orchestrator rather than one for the space.
+        #[arg(long)]
+        global: bool,
         /// Seconds the orchestrator is idle before the daemon sends it the inbox items it has
         /// not been told (15 when not given).
         #[arg(long)]
@@ -1533,10 +1538,11 @@ enum OrchestratorCommand {
         #[arg(long)]
         turn_limit: Option<u64>,
     },
-    /// End the orchestrator for a scope. Fails when none is running.
+    /// Close an orchestrator's pane, which ends its agent. Fails when the pane holds no
+    /// orchestrator.
     Stop {
-        /// A space id, or `daemon`.
-        scope: String,
+        /// The orchestrator's pane.
+        pane: String,
     },
 }
 
@@ -1544,10 +1550,10 @@ enum OrchestratorCommand {
 enum InboxCommand {
     /// Print the items not acked yet, oldest first, one per line as `[id] text`, with
     /// `(N times)` for a repeated event and `(told)` once the orchestrator was sent it. Fails
-    /// when no orchestrator runs for the scope.
+    /// when the pane holds no orchestrator.
     List {
-        /// A space id, or `daemon`.
-        scope: String,
+        /// The orchestrator's pane.
+        pane: String,
         /// Every item kept, the acked ones marked `(acked)`.
         #[arg(long)]
         all: bool,
@@ -1558,16 +1564,16 @@ enum InboxCommand {
     /// Mark items done, so `list` no longer shows them. Every id that names an item is acked;
     /// fails naming the ones that name none.
     Ack {
-        /// A space id, or `daemon`.
-        scope: String,
+        /// The orchestrator's pane.
+        pane: String,
         #[arg(required = true)]
         ids: Vec<u64>,
     },
     /// Send a message to the agent an item is about, and ack the item. Prints the turn it
     /// queued as.
     Reply {
-        /// A space id, or `daemon`.
-        scope: String,
+        /// The orchestrator's pane.
+        pane: String,
         id: u64,
         /// What to send; the words are joined with spaces.
         #[arg(required = true, num_args = 1..)]
@@ -3238,27 +3244,32 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
     Ok(())
 }
 
-/// Start the orchestrator for `scope` and print its agent's name.
+/// Start an orchestrator of `scope` as a new agent pane in `space` (this pane's when not given)
+/// and print the pane's id.
 async fn orchestrator_start(
     conn: &mut Conn,
-    scope: String,
+    space: Option<String>,
+    scope: wheel_proto::OrchestratorScope,
     pull_after_secs: Option<u64>,
     turn_limit_secs: Option<u64>,
 ) -> Result<(), Fail> {
+    let Some(space) = default_space(conn, space).await? else {
+        return Err(Fail::Other("no space: give --space, or run this in a Wheel pane".into()));
+    };
     let req = conn.req();
-    let start = ClientMsg::OrchestratorStart { req: Some(req), scope, pull_after_secs, turn_limit_secs };
+    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, pull_after_secs, turn_limit_secs };
     match conn.call(start, req).await? {
-        ServerMsg::OrchestratorStarted { agent, .. } => {
-            println!("{agent}");
+        ServerMsg::OrchestratorStarted { pane, .. } => {
+            println!("{pane}");
             Ok(())
         }
         other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
     }
 }
 
-async fn inbox_list(conn: &mut Conn, scope: String, all: bool, json: bool) -> Result<(), Fail> {
+async fn inbox_list(conn: &mut Conn, pane: String, all: bool, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::InboxList { req: Some(req), scope, all }, req).await? {
+    match conn.call(ClientMsg::InboxList { req: Some(req), pane, all }, req).await? {
         ServerMsg::InboxItems { items, .. } if json => {
             println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
             Ok(())
@@ -3282,9 +3293,9 @@ async fn inbox_list(conn: &mut Conn, scope: String, all: bool, json: bool) -> Re
     }
 }
 
-async fn inbox_reply(conn: &mut Conn, scope: String, id: u64, text: String) -> Result<(), Fail> {
+async fn inbox_reply(conn: &mut Conn, pane: String, id: u64, text: String) -> Result<(), Fail> {
     let req = conn.req();
-    match conn.call(ClientMsg::InboxReply { req: Some(req), scope, id, text }, req).await? {
+    match conn.call(ClientMsg::InboxReply { req: Some(req), pane, id, text }, req).await? {
         ServerMsg::AgentQueued { agent, turn, .. } => {
             println!("{agent} turn {turn}");
             Ok(())
@@ -3293,8 +3304,8 @@ async fn inbox_reply(conn: &mut Conn, scope: String, id: u64, text: String) -> R
     }
 }
 
-async fn orchestrator_stop(conn: &mut Conn, scope: String) -> Result<(), Fail> {
-    simple(conn, |req| ClientMsg::OrchestratorStop { req: Some(req), scope }).await
+async fn orchestrator_stop(conn: &mut Conn, pane: String) -> Result<(), Fail> {
+    simple(conn, |req| ClientMsg::OrchestratorStop { req: Some(req), pane }).await
 }
 
 async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
@@ -5424,7 +5435,7 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
-    type Row = (String, String, Option<String>, Option<String>, Option<String>);
+    type Row = (String, String, Option<String>, Option<String>, Option<String>, Option<&'static str>);
     fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
             wheel_proto::Node::Pane { id, kind, name, title, .. } => {
@@ -5432,11 +5443,18 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                let source = match node {
-                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Mirror { source, .. }, .. } => Some(source.clone()),
-                    _ => None,
+                let (source, orchestrator) = match node {
+                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Mirror { source, .. }, .. } => (Some(source.clone()), None),
+                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Agent { orchestrator: Some(scope), .. }, .. } => (
+                        None,
+                        Some(match scope {
+                            wheel_proto::OrchestratorScope::Space => "space",
+                            wheel_proto::OrchestratorScope::Global => "global",
+                        }),
+                    ),
+                    _ => (None, None),
                 };
-                out.push((id.clone(), kind, name.clone(), title.clone(), source));
+                out.push((id.clone(), kind, name.clone(), title.clone(), source, orchestrator));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -5456,13 +5474,16 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         for tree in space.trees() {
             walk(tree, &mut panes);
         }
-        for (pane, kind, name, title, source) in panes {
+        for (pane, kind, name, title, source, orchestrator) in panes {
             let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
             let mut row = serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind, "site": site, "name": name, "title": title,
             });
             if let Some(source) = source {
                 row["source"] = source.into();
+            }
+            if let Some(scope) = orchestrator {
+                row["orchestrator"] = scope.into();
             }
             rows.push(row);
         }
@@ -5474,10 +5495,12 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     for row in &rows {
         let named = row["name"].as_str().or(row["title"].as_str());
         let kind = row["kind"].as_str().unwrap_or_default();
-        // A mirror names its source in the kind column, so the columns stay where scripts read them.
-        let kind = match row["source"].as_str() {
-            Some(source) => format!("{kind}:{source}"),
-            None => kind.to_owned(),
+        // A mirror names its source, and an orchestrator its scope, in the kind column, so the
+        // columns stay where scripts read them.
+        let kind = match (row["source"].as_str(), row["orchestrator"].as_str()) {
+            (Some(source), _) => format!("{kind}:{source}"),
+            (None, Some(scope)) => format!("{kind}:orchestrator-{scope}"),
+            (None, None) => kind.to_owned(),
         };
         println!(
             "{} {} {} {}{}",
@@ -6569,15 +6592,16 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
-            Command::Orchestrator(OrchestratorCommand::Start { scope, pull_after, turn_limit }) => {
-                orchestrator_start(&mut conn, scope, pull_after, turn_limit).await
+            Command::Orchestrator(OrchestratorCommand::Start { space, global, pull_after, turn_limit }) => {
+                let scope = if global { wheel_proto::OrchestratorScope::Global } else { wheel_proto::OrchestratorScope::Space };
+                orchestrator_start(&mut conn, space, scope, pull_after, turn_limit).await
             }
-            Command::Inbox(InboxCommand::List { scope, all, json }) => inbox_list(&mut conn, scope, all, json).await,
-            Command::Inbox(InboxCommand::Ack { scope, ids }) => {
-                simple(&mut conn, |req| ClientMsg::InboxAck { req: Some(req), scope, ids }).await
+            Command::Inbox(InboxCommand::List { pane, all, json }) => inbox_list(&mut conn, pane, all, json).await,
+            Command::Inbox(InboxCommand::Ack { pane, ids }) => {
+                simple(&mut conn, |req| ClientMsg::InboxAck { req: Some(req), pane, ids }).await
             }
-            Command::Inbox(InboxCommand::Reply { scope, id, text }) => inbox_reply(&mut conn, scope, id, text.join(" ")).await,
-            Command::Orchestrator(OrchestratorCommand::Stop { scope }) => orchestrator_stop(&mut conn, scope).await,
+            Command::Inbox(InboxCommand::Reply { pane, id, text }) => inbox_reply(&mut conn, pane, id, text.join(" ")).await,
+            Command::Orchestrator(OrchestratorCommand::Stop { pane }) => orchestrator_stop(&mut conn, pane).await,
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await
             }

@@ -172,16 +172,7 @@ pub(crate) fn words(command: &str) -> Vec<String> {
 /// The arguments the driver adds after the command's own.
 fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
-    if launch.orchestrator {
-        // The orchestrator runs only the whitelisted `wheel` commands: Bash is its one tool, and
-        // `dontAsk` refuses everything the list does not name instead of asking a person.
-        args.extend(["--tools".into(), "Bash".into()]);
-        // No settings file is read, the person's or the project's: their allow rules and hooks
-        // would otherwise widen what this agent may run.
-        args.extend(["--setting-sources".into(), String::new()]);
-        args.extend(["--allowedTools".into(), crate::orchestrator::ALLOWED.join(",")]);
-        args.extend(["--permission-mode".into(), "dontAsk".into()]);
-    } else if launch.brief.is_some() {
+    if launch.brief.is_some() {
         args.extend(["--allowedTools".into(), ALLOWED.into()]);
         args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
     }
@@ -204,7 +195,7 @@ fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
         ]
         .map(String::from),
     );
-    if let Some(mode) = launch.permissions.permission_mode.as_ref().filter(|_| !launch.orchestrator) {
+    if let Some(mode) = &launch.permissions.permission_mode {
         args.extend(["--permission-mode".into(), mode.clone()]);
     }
     match &launch.conversation {
@@ -1892,7 +1883,6 @@ mod tests {
             conversation: Conversation::Fork { from: "src".into(), turns, id: "new".into() },
             model: None,
             permissions: Default::default(),
-            orchestrator: false,
         };
         let cut = super::arguments(&launch(1), Some("a1b"));
         let at = cut.iter().position(|a| a == "--resume-session-at").unwrap();

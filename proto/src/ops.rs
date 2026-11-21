@@ -10,7 +10,10 @@ use std::collections::BTreeSet;
 /// Every change that broke the protocol, as (level, what changed). A level is added only when an
 /// op is removed, or when an op or field a client relies on changes meaning, or when a reply gains
 /// a field an older client cannot do without. Adding an op, or a field with a default, is never one.
-pub const BREAKS: &[(u32, &str)] = &[(1, "wheeld lists the operations it handles")];
+pub const BREAKS: &[(u32, &str)] = &[
+    (1, "wheeld lists the operations it handles"),
+    (2, "an orchestrator is an agent pane: orchestrator_start makes one and names its pane, and orchestrator_stop and the inbox ops take that pane"),
+];
 
 /// This build's compatibility level: the last entry of [`BREAKS`].
 pub const COMPAT: u32 = BREAKS[BREAKS.len() - 1].0;

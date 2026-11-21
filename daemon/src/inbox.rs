@@ -144,10 +144,10 @@ impl Inbox {
         }
     }
 
-    /// The message that tells the orchestrator of `scope` its untold items, grouped by agent in
+    /// The message that tells the orchestrator in `pane` its untold items, grouped by agent in
     /// the order each agent first appears, with their ids, and marks them told. None when
     /// nothing is untold.
-    pub(crate) fn take_untold(&mut self, scope: &str) -> Option<(String, Vec<u64>)> {
+    pub(crate) fn take_untold(&mut self, pane: &str) -> Option<(String, Vec<u64>)> {
         let mut agents: Vec<&str> = Vec::new();
         for kept in self.items.iter().filter(|k| !k.item.acked && !k.item.told) {
             if !agents.contains(&kept.item.agent.as_str()) {
@@ -172,11 +172,11 @@ impl Inbox {
         for kept in self.items.iter_mut().filter(|k| ids.contains(&k.item.id)) {
             kept.item.told = true;
         }
-        tracing::info!(%scope, ?ids, "inbox told");
+        tracing::info!(%pane, ?ids, "inbox told");
         let n = ids.len();
         let noun = if n == 1 { "item" } else { "items" };
         let text = format!(
-            "Inbox: {n} new {noun}. Tell the person, then run `wheel inbox ack {scope} <ids>`.\n{}",
+            "Inbox: {n} new {noun}. Tell the person, then run `wheel inbox ack {pane} <ids>`.\n{}",
             lines.join("\n")
         );
         Some((text, ids))

@@ -41,6 +41,8 @@ pub(crate) struct AgentStart {
     /// Environment values picked for the agent (`pane_reload`'s `set`), other than its home
     /// variable, which `home` carries. Set last, so they win over Wheel's own.
     pub env: BTreeMap<String, String>,
+    /// The pane is an orchestrator of this scope (`crate::orchestrator`).
+    pub orchestrator: Option<wheel_proto::OrchestratorScope>,
 }
 
 /// An agent pane's choices while the pane is a terminal: the model and mode (config option id,
@@ -161,8 +163,8 @@ pub struct AppState {
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection that owns orchestrator, if any (`crate::orchestrator`).
     pub(crate) orchestrator_lease: Mutex<Option<SocketAddr>>,
-    /// Each running orchestrator's inbox, by scope (`crate::inbox`).
-    pub(crate) orchestrator_inboxes: Mutex<HashMap<String, Arc<Mutex<crate::inbox::Inbox>>>>,
+    /// The running orchestrators in the order they started (`crate::orchestrator`).
+    pub(crate) orchestrators: Mutex<Vec<crate::orchestrator::Orchestrator>>,
     /// A pane agent's failed build or test command, as (agent, command), for the orchestrators'
     /// inboxes (`crate::agent::build_command`).
     pub(crate) build_failures: broadcast::Sender<(String, String)>,
@@ -387,7 +389,7 @@ impl AppState {
             agent_added: watch::channel(()).0,
             agent_timing: Mutex::new(AgentTiming::default()),
             orchestrator_lease: Mutex::new(None),
-            orchestrator_inboxes: Mutex::new(HashMap::new()),
+            orchestrators: Mutex::new(Vec::new()),
             build_failures: broadcast::channel(64).0,
             agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
@@ -597,15 +599,10 @@ impl AppState {
     /// The environment for the agent in `pane` of `space`: where `wheel` reaches this daemon, and a
     /// `PATH` that finds it. Empty when this daemon has no address to give.
     pub(crate) fn agent_env(&self, pane: &str) -> Vec<(String, String)> {
-        self.agent_env_for(Some(pane))
-    }
-
-    /// [`AppState::agent_env`] for an agent that may have no pane: with none, `WHEEL_PANE` is not set.
-    pub(crate) fn agent_env_for(&self, pane: Option<&str>) -> Vec<(String, String)> {
         let Some(control) = self.control.lock().unwrap().clone() else {
             return Vec::new();
         };
-        let mut env = crate::shell::env(&control, &self.instance_dir, pane);
+        let mut env = crate::shell::env(&control, &self.instance_dir, Some(pane));
         env.push(("WHEEL_AGENT_PANE".into(), "1".into()));
         env.push((
             "PATH".into(),
@@ -773,6 +770,7 @@ impl AppState {
             model,
             permissions,
             env: picked,
+            orchestrator,
         } = start;
         let command = self.agent_ready(agent)?.command;
         let harness = Harness::parse(agent).ok_or_else(|| format!("no agent {agent}"))?;
@@ -781,14 +779,19 @@ impl AppState {
             command,
             cwd: cwd.into(),
             home: home.map(PathBuf::from).or_else(|| self.agent_home(agent)),
-            brief: Some(crate::brief::text(
-                pane,
-                name,
-                &self.pane_brief(pane, space_cwd),
-                &self.guidance_for(agent),
-            )),
+            brief: Some({
+                let brief = crate::brief::text(pane, name, &self.pane_brief(pane, space_cwd), &self.guidance_for(agent));
+                match orchestrator {
+                    Some(scope) => format!("{brief}\n\n{}", crate::orchestrator::brief(pane, scope)),
+                    None => brief,
+                }
+            }),
             env: {
                 let mut env = self.agent_env(pane);
+                if orchestrator.is_some() {
+                    // `wheel perm answer` refuses an irreversible allow without `--confirmed`.
+                    env.push(("WHEEL_ORCHESTRATOR".into(), "1".into()));
+                }
                 env.extend(picked);
                 env
             },
@@ -807,7 +810,6 @@ impl AppState {
             restart: self.agent_timing.lock().unwrap().restart,
             model,
             permissions,
-            orchestrator: false,
             on_build_failed: Some(Arc::new({
                 let failures = self.build_failures.clone();
                 let agent = name.to_string();
@@ -826,43 +828,10 @@ impl AppState {
         );
         self.agents.lock().unwrap().insert(name.into(), agent);
         self.agent_added.send_replace(());
-        Ok(())
-    }
-
-    /// Start the orchestrator's agent `name` in `cwd` on `model`, with `brief` as its whole
-    /// instructions (`crate::orchestrator`). It belongs to no pane.
-    pub(crate) fn spawn_orchestrator_agent(&self, name: &str, cwd: &str, brief: String, model: &str) -> Result<bool, String> {
-        let command = self.agent_ready("claude")?.command;
-        let config = AgentConfig {
-            agent: Harness::Claude,
-            command,
-            cwd: cwd.into(),
-            home: self.agent_home("claude"),
-            brief: Some(brief),
-            env: {
-                let mut env = self.agent_env_for(None);
-                env.push(("WHEEL_ORCHESTRATOR".into(), "1".into()));
-                env
-            },
-            restored: false,
-            conversation: None,
-            fork: None,
-            context: None,
-            on_saved: None,
-            restart: self.agent_timing.lock().unwrap().restart,
-            model: Some(model.into()),
-            permissions: AgentPermissions::default(),
-            orchestrator: true,
-            on_build_failed: None,
-        };
-        // One lock holds the check and the insert, so two starts never leave a process unowned.
-        let mut agents = self.agents.lock().unwrap();
-        if agents.contains_key(name) {
-            return Ok(false);
+        if let Some(scope) = orchestrator {
+            self.orchestrator_register(pane, name, scope);
         }
-        let agent = Agent::start(name.into(), None, config, self.perms.clone(), self.global.clone());
-        agents.insert(name.into(), agent);
-        Ok(true)
+        Ok(())
     }
 
     /// End an agent for good; its agent process is killed.
@@ -1701,17 +1670,31 @@ async fn handle(
             });
             None
         }
-        ClientMsg::OrchestratorStart { req, scope, pull_after_secs, turn_limit_secs } => match state.orchestrator_start(
-            &scope,
-            pull_after_secs.map(std::time::Duration::from_secs),
-            turn_limit_secs.map(std::time::Duration::from_secs),
-        ) {
-            Ok(agent) => {
-                tracing::info!(%peer, %scope, %agent, "orchestrator start");
-                req.map(|req| ServerMsg::OrchestratorStarted { req, scope, agent })
-            }
-            Err(message) => Some(failed(req, message)),
-        },
+        // On a task of its own: the pane's agent starts as `pane_start`'s does.
+        ClientMsg::OrchestratorStart { req, space, scope, pull_after_secs, turn_limit_secs } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let started = state
+                    .orchestrator_start(
+                        &space,
+                        scope,
+                        pull_after_secs.map(std::time::Duration::from_secs),
+                        turn_limit_secs.map(std::time::Duration::from_secs),
+                    )
+                    .await;
+                let reply = match started {
+                    Ok((pane, agent)) => {
+                        tracing::info!(%peer, %space, %pane, %agent, "orchestrator start");
+                        req.map(|req| ServerMsg::OrchestratorStarted { req, pane, agent })
+                    }
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::OrchestratorClaim { req } => {
             let owner = state.orchestrator_claim(peer);
             tracing::info!(%peer, "orchestrator claim");
@@ -1724,30 +1707,30 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::InboxList { req, scope, all } => match state.inbox(&scope) {
+        ClientMsg::InboxList { req, pane, all } => match state.inbox(&pane) {
             Ok(inbox) => {
                 let items = inbox.lock().unwrap().list(all);
                 req.map(|req| ServerMsg::InboxItems { req, items })
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::InboxAck { req, scope, ids } => match state.inbox(&scope).and_then(|inbox| inbox.lock().unwrap().ack(&ids)) {
+        ClientMsg::InboxAck { req, pane, ids } => match state.inbox(&pane).and_then(|inbox| inbox.lock().unwrap().ack(&ids)) {
             Ok(()) => {
-                tracing::info!(%peer, %scope, ?ids, "inbox ack");
+                tracing::info!(%peer, %pane, ?ids, "inbox ack");
                 req.map(|req| ServerMsg::Ok { req })
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::InboxReply { req, scope, id, text } => match state.inbox_reply(&scope, id, text) {
+        ClientMsg::InboxReply { req, pane, id, text } => match state.inbox_reply(&pane, id, text) {
             Ok((agent, turn)) => {
-                tracing::info!(%peer, %scope, id, %agent, "inbox reply");
+                tracing::info!(%peer, %pane, id, %agent, "inbox reply");
                 req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::OrchestratorStop { req, scope } => match state.orchestrator_stop(&scope) {
+        ClientMsg::OrchestratorStop { req, pane } => match state.orchestrator_stop(&pane) {
             Ok(()) => {
-                tracing::info!(%peer, %scope, "orchestrator stop");
+                tracing::info!(%peer, %pane, "orchestrator stop");
                 req.map(|req| ServerMsg::Ok { req })
             }
             Err(message) => Some(failed(req, message)),
@@ -2127,6 +2110,7 @@ async fn handle(
                                         permission_profile: None,
                                     },
                                     dir,
+                                    orchestrator: None,
                                 },
                             )
                             .await

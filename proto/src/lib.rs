@@ -774,19 +774,21 @@ pub enum ClientMsg {
         agent: String,
         timeout_secs: f64,
     },
-    /// Start the orchestrator for `scope`, a space id or `daemon`, or find the one already
-    /// running for it. Replies `orchestrator_started` naming its agent; a client attaches to that agent
-    /// with `agent_attach` for its transcript stream and sends to it with `agent_send`, as for
-    /// any agent. It is no pane's agent. Fails for a scope that names no space.
+    /// Start an orchestrator (ADR-0054): a new agent pane in `space`, run as any agent pane is,
+    /// with the orchestrator brief and an inbox keyed by its pane. `scope` says which agents'
+    /// events reach it: `space` for the agents of the space it is in, `global` for the rest
+    /// ([`OrchestratorScope`]). A space orchestrator runs in the `orchestrator.dir` setting of its
+    /// space, else the space's folder. Several may share a space. Replies `orchestrator_started`
+    /// naming the pane and its agent. Fails for a space that does not exist.
     ///
-    /// Agent events for the scope queue in its inbox (`inbox_list`). wheeld sends the orchestrator
-    /// the items it has not been told once it has been idle `pull_after_secs` (15 when absent), and
-    /// adds an `over_time` item for a turn running past `turn_limit_secs` (1800 when absent; 0 is
-    /// refused). A start for a running orchestrator sets the values given. `PROTOCOL_VERSION` 42.
+    /// wheeld sends the orchestrator the inbox items it has not been told once it has been idle
+    /// `pull_after_secs` (15 when absent), and adds an `over_time` item for a turn running past
+    /// `turn_limit_secs` (1800 when absent; 0 is refused).
     OrchestratorStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        scope: String,
+        space: String,
+        scope: OrchestratorScope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pull_after_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -804,38 +806,38 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
-    /// The inbox of the orchestrator for `scope`: the items not acked yet, oldest first, or every
-    /// item kept when `all`. Replies `inbox_items`. Fails when no orchestrator runs for `scope`.
-    /// `PROTOCOL_VERSION` 42.
+    /// The inbox of the orchestrator in `pane`: the items not acked yet, oldest first, or every
+    /// item kept when `all`. Replies `inbox_items`. Fails when `pane` holds no orchestrator.
     InboxList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        scope: String,
+        pane: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
     },
-    /// Mark inbox items of `scope` done, so `inbox_list` no longer shows them. Every id that
-    /// names an item is acked; fails naming the ids that name none. Replies `ok`. `PROTOCOL_VERSION` 42.
+    /// Mark inbox items of the orchestrator in `pane` done, so `inbox_list` no longer shows them.
+    /// Every id that names an item is acked; fails naming the ids that name none. Replies `ok`.
     InboxAck {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        scope: String,
+        pane: String,
         ids: Vec<u64>,
     },
-    /// Send `text` to the agent inbox item `id` of `scope` is about, as `agent_send` does, and ack
-    /// the item. Replies `agent_queued`. `PROTOCOL_VERSION` 42.
+    /// Send `text` to the agent that item `id` of the orchestrator in `pane` is about, as
+    /// `agent_send` does, and ack the item. Replies `agent_queued`.
     InboxReply {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        scope: String,
+        pane: String,
         id: u64,
         text: String,
     },
-    /// End the orchestrator for `scope` and its agent process. Fails when none is running.
+    /// Close the orchestrator pane `pane`, which ends its agent as any pane close does. Fails
+    /// when `pane` holds no orchestrator.
     OrchestratorStop {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-        scope: String,
+        pane: String,
     },
     /// Stop an agent's current turn. Queued messages are left alone: taking one back is
     /// `agent_unsend`.
@@ -2436,10 +2438,10 @@ pub enum ServerMsg {
     OrchestratorLease {
         owner: Option<String>,
     },
-    /// The reply to `orchestrator_start`: the orchestrator's agent for `scope`.
+    /// The reply to `orchestrator_start`: the orchestrator's new pane and its agent.
     OrchestratorStarted {
         req: u64,
-        scope: String,
+        pane: String,
         agent: String,
     },
     /// One step of an agent's conversation. `text` events are chunks: append each to the last.
@@ -3517,6 +3519,18 @@ pub enum CardRef {
 pub struct PlanItem {
     pub content: String,
     pub status: String,
+}
+
+/// Which agents' events reach an orchestrator (ADR-0054). An event goes to one orchestrator:
+/// the first space orchestrator started in the agent's space, else the first global one started.
+/// A space orchestrator's own events go to the first global one; a global one's go to none.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestratorScope {
+    /// The agents of the space the orchestrator's pane is in.
+    Space,
+    /// Every agent no space orchestrator takes, and the space orchestrators themselves.
+    Global,
 }
 
 /// What an orchestrator inbox item is about.
@@ -4648,6 +4662,9 @@ pub enum PaneKind {
         permissions: Option<Box<AgentPermissions>>,
         /// The login the pane runs under; set by the listing (`status`), never saved.
         login: Option<Box<AgentLogin>>,
+        /// The pane is an orchestrator of this scope (`orchestrator_start`, ADR-0054), saved so a
+        /// restored pane is one again.
+        orchestrator: Option<OrchestratorScope>,
         extra: Extra,
     },
     /// Another pane's live content drawn in a second place (`pane_mirror`): `source` is that
@@ -4806,6 +4823,8 @@ enum KnownPaneKind {
         permission_profile: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         login: Option<AgentLogin>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orchestrator: Option<OrchestratorScope>,
     },
 }
 
@@ -4868,6 +4887,7 @@ impl Serialize for PaneKind {
                 place,
                 permissions,
                 login,
+                orchestrator,
                 extra,
             } => (
                 KnownPaneKind::Agent {
@@ -4884,6 +4904,7 @@ impl Serialize for PaneKind {
                     approvals_reviewer: permissions.as_ref().and_then(|p| p.approvals_reviewer.clone()),
                     permission_profile: permissions.as_ref().and_then(|p| p.permission_profile.clone()),
                     login: login.as_deref().cloned(),
+                    orchestrator: *orchestrator,
                 },
                 extra,
             ),
@@ -4977,6 +4998,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 approvals_reviewer,
                 permission_profile,
                 login,
+                orchestrator,
             } => PaneKind::Agent {
                 agent,
                 harness,
@@ -4987,6 +5009,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 place: AgentPlace::boxed(cwd, env),
                 permissions: AgentPermissions::boxed(permission_mode, sandbox, approvals_reviewer, permission_profile),
                 login: login.map(Box::new),
+                orchestrator,
                 extra,
             },
         })

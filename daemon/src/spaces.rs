@@ -656,6 +656,8 @@ pub struct StartOptions {
     pub permissions: AgentPermissions,
     /// For an agent pane: the directory it runs in, instead of its space's.
     pub dir: Option<String>,
+    /// For an agent pane: start it as an orchestrator of this scope (`crate::orchestrator`).
+    pub orchestrator: Option<wheel_proto::OrchestratorScope>,
 }
 
 /// The conversation a forked agent copies, and where and under which account it was kept.
@@ -940,6 +942,7 @@ impl AppState {
             PaneKind::Browser { .. } => self.console.lock().unwrap().forget(pane),
             PaneKind::Agent { agent, .. } => {
                 self.end_agent(agent);
+                self.orchestrator_gone_from(pane);
                 // The caller holds the spaces lock, so the sweep that deletes this agent's
                 // artifacts waits for the layout without the pane.
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -1255,7 +1258,6 @@ impl AppState {
     fn close_locked(&self, spaces: &mut Spaces, index: usize) {
         let space = spaces.remove(index);
         self.streams.close_space(&space.id);
-        self.end_agent(&crate::orchestrator::agent_name(&space.id));
         for (pane, kind) in space_panes(&space) {
             self.drop_content(pane, kind);
         }
@@ -1841,6 +1843,7 @@ impl AppState {
             model,
             permissions,
             dir,
+            orchestrator,
         } = options;
         if kind == StartKind::Terminal && dir.is_some() {
             return Err("a directory is only for an agent pane".into());
@@ -1902,7 +1905,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model, permissions, dir, None)
+                .start_agent(space, &pane, &agent, message, model, permissions, (dir, orchestrator), None)
                 .await
                 .map(Some),
         };
@@ -1990,7 +1993,7 @@ impl AppState {
             home: source_home,
         };
         match self
-            .start_agent(&space, &new, &harness, None, model, permissions, None, Some(source))
+            .start_agent(&space, &new, &harness, None, model, permissions, (None, None), Some(source))
             .await
         {
             Ok((started, state)) => Ok(Started {
@@ -2144,11 +2147,11 @@ impl AppState {
         // A conversation switched over from a terminal runs where Claude Code ran it.
         let place = saved_place(root, &saved.pane);
         let cwd = place.cwd;
-        let permissions = match space_find(root, &saved.pane) {
-            Some(PaneKind::Agent { permissions, .. }) => {
-                permissions.as_deref().cloned().unwrap_or_default()
+        let (permissions, orchestrator) = match space_find(root, &saved.pane) {
+            Some(PaneKind::Agent { permissions, orchestrator, .. }) => {
+                (permissions.as_deref().cloned().unwrap_or_default(), *orchestrator)
             }
-            _ => AgentPermissions::default(),
+            _ => (AgentPermissions::default(), None),
         };
         // A hand-edited layout can name a mode the agent does not have; say so here rather than
         // let the agent fail at spawn.
@@ -2171,6 +2174,7 @@ impl AppState {
                 model: saved.model,
                 permissions,
                 env: picked_besides_home(place.env, harness),
+                orchestrator,
             },
         )?;
         if self.turn_ended.lock().unwrap().contains_key(&saved.pane) {
@@ -2265,7 +2269,7 @@ impl AppState {
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
-        dir: Option<String>,
+        (dir, orchestrator): (Option<String>, Option<wheel_proto::OrchestratorScope>),
         fork: Option<ForkSource>,
     ) -> Result<(String, AgentState), (String, bool)> {
         // A second start on a pane whose first has not heard back from its agent would `install`
@@ -2299,6 +2303,7 @@ impl AppState {
                 home: home.clone(),
                 model: model.clone(),
                 permissions: permissions.clone(),
+                orchestrator,
                 ..Default::default()
             },
         )
@@ -2319,6 +2324,7 @@ impl AppState {
             place: wheel_proto::AgentPlace::boxed(pane_cwd, picked),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
+            orchestrator,
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the agent it was given.
