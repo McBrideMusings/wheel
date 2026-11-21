@@ -163,13 +163,16 @@ impl AppState {
 
     /// The pane of the orchestrator an event of agent `agent` goes to: the first space orchestrator
     /// started in the agent's space, else the first global one. A space orchestrator's own events
-    /// go to the first global one, and a global orchestrator's to none.
+    /// go to the first global one, and a global orchestrator's to none. An orchestrator whose agent
+    /// is not running (its reload could not start one) is passed over until its agent starts again.
     pub(crate) fn orchestrator_for(&self, agent: &str) -> Option<String> {
         // A copy, so the registry's lock is never held while the spaces' is taken.
         let all: Vec<(String, String, OrchestratorScope)> =
             self.orchestrators.lock().unwrap().iter().map(|o| (o.pane.clone(), o.agent.clone(), o.scope)).collect();
+        let own = all.iter().find(|o| o.1 == agent).map(|o| o.2);
+        let all: Vec<_> = all.into_iter().filter(|o| self.agent(&o.1).is_ok()).collect();
         let first_global = || all.iter().find(|o| o.2 == OrchestratorScope::Global).map(|o| o.0.clone());
-        match all.iter().find(|o| o.1 == agent).map(|o| o.2) {
+        match own {
             Some(OrchestratorScope::Global) => return None,
             Some(OrchestratorScope::Space) => return first_global(),
             None => {}
@@ -335,5 +338,47 @@ mod tests {
         assert!(text.contains("wheel inbox ack p7 <ids>") && text.contains("wheel inbox list p7"), "{text}");
         assert!(text.contains("--confirmed"), "{text}");
         assert!(brief("p7", OrchestratorScope::Global).contains("Your scope is global"));
+    }
+
+    /// wheel-eg4e.19.14: an orchestrator whose agent is not running (a reload that ended it and
+    /// could not start another) is passed over, and takes its space's events again once it runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_orchestrator_whose_agent_is_not_running_is_passed_over() {
+        let dir = std::env::temp_dir().join(format!("wheel-orchestrator-down-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pane = |id: &str, agent: &str| serde_json::json!({"node": "pane", "id": id, "kind": "agent", "agent": agent, "harness": "claude"});
+        let saved = serde_json::json!({
+            "spaces": [{"id": "s1", "name": "tmp", "cwd": "/tmp", "focus": "p3", "root": {
+                "node": "split", "id": "x1", "axis": "horizontal", "ratio": 0.5,
+                "a": pane("p1", "w1"),
+                "b": {"node": "split", "id": "x2", "axis": "horizontal", "ratio": 0.5, "a": pane("p2", "w2"), "b": pane("p3", "w3")},
+            }}],
+            "next_id": 10,
+        });
+        let file = dir.join("spaces.json");
+        std::fs::write(&file, saved.to_string()).unwrap();
+        let state = AppState::new(String::new(), "t".into(), dir.clone(), std::path::PathBuf::new());
+        // No program, so the restore starts none of the three agents.
+        state.setting_set("agent.claude.command", dir.join("none").to_str().unwrap(), None, true).unwrap();
+        state.restore_spaces(file).await.unwrap();
+        state.setting_set("agent.claude.command", "/usr/bin/true", None, true).unwrap();
+        let start = |name: &str, pane: &str| {
+            let start = crate::server::AgentStart { orchestrator: Some(OrchestratorScope::Space), ..Default::default() };
+            state.spawn_agent(name, (pane, "claude"), ("/tmp", "/tmp"), start).unwrap();
+        };
+        start("w1", "p1");
+        start("w2", "p2");
+        assert_eq!(state.orchestrator_for("w3").as_deref(), Some("p1"), "the first started takes the space");
+
+        // 1. o1's agent ended and none started: the pane keeps its entry, and o2 takes the events.
+        state.end_agent("w1");
+        assert_eq!(state.orchestrator_for("w3").as_deref(), Some("p2"));
+
+        // 2. o1's agent starts again, and takes them back ahead of o2.
+        start("w1", "p1");
+        assert_eq!(state.orchestrator_for("w3").as_deref(), Some("p1"));
+        state.stop_agents();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
