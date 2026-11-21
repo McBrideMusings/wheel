@@ -1197,17 +1197,16 @@ final class PhoneModel {
 
     // MARK: Terminals
 
-    /// The surface for `term`'s own page, made the first time the page asks.
-    func terminal(_ term: String) -> PhoneTerminal {
-        if let existing = terminals[term] { return existing }
-        let terminal = makeSurface(term)
+    /// `term`'s own page came up: make its surface the first time.
+    func pageAppeared(_ term: String) {
+        guard terminals[term] == nil else { return }
+        _ = makeSurface(term)
         if attachedTerms.contains(term) {
             // Already streamed for another surface (a mirror's or an embed's): attach again for the replay, which goes to
             // this surface alone.
             Log.info("attaching to \(term) for a new surface")
             client?.send(.termAttach(req: client?.req(), id: term))
         }
-        return terminal
     }
 
     private func makeSurface(_ term: String) -> PhoneTerminal {

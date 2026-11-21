@@ -183,8 +183,7 @@ struct SpaceCarousel: View {
             TerminalEmbed(model: model, host: pane.id, term: term).id(term)
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
         } else if case let .terminal(term, _) = pane.kind {
-            let terminal = model.terminal(term)
-            TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+            TerminalPageSurface(model: model, term: term)
                 // The surface draws its own opaque background, so the tint goes over it.
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
         } else if case let .agent(agent, harness) = pane.kind, let chat = model.chats[agent] {
@@ -636,6 +635,23 @@ private struct TerminalEmbed: View {
         TerminalPage(model: model, terminal: terminal, termState: terminal.view)
             .onAppear { model.embedShown(terminal) }
             .onDisappear { model.embedHidden(terminal) }
+    }
+}
+
+/// A terminal pane's own page: the model's surface for the term, made when the page appears, so body sends nothing.
+private struct TerminalPageSurface: View {
+    let model: PhoneModel
+    let term: String
+
+    var body: some View {
+        Group {
+            if let terminal = model.terminals[term] {
+                TerminalPage(model: model, terminal: terminal, termState: terminal.view)
+            } else {
+                Color.clear
+            }
+        }
+        .onAppear { model.pageAppeared(term) }
     }
 }
 
