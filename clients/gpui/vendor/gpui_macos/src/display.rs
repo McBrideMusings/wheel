@@ -7,7 +7,7 @@ use cocoa::{
 };
 use core_foundation::base::CFRelease;
 use core_foundation::uuid::{CFUUIDGetUUIDBytes, CFUUIDRef};
-use core_graphics::display::{CGDirectDisplayID, CGDisplayBounds, CGGetActiveDisplayList};
+use core_graphics::display::{CGDirectDisplayID, CGDisplayBounds};
 use gpui::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, size};
 use objc::{msg_send, sel, sel_impl};
 use uuid::Uuid;
@@ -44,24 +44,21 @@ impl MacDisplay {
         }
     }
 
-    /// Obtains an iterator over all currently active system displays.
+    /// Every screen AppKit lists, sleeping ones included: `CGGetActiveDisplayList` leaves out a
+    /// display that is asleep, which would leave a window no screen to be restored onto.
     pub fn all() -> impl Iterator<Item = Self> {
         unsafe {
-            // We're assuming there aren't more than 32 displays connected to the system.
-            let mut displays = Vec::with_capacity(32);
-            let mut display_count = 0;
-            let result = CGGetActiveDisplayList(
-                displays.capacity() as u32,
-                displays.as_mut_ptr(),
-                &mut display_count,
-            );
-
-            if result == 0 {
-                displays.set_len(display_count as usize);
-                displays.into_iter().map(MacDisplay)
-            } else {
-                panic!("Failed to get active display list. Result: {result}");
-            }
+            let screens = NSScreen::screens(nil);
+            let screen_number_key: id = ns_string("NSScreenNumber");
+            (0..NSArray::count(screens))
+                .map(|i| {
+                    let screen = NSArray::objectAtIndex(screens, i);
+                    let screen_number = NSScreen::deviceDescription(screen).objectForKey_(screen_number_key);
+                    let screen_number: CGDirectDisplayID = msg_send![screen_number, unsignedIntegerValue];
+                    MacDisplay(screen_number)
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
         }
     }
 }
