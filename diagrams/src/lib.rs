@@ -2,7 +2,8 @@
 //! drawing client names. The GPUI Mac client lays out in its own process and draws the SVG;
 //! wheeld lays out and rasterizes ([`png`], the `png` feature) for a client with no fonts the
 //! crate can find (the iPhone: `fontdb` scans no iOS font folder), so every client gets the same
-//! picture from one layout.
+//! picture from one layout. [`svg_png`] rasterizes a reply's own SVG the same way for wheeld's
+//! `svg_image` op, since iOS has no SVG decoder.
 
 /// The colours a diagram is drawn in, each `#rrggbb`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +110,27 @@ pub const MAX_PIXELS: f32 = 4096.;
 /// in this machine's system fonts. A side over [`MAX_PIXELS`] lowers the scale to fit.
 #[cfg(feature = "png")]
 pub fn png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
+    rasterize(svg, scale).map(|(png, _, _)| png)
+}
+
+/// The most text one [`svg_png`] picture may hold, in bytes.
+#[cfg(feature = "png")]
+pub const MAX_SVG: usize = 256 * 1024;
+
+/// A reply's ```` ```svg ```` picture drawn as PNG at `scale` pixels per point, with its natural
+/// size in points, for a client that has no SVG decoder (the iPhone). The SVG comes from an agent,
+/// so no `image` it names is loaded: neither a file on this machine nor a data URL.
+#[cfg(feature = "png")]
+pub fn svg_png(svg: &str, scale: f32) -> Result<(Vec<u8>, f32, f32), String> {
+    if svg.len() > MAX_SVG {
+        return Err(format!("The SVG is over {} KB", MAX_SVG / 1024));
+    }
+    // A panic in resvg on an agent's SVG becomes this block's error, not a request left unanswered.
+    std::panic::catch_unwind(|| rasterize(svg, scale)).unwrap_or_else(|_| Err("The SVG's drawing failed".into()))
+}
+
+#[cfg(feature = "png")]
+fn rasterize(svg: &str, scale: f32) -> Result<(Vec<u8>, f32, f32), String> {
     use resvg::{tiny_skia, usvg};
     use std::sync::{Arc, OnceLock};
     // Scanning the system fonts takes a while: once per process.
@@ -120,15 +142,17 @@ pub fn png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
             Arc::new(db)
         })
         .clone();
-    let options = usvg::Options { fontdb, ..Default::default() };
+    let refuse = usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) };
+    let options = usvg::Options { fontdb, image_href_resolver: refuse, ..Default::default() };
     let tree = usvg::Tree::from_str(svg, &options).map_err(|e| format!("The SVG did not parse: {e}"))?;
     let size = tree.size();
     let longest = size.width().max(size.height()).max(1.);
     let scale = scale.clamp(1., 4.).min(MAX_PIXELS / longest);
     let mut pixmap = tiny_skia::Pixmap::new((size.width() * scale).ceil() as u32, (size.height() * scale).ceil() as u32)
-        .ok_or("The diagram has no area")?;
+        .ok_or("The picture has no area")?;
     resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    pixmap.encode_png().map_err(|e| format!("The PNG did not encode: {e}"))
+    let png = pixmap.encode_png().map_err(|e| format!("The PNG did not encode: {e}"))?;
+    Ok((png, size.width(), size.height()))
 }
 
 #[cfg(test)]
@@ -175,5 +199,24 @@ mod tests {
         p.line = "red\" onload=\"x".into();
         assert_eq!(layout("flowchart LR\n A --> B", &p).unwrap_err(), "The palette's line is not a #rrggbb colour");
         assert!(layout(&"A".repeat(MAX_SOURCE + 1), &palette()).unwrap_err().contains("over 64 KB"));
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn a_reply_svg_draws_and_loads_no_file() {
+        let file = std::env::temp_dir().join(format!("wheel-diagrams-{}.png", std::process::id()));
+        let (red, _, _) = svg_png(r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#, 1.).unwrap();
+        std::fs::write(&file, &red).unwrap();
+        let svg = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><image href="{}" width="120" height="60"/><circle cx="30" cy="30" r="20" fill="#7fb89a"/><text x="60" y="35" font-size="14">hi</text></svg>"##, file.display());
+        let (png, width, height) = svg_png(&svg, 2.).expect("the svg did not draw");
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!((width, height), (120., 60.));
+        let pixmap = resvg::tiny_skia::Pixmap::decode_png(&png).unwrap();
+        assert_eq!((pixmap.width(), pixmap.height()), (240, 120));
+        // The corner lies outside the circle: paint there would mean the file was read.
+        assert_eq!(pixmap.pixel(2, 2).unwrap().alpha(), 0);
+        assert_ne!(pixmap.pixel(60, 60).unwrap().alpha(), 0, "the circle did not draw");
+        assert!(svg_png("not svg", 1.).unwrap_err().starts_with("The SVG did not parse"));
+        assert!(svg_png(&"a".repeat(MAX_SVG + 1), 1.).unwrap_err().contains("over 256 KB"));
     }
 }

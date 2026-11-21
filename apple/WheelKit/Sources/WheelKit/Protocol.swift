@@ -57,6 +57,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// A Mermaid diagram laid out in `palette` on the daemon's machine, whose fonts the layout
     /// measures with, and drawn as PNG at `scale` pixels per point; the daemon answers `diagram`.
     case diagram(req: UInt64?, source: String, palette: DiagramPalette, scale: Double)
+    /// A reply's SVG picture drawn as PNG at `scale` pixels per point on the daemon's machine, for
+    /// a client with no SVG decoder; the daemon answers `diagram`.
+    case svgImage(req: UInt64?, svg: String, scale: Double)
     /// Split `pane` and show a page in a browser pane, or an artifact in a web pane, on its `dir`
     /// side; the daemon answers `created` with the new pane's id.
     case paneOpen(req: UInt64?, pane: String, dir: Dir, url: String?, artifact: String?, focus: Bool)
@@ -297,6 +300,8 @@ public enum ClientMsg: Sendable, Equatable {
             if let cwd { o["cwd"] = cwd }
         case let .diagram(req, source, palette, scale):
             o = ["op": "diagram", "source": source, "palette": palette.json, "scale": scale]; put(req)
+        case let .svgImage(req, svg, scale):
+            o = ["op": "svg_image", "svg": svg, "scale": scale]; put(req)
         case let .paneOpen(req, pane, dir, url, artifact, focus):
             o = ["op": "pane_open", "pane": pane, "dir": dir.rawValue]; put(req)
             if let url { o["url"] = url }
@@ -1396,7 +1401,8 @@ public enum ServerMsg: Sendable {
     /// An image file's bytes, in reply to `fileImage`: `found` is false when there is no such file or it is not
     /// a small image, and `error` says why for one that exists.
     case fileImage(req: UInt64, image: FileImage)
-    /// A Mermaid diagram as PNG with its natural size, or why it did not lay out, in reply to `diagram`.
+    /// A picture as PNG with its natural size, or why it did not lay out or draw, in reply to
+    /// `diagram` or `svgImage`.
     case diagram(req: UInt64, drawing: DiagramDrawing)
     /// The homes found for an agent and the reading of the path asked about, in reply to `agentHomes`.
     case agentHomes(req: UInt64, homes: [AgentHome], checked: AgentHome?, error: String?)

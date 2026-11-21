@@ -1967,6 +1967,10 @@ async fn handle(
             Some(req) => tokio::task::spawn_blocking(move || diagram(req, &source, palette, scale)).await.ok(),
             None => None,
         },
+        ClientMsg::SvgImage { req, svg, scale } => match req {
+            Some(req) => tokio::task::spawn_blocking(move || svg_image(req, &svg, scale)).await.ok(),
+            None => None,
+        },
         ClientMsg::PaneOpen {
             req,
             pane,
@@ -3929,6 +3933,20 @@ fn diagram(req: u64, source: &str, p: wheel_proto::DiagramPalette, scale: f32) -
         }
         Err(error) => {
             tracing::info!(req, bytes = source.len(), error, "diagram did not lay out");
+            ServerMsg::Diagram { req, png: None, width: 0., height: 0., error: Some(error) }
+        }
+    }
+}
+
+/// Answer `svg_image`: a reply's SVG drawn at `scale`, or why it did not draw.
+fn svg_image(req: u64, svg: &str, scale: f32) -> ServerMsg {
+    match wheel_diagrams::svg_png(svg, scale) {
+        Ok((png, width, height)) => {
+            tracing::info!(req, bytes = svg.len(), png = png.len(), width, height, "svg image");
+            ServerMsg::Diagram { req, png: Some(encode_bytes(&png)), width, height, error: None }
+        }
+        Err(error) => {
+            tracing::info!(req, bytes = svg.len(), error, "svg image did not draw");
             ServerMsg::Diagram { req, png: None, width: 0., height: 0., error: Some(error) }
         }
     }

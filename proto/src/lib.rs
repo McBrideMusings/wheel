@@ -1025,6 +1025,15 @@ pub enum ClientMsg {
         palette: DiagramPalette,
         scale: f32,
     },
+    /// A reply's SVG picture drawn as PNG at `scale` pixels per point (1 to 4), for a client with
+    /// no SVG decoder (a phone). No image the SVG names is loaded. Replies `diagram`, with the
+    /// picture and its natural size in points, or `error` saying why it did not draw.
+    SvgImage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        svg: String,
+        scale: f32,
+    },
     /// Split `pane`, putting a new pane on its `dir` side that shows `url` in a browser pane, or
     /// the artifact `artifact` in a web pane. Give one. Replies `created` with the new pane's id.
     PaneOpen {
@@ -2811,8 +2820,8 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// A Mermaid diagram as PNG (base64) with its natural size in points, in reply to `diagram`;
-    /// `error` (and no `png`) when the source did not lay out.
+    /// A picture as PNG (base64) with its natural size in points, in reply to `diagram` or
+    /// `svg_image`; `error` (and no `png`) when the source did not lay out or draw.
     Diagram {
         req: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]

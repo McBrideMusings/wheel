@@ -117,10 +117,11 @@ public final class ChatLinkResolver {
     @ObservationIgnored private var waitingArtifacts: [UInt64: String] = [:]
     @ObservationIgnored private var waitingImage: [UInt64: CheckedContinuation<FileImage, Never>] = [:]
     @ObservationIgnored private var waitingDiagram: [UInt64: CheckedContinuation<DiagramDrawing?, Never>] = [:]
-    /// wheeld's answer for each (palette, source, scale) asked, so a redrawn reply asks once.
+    /// wheeld's answer for each (palette, source, scale) asked, so a redrawn reply asks once; an
+    /// SVG picture has no palette.
     @ObservationIgnored private var diagrams: [DiagramKey: DiagramDrawing] = [:]
     private struct DiagramKey: Hashable {
-        let palette: DiagramPalette
+        let palette: DiagramPalette?
         let source: String
         let scale: Double
     }
@@ -261,15 +262,28 @@ public final class ChatLinkResolver {
     }
 
     /// The Mermaid diagram `source` laid out by wheeld in `palette` and drawn at `scale` pixels per
-    /// point; nil when the connected wheeld
-    /// has no `diagram` op, is offline or does not answer in 20 seconds, so the block stays code.
+    /// point; nil when the connected wheeld has no `diagram` op, is offline or does not answer in
+    /// 20 seconds, so the block stays code.
     func diagram(_ source: String, palette: DiagramPalette, scale: Double) async -> DiagramDrawing? {
-        let key = DiagramKey(palette: palette, source: source, scale: scale)
+        await picture(DiagramKey(palette: palette, source: source, scale: scale), op: "diagram") {
+            .diagram(req: $0, source: source, palette: palette, scale: scale)
+        }
+    }
+
+    /// A reply's sanitized SVG drawn by wheeld at `scale` pixels per point, for a client that cannot
+    /// decode SVG; nil when the connected wheeld has no `svg_image` op, is offline or does not
+    /// answer in 20 seconds, so the block shows its source.
+    func svgImage(_ svg: String, scale: Double) async -> DiagramDrawing? {
+        await picture(DiagramKey(palette: nil, source: svg, scale: scale), op: "svg_image") {
+            .svgImage(req: $0, svg: svg, scale: scale)
+        }
+    }
+
+    private func picture(_ key: DiagramKey, op: String, _ make: @escaping (UInt64) -> ClientMsg) async -> DiagramDrawing? {
         if let known = diagrams[key] { return known }
-        guard offers("diagram") else { return nil }
+        guard offers(op) else { return nil }
         let drawing: DiagramDrawing? = await withCheckedContinuation { continuation in
-            let sent = request { .diagram(req: $0, source: source, palette: palette, scale: scale) }
-            guard let sent else { return continuation.resume(returning: nil) }
+            guard let sent = request(make) else { return continuation.resume(returning: nil) }
             waitingDiagram[sent] = continuation
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(20))

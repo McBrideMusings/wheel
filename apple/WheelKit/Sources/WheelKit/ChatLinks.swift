@@ -243,7 +243,7 @@ public struct DiagramPalette: Sendable, Hashable {
     }
 }
 
-/// A Mermaid diagram as `diagram` answered: the PNG and its natural size in points, or the error.
+/// A picture as `diagram` or `svg_image` answered: the PNG and its natural size in points, or the error.
 public struct DiagramDrawing: Sendable, Equatable {
     public var png: Data?
     public var width: Double

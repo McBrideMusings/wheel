@@ -123,6 +123,9 @@ private struct CodeBlockView: View {
     /// wheeld's drawing of the block's Mermaid source and its decoded picture; nil until it
     /// answers, or when it cannot.
     @State private var mermaid: (drawing: DiagramDrawing, image: PlatformImage?)?
+    /// wheeld's drawing of the block's SVG and its decoded picture, on a platform with no SVG
+    /// decoder (iOS); nil until it answers, or when it cannot.
+    @State private var svgDrawn: (drawing: DiagramDrawing, image: PlatformImage?)?
     @State private var copied = false
     @State private var labelWidth: CGFloat = 0
     @State private var heights: [Int: CGFloat] = [:]
@@ -155,15 +158,27 @@ private struct CodeBlockView: View {
 
     /// The fence's SVG drawn as an image after scripts, handlers and external references are
     /// removed; nil when the language is not svg or the cleaned text does not load as an image.
-    private var svgImage: Image? {
+    /// iOS has no SVG decoder, so there wheeld draws it once the reply settles. With its natural
+    /// size in points.
+    private var svgImage: (image: Image, width: CGFloat, height: CGFloat)? {
+        #if canImport(AppKit)
         guard SVGFence.handles(language), let read, let clean = SVGFence.sanitize(read),
               let data = clean.data(using: .utf8) else { return nil }
-        #if canImport(AppKit)
         guard let image = NSImage(data: data), image.isValid, image.size.width > 0 else { return nil }
-        return Image(nsImage: image)
+        return (Image(nsImage: image), image.size.width, image.size.height)
         #else
-        guard let image = UIImage(data: data) else { return nil }
-        return Image(uiImage: image)
+        guard svgSource != nil, let drawn = svgDrawn, let image = drawn.image else { return nil }
+        return (Image(uiImage: image), drawn.drawing.width, drawn.drawing.height)
+        #endif
+    }
+
+    /// The sanitized SVG wheeld is asked to draw: iOS only, once the reply has settled.
+    private var svgSource: String? {
+        #if canImport(AppKit)
+        return nil
+        #else
+        guard SVGFence.handles(language), settled, let read else { return nil }
+        return SVGFence.sanitize(read)
         #endif
     }
 
@@ -236,16 +251,9 @@ private struct CodeBlockView: View {
             .padding(.bottom, 2)
             // A diagram scales down to the block's width, so it sits outside the code's horizontal scroller.
             if let mermaidImage {
-                mermaidImage.image.resizable().scaledToFit()
-                    .frame(maxWidth: mermaidImage.width, maxHeight: min(mermaidImage.height, 420))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("chat-mermaid")
-                    .onGeometryChange(for: CGSize.self, of: \.size) {
-                        UILog.info("mermaid in \(agent) shown \(Int($0.width))x\(Int($0.height))")
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
+                picture(mermaidImage, tallest: 420, kind: "mermaid")
+            } else if let svgImage {
+                picture(svgImage, tallest: 320, kind: "svg")
             } else {
                 Overflow {
                     HStack(alignment: .top, spacing: 12) {
@@ -271,8 +279,6 @@ private struct CodeBlockView: View {
                         }
                         if let diff {
                             DiffFenceView(lines: diff, look: look)
-                        } else if let svgImage {
-                            svgImage.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
                         } else if case .success(let chart) = chart {
                             ChartFenceView(chart: chart).frame(height: 200)
                         } else {
@@ -329,7 +335,35 @@ private struct CodeBlockView: View {
             mermaid = drawing.map { ($0, $0.png.flatMap(PlatformImage.init(data:))) }
             register(code)
         }
+        .task(id: svgSource.map { "\(displayScale)\u{0}\($0)" }) {
+            guard let svg = svgSource else { return svgDrawn = nil }
+            let drawing = await links?.svgImage(svg, scale: displayScale)
+            svgDrawn = drawing.map { ($0, $0.png.flatMap(PlatformImage.init(data:))) }
+            if let drawing {
+                if svgImage != nil {
+                    UILog.info("svg in \(agent): drawn \(Int(drawing.width))x\(Int(drawing.height))")
+                } else {
+                    UILog.info("svg in \(agent) could not draw: \(drawing.error ?? "the PNG did not load")")
+                }
+            }
+            register(code)
+        }
         .onDisappear { CodeBlockRegistry.shared.remove(id) }
+    }
+
+    /// A drawn picture at its natural size, scaled down to the block's width and to `tallest`
+    /// points; it sits outside the code's horizontal scroller so it never runs past the block.
+    private func picture(_ p: (image: Image, width: CGFloat, height: CGFloat), tallest: CGFloat, kind: String) -> some View {
+        p.image.resizable().scaledToFit()
+            .frame(maxWidth: p.width, maxHeight: min(p.height, tallest))
+            .accessibilityIdentifier("chat-\(kind)")
+            .onGeometryChange(for: CGSize.self, of: \.size) {
+                UILog.info("\(kind) in \(agent) shown \(Int($0.width))x\(Int($0.height))")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
     }
 
     /// Each line laid out alone at the label's width, invisible, to learn how tall it wraps.
@@ -358,6 +392,9 @@ private struct CodeBlockView: View {
         case .success(let c)?: UILog.info("chart in \(agent): \(c.mark), \(c.rows.count) rows")
         case .failure(let e)?: UILog.info("chart in \(agent) could not draw: \(e.reason)")
         case nil: break
+        }
+        if SVGFence.handles(language), settled, let read, SVGFence.sanitize(read) == nil {
+            UILog.info("svg in \(agent): shown as source, it did not sanitize")
         }
         if let mermaidImage {
             UILog.info("mermaid in \(agent): drawn \(Int(mermaidImage.width))x\(Int(mermaidImage.height))")
