@@ -6171,6 +6171,35 @@ async fn global_orchestrators_run_in_a_permanent_orchestrator_space() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A global orchestrator running when wheeld restarts comes back with the flags and brief the
+/// restarted wheeld builds, never ones kept from its first launch.
+#[tokio::test]
+async fn a_restarted_global_orchestrator_launches_with_the_current_flags_and_brief() {
+    use wheel_proto::OrchestratorScope::Global;
+    let dir = Scratch::new("orchestrator-relaunch");
+    let state_file = dir.0.join("spaces.json");
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, first) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let mut ws = connect(&url).await;
+    let (pane, agent) = orchestrator(&mut ws, 330, None, Global).await.unwrap();
+    attach_and_send(&mut ws, &agent, "say hi").await;
+    turn_text(&mut ws).await;
+    drop(ws);
+    first.abort();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let (url, _, _second) = start_daemon_with(fake, Some(state_file.clone())).await;
+    let saved = layout(&url).await;
+    let restored = pane_in(&saved, &pane).unwrap_or_else(|| panic!("{saved}"));
+    assert_eq!(restored["orchestrator"], "global", "{restored}");
+    let agent = restored["agent"].as_str().unwrap().to_string();
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &agent, "show orchestrator").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("allowed=Bash(wheel:*) denied=-\n"), "{text:?}");
+    assert!(text.contains("You are an orchestrator: an agent pane that dispatches"), "{text:?}");
+}
+
 /// Orchestrator is owned by one connection at a time: a claim takes it from the holder, every connection
 /// hears each change, a release clears it, a connection that is not the owner cannot release, and
 /// a closed connection gives it up.
