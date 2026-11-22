@@ -68,11 +68,17 @@ final class OrchestratorUITests: XCTestCase {
         chat.textViews.firstMatch.typeText("hello")
         chat.buttons["Send"].tap()
         XCTAssertTrue(waitFor { !self.chat.staticTexts["Message the global orchestrator."].exists }, "the message is in the transcript")
-        dismissKeyboard()
-        XCTAssertFalse(app.keyboards.firstMatch.exists, "the keyboard is down before the + menu opens")
+        // With the keyboard up, the + menu draws above it, and the composer lets go of it, so a pick never raises it
+        // again (wheel-eg4e.19.40).
+        if !app.keyboards.firstMatch.exists { chat.textViews.firstMatch.tap() }
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the keyboard is up before the + menu opens")
+        let keyboardTop = app.keyboards.firstMatch.frame.minY
         chat.buttons["Attach"].tap()
         let modelMenu = app.buttons["model menu"]
         XCTAssertTrue(modelMenu.waitForExistence(timeout: 5), "the + menu has Model")
+        XCTAssertTrue(app.buttons["Clear chat"].isHittable, "Clear chat is on top, not behind the keyboard")
+        XCTAssertLessThanOrEqual(app.buttons["Clear chat"].frame.maxY, keyboardTop, "the menu ends above the keyboard")
+        XCTAssertFalse(app.buttons["hide keyboard"].exists, "the composer let go of the keyboard")
         XCTAssertTrue(app.buttons["Clear chat"].exists, "the + menu has Clear chat")
         shot("plus-menu")
         modelMenu.tap()
@@ -87,6 +93,7 @@ final class OrchestratorUITests: XCTestCase {
         picked.tap()
         try? value.write(toFile: "\(env["WHEEL_SYNC_DIR"] ?? "")/picked-model", atomically: true, encoding: .utf8)
         Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "a Model pick leaves the keyboard down")
         chat.buttons["Attach"].tap()
         XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens again")
         app.buttons["Clear chat"].tap()

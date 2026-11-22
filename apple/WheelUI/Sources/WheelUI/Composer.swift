@@ -143,6 +143,7 @@ public struct Composer: View {
                     .focused($focused)
                     .modifier(TextTakesNoDrops(off: attach != nil, focused: focused))
                     .onChange(of: focused) { _, now in
+                        UILog.info("composer: keyboard \(now ? "up" : "down")")
                         if now { onFocus() }
                     }
                     .onChange(of: focusRequest) { focused = true }
@@ -196,7 +197,7 @@ public struct Composer: View {
             }
             HStack(spacing: 6) {
                 if let attachMenu {
-                    attachMenu
+                    attachMenu.environment(\.composerBlur, ComposerBlur { focused = false })
                 } else if let pickFiles {
                     Button("Attach a file", systemImage: "paperclip") {
                         let paths = pickFiles()
@@ -528,5 +529,23 @@ private struct AttachmentChips: View {
         .contentShape(Rectangle())
         .onTapGesture { if failed != nil { retry(item.id) } }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Lets go of the composer's keyboard: a menu the composer holds draws under the keyboard's window, so it calls this
+/// when it opens.
+public struct ComposerBlur: Sendable {
+    let blur: @MainActor @Sendable () -> Void
+    @MainActor public func callAsFunction() { blur() }
+}
+
+private struct ComposerBlurKey: EnvironmentKey {
+    static let defaultValue = ComposerBlur {}
+}
+
+extension EnvironmentValues {
+    public var composerBlur: ComposerBlur {
+        get { self[ComposerBlurKey.self] }
+        set { self[ComposerBlurKey.self] = newValue }
     }
 }

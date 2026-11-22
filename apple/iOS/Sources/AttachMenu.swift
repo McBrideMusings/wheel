@@ -22,34 +22,13 @@ struct AttachMenu: View {
     @State private var filesOpen = false
     @State private var confirmClear = false
     @State private var picked: [PhotosPickerItem] = []
+    @Environment(\.composerBlur) private var blurComposer
 
     var body: some View {
         Menu {
-            if canAttach {
-                Button("Photo Library", systemImage: "photo.on.rectangle") { photosOpen = true }
-                if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                    Button("Take Photo", systemImage: "camera") { cameraOpen = true }
-                }
-                Button("Choose File", systemImage: "folder") { filesOpen = true }
-                Divider()
-            }
-            if let option = chat.config.first(where: { $0.category == "model" }), case let .select(current, choices) = option.kind {
-                Menu {
-                    ForEach(choices) { choice in
-                        Button { setModel(option, choice.value) } label: {
-                            if choice.value == current { Label(choice.name, systemImage: "checkmark") } else { Text(choice.name) }
-                        }
-                        .accessibilityIdentifier("model \(choice.value)")
-                    }
-                } label: {
-                    Label("Model", systemImage: "cpu")
-                }
-                .accessibilityIdentifier("model menu")
-                .accessibilityValue(choices.first { $0.value == current }?.name ?? current)
-            }
-            if clear != nil {
-                Button("Clear chat", systemImage: "trash") { confirmClear = true }
-            }
+            Group { items }
+                // A menu draws under the keyboard's window, so opening it drops the keyboard (wheel-eg4e.19.40).
+                .onAppear { blurComposer() }
         } label: {
             Label("Attach", systemImage: "paperclip").labelStyle(.iconOnly)
         }
@@ -76,6 +55,34 @@ struct AttachMenu: View {
         .fullScreenCover(isPresented: $cameraOpen) {
             CameraPicker { image in AttachmentMedia.addPhoto(image, to: tray) }
                 .ignoresSafeArea()
+        }
+    }
+
+    @ViewBuilder private var items: some View {
+        if canAttach {
+            Button("Photo Library", systemImage: "photo.on.rectangle") { photosOpen = true }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo", systemImage: "camera") { cameraOpen = true }
+            }
+            Button("Choose File", systemImage: "folder") { filesOpen = true }
+            Divider()
+        }
+        if let option = chat.config.first(where: { $0.category == "model" }), case let .select(current, choices) = option.kind {
+            Menu {
+                ForEach(choices) { choice in
+                    Button { setModel(option, choice.value) } label: {
+                        if choice.value == current { Label(choice.name, systemImage: "checkmark") } else { Text(choice.name) }
+                    }
+                    .accessibilityIdentifier("model \(choice.value)")
+                }
+            } label: {
+                Label("Model", systemImage: "cpu")
+            }
+            .accessibilityIdentifier("model menu")
+            .accessibilityValue(choices.first { $0.value == current }?.name ?? current)
+        }
+        if clear != nil {
+            Button("Clear chat", systemImage: "trash") { confirmClear = true }
         }
     }
 
