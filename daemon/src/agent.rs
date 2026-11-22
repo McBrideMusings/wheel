@@ -33,7 +33,7 @@ use crate::driver::{self, DriverHandle, DriverEvent, DriverInput, Conversation, 
 use crate::task_output::TaskOutputs;
 use crate::checkout;
 use crate::claude::{self, History};
-use crate::perms::Perms;
+use crate::perms::{Perms, Verdict};
 use crate::resume::Harness;
 
 /// What an agent's permission request shows a person.
@@ -286,6 +286,9 @@ pub struct Agent {
 /// What an agent calls with the command when a build or test it ran fails.
 pub type OnBuildFailed = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// wheeld's own answer to a tool call the agent asks to run, by the tool's name and input.
+pub type OwnTools = Arc<dyn Fn(&str, &serde_json::Value) -> Verdict + Send + Sync>;
+
 /// How an agent's program is started.
 #[derive(Clone)]
 pub struct AgentConfig {
@@ -328,6 +331,9 @@ pub struct AgentConfig {
     /// Called with the command when a build or test command the agent ran fails
     /// ([`build_command`]), for the orchestrator's inbox.
     pub on_build_failed: Option<OnBuildFailed>,
+    /// Answers the agent's permission requests by a rule before any reaches the person: the
+    /// global orchestrator's (`perms::orchestrator_verdict`).
+    pub own_tools: Option<OwnTools>,
 }
 
 /// What waits in the queue under a turn: a message for the agent, or a reload of its pane.
@@ -2077,10 +2083,27 @@ impl Agent {
                         }
                         self.push_agent(event)
                     }
-                    Some(DriverEvent::Permission { request, title, tool_call, options, why }) => {
+                    Some(DriverEvent::Permission { request, title, tool_call, options, why, tool }) => {
                         if self.inner.lock().unwrap().unsent.is_some() {
                             let _ = agent.input.answer(request, None);
                             continue;
+                        }
+                        let verdict = match (&config.own_tools, &tool) {
+                            (Some(rule), Some((name, input))) => rule(name, input),
+                            _ => Verdict::Person,
+                        };
+                        match verdict {
+                            Verdict::Allow => {
+                                tracing::info!(agent = %self.name, tool = tool.as_ref().map_or("-", |t| t.0.as_str()), "own tool allowed by rule");
+                                let _ = agent.input.answer(request, Some("allow".into()));
+                                continue;
+                            }
+                            Verdict::Deny(message) => {
+                                tracing::info!(agent = %self.name, tool = tool.as_ref().map_or("-", |t| t.0.as_str()), "own tool refused by rule");
+                                let _ = agent.input.refuse(request, message);
+                                continue;
+                            }
+                            Verdict::Person => {}
                         }
                         self.ask(&perms, agent.input.clone(), request, PermAsk { title, options, tool_call, why });
                     }

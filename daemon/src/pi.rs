@@ -388,7 +388,7 @@ impl Driver {
                 tracing::info!(pid = self.pid, "agent interrupted");
                 self.request(Pending::Abort, json!({"type": "abort"})).await
             }
-            Input::Answer { request, choice } => {
+            Input::Answer { request, choice, .. } => {
                 let Some(dialog) = self.dialogs.remove(&request) else {
                     return Ok(());
                 };
@@ -1033,6 +1033,10 @@ impl Driver {
             tool_call: None,
             options,
             why: wheel_proto::PermWhy::default(),
+            // hack: pi's dialogs name no tool and input, so the global orchestrator's own-tool rule
+            // (perms.rs) never answers them and they go to the person; map them when a pi
+            // orchestrator runs.
+            tool: None,
         });
         Ok(())
     }

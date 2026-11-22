@@ -445,7 +445,7 @@ impl Driver {
                 tracing::info!(pid = self.pid, turn = ?self.turn, "agent interrupted");
                 self.interrupt().await
             }
-            Input::Answer { request, choice } => {
+            Input::Answer { request, choice, .. } => {
                 let Some(approval) = self.approvals.remove(&request) else {
                     return Ok(());
                 };
@@ -1090,6 +1090,7 @@ impl Driver {
                 reason: question["header"].as_str().filter(|h| !h.is_empty()).map(String::from),
                 ..Default::default()
             },
+            tool: None,
         });
         self.approvals.insert(request, Approval { id, agent_scope: false, ask: Some(ask) });
     }
@@ -1181,6 +1182,10 @@ impl Driver {
                 reason,
                 ..Default::default()
             },
+            // hack: Codex's approvals carry no Claude-style tool name and input, so the global
+            // orchestrator's own-tool rule (perms.rs) never answers them and they go to the person;
+            // map Codex's command and file-change approvals onto it when a Codex orchestrator runs.
+            tool: None,
         });
         Ok(())
     }

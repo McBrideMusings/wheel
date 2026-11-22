@@ -35,6 +35,11 @@
 //! - "slow start" (sent with a `uuid`) is held unread for up to five seconds; an `interrupt`
 //!   meanwhile drops it, names it in `still_queued` and ends the turn with nothing of it kept;
 //! - "show model" reports `model: <the --model flag>` (`-` when there is none);
+//! - a line "guarded <Tool> <path or command>" calls `Write`, `Edit` or `NotebookEdit` on the path,
+//!   or `Bash` with the command, as tool call "call-guarded"; it asks permission only when the
+//!   `--settings` JSON lists the tool under `permissions.ask`, and reports `guarded <Tool>: ran
+//!   unasked`, or `guarded <Tool>: <allow|deny>` followed by ` message=<message>` when the answer
+//!   carried one;
 //! - "permission" calls Bash `rm -rf build` as tool call "call-1", asks permission for it with a
 //!   `can_use_tool` request suggesting a rule that allows Bash for the session, and reports
 //!   `permission: <allow|deny>`, followed by ` always` when the answer took the rule; "described"
@@ -116,7 +121,8 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 14] = [
+const VALUED: [&str; 15] = [
+    "--settings",
     "--resume-session-at",
     "--tools",
     "--setting-sources",
@@ -286,6 +292,8 @@ struct State {
     answers: Mutex<HashMap<String, oneshot::Sender<String>>>,
     /// Rules an "always" answer added, as `(tool, ruleContent)`; a call one matches is not asked.
     rules: Mutex<Vec<(String, Option<String>)>>,
+    /// The message of the last refusal that carried one.
+    refusal: Mutex<Option<String>>,
     interrupted: AtomicBool,
     interrupt: Notify,
     /// The ids of messages read from stdin and not taken in yet.
@@ -467,6 +475,8 @@ struct Args {
     permission_mode: Option<String>,
     tools: Option<String>,
     setting_sources: Option<String>,
+    /// The `--settings` JSON, whose `permissions.ask` names the tools a "guarded" call asks for.
+    settings: Option<String>,
 }
 
 async fn answer(turn: &mut Turn, args: &Args, text: &str) {
@@ -582,6 +592,37 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
                 Some(behavior) => {
                     turn.tool_done(call, result);
                     turn.say(&format!("{label}: {behavior}\n"));
+                }
+                None => return out_of_time(turn),
+            }
+        }
+    }
+    if let Some(call) = text.lines().find_map(|l| l.trim().strip_prefix("guarded ")) {
+        // Asks only for a tool `--settings` puts under `permissions.ask`, as Claude Code does when
+        // the person's own settings allow it.
+        let (tool, arg) = call.split_once(' ').unwrap_or((call, ""));
+        let input = match tool {
+            "Bash" => json!({"command": arg}),
+            "NotebookEdit" => json!({"notebook_path": arg, "new_source": "x"}),
+            _ => json!({"file_path": arg, "content": "x", "old_string": "a", "new_string": "b"}),
+        };
+        let asks = args
+            .settings
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|s| s["permissions"]["ask"].as_array().is_some_and(|a| a.iter().any(|t| t == tool)));
+        turn.tool("call-guarded", tool, input.clone());
+        if !asks {
+            turn.tool_done("call-guarded", "done");
+            turn.say(&format!("guarded {tool}: ran unasked\n"));
+        } else {
+            *turn.state.refusal.lock().unwrap() = None;
+            match turn.ask("call-guarded", tool, input, json!({}), false).await {
+                Some(behavior) => {
+                    turn.tool_done("call-guarded", "done");
+                    let message = turn.state.refusal.lock().unwrap().take();
+                    let message = message.map(|m| format!(" message={m}")).unwrap_or_default();
+                    turn.say(&format!("guarded {tool}: {behavior}{message}\n"));
                 }
                 None => return out_of_time(turn),
             }
@@ -905,6 +946,7 @@ async fn main() {
         permission_mode: None,
         tools: None,
         setting_sources: None,
+        settings: None,
     };
     let mut words = all.into_iter().skip(1);
     while let Some(word) = words.next() {
@@ -934,6 +976,7 @@ async fn main() {
             ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
             ("--tools", Some(tools)) => args.tools = Some(tools),
             ("--setting-sources", Some(sources)) => args.setting_sources = Some(sources),
+            ("--settings", Some(settings)) => args.settings = Some(settings),
             _ => {}
         }
     }
@@ -961,6 +1004,7 @@ async fn main() {
         model: Mutex::new(args.model.clone().unwrap_or_else(|| "default".into())),
         answers: Mutex::new(HashMap::new()),
         rules: Mutex::new(Vec::new()),
+        refusal: Mutex::new(None),
         interrupted: AtomicBool::new(false),
         interrupt: Notify::new(),
         waiting: Mutex::new(HashSet::new()),
@@ -1010,6 +1054,9 @@ async fn main() {
                     let id = response["request_id"].as_str().unwrap_or_default();
                     let answer = &response["response"];
                     let mut behavior = answer["behavior"].as_str().unwrap_or("deny").to_string();
+                    if let Some(message) = answer["message"].as_str() {
+                        *reader_state.refusal.lock().unwrap() = Some(message.to_string());
+                    }
                     if let Some(updates) = answer["updatedPermissions"].as_array() {
                         behavior.push_str(" always");
                         for rule in updates.iter().flat_map(|u| u["rules"].as_array().into_iter().flatten()) {

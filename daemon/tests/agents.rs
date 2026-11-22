@@ -5996,6 +5996,53 @@ async fn two_if_none_global_starts_make_one_orchestrator() {
     assert_ne!(second, pa, "a start without if_none starts another");
 }
 
+/// The global orchestrator makes no change itself (wheel-eg4e.21): it starts with every edit and
+/// shell command under `permissions.ask`, and wheeld answers each by its rule, so none reaches the
+/// person: edits only under its own folder, ~/Knowledge or a space's docs/, and Bash only for a
+/// plain `wheel` command. A space orchestrator is started as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn wheeld_refuses_the_global_orchestrators_own_edits_and_shell() {
+    use wheel_proto::OrchestratorScope::{Global, Space};
+    let dir = std::env::temp_dir().join(format!("wheel-orchestrator-own-tools-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("project");
+    std::fs::create_dir_all(project.join("docs")).unwrap();
+    let fake = env!("CARGO_BIN_EXE_wheel-fake-agent");
+    let (url, _, _daemon) = start_daemon_with(fake, Some(dir.join("spaces.json"))).await;
+    let mut ws = connect(&url).await;
+    let (project_space, _) = space(&url, project.to_str().unwrap()).await;
+    let (_, global) = orchestrator(&mut ws, 500, None, Global).await.unwrap();
+    let (orch, _) = orchestrator_space(&mut ws).await;
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+    let own = std::path::Path::new(&orch.cwd);
+    for (tool, arg, allowed) in [
+        ("Write", "/tmp/x".to_string(), false),
+        ("Write", own.join("notes.md").display().to_string(), true),
+        ("Write", home.join("Knowledge/inbox/x.md").display().to_string(), true),
+        ("Edit", project.join("docs/adr.md").display().to_string(), true),
+        ("Edit", project.join("src/main.rs").display().to_string(), false),
+        ("Write", own.join("../escape.md").display().to_string(), false),
+        ("Bash", "ls".to_string(), false),
+        ("Bash", "wheel status; ls".to_string(), false),
+        ("Bash", "wheel status".to_string(), true),
+    ] {
+        // Nobody answers a request in this test, so each answer is wheeld's own.
+        attach_and_send(&mut ws, &global, &format!("guarded {tool} {arg}")).await;
+        let text = turn_text(&mut ws).await;
+        if allowed {
+            assert!(text.contains(&format!("guarded {tool}: allow\n")), "{tool} {arg}: {text:?}");
+        } else {
+            assert!(text.contains(&format!("guarded {tool}: deny message=wheeld refused this")), "{tool} {arg}: {text:?}");
+        }
+    }
+    // A space orchestrator gets no ask settings: the person's own settings decide, as before.
+    let (_, space_agent) = orchestrator(&mut ws, 501, Some(&project_space), Space).await.unwrap();
+    attach_and_send(&mut ws, &space_agent, "guarded Write /tmp/x").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("guarded Write: ran unasked\n"), "{text:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Global orchestrators run in the Orchestrator space (wheel-eg4e.19.9): the first global start
 /// makes it, in a session of its own, in its folder setting; it outlives every orchestrator and a
 /// restart; and a mirror in it may show a pane of any session, which no other space's may.

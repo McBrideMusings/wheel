@@ -35,6 +35,11 @@ use crate::resume::{between_turns, claude_project_dir, Harness};
 const ALLOWED: &str = "Bash(wheel:*)";
 const DISALLOWED: &str = "Bash(wheel perm answer:*)";
 
+/// Settings that make the global orchestrator ask before every edit and shell command, over any
+/// allow rule or mode the person's own settings give, so wheeld's rule answers each one
+/// (`perms::orchestrator_verdict`): an `ask` rule wins over `allow` and over `auto` mode.
+const ASK_OWN_TOOLS: &str = r#"{"permissions":{"ask":["Edit","Write","NotebookEdit","Bash"]}}"#;
+
 /// The permission modes the `mode` control offers, in order, with their names.
 const MODES: [(&str, &str); 5] = [
     ("default", "Default"),
@@ -102,6 +107,7 @@ fn question_request(ask: &Ask, id: &str) -> Option<DriverEvent> {
             reason: question["header"].as_str().map(String::from),
             ..Default::default()
         },
+        tool: None,
     })
 }
 
@@ -178,6 +184,9 @@ fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
         if !launch.answers_permissions {
             args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
         }
+    }
+    if launch.answers_permissions {
+        args.extend(["--settings".into(), ASK_OWN_TOOLS.into()]);
     }
     args.extend(
         [
@@ -509,7 +518,7 @@ impl Driver {
                 self.request(Pending::Interrupt, json!({"subtype": "interrupt"}))
                     .await
             }
-            Input::Answer { request, choice } => {
+            Input::Answer { request, choice, message } => {
                 if let Some(ask) = self.asks.remove(&request) {
                     return self.answer_question(ask, choice.as_deref()).await;
                 }
@@ -521,7 +530,7 @@ impl Driver {
                     Some("allow_always") => {
                         json!({"behavior": "allow", "updatedInput": input, "updatedPermissions": suggestions})
                     }
-                    Some(_) => json!({"behavior": "deny", "message": "The person denied this."}),
+                    Some(_) => json!({"behavior": "deny", "message": message.as_deref().unwrap_or("The person denied this.")}),
                     None => json!({"behavior": "deny", "message": "The request was withdrawn."}),
                 };
                 self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": request, "response": response}}))
@@ -927,13 +936,14 @@ impl Driver {
             blocked_path: text(&request["blocked_path"]),
             always_rule: rule_names(&updates).filter(|_| always),
         };
-        self.permissions.insert(id.clone(), (input, updates));
+        self.permissions.insert(id.clone(), (input.clone(), updates));
         self.emit(DriverEvent::Permission {
             request: id,
             title,
             tool_call,
             options: perm_options(always),
             why,
+            tool: Some((tool.to_string(), input)),
         });
         Ok(())
     }
@@ -1923,6 +1933,11 @@ mod tests {
         assert!(!orchestrator.contains(&"--disallowedTools".to_string()), "{orchestrator:?}");
         let at = orchestrator.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(orchestrator[at + 1], super::ALLOWED);
+        // Only the global orchestrator asks wheeld before every edit and shell command.
+        let at = orchestrator.iter().position(|a| a == "--settings").unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&orchestrator[at + 1]).unwrap();
+        assert_eq!(settings["permissions"]["ask"], serde_json::json!(["Edit", "Write", "NotebookEdit", "Bash"]));
+        assert!(!agent.contains(&"--settings".to_string()), "{agent:?}");
     }
 
     #[test]

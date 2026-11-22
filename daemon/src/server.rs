@@ -822,6 +822,21 @@ impl AppState {
                     let _ = failures.send((agent.clone(), command.to_string()));
                 }
             })),
+            own_tools: (orchestrator == Some(wheel_proto::OrchestratorScope::Global)).then(|| {
+                let me = self.me.clone();
+                let cwd = PathBuf::from(cwd);
+                let knowledge = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Knowledge"));
+                Arc::new(move |tool: &str, input: &serde_json::Value| {
+                    // Its own folder, the knowledge base, and every space's docs/ as wheeld holds
+                    // them now.
+                    let mut roots: Vec<PathBuf> = vec![cwd.clone()];
+                    roots.extend(knowledge.clone());
+                    if let Some(state) = me.upgrade() {
+                        roots.extend(state.spaces().spaces.iter().map(|s| PathBuf::from(&s.cwd).join("docs")));
+                    }
+                    crate::perms::orchestrator_verdict(tool, input, &roots, &cwd)
+                }) as crate::agent::OwnTools
+            }),
         };
         let agent = Agent::start(
             name.into(),
