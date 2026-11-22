@@ -5798,6 +5798,7 @@ async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
     assert!(text.contains(&format!("You are the agent in pane {first}")), "the pane's own brief: {text:?}");
     assert!(text.contains("You are an orchestrator") && text.contains(&format!("wheel inbox ack {first} <ids>")), "{text:?}");
     assert!(text.contains("wheel perm answer <id> allow --confirmed"), "{text:?}");
+    assert!(text.contains("never wait on an agent's turn") && !text.contains("wait on, cancel"), "the orchestrator dispatches and never waits: {text:?}");
 
     // Stopping closes the pane; its inbox goes with it.
     client_op(&mut ws, 75, ClientMsg::OrchestratorStop { req: Some(75), pane: first.clone() }).await;
