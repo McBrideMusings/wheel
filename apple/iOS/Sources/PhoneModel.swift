@@ -83,6 +83,40 @@ final class PhoneModel {
     /// Whether the running wheeld takes `orchestrator_start` (ADR-0050).
     var canStartOrchestrator: Bool { isConnected && serverOffer.has("orchestrator_start") }
 
+    /// The global orchestrator's tasks the Tasks sheet lists, newest first, and the read wheeld has not answered.
+    private(set) var tasks: [OrchestratorTask] = []
+    private var tasksReq: UInt64?
+    /// Whether the Tasks sheet is open, and the task it opens at (a push's tap).
+    var tasksOpen = false
+    var tasksFocus: String?
+    /// Whether the running wheeld serves the tasks (ADR-0050).
+    var canReadTasks: Bool { isConnected && serverOffer.has("orchestrator_tasks") }
+    var canMarkTaskDone: Bool { isConnected && serverOffer.has("orchestrator_task_done") }
+
+    /// Read the tasks again, when the running wheeld serves them.
+    func askTasks() {
+        guard canReadTasks, let client else { return }
+        let req = client.req()
+        tasksReq = req
+        client.send(.orchestratorTasks(req: req))
+    }
+
+    /// Open the Tasks sheet, at `task` when given: Orchestrator mode first, since the sheet belongs to it.
+    func openTasks(at task: String?) {
+        if mode != WindowMode.orchestrator { setMode(WindowMode.orchestrator) }
+        tasksFocus = task
+        tasksOpen = true
+        Log.info("tasks sheet: opened\(task.map { " at \($0)" } ?? "")")
+        askTasks()
+    }
+
+    /// The person's word that `task` is finished.
+    func markTaskDone(_ task: String) {
+        guard canMarkTaskDone, let client else { return }
+        Log.info("tasks sheet: done \(task)")
+        client.send(.orchestratorTaskDone(req: client.req(), task: task))
+    }
+
     /// Orchestrator mode with no global orchestrator running starts one, with no tap; `if_none` makes two clients
     /// opening the mode at once start one. wheeld makes the Orchestrator space for it, and the mode then shows it.
     /// A refusal stays until the mode is entered again.
@@ -516,6 +550,8 @@ final class PhoneModel {
             }
             serverOffer = offer
             offerBrowsers()
+            // A sheet a push opened before the connection was up reads its tasks now.
+            if tasksOpen { askTasks() }
             self.agents = agents
             // An unsolicited status means this connection missed daemon-wide events.
             self.perms = perms
@@ -697,6 +733,14 @@ final class PhoneModel {
                 if let space = spaces.first(where: { $0.allPanes.contains { $0.id == id } }) { focus(space: space.id, pane: id) } else { pendingPane = id }
             case nil: break
             }
+        case let .orchestratorTasks(req, tasks):
+            if req == tasksReq {
+                tasksReq = nil
+                self.tasks = tasks
+                Log.info("tasks: \(tasks.isEmpty ? "none" : tasks.map { "\($0.id) \($0.status)" }.joined(separator: ", "))")
+            }
+        case .orchestratorTasksChanged:
+            if tasksOpen { askTasks() }
         case let .orchestratorStarted(req, pane, agent):
             if req == orchestratorStartReq {
                 orchestratorStartReq = nil

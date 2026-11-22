@@ -78,6 +78,8 @@ pub enum Hit {
     Palette,
     Pin,
     NewSpace,
+    /// Orchestrator mode's Tasks popover: the global orchestrator's tasks.
+    Tasks,
 }
 
 /// One thing drawn in the row: a button in its slot, a tab, or the title.
@@ -122,6 +124,7 @@ pub fn frame_id(hit: &Hit) -> Option<String> {
         Hit::Palette => "palette".into(),
         Hit::Pin => "pin".into(),
         Hit::NewSpace => "new-space".into(),
+        Hit::Tasks => "tasks".into(),
         Hit::Space(_) | Hit::Title => return None,
     })
 }
@@ -220,6 +223,10 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
             right(plugin(info, 0.), &mut right_chips);
         }
     }
+    // Innermost on the right, so appearing in Orchestrator mode it moves no other button; only the title narrows.
+    if orchestrator && !hidden("tasks") {
+        right(button(Hit::Tasks, 0., "checklist", "Tasks the orchestrator holds"), &mut right_chips);
+    }
     let right_start = rx + RIGHT_GAP;
     right_chips.reverse();
     // Between the groups: the title, or the tabs.
@@ -306,7 +313,7 @@ mod tests {
         let spaces = row(1200., false, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces");
         let orchestrator = row(1200., false, &[], &named("s", 2), Some("so"), "Orchestrator", false, "orchestrator");
         assert!(ids(&spaces).iter().any(|id| id.starts_with("tab")), "Spaces mode with the sidebar closed shows tabs: {:?}", ids(&spaces));
-        assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "processes", "palette", "pin", "new-space"]);
+        assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "tasks", "processes", "palette", "pin", "new-space"]);
         assert!(!orchestrator.chips[0].enabled, "the sidebar button is disabled");
         assert_eq!(orchestrator.chips[0].rect, spaces.chips[0].rect, "and holds its place");
         assert!(orchestrator.track.is_none() && orchestrator.tabs.is_empty());
@@ -348,9 +355,12 @@ mod tests {
 
     #[test]
     fn every_mode_keeps_every_button_in_place() {
-        let rects = |mode: &str| row(1200., true, &[entry("vpn", TitleSide::Left, true)], &named("s", 2), Some("s1"), "s 1", false, mode).chips.iter().map(|c| (frame_id(&c.hit), c.rect)).collect::<Vec<_>>();
+        // Every button, not the title between the groups, whose text narrows for a button only one mode has.
+        let rects = |mode: &str| row(1200., true, &[entry("vpn", TitleSide::Left, true)], &named("s", 2), Some("s1"), "s 1", false, mode).chips.iter()
+            .filter_map(|c| frame_id(&c.hit).map(|id| (id, c.rect))).collect::<Vec<_>>();
         for (id, _, icon) in MODES {
-            assert_eq!(rects(id), rects("spaces"), "{id}");
+            let only_here = |r: &(String, Rect)| id == "orchestrator" && r.0 == "tasks";
+            assert_eq!(rects(id).into_iter().filter(|r| !only_here(r)).collect::<Vec<_>>(), rects("spaces"), "{id}");
             assert_eq!(row(1200., true, &[], &named("s", 1), Some("s1"), "s 1", false, id).chips[2].icon, icon);
         }
     }

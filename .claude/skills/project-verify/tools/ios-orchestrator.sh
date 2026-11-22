@@ -19,6 +19,9 @@ mkdir -p "$SCR/wheel"
 W="$(w space new "$SCR/wheel")"
 P1="$(w space ls | jq -r --arg s "$W" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P1" agent >/dev/null
+# wheel-eg4e.20.3: a task file in the global orchestrator's folder, for the Tasks sheet.
+mkdir -p "$INST/orchestrator/tasks"
+printf '{"id":"tc1","asked":"Check the Tasks sheet","agents":["w0"],"status":"needs-review","created_ms":1,"done":false}\n' >"$INST/orchestrator/tasks/tc1.json"
 
 ios_ui_start OrchestratorUITests/testOrchestratorMode
 
@@ -46,6 +49,12 @@ if step chrome; then
   check "the handle's swipe up in Orchestrator mode opened no sheet" noplog "page handle: swipe up"
   check "no agents sheet opened" noplog "agents sheet: eye tapped"
   ack chrome
+fi
+if step tasks; then
+  check "phone.log records the Tasks sheet" plog "tasks sheet: opened"
+  check "the phone read the task file" plog "tasks: tc1 needs-review"
+  check "Done wrote the person's done into the file" bash -c "jq -e '.done == true and .asked == \"Check the Tasks sheet\"' '$INST/orchestrator/tasks/tc1.json'"
+  ack tasks
 fi
 if step keyboard; then
   # wheel-eg4e.19.41: with the keyboard up the chat, composer included, ends at the keyboard's top.

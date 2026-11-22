@@ -19,6 +19,17 @@ struct ProtocolTests {
     }
 
     /// The guidance messages as wheeld's serde writes and reads them.
+    @Test func orchestratorTasksMatchTheDaemonsSpelling() throws {
+        #expect(try ClientMsg.orchestratorTasks(req: 4).json() == #"{"op":"orchestrator_tasks","req":4}"#)
+        #expect(try ClientMsg.orchestratorTaskDone(req: 5, task: "t1").json() == #"{"op":"orchestrator_task_done","req":5,"task":"t1"}"#)
+        let listed = try ServerMsg.decode(#"{"ev":"orchestrator_tasks","req":4,"tasks":[{"id":"t1","asked":"Fix login","status":"needs-decision","agents":["w1"],"beads":[],"done":false,"created_ms":7,"events":[{"kind":"permission","orchestrator":"p1","agent":"w1","text":"w1 waits","at_ms":8}]},{"id":"t2","asked":"Docs"}]}"#)
+        guard case let .orchestratorTasks(req, tasks) = listed else { Issue.record("wrong case"); return }
+        #expect(req == 4 && tasks.map(\.id) == ["t1", "t2"])
+        #expect(tasks[0].statusText == "Needs a decision" && tasks[0].events.first?.text == "w1 waits" && !tasks[0].closed)
+        #expect(tasks[1].status == "" && tasks[1].agents.isEmpty && tasks[1].statusText == "Waiting for its first status")
+        guard case .orchestratorTasksChanged = try ServerMsg.decode(#"{"ev":"orchestrator_tasks_changed"}"#) else { Issue.record("wrong case"); return }
+    }
+
     @Test func guidanceMessagesMatchTheDaemonsSpelling() throws {
         #expect(try ClientMsg.guidanceLs(req: 2, agent: nil).json() == #"{"op":"guidance_ls","req":2}"#)
         #expect(try ClientMsg.guidanceLs(req: 2, agent: "pi").json() == #"{"agent":"pi","op":"guidance_ls","req":2}"#)

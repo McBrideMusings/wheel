@@ -20,7 +20,8 @@ struct PhoneApp: App {
             }
             .task {
                 model.start()
-                PushCenter.shared.listen { space, pane in model.focus(space: space, pane: pane) }
+                PushCenter.shared.listen(onOpen: { space, pane in model.focus(space: space, pane: pane) },
+                                         onTask: { task in model.openTasks(at: task) })
                 PushCenter.shared.onToken = { model.pushToken($0) }
                 // Debug builds launched with `WHEEL_NOTIFICATIONS=off` never ask, so a check's
                 // screenshots carry no permission alert.

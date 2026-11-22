@@ -51,6 +51,21 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(app.buttons["space wheel"].exists, "a swipe up on the handle opens no sheet")
         sync("chrome")
 
+        // The eye's slot holds Tasks (wheel-eg4e.20.3): its sheet lists the task file the check wrote, and Done
+        // writes the person's done.
+        let tasks = app.buttons["tasks"]
+        XCTAssertTrue(tasks.waitForExistence(timeout: 10), "Orchestrator mode has a Tasks button")
+        tasks.tap()
+        XCTAssertTrue(any("task tc1").waitForExistence(timeout: 10), "the Tasks sheet lists the task file")
+        XCTAssertTrue(app.staticTexts["Check the Tasks sheet"].exists, "the task names what was asked")
+        XCTAssertEqual(any("task status tc1").label, "Ready for review")
+        shot("tasks")
+        app.buttons["task done tc1"].tap()
+        XCTAssertTrue(waitFor { !self.app.buttons["task done tc1"].exists }, "Done goes once the task is done")
+        sync("tasks")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(waitFor { !self.any("tasks list").exists }, "the sheet closes")
+
         // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "no keyboard button while the keyboard is down")
         // The .19.31 placeholders (wheel-eg4e.19.41): a mic, and voice mode in Send's place while the field is empty.

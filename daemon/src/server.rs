@@ -167,6 +167,12 @@ pub struct AppState {
     pub(crate) orchestrator_starting: tokio::sync::Mutex<()>,
     /// The running orchestrators in the order they started (`crate::orchestrator`).
     pub(crate) orchestrators: Mutex<Vec<crate::orchestrator::Orchestrator>>,
+    /// Each orchestrator folder's queue of inbox files for its `tools/on-event`.
+    pub(crate) orchestrator_runs: Mutex<HashMap<PathBuf, tokio::sync::mpsc::UnboundedSender<(PathBuf, String)>>>,
+    /// The orchestrator folders that got their `start` event since wheeld started.
+    pub(crate) orchestrator_folders_started: Mutex<HashSet<PathBuf>>,
+    /// Set while `restore_spaces` runs: orchestrators restored then get their `start` event after.
+    pub(crate) restoring: std::sync::atomic::AtomicBool,
     /// A pane agent's failed build or test command, as (agent, command), for the orchestrators'
     /// inboxes (`crate::agent::build_command`).
     pub(crate) build_failures: broadcast::Sender<(String, String)>,
@@ -200,6 +206,8 @@ pub struct AppState {
     pub(crate) settings_write: Mutex<()>,
     /// The watch on the `wheel.toml` files, and what clients were last told each scope resolves to.
     pub(crate) settings_watch: Mutex<Option<crate::settings_watch::Watch>>,
+    /// The watch on the global orchestrator folder's `tasks/` and `inbox/` (`crate::tasks`).
+    pub(crate) tasks_watch: Mutex<Option<crate::tasks::Watch>>,
     pub(crate) settings_seen: Mutex<crate::settings_watch::Seen>,
     /// The folders watched for plugin script saves, and the script each plugin pane last sent.
     pub(crate) plugin_watch: Mutex<Option<crate::plugins::Watch>>,
@@ -393,6 +401,9 @@ impl AppState {
             orchestrator_lease: Mutex::new(None),
             orchestrator_starting: tokio::sync::Mutex::new(()),
             orchestrators: Mutex::new(Vec::new()),
+            orchestrator_runs: Mutex::new(HashMap::new()),
+            orchestrator_folders_started: Mutex::new(HashSet::new()),
+            restoring: std::sync::atomic::AtomicBool::new(false),
             build_failures: broadcast::channel(64).0,
             agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
@@ -402,6 +413,7 @@ impl AppState {
             state_file: Mutex::new(None),
             settings_write: Mutex::new(()),
             settings_watch: Mutex::new(None),
+            tasks_watch: Mutex::new(None),
             settings_seen: Mutex::new(Default::default()),
             plugin_watch: Mutex::new(None),
             plugin_seen: Mutex::new(Default::default()),
@@ -785,7 +797,7 @@ impl AppState {
             brief: Some({
                 let brief = crate::brief::text(pane, name, &self.pane_brief(pane, space_cwd), &self.guidance_for(agent));
                 match orchestrator {
-                    Some(scope) => format!("{brief}\n\n{}", crate::orchestrator::brief(pane, scope)),
+                    Some(scope) => format!("{brief}\n\n{}", crate::orchestrator::brief(scope)),
                     None => brief,
                 }
             }),
@@ -1509,6 +1521,28 @@ async fn handle(
                 None
             }
         },
+        ClientMsg::PushSend { req, .. } if *caller != Caller::Local => {
+            tracing::warn!(%peer, ?caller, "refused: push send from a remote client");
+            Some(failed(req, "a push is sent from the machine wheeld runs on".to_string()))
+        }
+        ClientMsg::PushSend { req, title, body, task, pane } => {
+            tracing::info!(%peer, ?task, ?pane, "push send");
+            let notice = state.push_task_notice(title, body, task, pane);
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let reply = match state.push_send(&notice).await {
+                    Ok(_) => req.map(|req| ServerMsg::Ok { req }),
+                    Err(why) => {
+                        tracing::warn!(task = ?notice.task, %why, "push send failed");
+                        Some(failed(req, why))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::Status { req } => Some(state.status(req).await),
         ClientMsg::Log {
             req,
@@ -1634,12 +1668,26 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::AgentSend { req, agent, text } => {
+        ClientMsg::AgentSend { req, agent, text, from } => {
             // Sized, never the text: a prompt can quote anything.
-            tracing::info!(%peer, %agent, chars = text.len(), "agent send");
+            tracing::info!(%peer, %agent, chars = text.len(), ?from, "agent send");
             match state.resolve_agent(&agent).and_then(|a| {
-                let turn = a.agent.send(text)?;
-                Ok((a.agent.name.clone(), turn))
+                let name = a.agent.name.clone();
+                // A message to an orchestrator from no pane is the person's: it carries the inbox.
+                let to_orchestrator = from.is_none().then(|| state.orchestrator_of_agent(&name)).flatten();
+                let (message, attached) = match &to_orchestrator {
+                    Some(pane) => state.orchestrator_message(pane, text.clone()),
+                    None => (text.clone(), Vec::new()),
+                };
+                let turn = a.agent.send(message)?;
+                if !attached.is_empty() {
+                    tracing::info!(%peer, agent = %name, files = attached.len(), "inbox attached to the person's message");
+                    crate::inbox::told(&attached);
+                }
+                if let Some(from) = &from {
+                    state.orchestrator_dispatched(from, &name, &text);
+                }
+                Ok((name, turn))
             }) {
                 Ok((agent, turn)) => {
                     req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
@@ -1702,9 +1750,9 @@ async fn handle(
                     )
                     .await;
                 let reply = match started {
-                    Ok((pane, agent)) => {
-                        tracing::info!(%peer, ?space, %pane, %agent, "orchestrator start");
-                        req.map(|req| ServerMsg::OrchestratorStarted { req, pane, agent })
+                    Ok((pane, agent, dir)) => {
+                        tracing::info!(%peer, ?space, %pane, %agent, dir = %dir.display(), "orchestrator start");
+                        req.map(|req| ServerMsg::OrchestratorStarted { req, pane, agent, dir: dir.to_string_lossy().into_owned() })
                     }
                     Err(message) => Some(failed(req, message)),
                 };
@@ -1726,24 +1774,14 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::InboxList { req, pane, all } => match state.inbox(&pane) {
-            Ok(inbox) => {
-                let items = inbox.lock().unwrap().list(all);
-                req.map(|req| ServerMsg::InboxItems { req, items })
-            }
+        ClientMsg::OrchestratorTasks { req } => match state.orchestrator_tasks() {
+            Ok(tasks) => req.map(|req| ServerMsg::OrchestratorTasks { req, tasks }),
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::InboxAck { req, pane, ids } => match state.inbox(&pane).and_then(|inbox| inbox.lock().unwrap().ack(&ids)) {
+        ClientMsg::OrchestratorTaskDone { req, task } => match state.orchestrator_task_done(&task) {
             Ok(()) => {
-                tracing::info!(%peer, %pane, ?ids, "inbox ack");
+                tracing::info!(%peer, %task, "orchestrator task done");
                 req.map(|req| ServerMsg::Ok { req })
-            }
-            Err(message) => Some(failed(req, message)),
-        },
-        ClientMsg::InboxReply { req, pane, id, text } => match state.inbox_reply(&pane, id, text) {
-            Ok((agent, turn)) => {
-                tracing::info!(%peer, %pane, id, %agent, "inbox reply");
-                req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
             }
             Err(message) => Some(failed(req, message)),
         },
@@ -2118,9 +2156,11 @@ async fn handle(
             permission_mode,
             sandbox,
             dir,
+            from,
         } => {
             let (state, out) = (state.clone(), out.clone());
             tokio::spawn(async move {
+                let first = message.clone();
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
                         state
@@ -2146,6 +2186,11 @@ async fn handle(
                     }
                     Err(e) => Err(e),
                 };
+                if let (Some(from), Some(first), Ok(s)) = (&from, &first, &started) {
+                    if let Some(agent) = &s.agent {
+                        state.orchestrator_dispatched(from, agent, first);
+                    }
+                }
                 let reply = match (req, started) {
                     (Some(req), Ok(s)) => Some(ServerMsg::Started {
                         req,

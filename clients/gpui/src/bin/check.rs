@@ -3373,8 +3373,10 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
         let hidden = mode != "spaces";
         wait(&native, &format!("every pane hidden={hidden} in {mode} mode"), |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == hidden), cx).await?;
         draw(window, Some(output.join(format!("client-mode-{mode}.png"))), cx)?;
-        let frames = row_frames(cx)?;
-        ensure!(frames == spaces_row, "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
+        // Every button but the one only Orchestrator mode has (Tasks); the title between the groups narrows for it.
+        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title" && !(mode == "orchestrator" && id == "tasks")).collect::<Vec<_>>();
+        let frames = buttons(row_frames(cx)?);
+        ensure!(frames == buttons(spaces_row.clone()), "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
         let icon = wheel_gpui::header::MODES.iter().find(|m| m.0 == mode).map(|m| m.2).unwrap_or_default();
         ensure!(title_state(cx)?["row"].as_array().is_some_and(|r| r.iter().any(|c| c["id"] == "mode" && c["icon"] == icon)), "the mode button does not show {icon} in {mode} mode: {}", title_state(cx)?["row"]);
     }
@@ -6114,6 +6116,39 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     ensure!(pane_frame[0] >= area[0] - 0.5 && pane_frame[1] >= area[1] - 0.5 && pane_frame[2] > 100. && pane_frame[3] > 100., "the orchestrator pane draws at {pane_frame:?} in a grid at {area:?}");
     ensure!(window.update(cx, |c, _, _| c.grid_drawn_count())? == panes_of(&shown).len(), "the mode drew {} of the space's {} panes", window.update(cx, |c, _, _| c.grid_drawn_count())?, panes_of(&shown).len());
     draw(window, Some(output.join("client-orchestrator-space.png")), cx)?;
+    // wheel-eg4e.20.4: the title row's Tasks button opens the global orchestrator's tasks, read from a file this
+    // check writes into the Orchestrator space's tasks/, and Mark Done writes the person's done into it.
+    let (ok, out, err) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space ls failed: {err}");
+    let listed: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let folder = listed["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == space.as_str())).and_then(|x| x["cwd"].as_str()).map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("wheel space ls names no folder for the Orchestrator space {space}"))?;
+    std::fs::create_dir_all(folder.join("tasks"))?;
+    let task_file = folder.join("tasks/tc1.json");
+    std::fs::write(&task_file, json!({"id":"tc1","asked":"Check the Tasks popover","agents":["w0"],"status":"needs-review","created_ms":1,"done":false}).to_string())?;
+    ensure!(shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == "tasks"), "Orchestrator mode's title row has no Tasks button: {}", shown["title"]["row"]);
+    click_chip(window, Hit::Tasks, cx).await?;
+    let tasks = until!("the Tasks menu listing the task file", |s: &Value| s["title"]["menu"]["kind"] == "tasks"
+        && s["title"]["menu"]["rows"].as_array().is_some_and(|r| r.iter().any(|row| row["id"] == "task:tc1" && row["title"] == "Check the Tasks popover · ready for review")));
+    draw(window, Some(output.join("client-orchestrator-tasks.png")), cx)?;
+    let done_row = tasks["title"]["menu"]["rows"].as_array().and_then(|r| r.iter().find(|row| row["id"] == "done:tc1")).map(|row| four(&row["frame"]))
+        .ok_or_else(|| anyhow::anyhow!("the Tasks menu has no Mark Done for tc1: {}", tasks["title"]["menu"]))?;
+    let native_now = window.update(cx, |c, _, _| c.native())?;
+    let at = [done_row[0] + done_row[2] / 2., done_row[1] + done_row[3] / 2.];
+    native_now.call(json!({"op":"post_mouse","kind":"down","point":at}));
+    native_now.call(json!({"op":"post_mouse","kind":"up","point":at}));
+    let mut marked = false;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let saved: Value = serde_json::from_slice(&std::fs::read(&task_file)?).unwrap_or(Value::Null);
+        if saved["done"] == true && saved["asked"] == "Check the Tasks popover" {
+            marked = true;
+            break;
+        }
+    }
+    ensure!(marked, "Mark Done never wrote done into {}", task_file.display());
+    std::fs::remove_file(&task_file)?;
     // Case 2: no session, sidebar row or tab holds the Orchestrator space.
     let in_sessions = shown["sessions"].as_array().into_iter().flatten().any(|s| s["spaces"].as_array().is_some_and(|l| l.iter().any(|id| id == space.as_str())));
     let in_sidebar = shown["sidebar"]["rows"].as_array().into_iter().flatten().any(|r| r["id"] == space.as_str());
@@ -7431,7 +7466,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(menu_state["item"]["badge"].as_u64() == Some(background as u64), "the item's badge reads {}, the windows leave {background} spaces unshown", menu_state["item"]["badge"]);
     let badge_before = menu_state["item"]["badge"].clone();
     // A permission the fixture agent raises counts in the row of the space holding it.
-    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into() }))?;
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into(), from: None }))?;
     let mut waiting_state = Value::Null;
     for _ in 0..300 {
         pump(connection, 100, layouts, window, cx).await?;

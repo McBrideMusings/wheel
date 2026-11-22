@@ -172,6 +172,7 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
             permission_mode: None,
             sandbox: None,
             dir: None,
+            from: None,
         },
         3,
     )

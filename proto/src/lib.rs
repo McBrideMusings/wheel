@@ -760,6 +760,36 @@ pub enum ClientMsg {
         req: Option<u64>,
         event: String,
     },
+    /// Send every registered phone a notification with these words, through Apple Push, whatever
+    /// `push.events` lists: an orchestrator folder's `tools/on-event` sends one when a task needs
+    /// the person (ADR-0054). With `task`, pushes about one task replace each other on the phone
+    /// (one collapse id per task) and a tap opens the Tasks view at it; `pane` is the pane a tap
+    /// opens otherwise. Replies `ok`, or an error saying why nothing was sent. Local clients only.
+    PushSend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        title: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane: Option<String>,
+    },
+    /// The global orchestrator's tasks, as the Tasks views show them: each `tasks/<id>.json` in
+    /// the Orchestrator space's folder with the inbox events naming its agents (ADR-0054). Replies
+    /// `orchestrator_tasks`; `orchestrator_tasks_changed` tells every client when `tasks/` or
+    /// `inbox/` changes.
+    OrchestratorTasks {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
+    /// The person's word that a global orchestrator task is finished: writes `"done": true` into
+    /// its `tasks/<id>.json` and changes nothing else. Replies `ok`.
+    OrchestratorTaskDone {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        task: String,
+    },
     /// Give an agent a message. Replies `agent_queued` with the message's turn id; the turn
     /// streams as `agent` events carrying that id.
     AgentSend {
@@ -767,6 +797,12 @@ pub enum ClientMsg {
         req: Option<u64>,
         agent: String,
         text: String,
+        /// The pane the sender runs in (the CLI's `WHEEL_PANE`); none from a client's composer. A
+        /// message from an orchestrator's pane lands in its inbox as a `dispatched` event, and a
+        /// message to an orchestrator with none is the person's, which carries the inbox's new
+        /// files (ADR-0054).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// Put a card in an agent's transcript: `pane`, an id in any space, or `artifact`, a name
     /// looked for in the agent's space's project and then the machine's. Exactly one is set. The
@@ -790,7 +826,7 @@ pub enum ClientMsg {
         timeout_secs: f64,
     },
     /// Start an orchestrator (ADR-0054): a new agent pane, run as any agent pane is,
-    /// with the orchestrator brief and an inbox keyed by its pane. `scope` says which agents'
+    /// with the orchestrator brief and an inbox in its folder. `scope` says which agents'
     /// events reach it: `space` for the agents of the space it is in, `global` for the rest
     /// ([`OrchestratorScope`]). A space orchestrator runs in the `orchestrator.dir` setting of its
     /// space, else the space's folder; a global one in the Orchestrator space, made at the first
@@ -798,9 +834,9 @@ pub enum ClientMsg {
     /// its agent. Fails for a space that does not exist, a space orchestrator with no space, and a
     /// global one given a space.
     ///
-    /// wheeld never writes the inbox into the orchestrator's chat; the orchestrator reads it with
-    /// `inbox_list`. wheeld adds an `over_time` item for a turn running past `turn_limit_secs`
-    /// (1800 when absent; 0 is refused).
+    /// Its inbox is a Maildir in its folder ([`InboxEvent`]): wheeld never starts a turn in the
+    /// orchestrator's chat, and attaches the new files to the person's next message. wheeld adds an
+    /// `over_time` event for a turn running past `turn_limit_secs` (1800 when absent; 0 is refused).
     OrchestratorStart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -828,32 +864,6 @@ pub enum ClientMsg {
     OrchestratorRelease {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
-    },
-    /// The inbox of the orchestrator in `pane`: the items not acked yet, oldest first, or every
-    /// item kept when `all`. Replies `inbox_items`. Fails when `pane` holds no orchestrator.
-    InboxList {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        all: bool,
-    },
-    /// Mark inbox items of the orchestrator in `pane` done, so `inbox_list` no longer shows them.
-    /// Every id that names an item is acked; fails naming the ids that name none. Replies `ok`.
-    InboxAck {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        ids: Vec<u64>,
-    },
-    /// Send `text` to the agent that item `id` of the orchestrator in `pane` is about, as
-    /// `agent_send` does, and ack the item. Replies `agent_queued`.
-    InboxReply {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        pane: String,
-        id: u64,
-        text: String,
     },
     /// Close the orchestrator pane `pane`, which ends its agent as any pane close does. Fails
     /// when `pane` holds no orchestrator.
@@ -1292,6 +1302,10 @@ pub enum ClientMsg {
         /// a restart, `agent conversations` and `status` use it, not the space's directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dir: Option<String>,
+        /// For `agent` only: the pane the sender runs in, as on `agent_send`; a first message
+        /// from an orchestrator's pane lands in its inbox as a `dispatched` event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
     /// A client reports what its copy of a browser pane's page wrote to its console: `entries`,
     /// oldest first. With `reset`, that copy was just loaded, so the daemon drops what it kept for
@@ -2482,21 +2496,27 @@ pub enum ServerMsg {
         req: u64,
         owner: String,
     },
-    /// The reply to `inbox_list`.
-    InboxItems {
-        req: u64,
-        items: Vec<InboxItem>,
-    },
     /// Sent to every connection when the orchestrator lease changes hands: the owner's connection id, or
     /// none once it is released or its connection closed.
     OrchestratorLease {
         owner: Option<String>,
     },
-    /// The reply to `orchestrator_start`: the orchestrator's new pane and its agent.
+    /// The reply to `orchestrator_tasks`: the global orchestrator's tasks, newest first.
+    OrchestratorTasks {
+        req: u64,
+        tasks: Vec<OrchestratorTask>,
+    },
+    /// The global orchestrator folder's `tasks/` or `inbox/` changed: a Tasks view reads
+    /// `orchestrator_tasks` again. Sent to every client.
+    OrchestratorTasksChanged {},
+    /// The reply to `orchestrator_start`: the orchestrator's new pane, its agent, and the folder
+    /// holding its `inbox/`, `tasks/` and `tools/on-event`.
     OrchestratorStarted {
         req: u64,
         pane: String,
         agent: String,
+        #[serde(default)]
+        dir: String,
     },
     /// One step of an agent's conversation. `text` events are chunks: append each to the last.
     /// An agent that ends sends an `error` with no `turn`, then nothing more.
@@ -3139,8 +3159,8 @@ impl ServerMsg {
             | ServerMsg::Console { req, .. }
             | ServerMsg::PaneShot { req, .. }
             | ServerMsg::OrchestratorStarted { req, .. }
+            | ServerMsg::OrchestratorTasks { req, .. }
             | ServerMsg::OrchestratorClaimed { req, .. }
-            | ServerMsg::InboxItems { req, .. }
             | ServerMsg::PaneRecorded { req, .. }
             | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
@@ -3174,7 +3194,8 @@ impl ServerMsg {
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::InspectPane { .. }
-            | ServerMsg::RenderPane { .. } => None,
+            | ServerMsg::RenderPane { .. }
+            | ServerMsg::OrchestratorTasksChanged {} => None,
         }
     }
 }
@@ -3607,12 +3628,14 @@ pub enum OrchestratorScope {
     Global,
 }
 
-/// What an orchestrator inbox item is about.
+/// What an orchestrator inbox event is about.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum InboxKind {
     /// The agent waits on a permission request.
     Permission,
+    /// A permission request of the agent's was answered.
+    Answered,
     /// The agent finished a turn and is idle.
     Finished,
     /// The agent stopped, or gave up restarting.
@@ -3621,28 +3644,71 @@ pub enum InboxKind {
     OverTime,
     /// A build or test command the agent ran failed.
     BuildFailed,
-    /// A kind this build does not know; a newer daemon may send one.
+    /// The orchestrator sent the agent a message (`agent_send` or `pane_start` from its pane).
+    Dispatched,
+    /// wheeld started: agents from before it are gone. Written once per folder per start.
+    Start,
+    /// The folder's `tools/on-event` failed on an event; `text` holds its exit and stderr.
+    OnEventFailed,
+    /// A kind this build does not know; a newer daemon may write one.
     #[serde(other)]
     Other,
 }
 
-/// One item in an orchestrator's inbox (`inbox_list`). wheeld keeps one item per agent and kind
-/// until it is acked: a repeat of the event raises `count`, replaces `text` and `at_ms`, and makes
-/// the item new (`told` false) again.
+/// One file in an orchestrator's inbox (ADR-0054): `<folder>/inbox/new/<name>.json`, moved to
+/// `inbox/cur/` once attached to the person's message. wheeld writes it to `inbox/tmp/` and renames
+/// it into `inbox/new/`, so no reader sees a partial file; nothing edits or deletes one. Names sort
+/// in the order wheeld wrote them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InboxItem {
-    pub id: u64,
-    pub agent: String,
+pub struct InboxEvent {
     pub kind: InboxKind,
+    /// The orchestrator pane the event was routed to; folders can hold several orchestrators.
+    pub orchestrator: String,
+    /// The agent the event is about; none for `start` and `on_event_failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The agent's pane, when it runs in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
     /// The event as one short line, naming the agent.
     pub text: String,
-    /// How many times the event happened since the item was made.
-    pub count: u32,
-    /// When the event last happened, in milliseconds since the Unix epoch.
+    /// When it happened, in milliseconds since the Unix epoch.
     pub at_ms: u64,
-    /// `inbox_list` has returned the item since it last happened.
-    pub told: bool,
-    pub acked: bool,
+    /// The permission request a `permission` or `answered` event is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perm: Option<String>,
+    /// The inbox file a `on_event_failed` event is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+/// One orchestrator task as a Tasks view shows it: what `tools/on-event` wrote in
+/// `tasks/<id>.json` (ADR-0054), and the inbox events that name its agents, oldest first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrchestratorTask {
+    pub id: String,
+    /// The first line of the message the orchestrator sent.
+    pub asked: String,
+    /// `working`, `needs-decision`, `needs-review` or `done`, as the script last derived it; empty
+    /// before its first run.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub beads: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u64>,
+    /// The person said it is finished.
+    #[serde(default)]
+    pub done: bool,
+    #[serde(default)]
+    pub created_ms: u64,
+    /// Why wheeld sent no push the last time the script asked for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_error: Option<String>,
+    #[serde(default)]
+    pub events: Vec<InboxEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

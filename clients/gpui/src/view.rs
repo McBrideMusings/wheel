@@ -350,6 +350,10 @@ pub struct Client {
     /// why wheeld refused the last one.
     orchestrator_start_req: Option<u64>,
     orchestrator_refused: Option<String>,
+    /// The global orchestrator's tasks the Tasks menu shows, and the `orchestrator_tasks` read
+    /// wheeld has not answered.
+    orchestrator_tasks: Vec<wheel_proto::OrchestratorTask>,
+    tasks_req: Option<u64>,
     session_to_show: Option<String>,
     /// SF Symbols the bridge drew, by name, size and colour; None for a name the system lacks.
     symbols: Symbols,
@@ -526,7 +530,7 @@ impl Client {
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
-            session_show_req: None, orchestrator_start_req: None, orchestrator_refused: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            session_show_req: None, orchestrator_start_req: None, orchestrator_refused: None, orchestrator_tasks: vec![], tasks_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,

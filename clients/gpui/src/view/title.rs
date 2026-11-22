@@ -18,6 +18,9 @@ const CARD_BG: u32 = 0x17201c;
 const ORANGE: u32 = 0xff9f0a;
 const BADGE_RED: u32 = 0xff453a;
 const MENU_W: f32 = 240.0;
+const TASKS_W: f32 = 380.0;
+/// The inbox events the Tasks menu lists under each task: the newest.
+const TASK_EVENTS: usize = 3;
 const MENU_ROW_H: f32 = 24.0;
 const USAGE_W: f32 = 540.0;
 const USAGE_H: f32 = 520.0;
@@ -29,6 +32,8 @@ pub enum TitleMenu {
     Mode,
     /// The title's own menu: Rename Space… and Rename Window….
     Title,
+    /// Orchestrator mode's Tasks: each global orchestrator task with its status and latest events.
+    Tasks,
 }
 
 /// One row of a title menu.
@@ -40,6 +45,40 @@ pub struct MenuRow {
     pub checked: bool,
     /// A separator above this row.
     pub divided: bool,
+}
+
+/// The Tasks menu's rows: per task, what was asked with its status, its newest inbox events, and
+/// Mark Done while it is open and the running wheeld takes the person's done.
+pub fn tasks_rows(tasks: &[wheel_proto::OrchestratorTask], can_mark: bool) -> Vec<MenuRow> {
+    if tasks.is_empty() {
+        return vec![MenuRow { id: "tasks:none".into(), title: "No tasks yet".into(), enabled: false, checked: false, divided: false }];
+    }
+    let mut rows = vec![];
+    for (i, task) in tasks.iter().enumerate() {
+        let status = match task.status.as_str() {
+            "needs-decision" => "needs a decision",
+            "needs-review" => "ready for review",
+            "working" => "working",
+            "done" => "done",
+            _ => "waiting for its first status",
+        };
+        let closed = task.done || task.status == "done";
+        rows.push(MenuRow { id: format!("task:{}", task.id), title: format!("{} · {status}", clip(&task.asked, 48)), enabled: false, checked: closed, divided: i > 0 });
+        let skip = task.events.len().saturating_sub(TASK_EVENTS);
+        for (n, event) in task.events[skip..].iter().enumerate() {
+            rows.push(MenuRow { id: format!("event:{}:{n}", task.id), title: format!("    {}", clip(&event.text, 56)), enabled: false, checked: false, divided: false });
+        }
+        if !closed && can_mark {
+            rows.push(MenuRow { id: format!("done:{}", task.id), title: "Mark Done".into(), enabled: true, checked: false, divided: false });
+        }
+    }
+    rows
+}
+
+/// `text` cut to `chars` characters with an ellipsis, so a row holds one line.
+fn clip(text: &str, chars: usize) -> String {
+    let line = text.lines().next().unwrap_or("");
+    if line.chars().count() <= chars { line.to_owned() } else { format!("{}…", line.chars().take(chars - 1).collect::<String>()) }
 }
 
 /// The named colours a `state` command's `tint` may print; anything else draws in the primary colour.
@@ -100,7 +139,13 @@ impl Client {
             None => "waiting for wheeld".into(),
         };
         // The title shows while the sidebar is open, and while its name field is up.
-        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode)
+        let mut row = header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode);
+        // A wheeld that serves no tasks leaves the button in its place, disabled.
+        let serves = self.server_has("orchestrator_tasks");
+        for chip in row.chips.iter_mut().filter(|c| c.hit == Hit::Tasks) {
+            chip.enabled = serves;
+        }
+        row
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -150,6 +195,21 @@ impl Client {
                 self.orchestrator_refused = Some(message.clone());
                 true
             }
+            ServerMsg::OrchestratorTasks { req, tasks } if self.tasks_req == Some(*req) => {
+                self.tasks_req = None;
+                self.log(format!("orchestrator tasks: {}", if tasks.is_empty() { "none".to_owned() } else { tasks.iter().map(|t| format!("{} {}", t.id, t.status)).collect::<Vec<_>>().join(", ") }));
+                self.orchestrator_tasks = tasks.clone();
+                if self.title_menu == Some(TitleMenu::Tasks) {
+                    self.sync_overlay();
+                }
+                true
+            }
+            ServerMsg::OrchestratorTasksChanged {} => {
+                if self.title_menu == Some(TitleMenu::Tasks) {
+                    self.ask_tasks();
+                }
+                true
+            }
             ServerMsg::Created { req, id, .. } if self.session_show_req == Some(*req) => {
                 self.session_show_req = None;
                 self.session_to_show = Some(id.clone());
@@ -164,13 +224,14 @@ impl Client {
     pub fn press_title(&mut self, hit: &Hit) {
         self.press(format!("title {}", header::frame_id(hit).unwrap_or_else(|| match hit { Hit::Space(id) => format!("tab {id}"), _ => "title".into() })));
         // A press on any other control dismisses an open menu, as a press outside a menu does.
-        if !matches!(hit, Hit::SessionMenu | Hit::Mode) {
+        if !matches!(hit, Hit::SessionMenu | Hit::Mode | Hit::Tasks) {
             self.close_title_menu();
         }
         match hit {
             Hit::Sidebar => self.toggle_sidebar(),
             Hit::SessionMenu => self.toggle_title_menu(TitleMenu::Session),
             Hit::Mode => self.toggle_title_menu(TitleMenu::Mode),
+            Hit::Tasks => self.toggle_title_menu(TitleMenu::Tasks),
             Hit::Plugin(id) => self.press_plugin(&id.clone()),
             Hit::Space(id) => self.select_space(&id.clone()),
             Hit::Title => {}
@@ -179,6 +240,16 @@ impl Client {
             Hit::Pin => self.set_pinned(!self.pinned),
             Hit::NewSpace => self.open_new_space_palette(),
         }
+    }
+    /// Read the global orchestrator's tasks again, when the running wheeld serves them.
+    pub fn ask_tasks(&mut self) {
+        if !self.server_has("orchestrator_tasks") {
+            self.log("orchestrator tasks: this wheeld does not serve them".to_owned());
+            return;
+        }
+        let req = self.req();
+        self.tasks_req = Some(req);
+        self.send(&ClientMsg::OrchestratorTasks { req: Some(req) });
     }
     /// A press on a `[[title.button]]` entry: wheeld runs its command in the space's directory.
     /// An indicator, or a button its state disabled, takes no press.
@@ -256,6 +327,9 @@ impl Client {
             self.title_menu = Some(menu);
             self.menu = None;
             self.close_space_menu();
+            if menu == TitleMenu::Tasks {
+                self.ask_tasks();
+            }
             self.sync_overlay();
         }
     }
@@ -281,6 +355,7 @@ impl Client {
                 MenuRow { id: "rename-window".into(), title: "Rename Window…".into(), enabled: true, checked: false, divided: false },
             ],
             TitleMenu::Mode => header::MODES.iter().map(|(id, title, _)| MenuRow { id: format!("mode:{id}"), title: (*title).to_owned(), enabled: true, checked: self.mode == *id, divided: false }).collect(),
+            TitleMenu::Tasks => tasks_rows(&self.orchestrator_tasks, self.server_has("orchestrator_task_done")),
         }
     }
     /// Run a row of the open menu, which closes.
@@ -300,6 +375,8 @@ impl Client {
             self.select_session(session);
         } else if let Some(mode) = id.strip_prefix("mode:") {
             self.set_mode(mode);
+        } else if let Some(task) = id.strip_prefix("done:") {
+            self.send(&ClientMsg::OrchestratorTaskDone { req: None, task: task.to_owned() });
         } else if id == "new-session" {
             // The Swift app shows the new session in the focused window once it exists.
             let taken: Vec<&str> = self.sessions.iter().map(|s| s.name.as_str()).collect();
@@ -497,7 +574,10 @@ impl Client {
     /// the element draws and a check presses.
     pub fn title_menu_placed(&self) -> Option<(Rect, Vec<(MenuRow, Rect)>)> {
         let menu = self.title_menu?;
-        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode, TitleMenu::Title => Hit::Title })?.rect;
+        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode, TitleMenu::Title => Hit::Title, TitleMenu::Tasks => Hit::Tasks })?.rect;
+        let width = if menu == TitleMenu::Tasks { TASKS_W } else { MENU_W };
+        // A menu under a button near the right edge opens leftward to stay inside the window.
+        let left = anchor.x.min(self.viewport.0 - width - 8.).max(0.);
         let top = anchor.y + anchor.h + 2.;
         let mut y = top + 4.;
         let mut placed = vec![];
@@ -505,10 +585,10 @@ impl Client {
             if row.divided {
                 y += 7.;
             }
-            placed.push((row, Rect { x: anchor.x + 4., y, w: MENU_W - 8., h: MENU_ROW_H }));
+            placed.push((row, Rect { x: left + 4., y, w: width - 8., h: MENU_ROW_H }));
             y += MENU_ROW_H;
         }
-        Some((Rect { x: anchor.x, y: top, w: MENU_W, h: y + 4. - top }, placed))
+        Some((Rect { x: left, y: top, w: width, h: y + 4. - top }, placed))
     }
     /// The open menu under its button.
     fn title_menu_element(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
@@ -521,7 +601,8 @@ impl Client {
             }
             let id = row.id.clone();
             let mut el = div().absolute().left(px(r.x - card_rect.x)).top(px(r.y - card_rect.y)).w(px(r.w)).h(px(r.h)).px_2().rounded_sm().flex().items_center().gap_2().text_color(rgb(if row.enabled { TEXT } else { 0x5a7266 }))
-                .child(div().w(px(14.)).flex_none().text_xs().child(if row.checked { "✓" } else { "" })).child(row.title.clone());
+                .child(div().w(px(14.)).flex_none().text_xs().child(if row.checked { "✓" } else { "" }))
+                .child(div().flex_1().min_w(px(0.)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(row.title.clone()));
             if row.enabled {
                 el = el.cursor_pointer().hover(|s| s.bg(rgb(ACCENT)));
             }
@@ -899,7 +980,7 @@ impl Client {
             "buttons": self.title_buttons.iter().map(|(space, list)| (space.clone(), json!(list))).collect::<serde_json::Map<_, _>>(),
             "row": row.chips.iter().map(|c| json!({"id": header::frame_id(&c.hit).unwrap_or_else(|| match &c.hit { Hit::Space(id) => format!("tab:{id}"), _ => "title".into() }), "label": c.label, "icon": c.icon, "badge": c.badge, "tint": c.tint, "enabled": c.enabled, "pressable": c.pressable, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})).collect::<Vec<_>>(),
             "tabs": row.track.map(|t| json!({"track": [t.x, t.y, t.w, t.h], "tab_width": row.tab_width, "scrolls": row.scrolls})),
-            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title" },
+            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title", TitleMenu::Tasks => "tasks" },
                 "rows": self.title_menu_placed().map(|(_, rows)| rows.iter().map(|(r, rect)| json!({"id": r.id, "title": r.title, "enabled": r.enabled, "checked": r.checked, "frame": [rect.x, rect.y, rect.w, rect.h]})).collect::<Vec<_>>()).unwrap_or_default()})),
             "mode": self.mode,
             "pinned": self.pinned,
@@ -960,5 +1041,21 @@ mod tests {
         assert_eq!(tint(Some("grey")), tint(Some("gray")));
         assert_eq!(tint(Some("teal")), None);
         assert_eq!(tint(None), None);
+    }
+
+    #[test]
+    fn the_tasks_menu_lists_each_task_its_newest_events_and_mark_done() {
+        assert_eq!(tasks_rows(&[], true).iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["tasks:none"]);
+        let event = |text: &str| serde_json::from_value::<wheel_proto::InboxEvent>(serde_json::json!({"kind":"finished","orchestrator":"p1","agent":"w1","text":text,"at_ms":1})).unwrap();
+        let task = |id: &str, status: &str, done: bool| wheel_proto::OrchestratorTask {
+            id: id.into(), asked: format!("Fix {id}"), status: status.into(), agents: vec!["w1".into()], beads: vec![], pr: None, done, created_ms: 1, push_error: None,
+            events: ["a", "b", "c", "d"].iter().map(|t| event(t)).collect(),
+        };
+        let rows = tasks_rows(&[task("t1", "needs-decision", false), task("t2", "working", true)], true);
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["task:t1", "event:t1:0", "event:t1:1", "event:t1:2", "done:t1", "task:t2", "event:t2:0", "event:t2:1", "event:t2:2"], "a done task offers no Mark Done");
+        assert_eq!((rows[0].title.as_str(), rows[1].title.as_str()), ("Fix t1 · needs a decision", "    b"), "the newest three events");
+        assert!(rows[5].checked && rows[5].divided && !rows[0].divided);
+        assert!(!tasks_rows(&[task("t1", "needs-review", false)], false).iter().any(|r| r.id.starts_with("done:")), "no Mark Done on a wheeld without the op");
     }
 }

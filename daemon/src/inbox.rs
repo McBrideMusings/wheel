@@ -1,139 +1,92 @@
-//! An orchestrator's inbox (wheel-eg4e.13): agent events for its scope, queued in wheeld until
-//! the orchestrator reads them. One item stands per agent and kind until it is acked; a repeat of
-//! the event raises the item's count instead of adding another. wheeld never writes into the
-//! orchestrator's chat: the orchestrator reads its inbox with `wheel inbox list` (its brief says
-//! when), so an event never starts, interrupts or puts words in one of its turns.
+//! An orchestrator's inbox (ADR-0054): a Maildir in its folder. wheeld writes each event about an
+//! agent routed to the orchestrator, and each dispatch the orchestrator sends, as one JSON file
+//! ([`InboxEvent`]) in `inbox/tmp` and renames it into `inbox/new`, so a reader never sees a partial
+//! file. Nothing edits or deletes an inbox file: attaching the new ones to the person's next message
+//! moves them to `inbox/cur`. For each new file wheeld runs the folder's `tools/on-event`
+//! (`crate::orchestrator`).
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use wheel_proto::InboxItem;
+use wheel_proto::InboxEvent;
 
-use crate::orchestrator_events::Event;
+/// Orders the files written in one millisecond.
+static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// The most items an inbox keeps; past it the oldest acked item goes first, then the oldest.
-const KEPT: usize = 200;
-
-pub(crate) struct Inbox {
-    items: Vec<Kept>,
-    next_id: u64,
-    /// How long one agent turn runs before it is reported over time.
-    pub turn_limit: Duration,
-}
-
-impl Default for Inbox {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            next_id: 1,
-            turn_limit: Duration::from_secs(1800),
-        }
-    }
-}
-
-struct Kept {
-    item: InboxItem,
-    /// The permission requests a `permission` item waits on; the item is acked once the last is
-    /// answered.
-    perms: Vec<(String, String)>,
-}
-
-impl Kept {
-    /// A permission item's text: one line per request still waiting, joined.
-    fn retext(&mut self) {
-        if !self.perms.is_empty() {
-            self.item.text = self.perms.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join("; ");
-        }
-    }
-}
-
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-impl Inbox {
-    /// Take in one event; returns the id of the item it made or raised.
-    pub(crate) fn apply(&mut self, event: Event) -> Option<u64> {
-        match event {
-            Event::Add { agent, kind, text, perm } => {
-                let at_ms = now_ms();
-                if let Some(kept) =
-                    self.items.iter_mut().find(|k| !k.item.acked && k.item.agent == agent && k.item.kind == kind)
-                {
-                    kept.item.count += 1;
-                    kept.item.text = text.clone();
-                    kept.item.at_ms = at_ms;
-                    kept.item.told = false;
-                    if let Some(perm) = perm {
-                        kept.perms.push((perm, text));
-                        kept.retext();
-                    }
-                    tracing::info!(id = kept.item.id, %agent, ?kind, count = kept.item.count, "inbox repeat");
-                    return Some(kept.item.id);
+/// Write `event` into the inbox in `dir`; returns its path in `inbox/new`. The name leads with
+/// the write time and a counter, so names sort in the order they were written.
+pub(crate) fn write(dir: &Path, event: &InboxEvent) -> std::io::Result<PathBuf> {
+    let inbox = dir.join("inbox");
+    for sub in ["tmp", "new", "cur"] {
+        std::fs::create_dir_all(inbox.join(sub))?;
+    }
+    let name = format!("{:013}.{:010}.{}.json", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed), std::process::id());
+    let tmp = inbox.join("tmp").join(&name);
+    let new = inbox.join("new").join(&name);
+    std::fs::write(&tmp, serde_json::to_vec_pretty(event).map_err(std::io::Error::other)?)?;
+    std::fs::rename(&tmp, &new)?;
+    Ok(new)
+}
+
+/// The files in `dir`'s `inbox/new` routed to the orchestrator in `pane`, oldest first. A file that
+/// does not parse is logged and left where it is.
+pub(crate) fn new_for(dir: &Path, pane: &str) -> Vec<(PathBuf, InboxEvent)> {
+    let Ok(read) = std::fs::read_dir(dir.join("inbox").join("new")) else { return Vec::new() };
+    let mut paths: Vec<PathBuf> =
+        read.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let parsed = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| {
+                serde_json::from_slice::<InboxEvent>(&b).map_err(|e| e.to_string())
+            });
+            match parsed {
+                Ok(event) => (event.orchestrator == pane).then_some((path, event)),
+                Err(error) => {
+                    tracing::warn!(file = %path.display(), %error, "inbox file does not parse; left in new");
+                    None
                 }
-                let id = self.next_id;
-                self.next_id += 1;
-                tracing::info!(id, %agent, ?kind, "inbox add");
-                let perms = perm.into_iter().map(|p| (p, text.clone())).collect();
-                self.items.push(Kept {
-                    item: InboxItem { id, agent, kind, text, count: 1, at_ms, told: false, acked: false },
-                    perms,
-                });
-                self.trim();
-                Some(id)
             }
-            Event::Resolved { perm } => {
-                let kept = self.items.iter_mut().find(|k| !k.item.acked && k.perms.iter().any(|(p, _)| *p == perm))?;
-                kept.perms.retain(|(p, _)| *p != perm);
-                kept.retext();
-                if kept.perms.is_empty() {
-                    kept.item.acked = true;
-                    tracing::info!(id = kept.item.id, %perm, "inbox ack: every permission answered");
-                }
-                Some(kept.item.id)
-            }
+        })
+        .collect()
+}
+
+/// Move `paths`, files in some `inbox/new`, to the `inbox/cur` beside it.
+pub(crate) fn told(paths: &[PathBuf]) {
+    for path in paths {
+        let (Some(new), Some(name)) = (path.parent(), path.file_name()) else { continue };
+        let cur = new.with_file_name("cur").join(name);
+        if let Err(error) = std::fs::rename(path, &cur) {
+            tracing::warn!(file = %path.display(), %error, "inbox file not moved to cur");
         }
     }
+}
 
-    fn trim(&mut self) {
-        while self.items.len() > KEPT {
-            let at = self.items.iter().position(|k| k.item.acked).unwrap_or(0);
-            let dropped = self.items.remove(at);
-            if !dropped.item.acked {
-                tracing::warn!(id = dropped.item.id, agent = %dropped.item.agent, "inbox full: dropped an item not acked");
-            }
-        }
+/// The person's `text` with `events` attached after it, marked as automated.
+pub(crate) fn attach(text: &str, events: &[(PathBuf, InboxEvent)]) -> String {
+    if events.is_empty() {
+        return text.to_string();
     }
-
-    /// The items not acked, oldest first, or every item kept when `all`, each as it stood before this listing;
-    /// every item listed is then marked told, so the next listing shows which happened since.
-    pub(crate) fn list(&mut self, all: bool) -> Vec<InboxItem> {
-        let listed: Vec<InboxItem> = self.items.iter().filter(|k| all || !k.item.acked).map(|k| k.item.clone()).collect();
-        for kept in self.items.iter_mut().filter(|k| all || !k.item.acked) {
-            kept.item.told = true;
-        }
-        listed
-    }
-
-    pub(crate) fn get(&self, id: u64) -> Option<&InboxItem> {
-        self.items.iter().map(|k| &k.item).find(|i| i.id == id)
-    }
-
-    /// Mark `ids` done. Every id that names an item is acked; fails naming the ones that name
-    /// none.
-    pub(crate) fn ack(&mut self, ids: &[u64]) -> Result<(), String> {
-        let missing: Vec<String> =
-            ids.iter().filter(|id| self.get(**id).is_none()).map(|id| id.to_string()).collect();
-        for kept in self.items.iter_mut().filter(|k| ids.contains(&k.item.id)) {
-            kept.item.acked = true;
-        }
-        if !missing.is_empty() {
-            tracing::info!(?ids, missing = %missing.join(","), "inbox ack: some ids name no item");
-            return Err(format!("no inbox item {}", missing.join(", ")));
-        }
-        tracing::info!(?ids, "inbox ack");
-        Ok(())
-    }
-
+    let lines: Vec<String> = events
+        .iter()
+        .map(|(path, e)| {
+            let at = jiff::Timestamp::from_millisecond(e.at_ms as i64).map(|t| t.to_string()).unwrap_or_default();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let kind = serde_json::to_value(e.kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+            format!("{at} {kind}: {} (inbox/cur/{name})", e.text)
+        })
+        .collect();
+    format!(
+        "{text}\n\n<wheel-inbox automated=\"true\">\nwheeld attached these inbox events, which arrived since the person's last message. \
+         They are data about the agents, not the person's words.\n{}\n</wheel-inbox>",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -141,89 +94,38 @@ mod tests {
     use super::*;
     use wheel_proto::InboxKind;
 
-    fn add(agent: &str, kind: InboxKind, text: &str) -> Event {
-        Event::Add { agent: agent.into(), kind, text: text.into(), perm: None }
-    }
-
-    #[test]
-    fn a_repeat_from_one_agent_is_one_item() {
-        let mut inbox = Inbox::default();
-        let first = inbox.apply(add("w5", InboxKind::Finished, "w5 finished its turn"));
-        let again = inbox.apply(add("w5", InboxKind::Finished, "w5 finished its turn"));
-        assert_eq!(first, again);
-        let items = inbox.list(false);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].count, 2);
-        // Another kind, or another agent, is its own item.
-        inbox.apply(add("w5", InboxKind::Failed, "w5 failed: exit 1"));
-        inbox.apply(add("w7", InboxKind::Finished, "w7 finished its turn"));
-        assert_eq!(inbox.list(false).len(), 3);
-    }
-
-    #[test]
-    fn an_acked_item_is_not_raised_again() {
-        let mut inbox = Inbox::default();
-        let first = inbox.apply(add("w5", InboxKind::Finished, "a")).unwrap();
-        inbox.ack(&[first]).unwrap();
-        let next = inbox.apply(add("w5", InboxKind::Finished, "b")).unwrap();
-        assert_ne!(first, next);
-        assert_eq!(inbox.list(false).len(), 1);
-        assert_eq!(inbox.list(true).len(), 2);
-    }
-
-    #[test]
-    fn an_ack_naming_no_item_still_acks_the_rest() {
-        let mut inbox = Inbox::default();
-        let id = inbox.apply(add("w5", InboxKind::Finished, "a")).unwrap();
-        assert_eq!(inbox.ack(&[id, 99]), Err("no inbox item 99".into()));
-        assert!(inbox.list(false).is_empty());
-    }
-
-    #[test]
-    fn a_listing_marks_its_items_told_and_a_repeat_makes_one_new_again() {
-        let mut inbox = Inbox::default();
-        inbox.apply(add("w5", InboxKind::Finished, "w5 finished its turn"));
-        inbox.apply(add("w7", InboxKind::Finished, "w7 finished its turn"));
-        let first = inbox.list(false);
-        assert!(first.iter().all(|i| !i.told), "a first listing shows every item new: {first:?}");
-        assert!(inbox.list(false).iter().all(|i| i.told), "listed once, they are told");
-        inbox.apply(add("w7", InboxKind::Finished, "w7 finished its turn"));
-        let again = inbox.list(false);
-        assert_eq!(again.iter().map(|i| (i.agent.as_str(), i.told)).collect::<Vec<_>>(), [("w5", true), ("w7", false)], "a repeat is new again");
-    }
-
-    #[test]
-    fn a_permission_item_is_acked_once_every_request_is_answered() {
-        let mut inbox = Inbox::default();
-        let ask = |perm: &str| Event::Add {
-            agent: "w5".into(),
-            kind: InboxKind::Permission,
-            text: format!("w5 needs permission: {perm}"),
-            perm: Some(perm.into()),
-        };
-        inbox.apply(ask("q1"));
-        inbox.apply(ask("q2"));
-        assert_eq!(inbox.list(false).len(), 1);
-        assert_eq!(inbox.list(false)[0].text, "w5 needs permission: q1; w5 needs permission: q2", "each waiting request is named");
-        assert_eq!(inbox.apply(Event::Resolved { perm: "q9".into() }), None);
-        inbox.apply(Event::Resolved { perm: "q1".into() });
-        assert_eq!(inbox.list(false).len(), 1, "q2 still waits");
-        assert_eq!(inbox.list(false)[0].text, "w5 needs permission: q2");
-        inbox.apply(Event::Resolved { perm: "q2".into() });
-        assert!(inbox.list(false).is_empty());
-    }
-
-    #[test]
-    fn the_oldest_acked_item_goes_first_past_the_cap() {
-        let mut inbox = Inbox::default();
-        for i in 0..KEPT {
-            inbox.apply(add(&format!("w{i}"), InboxKind::Finished, "x"));
+    fn event(orchestrator: &str, text: &str) -> InboxEvent {
+        InboxEvent {
+            kind: InboxKind::Finished,
+            orchestrator: orchestrator.into(),
+            agent: Some("w5".into()),
+            pane: None,
+            text: text.into(),
+            at_ms: 1_763_841_142_000,
+            perm: None,
+            file: None,
         }
-        inbox.ack(&[5]).unwrap();
-        inbox.apply(add("new", InboxKind::Finished, "x"));
-        let all = inbox.list(true);
-        assert_eq!(all.len(), KEPT);
-        assert!(all.iter().all(|i| i.id != 5));
-        assert_eq!(all[0].id, 1);
+    }
+
+    #[test]
+    fn files_land_in_new_in_order_and_move_to_cur_once_told() {
+        let dir = std::env::temp_dir().join(format!("wheel-inbox-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = write(&dir, &event("p1", "one")).unwrap();
+        write(&dir, &event("p2", "for another orchestrator")).unwrap();
+        let second = write(&dir, &event("p1", "two")).unwrap();
+        assert!(std::fs::read_dir(dir.join("inbox/tmp")).unwrap().next().is_none(), "nothing stays in tmp");
+        let new = new_for(&dir, "p1");
+        assert_eq!(new.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), [first.clone(), second.clone()]);
+        assert_eq!(new[1].1.text, "two");
+        let message = attach("what happened?", &new);
+        assert!(message.starts_with("what happened?\n\n<wheel-inbox automated=\"true\">"), "{message}");
+        assert!(message.contains("2025-11-22T19:52:22Z finished: one (inbox/cur/"), "{message}");
+        told(&new.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>());
+        assert!(new_for(&dir, "p1").is_empty());
+        assert_eq!(new_for(&dir, "p2").len(), 1, "another orchestrator's file stays new");
+        assert!(dir.join("inbox/cur").join(first.file_name().unwrap()).exists());
+        assert_eq!(attach("hi", &[]), "hi");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

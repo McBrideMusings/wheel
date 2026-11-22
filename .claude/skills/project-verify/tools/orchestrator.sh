@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrators (wheel-eg4e.19.4, ADR-0054), through the wheel command against the fake agent.
-# `wheel orchestrator start` makes an ordinary agent pane with a scope and an inbox and prints its
+# `wheel orchestrator start` makes an ordinary agent pane with a scope and an inbox (files in its
+# folder, tools/inbox.sh) and prints its
 # pane; several may share a space; each agent event goes to the first space orchestrator of the
 # agent's space, else the first global one; a space orchestrator's own events go to the global one;
 # `wheel orchestrator stop <pane>` closes the pane. A global orchestrator goes in the Orchestrator
@@ -24,17 +25,24 @@ O1="$(w orchestrator start --space "$A")"
 expect_out "^$A $O1 agent:orchestrator-space " "case 1: pane ls shows an agent pane marked orchestrator" w pane ls
 O2="$(w orchestrator start --space "$A")"
 check "case 2: a second orchestrator in the space is another pane" test "$O2" != "$O1"
-check "case 2: each has its own inbox" bash -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O1' && '$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' inbox list '$O2'"
-
-# inbox_has <pane> <agent>: wait up to 10 s for an item about <agent> in <pane>'s inbox.
+# A space orchestrator's folder is spaces/<space> in the machine's orchestrator folder, a global
+# one's that folder itself; each inbox file names the orchestrator pane it was routed to.
+OHOME="$INST/orchestrator"
+folder_of() { case "$1" in "$O1"|"$O2") echo "$OHOME/spaces/$A" ;; *) echo "$OHOME" ;; esac; }
+# agents_in <pane>: the agents the inbox files routed to <pane> are about, sorted, unique.
+agents_in() {
+  cat "$(folder_of "$1")"/inbox/new/*.json "$(folder_of "$1")"/inbox/cur/*.json 2>/dev/null \
+    | jq -rs --arg p "$1" '[.[] | select(.orchestrator == $p and .agent != null) | .agent] | unique | join(",")'
+}
+# inbox_has <pane> <agent>: wait up to 10 s for an event about <agent> in <pane>'s inbox.
 inbox_has() {
   for _ in $(seq 1 100); do
-    w inbox list "$1" --json | jq -e --arg a "$2" 'any(.[]; .agent == $a)' >/dev/null && return 0
+    agents_in "$1" | tr , '\n' | grep -qx "$2" && return 0
     sleep 0.1
   done
   return 1
 }
-agents_in() { w inbox list "$1" --json | jq -r '[.[].agent] | sort | join(",")'; }
+eq "case 2: each has its own inbox, empty" "$(agents_in "$O1")/$(agents_in "$O2")" "/"
 
 # Case 6: no global orchestrator yet; a space orchestrator's finished turn reaches nobody.
 w agent send "$O1" hello --timeout 30 >/dev/null 2>&1

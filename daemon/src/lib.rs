@@ -56,6 +56,7 @@ mod views;
 mod inbox;
 mod orchestrator;
 mod orchestrator_events;
+mod tasks;
 
 pub use refresh::{warden, WARDEN_ARG};
 pub use server::{serve, AgentTiming, AppState};

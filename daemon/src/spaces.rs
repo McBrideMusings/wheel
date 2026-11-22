@@ -2748,7 +2748,16 @@ impl AppState {
     /// pane whose home only the login shell can say is kept as saved and started by a start of
     /// kept agents ([`Self::start_kept_agents`]) once the restore returns; a start of kept agents
     /// waits until then.
+    /// Each orchestrator folder gets its `start` event once the restore returns
+    /// (`AppState::orchestrators_restored`).
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
+        self.restoring.store(true, std::sync::atomic::Ordering::SeqCst);
+        let restored = self.restore_layout(path).await;
+        self.orchestrators_restored();
+        restored
+    }
+
+    async fn restore_layout(&self, path: PathBuf) -> anyhow::Result<()> {
         self.sweep_removed_pane_dirs();
         let Saved {
             layout: mut loaded,

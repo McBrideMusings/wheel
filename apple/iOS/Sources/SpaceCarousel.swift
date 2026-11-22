@@ -311,17 +311,30 @@ struct SpaceCarousel: View {
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
             ModeButton(mode: model.mode) { model.setMode($0) }
-            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot stays, so search and
-            // the ⋯ keep their places.
+            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot holds Tasks, so search
+            // and the ⋯ keep their places.
             Group {
-                let eye = AgentsButton(needsYou: model.sessionNeedsYou > 0) {
-                    Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
-                    agentsOpen = true
+                if orchestratorMode {
+                    let tasks = Button { model.openTasks(at: nil) } label: { Image(systemName: "checklist") }
+                        .accessibilityLabel("Tasks")
+                        .accessibilityIdentifier("tasks")
+                    if model.canReadTasks { tasks } else { tasks.hidden() }
+                } else {
+                    AgentsButton(needsYou: model.sessionNeedsYou > 0) {
+                        Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
+                        agentsOpen = true
+                    }
                 }
-                if orchestratorMode { eye.hidden() } else { eye }
             }
+            // One width for the eye and Tasks, so the mode button keeps its place across the modes.
+            .frame(width: 28)
             .sheet(isPresented: $agentsOpen) {
                 AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: Bindable(model).tasksOpen) {
+                TasksSheet(model: model)
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }

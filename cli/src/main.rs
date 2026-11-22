@@ -105,10 +105,6 @@ enum Command {
     /// Orchestrators: agent panes that watch the other agents, each with a scope and an inbox.
     #[command(subcommand)]
     Orchestrator(OrchestratorCommand),
-    /// An orchestrator's inbox: agent events, queued in the daemon until the orchestrator reads
-    /// them.
-    #[command(subcommand)]
-    Inbox(InboxCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -266,6 +262,22 @@ enum PushCommand {
     /// went; exits non-zero with the reason when nothing was sent (no phone registered, the push
     /// key unset, Apple refusing).
     Test { event: String },
+    /// Send every phone that registered a push token a notification with these words, whatever
+    /// `push.events` lists; an orchestrator folder's `tools/on-event` sends one when a task needs
+    /// the person. With `--task`, pushes about one task replace each other on the phone and a tap
+    /// opens the Tasks view at it. Exits non-zero with the reason when nothing was sent.
+    Send {
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        body: String,
+        /// The orchestrator task it is about (`tasks/<id>.json`).
+        #[arg(long)]
+        task: Option<String>,
+        /// The pane a tap opens.
+        #[arg(long)]
+        pane: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1559,40 +1571,13 @@ enum OrchestratorCommand {
         /// The orchestrator's pane.
         pane: String,
     },
-}
-
-#[derive(Subcommand)]
-enum InboxCommand {
-    /// Print the items not acked yet, oldest first, one per line as `[id] text`, with
-    /// `(N times)` for a repeated event and `(told)` once the orchestrator was sent it. Fails
-    /// when the pane holds no orchestrator.
-    List {
-        /// The orchestrator's pane.
-        pane: String,
-        /// Every item kept, the acked ones marked `(acked)`.
-        #[arg(long)]
-        all: bool,
-        /// Print the items as a JSON array.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Mark items done, so `list` no longer shows them. Every id that names an item is acked;
-    /// fails naming the ones that name none.
-    Ack {
-        /// The orchestrator's pane.
-        pane: String,
-        #[arg(required = true)]
-        ids: Vec<u64>,
-    },
-    /// Send a message to the agent an item is about, and ack the item. Prints the turn it
-    /// queued as.
-    Reply {
-        /// The orchestrator's pane.
-        pane: String,
-        id: u64,
-        /// What to send; the words are joined with spaces.
-        #[arg(required = true, num_args = 1..)]
-        text: Vec<String>,
+    /// Print the global orchestrator's tasks as JSON, newest first: each `tasks/<id>.json` in the
+    /// Orchestrator space's folder with the inbox events naming its agents.
+    Tasks,
+    /// Mark a global orchestrator task done: writes `"done": true` into its `tasks/<id>.json`.
+    Done {
+        /// The task's id.
+        task: String,
     },
 }
 
@@ -2248,6 +2233,15 @@ async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fai
     Ok(())
 }
 
+async fn orchestrator_tasks(conn: &mut Conn) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::OrchestratorTasks { tasks, .. } = conn.call(ClientMsg::OrchestratorTasks { req: Some(req) }, req).await? else {
+        return Err(Fail::Other("unexpected reply to orchestrator_tasks".into()));
+    };
+    println!("{}", serde_json::to_string_pretty(&tasks).map_err(other)?);
+    Ok(())
+}
+
 async fn remote_devices(conn: &mut Conn, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Devices { devices, .. } = conn
@@ -2681,6 +2675,12 @@ fn print_perm_hint(perm: &wheel_proto::PermInfo) {
     );
 }
 
+/// The pane this command runs in (`WHEEL_PANE`), which wheeld names as a message's sender: a
+/// message from an orchestrator's pane lands in its inbox as a dispatch.
+fn caller_pane() -> Option<String> {
+    std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty())
+}
+
 async fn agent_send(
     conn: &mut Conn,
     agent: String,
@@ -2708,6 +2708,7 @@ async fn agent_send(
                 req: Some(req),
                 agent: agent.clone(),
                 text,
+                from: caller_pane(),
             },
             req,
         )
@@ -3284,43 +3285,6 @@ async fn orchestrator_start(
     match conn.call(start, req).await? {
         ServerMsg::OrchestratorStarted { pane, .. } => {
             println!("{pane}");
-            Ok(())
-        }
-        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
-    }
-}
-
-async fn inbox_list(conn: &mut Conn, pane: String, all: bool, json: bool) -> Result<(), Fail> {
-    let req = conn.req();
-    match conn.call(ClientMsg::InboxList { req: Some(req), pane, all }, req).await? {
-        ServerMsg::InboxItems { items, .. } if json => {
-            println!("{}", serde_json::to_string_pretty(&items).map_err(other)?);
-            Ok(())
-        }
-        ServerMsg::InboxItems { items, .. } => {
-            for item in items {
-                let mut line = format!("[{}] {}", item.id, item.text);
-                if item.count > 1 {
-                    line.push_str(&format!(" ({} times)", item.count));
-                }
-                if item.acked {
-                    line.push_str(" (acked)");
-                } else if item.told {
-                    line.push_str(" (told)");
-                }
-                println!("{line}");
-            }
-            Ok(())
-        }
-        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
-    }
-}
-
-async fn inbox_reply(conn: &mut Conn, pane: String, id: u64, text: String) -> Result<(), Fail> {
-    let req = conn.req();
-    match conn.call(ClientMsg::InboxReply { req: Some(req), pane, id, text }, req).await? {
-        ServerMsg::AgentQueued { agent, turn, .. } => {
-            println!("{agent} turn {turn}");
             Ok(())
         }
         other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
@@ -6055,6 +6019,7 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 permission_mode,
                 sandbox,
                 dir,
+                from: caller_pane(),
             };
             let ServerMsg::Started {
                 pane,
@@ -6564,6 +6529,9 @@ async fn main() -> ExitCode {
             Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,
             Command::Remote(RemoteCommand::Revoke { id }) => remote_revoke(&mut conn, id).await,
             Command::Push(PushCommand::Test { event }) => push_test(&mut conn, event).await,
+            Command::Push(PushCommand::Send { title, body, task, pane }) => {
+                simple(&mut conn, |req| ClientMsg::PushSend { req: Some(req), title, body, task, pane }).await
+            }
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
             }
@@ -6627,12 +6595,11 @@ async fn main() -> ExitCode {
                 let scope = if global { wheel_proto::OrchestratorScope::Global } else { wheel_proto::OrchestratorScope::Space };
                 orchestrator_start(&mut conn, space, scope, turn_limit).await
             }
-            Command::Inbox(InboxCommand::List { pane, all, json }) => inbox_list(&mut conn, pane, all, json).await,
-            Command::Inbox(InboxCommand::Ack { pane, ids }) => {
-                simple(&mut conn, |req| ClientMsg::InboxAck { req: Some(req), pane, ids }).await
-            }
-            Command::Inbox(InboxCommand::Reply { pane, id, text }) => inbox_reply(&mut conn, pane, id, text.join(" ")).await,
             Command::Orchestrator(OrchestratorCommand::Stop { pane }) => orchestrator_stop(&mut conn, pane).await,
+            Command::Orchestrator(OrchestratorCommand::Tasks) => orchestrator_tasks(&mut conn).await,
+            Command::Orchestrator(OrchestratorCommand::Done { task }) => {
+                simple(&mut conn, |req| ClientMsg::OrchestratorTaskDone { req: Some(req), task }).await
+            }
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await
             }

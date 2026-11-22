@@ -37,6 +37,8 @@ pub enum Event {
     NeedsYou,
     Failed,
     TurnDone,
+    /// A task an orchestrator holds needs the person (`push_send`).
+    Task,
 }
 
 impl Event {
@@ -45,6 +47,7 @@ impl Event {
             Event::NeedsYou => "needs_you",
             Event::Failed => "failed",
             Event::TurnDone => "turn_done",
+            Event::Task => "task",
         }
     }
 
@@ -63,6 +66,8 @@ pub struct Notice {
     pub pane: String,
     pub title: String,
     pub body: String,
+    /// The orchestrator task the notification is about; a tap opens the Tasks view at it.
+    pub task: Option<String>,
 }
 
 impl Notice {
@@ -78,8 +83,18 @@ impl Notice {
             "event": self.event.name(),
             "space": self.space,
             "pane": self.pane,
+            "task": self.task,
         })
         .to_string()
+    }
+
+    /// Notifications with one collapse id replace each other on the phone: one per task, else one
+    /// per pane and event.
+    pub fn collapse(&self) -> String {
+        match &self.task {
+            Some(task) => format!("task-{task}"),
+            None => format!("{}-{}", self.pane, self.event.name()),
+        }
     }
 }
 
@@ -197,7 +212,7 @@ impl AppState {
         }
         let jwt = self.push_jwt(&config)?;
         let payload = notice.payload();
-        let collapse = format!("{}-{}", notice.pane, notice.event.name());
+        let collapse = notice.collapse();
         let mut sent = 0;
         let mut errors = Vec::new();
         for (device, token) in targets {
@@ -205,7 +220,7 @@ impl AppState {
             match outcome {
                 Outcome::Sent => {
                     sent += 1;
-                    tracing::info!(%device, event = notice.event.name(), pane = %notice.pane, "push sent");
+                    tracing::info!(%device, event = notice.event.name(), pane = %notice.pane, task = ?notice.task, "push sent");
                 }
                 Outcome::DeadToken(reason) => {
                     tracing::warn!(%device, %reason, "push token refused; forgotten");
@@ -241,6 +256,7 @@ impl AppState {
             Event::NeedsYou => (format!("{space} needs you"), "Test: an agent is waiting"),
             Event::Failed => (format!("{space} stopped"), "Test: an agent stopped"),
             Event::TurnDone => (format!("{space} finished"), "Test: a long turn ended"),
+            Event::Task => (format!("{space}: a task needs you"), "Test: a task needs a decision"),
         };
         Notice {
             event,
@@ -248,7 +264,14 @@ impl AppState {
             pane,
             title,
             body: body.to_string(),
+            task: None,
         }
+    }
+
+    /// The notification `push_send` sends: `pane`'s space, when it names one.
+    pub(crate) fn push_task_notice(&self, title: String, body: String, task: Option<String>, pane: Option<String>) -> Notice {
+        let space = pane.as_deref().and_then(|p| self.pane_space(p)).map(|(id, _)| id).unwrap_or_default();
+        Notice { event: Event::Task, space, pane: pane.unwrap_or_default(), title, body, task }
     }
 
     fn push_wanted(&self, event: Event) -> bool {
@@ -257,8 +280,14 @@ impl AppState {
     }
 
     /// Send `notice` in the background when `push.events` lists its event and a phone is waiting.
-    fn push_notify(self: &Arc<Self>, notice: Notice) {
+    /// An agent named in an open orchestrator task is left to the task's own push (`push_send`),
+    /// so one event makes one notification.
+    fn push_notify(self: &Arc<Self>, notice: Notice, agent: Option<&str>) {
         if !self.push_wanted(notice.event) || self.devices.push_tokens().is_empty() {
+            return;
+        }
+        if let Some(task) = agent.and_then(|a| self.open_task_naming(a)) {
+            tracing::info!(event = notice.event.name(), pane = %notice.pane, %task, "push left to the task");
             return;
         }
         let state = self.clone();
@@ -291,14 +320,19 @@ impl AppState {
             .map(|s| (s.id.clone(), s.name.clone()))
     }
 
-    /// What the agent in `pane` is waiting on, from the permission request in front of it.
-    fn waiting_on(&self, pane: &str) -> String {
-        let agent = self.spaces().spaces.iter().find_map(|s| {
+    /// The agent pane `pane` runs.
+    fn pane_agent(&self, pane: &str) -> Option<String> {
+        self.spaces().spaces.iter().find_map(|s| {
             space_panes(s).into_iter().find_map(|(p, kind)| match kind {
                 PaneKind::Agent { agent, .. } if p == pane => Some(agent.clone()),
                 _ => None,
             })
-        });
+        })
+    }
+
+    /// What the agent in `pane` is waiting on, from the permission request in front of it.
+    fn waiting_on(&self, pane: &str) -> String {
+        let agent = self.pane_agent(pane);
         let perms = self.perms.list();
         perms
             .iter()
@@ -445,22 +479,25 @@ pub(crate) fn follow(state: Arc<AppState>) {
                     match new {
                         PaneStatus::NeedsYou { .. } if !matches!(old, Some(PaneStatus::NeedsYou { .. })) => {
                             let body = state.waiting_on(&pane);
-                            state.push_notify(Notice {
-                                event: Event::NeedsYou,
-                                space,
-                                pane,
-                                title: format!("{name} needs you"),
-                                body,
-                            });
+                            let agent = state.pane_agent(&pane);
+                            state.push_notify(
+                                Notice { event: Event::NeedsYou, space, pane, title: format!("{name} needs you"), body, task: None },
+                                agent.as_deref(),
+                            );
                         }
                         PaneStatus::Stopped if old.is_some_and(|o| o != PaneStatus::Stopped) => {
-                            state.push_notify(Notice {
-                                event: Event::Failed,
-                                space,
-                                pane,
-                                title: format!("{name} stopped"),
-                                body: "The agent stopped and will not run again".into(),
-                            });
+                            let agent = state.pane_agent(&pane);
+                            state.push_notify(
+                                Notice {
+                                    event: Event::Failed,
+                                    space,
+                                    pane,
+                                    title: format!("{name} stopped"),
+                                    body: "The agent stopped and will not run again".into(),
+                                    task: None,
+                                },
+                                agent.as_deref(),
+                            );
                         }
                         _ => {}
                     }
@@ -480,13 +517,17 @@ pub(crate) fn follow(state: Arc<AppState>) {
                             continue;
                         }
                         if let Some((space, name, pane)) = state.agent_pane(&agent) {
-                            state.push_notify(Notice {
-                                event: Event::TurnDone,
-                                space,
-                                pane,
-                                title: format!("{name} finished"),
-                                body: format!("A turn of {} min ended", since.elapsed().as_secs() / 60),
-                            });
+                            state.push_notify(
+                                Notice {
+                                    event: Event::TurnDone,
+                                    space,
+                                    pane,
+                                    title: format!("{name} finished"),
+                                    body: format!("A turn of {} min ended", since.elapsed().as_secs() / 60),
+                                    task: None,
+                                },
+                                Some(&agent),
+                            );
                         }
                     }
                     _ => {
@@ -552,11 +593,17 @@ mod tests {
             pane: "p7".into(),
             title: "wheel needs you".into(),
             body: "Allow Bash: ls".into(),
+            task: None,
         };
         let v: serde_json::Value = serde_json::from_str(&notice.payload()).unwrap();
         assert_eq!(v["pane"], "p7");
         assert_eq!(v["space"], "s1");
         assert_eq!(v["aps"]["alert"]["title"], "wheel needs you");
         assert_eq!(v["aps"]["alert"]["body"], "Allow Bash: ls");
+        assert_eq!(notice.collapse(), "p7-needs_you");
+        let task = Notice { event: Event::Task, task: Some("t17".into()), ..notice };
+        assert_eq!(task.collapse(), "task-t17", "pushes about one task replace each other");
+        let v: serde_json::Value = serde_json::from_str(&task.payload()).unwrap();
+        assert_eq!((v["event"].as_str(), v["task"].as_str()), (Some("task"), Some("t17")));
     }
 }
