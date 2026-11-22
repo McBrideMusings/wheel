@@ -505,12 +505,13 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
     }
     if text.contains("show orchestrator") {
         turn.say(&format!(
-            "orchestrator: tools={} setting-sources={} mode={} model={} allowed={}\nbrief: {}\n",
+            "orchestrator: tools={} setting-sources={} mode={} model={} allowed={} denied={}\nbrief: {}\n",
             args.tools.as_deref().unwrap_or("-"),
             args.setting_sources.as_deref().map(|s| format!("[{s}]")).unwrap_or_else(|| "-".into()),
             args.permission_mode.as_deref().unwrap_or("-"),
             args.model.as_deref().unwrap_or("-"),
             args.allowed.as_deref().unwrap_or("-"),
+            args.disallowed.as_deref().unwrap_or("-"),
             args.brief.as_deref().unwrap_or("-").replace('\n', " "),
         ));
     }

@@ -5798,6 +5798,7 @@ async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
     assert!(text.contains(&format!("You are the agent in pane {first}")), "the pane's own brief: {text:?}");
     assert!(text.contains("You are an orchestrator") && text.contains(&format!("wheel inbox ack {first} <ids>")), "{text:?}");
     assert!(text.contains("wheel perm answer <id> allow --confirmed"), "{text:?}");
+    assert!(text.contains("allowed=Bash(wheel:*) denied=Bash(wheel perm answer:*)\n"), "a space orchestrator never answers a permission request unasked: {text:?}");
     assert!(text.contains("never wait on an agent's turn") && !text.contains("wait on, cancel"), "the orchestrator dispatches and never waits: {text:?}");
 
     // Stopping closes the pane; its inbox goes with it.
@@ -6012,8 +6013,12 @@ async fn global_orchestrators_run_in_a_permanent_orchestrator_space() {
 
     // 1. The first global start makes the space, in a session named Orchestrator, in the folder
     // beside this machine's wheel.toml, and puts the pane in it.
-    let (g1, _) = orchestrator(&mut ws, 300, None, Global).await.unwrap();
+    let (g1, g1_agent) = orchestrator(&mut ws, 300, None, Global).await.unwrap();
     let (orch, session) = orchestrator_space(&mut ws).await;
+    // 2. The global orchestrator may run `wheel perm answer`: no tool is denied it.
+    attach_and_send(&mut ws, &g1_agent, "show orchestrator").await;
+    let text = turn_text(&mut ws).await;
+    assert!(text.contains("allowed=Bash(wheel:*) denied=-\n"), "{text:?}");
     let folder = dir.join("orchestrator");
     assert_eq!((orch.name.as_str(), orch.cwd.as_str()), ("Orchestrator", folder.to_str().unwrap()));
     assert!(folder.is_dir(), "wheeld made the folder");

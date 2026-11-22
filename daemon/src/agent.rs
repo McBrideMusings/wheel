@@ -300,6 +300,9 @@ pub struct AgentConfig {
     /// Appended to the agent's system prompt: how to use Wheel (`crate::brief`). None leaves the
     /// agent's prompt as its configuration makes it.
     pub brief: Option<String>,
+    /// The agent may run `wheel perm answer` unasked: only the global orchestrator, whose brief
+    /// lets it answer once the person says yes.
+    pub answers_permissions: bool,
     /// Added to the agent process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
     /// The agent comes back from a saved layout: its first agent process resumes
@@ -1663,6 +1666,7 @@ impl Agent {
             cwd: config.cwd.clone(),
             config_dir: config.home.clone(),
             brief: config.brief.clone(),
+            answers_permissions: config.answers_permissions,
             env: config.env.clone(),
             conversation,
             model: config.model.clone(),

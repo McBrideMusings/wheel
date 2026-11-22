@@ -789,6 +789,7 @@ impl AppState {
                     None => brief,
                 }
             }),
+            answers_permissions: orchestrator == Some(wheel_proto::OrchestratorScope::Global),
             env: {
                 let mut env = self.agent_env(pane);
                 if orchestrator.is_some() {

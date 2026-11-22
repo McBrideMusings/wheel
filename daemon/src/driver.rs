@@ -63,6 +63,8 @@ pub struct Launch {
     pub config_dir: Option<PathBuf>,
     /// Added to the agent's instructions: how to use Wheel (`crate::brief`).
     pub brief: Option<String>,
+    /// The agent may run `wheel perm answer` unasked (`AgentConfig::answers_permissions`).
+    pub answers_permissions: bool,
     /// Added to the process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
     pub conversation: Conversation,

@@ -30,7 +30,8 @@ use crate::driver::{
 use crate::resume::{between_turns, claude_project_dir, Harness};
 
 /// Tools the agent runs without asking, and the ones it never runs unasked: `wheel` itself is
-/// Wheel's own surface, except for answering a permission request, which is the person's.
+/// Wheel's own surface, except for answering a permission request, which is the person's unless
+/// the agent is the global orchestrator (`Launch::answers_permissions`).
 const ALLOWED: &str = "Bash(wheel:*)";
 const DISALLOWED: &str = "Bash(wheel perm answer:*)";
 
@@ -174,7 +175,9 @@ fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if launch.brief.is_some() {
         args.extend(["--allowedTools".into(), ALLOWED.into()]);
-        args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
+        if !launch.answers_permissions {
+            args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
+        }
     }
     args.extend(
         [
@@ -1879,6 +1882,7 @@ mod tests {
             cwd: "/work/proj".into(),
             config_dir: None,
             brief: None,
+            answers_permissions: false,
             env: Vec::new(),
             conversation: Conversation::Fork { from: "src".into(), turns, id: "new".into() },
             model: None,
@@ -1895,6 +1899,30 @@ mod tests {
         let whole = super::arguments(&launch(2), None);
         assert!(whole.contains(&"--fork-session".to_string()));
         assert!(!whole.contains(&"--resume-session-at".to_string()));
+    }
+
+    #[test]
+    fn only_an_agent_that_answers_permissions_may_run_perm_answer() {
+        use crate::driver::{Conversation, Launch};
+        let launch = |answers_permissions| Launch {
+            agent: crate::resume::Harness::Claude,
+            command: "claude".into(),
+            cwd: "/work/proj".into(),
+            config_dir: None,
+            brief: Some("brief".into()),
+            answers_permissions,
+            env: Vec::new(),
+            conversation: Conversation::New("c".into()),
+            model: None,
+            permissions: Default::default(),
+        };
+        let agent = super::arguments(&launch(false), None);
+        let at = agent.iter().position(|a| a == "--disallowedTools").unwrap();
+        assert_eq!(agent[at + 1], super::DISALLOWED);
+        let orchestrator = super::arguments(&launch(true), None);
+        assert!(!orchestrator.contains(&"--disallowedTools".to_string()), "{orchestrator:?}");
+        let at = orchestrator.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(orchestrator[at + 1], super::ALLOWED);
     }
 
     #[test]
