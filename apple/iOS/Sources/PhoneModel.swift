@@ -37,14 +37,10 @@ final class PhoneModel {
     /// draws from the layout already held, moves no other client, and the phone reports it with `view`.
     private(set) var view = SessionView()
     /// What the phone's body shows, a `WindowMode` id: the space's pages, or another mode in their
-    /// place. The phone holds it alone and saves it across launches; wheeld never hears of it (ADR-0022).
-    private(set) var mode: String = {
-        let saved = UserDefaults.standard.string(forKey: PhoneModel.modeKey) ?? WindowMode.spaces
-        let mode = WindowMode.builtIn.contains(saved) ? saved : WindowMode.spaces
-        Log.info("mode restored: \(mode)")
-        return mode
-    }()
-    private static let modeKey = "phoneMode"
+    /// place. The phone holds it alone and saves it with the view, per paired Mac; wheeld never hears of it (ADR-0022).
+    private(set) var mode = WindowMode.spaces
+    /// The page Orchestrator mode shows: a pane of the Orchestrator space, nil for the chat. Saved with the view.
+    private(set) var orchestratorPage: String?
 
     /// Show another mode, as the mode menu's row does.
     func setMode(_ new: String) {
@@ -55,13 +51,12 @@ final class PhoneModel {
         guard new != mode else { return }
         Log.info("mode \(mode) -> \(new)")
         mode = new
-        UserDefaults.standard.set(new, forKey: Self.modeKey)
+        saveView()
         if new == WindowMode.orchestrator {
             // Each entry tries again after a refusal.
             orchestratorRefused = nil
             startOrchestratorIfNone()
         }
-        pinOrchestrator()
         reportView()
         showTerm()
     }
@@ -70,20 +65,16 @@ final class PhoneModel {
     var orchestratorSpace: SpaceInfo? { spaces.first(where: \.orchestrator) }
     /// The spaces a list offers: every one but the Orchestrator space, which only Orchestrator mode shows.
     var listedSpaces: [SpaceInfo] { spaces.filter { !$0.orchestrator } }
-    /// In Orchestrator mode the person talks to the global orchestrator only, so it is always the pinned sheet: pinned
-    /// whenever the mode shows its space unpinned, and never unpinned there (`unpin`).
-    private func pinOrchestrator() {
-        guard mode == WindowMode.orchestrator, !restorePending, let space = orchestratorSpace,
-              let pane = space.firstGlobalOrchestrator, !pins.isPinned(pane, in: space.id) else { return }
-        pins.pin(pane, in: space.id)
-        sheets[space.id] = PinSheet(pane: pane, position: .low)
-        savePins()
-        Log.info("orchestrator space \(space.id): pinned \(pane)")
+    /// The global orchestrator's pane, whose chat is Orchestrator mode's first page; nil in another mode or before
+    /// wheeld has started one.
+    var orchestratorPane: String? {
+        mode == WindowMode.orchestrator ? orchestratorSpace?.firstGlobalOrchestrator : nil
     }
 
-    /// Whether `pane` is the global orchestrator Orchestrator mode keeps pinned.
-    func isPinnedOrchestrator(_ pane: String) -> Bool {
-        mode == WindowMode.orchestrator && orchestratorSpace?.firstGlobalOrchestrator == pane
+    /// The name a page of `space` goes by: a mirror's title, the name the pane was given, else its kind's.
+    func pageName(_ pane: String, in space: SpaceInfo) -> String {
+        let kind = space.allPanes.first { $0.id == pane }?.kind
+        return mirror(pane)?.title ?? space.paneNames[pane] ?? kind.flatMap { PhoneCommands.paneName($0, status: nil) } ?? kind?.name ?? pane
     }
 
     /// The `orchestrator_start` the phone sent on its own that wheeld has not answered, and why wheeld refused the last one.
@@ -131,7 +122,7 @@ final class PhoneModel {
 
     /// Unpin `pane` of the shown space: it goes back to the carousel, and the sheet shows the next pinned pane.
     func unpin(_ pane: String) {
-        guard let space = activeSpace?.id, !isPinnedOrchestrator(pane) else { return }
+        guard let space = activeSpace?.id else { return }
         pins.unpin(pane, in: space)
         if sheets[space]?.pane == pane { sheets[space]?.pane = pins.pinned(in: space).first ?? pane }
         savePins()
@@ -963,15 +954,16 @@ final class PhoneModel {
             pendingSession = nil
             selectSession(session)
         }
-        // A pinned pane that closed leaves its space's pins.
-        let kept = pins.kept(in: self.spaces)
+        // A pinned pane that closed leaves its space's pins, and the Orchestrator space holds none: its mode draws no
+        // sheet.
+        var kept = pins.kept(in: self.spaces)
+        if let space = orchestratorSpace { for pane in kept.pinned(in: space.id) { kept.unpin(pane, in: space.id) } }
         if kept != pins {
             Log.info("pins: \(pins.bySpace) -> \(kept.bySpace), a pinned pane closed")
             pins = kept
             savePins()
         }
         startOrchestratorIfNone()
-        pinOrchestrator()
         reportView()
         Log.info("layout: \(spaces.count) spaces, active \(active ?? "none"), panes \(activeSpace?.root.readingOrder.map(\.id) ?? []), statuses \(statusText)")
         for space in self.spaces {
@@ -1040,6 +1032,34 @@ final class PhoneModel {
     }
 
     // MARK: Agents
+
+    /// Change one of an agent's config options, as the composer's Model menu does. The menu redraws when wheeld
+    /// broadcasts the agent's new list, never from the tap, so its check is always on what the agent took.
+    func setConfig(_ chat: AgentChat, _ option: ConfigOption, to value: String) {
+        guard case .connected = connection, let client else {
+            chat.error = "Not connected to the Mac."
+            return
+        }
+        chat.error = nil
+        let req = client.req()
+        agentReqs[req] = chat.name
+        Log.info("set \(chat.name) \(option.id) to \(value)")
+        client.send(.agentConfigSet(req: req, agent: chat.name, config: option.id, value: value))
+    }
+
+    /// Start the agent's conversation over, as the composer's Clear chat does: `/clear`, which wheeld turns into a
+    /// conversation reset.
+    func clearChat(_ chat: AgentChat) {
+        guard case .connected = connection, let client else {
+            chat.error = "Not connected to the Mac."
+            return
+        }
+        chat.error = nil
+        let req = client.req()
+        agentReqs[req] = chat.name
+        Log.info("clear chat \(chat.name)")
+        client.send(.agentSend(req: req, agent: chat.name, text: "/clear"))
+    }
 
     /// Send an agent's draft, with the Mac paths of the files in `tray` after it, one per line.
     /// The draft and the tray clear once the message goes out; when it can't go out now (or a file
@@ -1127,8 +1147,15 @@ final class PhoneModel {
     func focus(space: String, pane: String) {
         Log.info("focus pane \(pane) in \(space)")
         if space == orchestratorSpace?.id {
-            // The Orchestrator space is Orchestrator mode's: its pane shows there, and the Spaces mode view stays.
+            // The Orchestrator space is Orchestrator mode's: its pane shows there as the carousel's page, and the Spaces
+            // mode view stays.
             setMode(WindowMode.orchestrator)
+            let page = pane == orchestratorSpace?.firstGlobalOrchestrator ? nil : pane
+            if page != orchestratorPage {
+                orchestratorPage = page
+                Log.info("orchestrator page \(page ?? "chat")")
+                saveView()
+            }
             if let i = spaces.firstIndex(where: { $0.id == space }), spaces[i].allPanes.contains(where: { $0.id == pane }), spaces[i].focus != pane {
                 spaces[i].focus = pane
             }
@@ -1176,15 +1203,34 @@ final class PhoneModel {
         showTerm()
     }
 
-    /// The view saved at the last launch for this Mac, restored once the first layout is here.
+    /// The view saved at the last launch for this Mac, restored once the first layout is here: the mode, Spaces mode's
+    /// session, space and pane, and Orchestrator mode's page. A saved page whose pane is gone falls back to the chat, and
+    /// a saved pane to the space's first page.
     private func restoreView() {
         let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.viewKey($0)) as? [String: String] } ?? [:]
+        mode = saved["mode"].flatMap { WindowMode.builtIn.contains($0) ? $0 : nil } ?? WindowMode.spaces
+        orchestratorPage = saved["orchestratorPage"].flatMap { page in orchestratorSpace?.allPanes.contains { $0.id == page } == true ? page : nil }
+        Log.info("mode restored: \(mode), orchestrator page \(orchestratorPage ?? "chat")")
         let (restored, took) = SessionView.restored(session: saved["session"], space: saved["space"], in: sessions)
         view = restored
         if let pane = saved["pane"], let i = spaces.firstIndex(where: { $0.id == restored.space }), spaces[i].allPanes.contains(where: { $0.id == pane }) {
             spaces[i].focus = pane
         }
         Log.info("restored last view session=\(saved["session"] ?? "-") space=\(saved["space"] ?? "-") pane=\(saved["pane"] ?? "-"): took \(took), showing \(view.session ?? "none")/\(view.space ?? "none")/\(activeSpace?.focus ?? "none")")
+    }
+
+    /// Save what the phone shows for this Mac: the mode, Spaces mode's session, space and pane, and Orchestrator mode's
+    /// page. Nothing is saved until the launch's first layout has restored the last save.
+    private func saveView() {
+        guard let pairing, !restorePending else { return }
+        let shown = spaces.first { $0.id == view.space }
+        var saved: [String: String] = [:]
+        saved["mode"] = mode
+        saved["session"] = view.session
+        saved["space"] = shown?.id
+        saved["pane"] = shown?.focus
+        saved["orchestratorPage"] = orchestratorPage
+        UserDefaults.standard.set(saved, forKey: Self.viewKey(pairing))
     }
 
     /// Each Mac's ids are its own, so the view is saved per paired daemon.
@@ -1196,15 +1242,7 @@ final class PhoneModel {
         let key = "\(view.session ?? "-")/\(space?.id ?? "-")/\(space?.focus ?? "-")"
         guard key != reportedView else { return }
         reportedView = key
-        if let pairing, view.session != nil {
-            // The saved view is Spaces mode's; the mode is saved apart.
-            let shown = spaces.first { $0.id == view.space }
-            var saved: [String: String] = [:]
-            saved["session"] = view.session
-            saved["space"] = shown?.id
-            saved["pane"] = shown?.focus
-            UserDefaults.standard.set(saved, forKey: Self.viewKey(pairing))
-        }
+        saveView()
         client?.send(.view(req: nil, window: "phone", space: space?.id, pane: space?.focus, session: view.session))
     }
 
@@ -1330,6 +1368,13 @@ final class PhoneModel {
     /// the previous page showed.
     func show(pane: String?) {
         shownPane = pane
+        if mode == WindowMode.orchestrator, orchestratorPane != nil {
+            let page = pane == orchestratorPane ? nil : pane
+            if page != orchestratorPage {
+                orchestratorPage = page
+                saveView()
+            }
+        }
         showTerm()
     }
 
@@ -1618,7 +1663,12 @@ final class PhoneModel {
         resolver.locate = { [unowned self] agent in
             ChatLinks.place(ofAgent: agent, in: spaces).map { .init(space: $0.space, cwd: $0.cwd, pane: $0.pane) }
         }
-        resolver.paneChip = { [unowned self] id in ChatLinks.chip(for: id, in: spaces) }
+        // In Orchestrator mode only the panes the orchestrator placed are links: a pane in another space is plain text,
+        // so no tap leaves the mode or adds a page.
+        resolver.paneChip = { [unowned self] id in
+            if mode == WindowMode.orchestrator, orchestratorSpace?.allPanes.contains(where: { $0.id == id }) != true { return nil }
+            return ChatLinks.chip(for: id, in: spaces)
+        }
         resolver.request = { [unowned self] make in
             guard let client, isConnected else { return nil }
             let req = client.req()

@@ -4,7 +4,7 @@ import WheelKit
 /// The shown space's pinned pane as a bottom sheet over the carousel. It sits full (everything under the top bar),
 /// high, low or as its header alone at the bottom edge, so it never leaves the screen; a drag on its header moves it
 /// and ends at the nearest of the four. The header names the pane, and its menu switches among the space's pinned
-/// panes and unpins; over Orchestrator mode's orchestrator it names it alone.
+/// panes and unpins.
 struct PinSheetView<Content: View>: View {
     let model: PhoneModel
     let space: SpaceInfo
@@ -64,11 +64,6 @@ struct PinSheetView<Content: View>: View {
         VStack(spacing: 4) {
             Capsule().fill(Color.secondary.opacity(0.5)).frame(width: 36, height: 5).padding(.top, 6)
             HStack(spacing: 8) {
-                // Orchestrator mode keeps its orchestrator pinned: its name, with no picker and no Unpin.
-                if model.isPinnedOrchestrator(pane.id) {
-                    Text(title(of: pane.id)).font(.subheadline.weight(.semibold)).lineLimit(1)
-                        .accessibilityIdentifier("pin sheet title")
-                } else {
                 Menu {
                     let pinned = model.pins.pinned(in: space.id)
                     ForEach(pinned, id: \.self) { id in
@@ -89,7 +84,6 @@ struct PinSheetView<Content: View>: View {
                 }
                 .accessibilityIdentifier("pin sheet menu")
                 .accessibilityValue(title(of: pane.id))
-                }
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -121,8 +115,5 @@ struct PinSheetView<Content: View>: View {
             })
     }
 
-    private func title(of id: String) -> String {
-        let kind = space.allPanes.first { $0.id == id }?.kind
-        return model.mirror(id)?.title ?? space.paneNames[id] ?? kind.flatMap { PhoneCommands.paneName($0, status: nil) } ?? kind?.name ?? id
-    }
+    private func title(of id: String) -> String { model.pageName(id, in: space) }
 }

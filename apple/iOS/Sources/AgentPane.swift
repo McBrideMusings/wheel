@@ -3,22 +3,26 @@ import WheelKit
 import WheelUI
 
 /// An agent pane on the phone: the agent's conversation, the request it waits on, and a composer,
-/// all from WheelUI and bound to the agent the daemon holds.
+/// all from WheelUI and bound to the agent the daemon holds. The global orchestrator's chat in Orchestrator mode has
+/// no header row and talks to it by name: the top bar already names it.
 struct AgentPane: View {
     let model: PhoneModel
     let pane: String
     let agent: String
     let harness: String
     @ObservedObject var chat: AgentChat
+    var globalOrchestrator = false
 
     var body: some View {
         let mine = model.perms.filter { $0.agent == chat.name }
         let tray = model.trays[pane]
         VStack(spacing: 0) {
-            AgentHeader(model: model, pane: pane, agent: agent, harness: harness, chat: chat)
+            if !globalOrchestrator {
+                AgentHeader(model: model, pane: pane, agent: agent, harness: harness, chat: chat)
+            }
             TranscriptView(
                 chat: chat,
-                empty: "Give this agent a task.",
+                empty: globalOrchestrator ? "Message the global orchestrator." : "Give this agent a task.",
                 permissions: PermissionQueue(
                     waiting: Set(mine.compactMap(\.toolCall)),
                     places: Dictionary(model.perms.enumerated().compactMap { index, perm in
@@ -41,7 +45,7 @@ struct AgentPane: View {
                     .padding([.horizontal, .top], 10)
             }
             Composer(
-                placeholder: "Message \(AgentInfo.title(of: agent))",
+                placeholder: globalOrchestrator ? "Message" : "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.isConnected,
@@ -50,7 +54,10 @@ struct AgentPane: View {
                 // there first and its Mac path goes into the message; a server too old to take
                 // uploads gets no paperclip.
                 pickFiles: nil,
-                attachMenu: model.canAttach ? tray.map { AnyView(AttachMenu(tray: $0)) } : nil,
+                attachMenu: tray.map {
+                    AnyView(AttachMenu(tray: $0, canAttach: model.canAttach, chat: chat,
+                                       setModel: { model.setConfig(chat, $0, to: $1) }, clear: { model.clearChat(chat) }))
+                },
                 attachments: tray?.chips ?? [],
                 removeAttachment: { tray?.remove($0) },
                 retryAttachment: { tray?.retry($0) },
@@ -64,6 +71,8 @@ struct AgentPane: View {
             )
             .padding(10)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(globalOrchestrator ? "orchestrator chat" : "agent pane \(pane)")
     }
 }
 

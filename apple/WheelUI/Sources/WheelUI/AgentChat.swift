@@ -125,7 +125,12 @@ public final class AgentChat: ObservableObject {
     @Published public var draft = ""
     /// The transcript follows new output: true until the person scrolls away from the end, and
     /// again once they scroll back to it. Not published: the view reads it when content changes.
-    public var pinned = true
+    public var pinned = true {
+        didSet { if awayFromEnd == pinned { awayFromEnd = !pinned } }
+    }
+    /// Whether the transcript is scrolled up away from the newest message: `pinned` turned around and published, so the
+    /// scroll-to-bottom button follows it while a scroll, which moves `pinned` often, redraws nothing else.
+    @Published public private(set) var awayFromEnd = false
     /// A person's scroll of the transcript is under way (dragging, or coasting after it).
     public var userScrolling = false
     /// When a scroll-wheel event or a scrolling key last reached this transcript. A notched mouse

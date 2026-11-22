@@ -97,6 +97,28 @@ public struct TranscriptView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .defaultScrollAnchor(.bottom)
+            // Away from the newest message, a round down-arrow centred over the transcript's foot goes back to it.
+            .overlay(alignment: .bottom) {
+                if chat.awayFromEnd {
+                    Button {
+                        UILog.info("transcript \(chat.name): scroll to bottom tapped")
+                        chat.endRequest += 1
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(Color.secondary.opacity(0.25)))
+                            .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 10)
+                    .accessibilityLabel("Scroll to the newest message")
+                    .accessibilityIdentifier("scroll to bottom")
+                }
+            }
             #if os(iOS)
             // A hardware keyboard's printable key typed over the transcript goes to the composer;
             // the Mac does the same from its key monitor, which sees the table view's keys.

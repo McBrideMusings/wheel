@@ -2,11 +2,19 @@ import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import WheelKit
+import WheelUI
 
 /// The composer's paperclip on the phone: Photo Library (several at once), Take Photo where the
-/// device has a camera, and Choose File. Every pick lands in the pane's `AttachmentTray`.
+/// device has a camera, and Choose File, when wheeld takes uploads; then the agent's Model, a check on
+/// the current one, when the agent offers one, and Clear chat. Every pick lands in the pane's `AttachmentTray`.
 struct AttachMenu: View {
     let tray: AttachmentTray
+    /// Whether wheeld takes uploads: without, the menu holds Model and Clear chat alone.
+    let canAttach: Bool
+    @ObservedObject var chat: AgentChat
+    let setModel: (ConfigOption, String) -> Void
+    let clear: () -> Void
     @State private var photosOpen = false
     @State private var cameraOpen = false
     @State private var filesOpen = false
@@ -14,11 +22,29 @@ struct AttachMenu: View {
 
     var body: some View {
         Menu {
-            Button("Photo Library", systemImage: "photo.on.rectangle") { photosOpen = true }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                Button("Take Photo", systemImage: "camera") { cameraOpen = true }
+            if canAttach {
+                Button("Photo Library", systemImage: "photo.on.rectangle") { photosOpen = true }
+                if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                    Button("Take Photo", systemImage: "camera") { cameraOpen = true }
+                }
+                Button("Choose File", systemImage: "folder") { filesOpen = true }
+                Divider()
             }
-            Button("Choose File", systemImage: "folder") { filesOpen = true }
+            if let option = chat.config.first(where: { $0.category == "model" }), case let .select(current, choices) = option.kind {
+                Menu {
+                    ForEach(choices) { choice in
+                        Button { setModel(option, choice.value) } label: {
+                            if choice.value == current { Label(choice.name, systemImage: "checkmark") } else { Text(choice.name) }
+                        }
+                        .accessibilityIdentifier("model \(choice.value)")
+                    }
+                } label: {
+                    Label("Model", systemImage: "cpu")
+                }
+                .accessibilityIdentifier("model menu")
+                .accessibilityValue(choices.first { $0.value == current }?.name ?? current)
+            }
+            Button("Clear chat", systemImage: "trash") { clear() }
         } label: {
             Label("Attach", systemImage: "paperclip").labelStyle(.iconOnly)
         }

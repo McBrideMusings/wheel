@@ -47,8 +47,8 @@ final class ModeUITests: XCTestCase {
                 XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
                 XCTAssertFalse(body.exists, "Spaces shows the pages")
             } else {
-                // Orchestrator mode starts the global orchestrator on its own and shows its space with it pinned.
-                let shown = id == "orchestrator" ? app.otherElements["pin sheet"] : body
+                // Orchestrator mode starts the global orchestrator on its own and shows its chat as the first page.
+                let shown = id == "orchestrator" ? app.otherElements["orchestrator chat"] : body
                 XCTAssertTrue(shown.waitForExistence(timeout: 5), "\(title) shows its body")
                 shot(id)
             }

@@ -28,7 +28,7 @@ struct SpaceCarousel: View {
     var body: some View {
         GeometryReader { geo in
             let landscape = geo.size.width > geo.size.height
-            let pages = Pages(model.activeSpace, pinned: pinnedIDs)
+            let pages = self.pages
             let panes = pages.panes
             let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
             let spacesMode = showsPages
@@ -61,6 +61,7 @@ struct SpaceCarousel: View {
                             pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                         }
                     }
+                    .overlay { floatButton(pages: pages, landscape: landscape) }
                     .padding(.bottom, spacesMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
                     if spacesMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
                        let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
@@ -70,9 +71,22 @@ struct SpaceCarousel: View {
             }
             .onChange(of: trayIDs) { _, ids in trayChanged(ids) }
             .onChange(of: pinnedIDs) { old, new in pinsChanged(from: old, to: new) }
+            .onChange(of: orchestratorMode ? pages.pageIDs : [], initial: true) { _, ids in
+                if !ids.isEmpty { Log.info("orchestrator pages: \(ids.joined(separator: ", "))") }
+            }
+            // A pane link in a reply slides to its page.
+            .onChange(of: model.orchestratorPage) { _, shown in
+                if let chat = model.orchestratorPane, (shown ?? chat) != page { go(shown ?? chat) }
+            }
+            // Entering the mode shows the page it showed last, else the chat.
+            .onChange(of: model.orchestratorPane, initial: true) { _, chat in
+                if let chat { page = model.orchestratorPage.flatMap { pages.pageIDs.contains($0) ? $0 : nil } ?? chat }
+            }
+            .onChange(of: titleText) { _, title in if let title { Log.info("title: \(title)") } }
         }
-        .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in follow(focus) }
-        .onChange(of: model.activeSpace?.id) { _, _ in follow(model.activeSpace?.focus) }
+        // Orchestrator mode's pages are the phone's own: no other client's focus moves them.
+        .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in if !orchestratorMode { follow(focus) } }
+        .onChange(of: model.activeSpace?.id) { _, _ in if !orchestratorMode { follow(model.activeSpace?.focus) } }
         .onChange(of: page, initial: true) { _, new in model.show(pane: new == Pages.trayID ? openTray : new) }
         .onChange(of: openTray) { _, open in
             guard page == Pages.trayID else { return }
@@ -191,7 +205,8 @@ struct SpaceCarousel: View {
                 // The surface draws its own opaque background, so the tint goes over it.
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
         } else if case let .agent(agent, harness) = pane.kind, let chat = model.chats[agent] {
-            AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat)
+            AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat,
+                      globalOrchestrator: pane.id == model.orchestratorPane)
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
                 .background(SwipeArea.tint)
         } else if let link = model.pluginPanes[pane.id] {
@@ -214,7 +229,22 @@ struct SpaceCarousel: View {
         }
     }
 
-    private var trayIDs: [String] { Pages(model.activeSpace, pinned: pinnedIDs).tray.map(\.id) }
+    /// The shown space's pages; in Orchestrator mode the global orchestrator's chat leads them.
+    private var pages: Pages { Pages(model.activeSpace, pinned: pinnedIDs, chat: model.orchestratorPane) }
+
+    private var trayIDs: [String] { pages.tray.map(\.id) }
+
+    /// Orchestrator mode's title: "Global orchestrator" on the chat, the shown page's name elsewhere; nil in another mode.
+    private var titleText: String? {
+        guard orchestratorMode else { return nil }
+        let ids = pages.pageIDs
+        guard let space = model.activeSpace, let shown = ids.contains(page ?? "") ? page : ids.first, shown != model.orchestratorPane else {
+            return Self.orchestratorTitle
+        }
+        return model.pageName(shown, in: space)
+    }
+
+    static let orchestratorTitle = "Global orchestrator"
 
     /// The shown space's pinned panes, drawn in the sheet and left out of the pages.
     private var pinnedIDs: [String] { model.activeSpace.map { model.pins.pinned(in: $0.id) } ?? [] }
@@ -222,9 +252,9 @@ struct SpaceCarousel: View {
     /// The page on screen was pinned: its neighbour takes its place, the next page else the one before, the backgrounded
     /// panes' page included. With no page on screen (every pane was pinned), the first page there is now.
     private func pinsChanged(from old: [String], to new: [String]) {
-        let now = Pages(model.activeSpace, pinned: new).pageIDs
+        let now = Pages(model.activeSpace, pinned: new, chat: model.orchestratorPane).pageIDs
         guard page == nil || !now.contains(page ?? "") else { return }
-        let was = Pages(model.activeSpace, pinned: old).pageIDs
+        let was = Pages(model.activeSpace, pinned: old, chat: model.orchestratorPane).pageIDs
         guard let page, let i = was.firstIndex(of: page) else {
             self.page = now.first
             return
@@ -251,7 +281,7 @@ struct SpaceCarousel: View {
         let panes = pages.panes
         let spacesMode = showsPages
         return HStack {
-            TitleButton(model: model, open: $titleOpen)
+            TitleButton(model: model, open: $titleOpen, orchestratorTitle: titleText)
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
@@ -266,7 +296,7 @@ struct SpaceCarousel: View {
                 .frame(maxWidth: 240, alignment: .leading)
             Spacer()
             // Left of the mode button, so the dots going in another mode move no control.
-            if landscape && spacesMode && dots.kinds.count > 1 {
+            if landscape && spacesMode && !orchestratorMode && dots.kinds.count > 1 {
                 dots
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
@@ -318,14 +348,15 @@ struct SpaceCarousel: View {
     /// its drag: a drag across it changes page, and a swipe up opens the sheet on the tab last
     /// used, a long one on Agents. The composer above wears the same tint, since a swipe there
     /// changes page too.
-    /// In a mode other than Spaces the bar keeps its place and its swipe up, with no dots and no page to change.
+    /// In Agents mode the bar keeps its place and its swipe up, with no dots and no page to change; in Orchestrator mode
+    /// a swipe across it changes page, and it shows no dots and opens no sheet.
     private func pageHandle(pages: Pages, dots: Dots, spacesMode: Bool) -> some View {
         let ids = spacesMode ? pages.pageIDs : []
         let index = spacesMode ? pages.index(of: page) : 0
         let prev = index > 0 ? index - 1 : nil
         let next = index + 1 < ids.count ? index + 1 : nil
         return Group {
-            if ids.count > 1 { dots } else { Color.clear.frame(height: 7) }
+            if ids.count > 1 && !orchestratorMode { dots } else { Color.clear.frame(height: 7) }
         }
         .frame(maxWidth: .infinity, minHeight: 40)
         .background(SwipeArea.tint.ignoresSafeArea(edges: .bottom))
@@ -358,6 +389,17 @@ struct SpaceCarousel: View {
     }
 
     private func go(_ id: String) { withAnimation { page = id } }
+
+    /// Orchestrator mode's way back to the chat, over every page but the chat, clear of the bottom bar.
+    @ViewBuilder private func floatButton(pages: Pages, landscape: Bool) -> some View {
+        if let chatPane = model.orchestratorPane, let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first, shown != chatPane,
+           case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
+            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape ? 8 : 48) {
+                Log.info("float: back to the chat")
+                go(chatPane)
+            }
+        }
+    }
 
     /// A swipe up this far from the dots bar opens the sheet, and one this far opens the Agents tab;
     /// a swipe sideways this far across the pager changes page.
@@ -393,7 +435,7 @@ struct SpaceCarousel: View {
             Log.info("start page tray")
             openTray = env["WHEEL_TRAY_OPEN"]
             withAnimation { page = Pages.trayID }
-        } else if let n = env["WHEEL_START_PAGE"].flatMap(Int.init), case let panes = Pages(model.activeSpace, pinned: pinnedIDs).panes, (1...max(panes.count, 1)).contains(n) {
+        } else if let n = env["WHEEL_START_PAGE"].flatMap(Int.init), case let panes = pages.panes, (1...max(panes.count, 1)).contains(n) {
             Log.info("start page \(n)")
             withAnimation { page = panes[n - 1].id }
         }
@@ -408,7 +450,7 @@ struct SpaceCarousel: View {
         }
         // `WHEEL_SWIPE=<n>` raises the keyboard in the shown terminal, then swipes to the n-th page and logs what the
         // page's surface holds once the swipe settles.
-        if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = Pages(model.activeSpace, pinned: pinnedIDs).panes, (1...max(panes.count, 1)).contains(n) {
+        if let n = env["WHEEL_SWIPE"].flatMap(Int.init), case let panes = pages.panes, (1...max(panes.count, 1)).contains(n) {
             model.focusShown()
             try? await Task.sleep(for: .seconds(2))
             Log.info("swipe to page \(n)")
@@ -736,7 +778,8 @@ private struct PanePlaceholder: View {
 }
 
 /// The pages of the shown space: grid panes in reading order, then each popped window's panes,
-/// then, only when the tray holds any, one last page listing the backgrounded panes.
+/// then, only when the tray holds any, one last page listing the backgrounded panes. In Orchestrator mode the global
+/// orchestrator's chat is the first page wherever its pane sits, and there is no tray page: that surface lists no panes.
 private struct Pages {
     /// The tray page's tag: no pane has this id.
     static let trayID = "tray"
@@ -745,12 +788,13 @@ private struct Pages {
     let popped: [(id: String, kind: PaneKind)]
     let tray: [(id: String, kind: PaneKind)]
 
-    /// The pages of `space`, less the `pinned` panes the sheet draws.
-    init(_ space: SpaceInfo?, pinned: [String] = []) {
-        let pinned = Set(pinned)
-        grid = (space?.root.readingOrder ?? []).filter { !pinned.contains($0.id) }
-        popped = (space?.popped.flatMap(\.readingOrder) ?? []).filter { !pinned.contains($0.id) }
-        tray = (space?.backgrounded.flatMap(\.panes) ?? []).filter { !pinned.contains($0.id) }
+    /// The pages of `space`, less the `pinned` panes the sheet draws, led by the `chat` pane when there is one.
+    init(_ space: SpaceInfo?, pinned: [String] = [], chat: String? = nil) {
+        let leaving = Set(pinned + [chat].compactMap { $0 })
+        let lead = space?.allPanes.first { $0.id == chat }
+        grid = (lead.map { [$0] } ?? []) + (space?.root.readingOrder ?? []).filter { !leaving.contains($0.id) }
+        popped = (space?.popped.flatMap(\.readingOrder) ?? []).filter { !leaving.contains($0.id) }
+        tray = lead != nil ? [] : (space?.backgrounded.flatMap(\.panes) ?? []).filter { !leaving.contains($0.id) }
     }
 
     var panes: [(id: String, kind: PaneKind)] { grid + popped }
