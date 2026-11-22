@@ -6024,6 +6024,8 @@ async fn global_orchestrators_run_in_a_permanent_orchestrator_space() {
     assert!(folder.is_dir(), "wheeld made the folder");
     assert_eq!((session.name.as_str(), session.spaces.clone()), ("Orchestrator", vec![orch.id.clone()]));
     assert!(pane_in(&serde_json::to_value(&orch).unwrap(), &g1).is_some(), "{orch:?}");
+    // The orchestrator fills the new space: no empty pane beside it (wheel-eg4e.19.19).
+    assert!(matches!(&orch.root, wheel_proto::Node::Pane { id, .. } if *id == g1), "{:?}", orch.root);
     // 3. The layout listing marks it.
     let listed = layout(&url).await;
     let marked: Vec<_> = listed["spaces"].as_array().unwrap().iter().filter(|s| s["orchestrator"] == true).collect();

@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use wheel_proto::OrchestratorScope;
+use wheel_proto::{Node, OrchestratorScope, PaneKind};
 
 use crate::inbox::Inbox;
 use crate::orchestrator_events::Event;
@@ -120,8 +120,17 @@ impl AppState {
             (OrchestratorScope::Global, None) => (self.orchestrator_space()?, None),
         };
         let space = space.as_str();
+        // A new Orchestrator space holds one empty pane; the orchestrator takes it rather than
+        // opening beside it.
+        let empty = {
+            let spaces = self.spaces.lock().unwrap();
+            match &spaces.spaces[spaces.index(space)?].root {
+                Node::Pane { id, kind: PaneKind::Empty { .. }, .. } if scope == OrchestratorScope::Global => Some(id.clone()),
+                _ => None,
+            }
+        };
         let started = self
-            .pane_start(space, None, StartKind::Agent, StartOptions { dir, orchestrator: Some(scope), ..Default::default() })
+            .pane_start(space, empty, StartKind::Agent, StartOptions { dir, orchestrator: Some(scope), ..Default::default() })
             .await?;
         let agent = started.agent.ok_or("the orchestrator pane started no agent")?;
         let inbox = self.inbox(&started.pane)?;
