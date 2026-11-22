@@ -7,7 +7,7 @@ WHEEL_DERIVED_DATA ?= $(ROOT)/DerivedData
 PROJECT_TOOLS := $(ROOT)/.claude/skills/project-verify/tools
 
 .PHONY: help build-server build-client dev test test-rust test-wheelkit vet fmt kill \
-	deploy-client deploy-dev restart-server restart-server-dev deploy-phone ios-check \
+	deploy-client deploy-dev restart-server restart-server-dev deploy-phone deploy-phone-ota ios-check \
 	grid-motion idle-chat lsregister-prune icon-render
 
 help: ## List the targets
@@ -59,6 +59,9 @@ restart-server-dev: ## Restart Wheel Dev.app's wheeld from its bundle
 
 deploy-phone: ## Build the phone app, install it on the device in WHEEL_IOS_DEVICE and launch it
 	bash $(PROJECT_TOOLS)/deploy-phone.sh
+
+deploy-phone-ota: ## Build the phone app and serve it over the tailnet; open the printed page on the phone to install
+	bash $(PROJECT_TOOLS)/deploy-phone-ota.sh
 
 ios-check: ## Build the phone app for the simulator and run the iOS check scripts against it
 	bash $(PROJECT_TOOLS)/ios-checks.sh

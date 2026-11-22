@@ -71,6 +71,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
         PRODUCT_NAME: Wheel
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "6.0"
