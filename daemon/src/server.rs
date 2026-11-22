@@ -785,7 +785,13 @@ impl AppState {
             brief: Some({
                 let brief = crate::brief::text(pane, name, &self.pane_brief(pane, space_cwd), &self.guidance_for(agent));
                 match orchestrator {
-                    Some(scope) => format!("{brief}\n\n{}", crate::orchestrator::brief(pane, scope)),
+                    Some(scope) => {
+                        let folder = self.orchestrator_folder(pane, scope).map(|d| d.display().to_string()).unwrap_or_else(|e| {
+                            tracing::warn!(%pane, "the orchestrator brief names no folder: {e}");
+                            "unknown".into()
+                        });
+                        format!("{brief}\n\n{}", crate::orchestrator::brief(scope, &folder))
+                    }
                     None => brief,
                 }
             }),
@@ -1634,12 +1640,16 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
-        ClientMsg::AgentSend { req, agent, text } => {
+        ClientMsg::AgentSend { req, agent, text, from } => {
             // Sized, never the text: a prompt can quote anything.
-            tracing::info!(%peer, %agent, chars = text.len(), "agent send");
+            tracing::info!(%peer, %agent, chars = text.len(), from = ?from, "agent send");
             match state.resolve_agent(&agent).and_then(|a| {
+                let name = a.agent.name.clone();
+                state.orchestrator_dispatched(from.as_deref(), &name, &text);
+                let (text, attached) = state.orchestrator_attach(from.as_deref(), &name, text);
                 let turn = a.agent.send(text)?;
-                Ok((a.agent.name.clone(), turn))
+                state.orchestrator_told(&name, &attached);
+                Ok((name, turn))
             }) {
                 Ok((agent, turn)) => {
                     req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
@@ -1723,27 +1733,6 @@ async fn handle(
             Ok(()) => {
                 tracing::info!(%peer, "orchestrator release");
                 req.map(|req| ServerMsg::Ok { req })
-            }
-            Err(message) => Some(failed(req, message)),
-        },
-        ClientMsg::InboxList { req, pane, all } => match state.inbox(&pane) {
-            Ok(inbox) => {
-                let items = inbox.lock().unwrap().list(all);
-                req.map(|req| ServerMsg::InboxItems { req, items })
-            }
-            Err(message) => Some(failed(req, message)),
-        },
-        ClientMsg::InboxAck { req, pane, ids } => match state.inbox(&pane).and_then(|inbox| inbox.lock().unwrap().ack(&ids)) {
-            Ok(()) => {
-                tracing::info!(%peer, %pane, ?ids, "inbox ack");
-                req.map(|req| ServerMsg::Ok { req })
-            }
-            Err(message) => Some(failed(req, message)),
-        },
-        ClientMsg::InboxReply { req, pane, id, text } => match state.inbox_reply(&pane, id, text) {
-            Ok((agent, turn)) => {
-                tracing::info!(%peer, %pane, id, %agent, "inbox reply");
-                req.map(|req| ServerMsg::AgentQueued { req, agent, turn })
             }
             Err(message) => Some(failed(req, message)),
         },
@@ -2113,6 +2102,7 @@ async fn handle(
             pane,
             kind,
             message,
+            from,
             agent,
             model,
             permission_mode,
@@ -2120,6 +2110,7 @@ async fn handle(
             dir,
         } => {
             let (state, out) = (state.clone(), out.clone());
+            let dispatch = message.clone();
             tokio::spawn(async move {
                 let started = match state.space_holding(&pane) {
                     Ok(space) => {
@@ -2146,6 +2137,11 @@ async fn handle(
                     }
                     Err(e) => Err(e),
                 };
+                if let (Ok(s), Some(text)) = (&started, &dispatch) {
+                    if let Some(agent) = &s.agent {
+                        state.orchestrator_dispatched(from.as_deref(), agent, text);
+                    }
+                }
                 let reply = match (req, started) {
                     (Some(req), Ok(s)) => Some(ServerMsg::Started {
                         req,

@@ -1,10 +1,12 @@
-//! Orchestrators (ADR-0054): agent panes that wheeld gives the orchestrator brief and an inbox.
+//! Orchestrators (ADR-0054): agent panes that wheeld gives the orchestrator brief and an inbox,
+//! a Maildir in the orchestrator's folder (`crate::inbox`).
 //! `orchestrator_start` makes one in a space, as any agent pane is made and run, with a scope:
 //! `space` for the agents of the space its pane is in, `global` for the rest. A global one's pane
 //! goes in the Orchestrator space, made on first use. Several may share a space. Each agent event goes to one orchestrator ([`AppState::orchestrator_for`]), and the
 //! orchestrator acts on any space or pane through the wheel CLI. Closing the pane ends it.
 
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wheel_proto::{Node, OrchestratorScope, PaneKind};
@@ -30,11 +32,11 @@ pub(crate) struct Orchestrator {
     pub pane: String,
     pub agent: String,
     pub scope: OrchestratorScope,
-    pub inbox: Arc<Mutex<Inbox>>,
+    pub inbox: Arc<Inbox>,
 }
 
 /// What the orchestrator in `pane` is told, appended to the pane's own brief.
-pub(crate) fn brief(pane: &str, scope: OrchestratorScope) -> String {
+pub(crate) fn brief(scope: OrchestratorScope, folder: &str) -> String {
     let scope_line = match scope {
         OrchestratorScope::Space => {
             "Your scope is the space your pane is in: what its agents do reaches your inbox, unless \
@@ -66,13 +68,12 @@ pub(crate) fn brief(pane: &str, scope: OrchestratorScope) -> String {
          agent to do, needs the person to say yes first: ask in one short sentence, wait, and only \
          then answer with `wheel perm answer <id> allow --confirmed`; the command refuses without \
          `--confirmed`.\n\
-         What the agents do waits in your inbox, one item per agent and kind; wheeld never writes \
-         it into this chat. Read it with `wheel inbox list {pane}` before you end a turn and \
-         whenever the person asks what happened: items marked `(told)` you have listed before. \
-         Tell the person about the new ones, one short sentence per agent, then mark what you \
-         reported done with `wheel inbox ack {pane} <ids>`. To answer the agent an item is about, \
-         run `wheel inbox reply {pane} <id> \"<message>\"`, which sends it the message and marks \
-         the item done."
+         Your folder is {folder}. What the agents do, and each message you send one, lands in \
+         your inbox there, one file per event; wheeld never starts a turn in this chat. The events \
+         new since the person's last message are attached to the end of their next one, after a \
+         line that starts `[Automated:`: wheeld wrote them, not the person. Tell the person about \
+         them, one short sentence per agent. Answer an agent with `wheel agent send <agent> \
+         \"<message>\"`. Earlier events stay in {folder}/inbox/cur."
     )
 }
 
@@ -133,10 +134,9 @@ impl AppState {
             .pane_start(space, empty, StartKind::Agent, StartOptions { dir, orchestrator: Some(scope), ..Default::default() })
             .await?;
         let agent = started.agent.ok_or("the orchestrator pane started no agent")?;
-        let inbox = self.inbox(&started.pane)?;
-        let mut inbox = inbox.lock().unwrap();
+        let inbox = self.orchestrator_inbox(&started.pane)?;
         if let Some(turn_limit) = turn_limit {
-            inbox.turn_limit = turn_limit;
+            inbox.set_turn_limit(turn_limit);
         }
         tracing::info!(%space, pane = %started.pane, %agent, ?scope, "orchestrator started");
         Ok((started.pane, agent))
@@ -154,26 +154,71 @@ impl AppState {
 
     /// Close the orchestrator pane `pane`.
     pub(crate) fn orchestrator_stop(&self, pane: &str) -> Result<(), String> {
-        self.inbox(pane)?;
+        self.orchestrator_inbox(pane)?;
         self.pane_close(pane)
     }
 
+    /// The folder of an orchestrator of `scope` in `pane`: a global one's is the folder of the
+    /// space its pane is in (the Orchestrator space); a space orchestrator's is
+    /// `orchestrator/spaces/<space id>` beside this machine's `wheel.toml`, never a project
+    /// checkout.
+    pub(crate) fn orchestrator_folder(&self, pane: &str, scope: OrchestratorScope) -> Result<PathBuf, String> {
+        let space = self.space_holding(pane)?;
+        Ok(match scope {
+            OrchestratorScope::Global => {
+                let spaces = self.spaces.lock().unwrap();
+                PathBuf::from(&spaces.spaces[spaces.index(&space)?].cwd)
+            }
+            OrchestratorScope::Space => self.machine_file().with_file_name("orchestrator").join("spaces").join(space),
+        })
+    }
+
     /// Make agent `agent`, just started in `pane`, an orchestrator of `scope`. A pane that was one
-    /// already (its agent reloaded or restarted) keeps its inbox and its place in the start order.
+    /// already (its agent reloaded or restarted) keeps its inbox and its place in the start order;
+    /// a pane new to this wheeld opens its folder's inbox and runs `tools/on-event start`.
     pub(crate) fn orchestrator_register(&self, pane: &str, agent: &str, scope: OrchestratorScope) {
-        let inbox = {
+        let kept = {
             let mut all = self.orchestrators.lock().unwrap();
-            match all.iter_mut().find(|o| o.pane == pane) {
-                Some(kept) => {
-                    kept.agent = agent.to_string();
-                    kept.scope = scope;
-                    kept.inbox.clone()
-                }
-                None => {
-                    let inbox = Arc::new(Mutex::new(Inbox::default()));
-                    all.push(Orchestrator { pane: pane.into(), agent: agent.into(), scope, inbox: inbox.clone() });
-                    inbox
-                }
+            all.iter_mut().find(|o| o.pane == pane).map(|kept| {
+                kept.agent = agent.to_string();
+                kept.scope = scope;
+                kept.inbox.clone()
+            })
+        };
+        let inbox = match kept {
+            Some(inbox) => inbox,
+            None => {
+                let env = self
+                    .control
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|control| crate::shell::env(control, &self.instance_dir, Some(pane)))
+                    .unwrap_or_default();
+                let runner = crate::inbox::Runner { env, agent: agent.to_string() };
+                // Orchestrators of one folder (two in a space, two global ones) share its inbox.
+                let opened = self.orchestrator_folder(pane, scope).and_then(|dir| {
+                    let shared = self.orchestrators.lock().unwrap().iter().find(|o| o.inbox.dir == dir).map(|o| o.inbox.clone());
+                    match shared {
+                        Some(inbox) => Ok(inbox),
+                        None => Inbox::open(dir, runner).inspect(|inbox| inbox.start()),
+                    }
+                });
+                let inbox = match opened {
+                    Ok(inbox) => inbox,
+                    Err(e) => {
+                        tracing::error!(%pane, %agent, "orchestrator has no inbox, so no agent's events reach it: {e}");
+                        return;
+                    }
+                };
+                tracing::info!(%pane, %agent, folder = %inbox.dir.display(), "orchestrator inbox opened");
+                self.orchestrators.lock().unwrap().push(Orchestrator {
+                    pane: pane.into(),
+                    agent: agent.into(),
+                    scope,
+                    inbox: inbox.clone(),
+                });
+                inbox
             }
         };
         self.orchestrator_follow(pane, agent, inbox);
@@ -238,7 +283,7 @@ impl AppState {
     }
 
     /// The inbox of the orchestrator in `pane`.
-    pub(crate) fn inbox(&self, pane: &str) -> Result<Arc<Mutex<Inbox>>, String> {
+    pub(crate) fn orchestrator_inbox(&self, pane: &str) -> Result<Arc<Inbox>, String> {
         self.orchestrators
             .lock()
             .unwrap()
@@ -248,22 +293,63 @@ impl AppState {
             .ok_or_else(|| format!("{pane} holds no orchestrator"))
     }
 
-    /// Send `text` to the agent that inbox item `id` of the orchestrator in `pane` is about, then
-    /// ack the item. Returns the agent's name and the turn the text queued as.
-    pub(crate) fn inbox_reply(&self, pane: &str, id: u64, text: String) -> Result<(String, u64), String> {
-        let inbox = self.inbox(pane)?;
-        let agent = inbox.lock().unwrap().get(id).map(|i| i.agent.clone()).ok_or_else(|| format!("no inbox item {id}"))?;
-        let resolved = self.resolve_agent(&agent)?;
-        let turn = resolved.agent.send(text)?;
-        inbox.lock().unwrap().ack(&[id])?;
-        Ok((resolved.agent.name.clone(), turn))
+    /// A message `text` is about to go to agent `agent` from the caller in pane `from`: when the
+    /// caller is an orchestrator, write a `dispatched` event naming the agent and the message's
+    /// first line to its inbox.
+    pub(crate) fn orchestrator_dispatched(&self, from: Option<&str>, agent: &str, text: &str) {
+        let Some(inbox) = from.and_then(|from| self.orchestrator_inbox(from).ok()) else { return };
+        let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+        let event = Event {
+            agent: agent.to_string(),
+            kind: wheel_proto::InboxKind::Dispatched,
+            text: format!("sent {agent}: {line}"),
+            perm: None,
+        };
+        if let Err(e) = inbox.add(&event.stamped()) {
+            tracing::warn!(%agent, "cannot write the dispatch to the orchestrator's inbox: {e}");
+        }
+    }
+
+    /// A message for agent `agent` from the caller in pane `from` (none from a client): when it
+    /// is the person's message to an orchestrator, `text` with the inbox's new events attached,
+    /// and those files, to move to `cur` once the message is queued. The person is anyone but
+    /// an agent pane.
+    pub(crate) fn orchestrator_attach(&self, from: Option<&str>, agent: &str, text: String) -> (String, Vec<PathBuf>) {
+        let inbox = self.orchestrators.lock().unwrap().iter().find(|o| o.agent == agent).map(|o| o.inbox.clone());
+        let Some(inbox) = inbox else { return (text, Vec::new()) };
+        let from_agent = from.is_some_and(|from| {
+            self.spaces.lock().unwrap().spaces.iter().any(|s| crate::spaces::agent_panes(s).iter().any(|p| p.pane == from))
+        });
+        if from_agent {
+            return (text, Vec::new());
+        }
+        let pending = inbox.pending();
+        if pending.is_empty() {
+            return (text, Vec::new());
+        }
+        let attached = format!("{text}\n\n{}", crate::inbox::attachment(&pending));
+        (attached, pending.into_iter().map(|(path, _)| path).collect())
+    }
+
+    /// The files [`AppState::orchestrator_attach`] attached to a message agent `agent` queued:
+    /// move them to `cur`.
+    pub(crate) fn orchestrator_told(&self, agent: &str, files: &[PathBuf]) {
+        if files.is_empty() {
+            return;
+        }
+        let inbox = self.orchestrators.lock().unwrap().iter().find(|o| o.agent == agent).map(|o| o.inbox.clone());
+        if let Some(inbox) = inbox {
+            inbox.told(files);
+            tracing::info!(%agent, events = files.len(), "inbox events attached to the person's message");
+        }
     }
 
     /// Fill the inbox of the orchestrator in `pane` from the global broadcast and the failed
-    /// builds, keeping the events [`AppState::orchestrator_for`] sends it, until its agent `name`
-    /// is no longer the pane's orchestrator. It sends the orchestrator nothing: the orchestrator
-    /// reads its inbox. The task sleeps until the next event or a turn reaching the turn limit.
-    fn orchestrator_follow(&self, pane: &str, name: &str, inbox: Arc<Mutex<Inbox>>) {
+    /// builds, writing the events [`AppState::orchestrator_for`] sends it, until its agent `name`
+    /// is no longer the pane's orchestrator. It sends the orchestrator nothing: the events ride on
+    /// the person's next message. The task sleeps until the next event or a turn reaching the
+    /// turn limit.
+    fn orchestrator_follow(&self, pane: &str, name: &str, inbox: Arc<Inbox>) {
         let Some(state) = self.me.upgrade() else { return };
         let pane = pane.to_string();
         let name = name.to_string();
@@ -273,7 +359,7 @@ impl AppState {
             use tokio::sync::broadcast::error::RecvError;
             let mut filter = crate::orchestrator_events::Filter::default();
             let why = loop {
-                let turn_limit = inbox.lock().unwrap().turn_limit;
+                let turn_limit = inbox.turn_limit();
                 let wake = filter.next_overdue(turn_limit);
                 let far = Instant::now() + Duration::from_secs(86_400);
                 let events: Vec<Event> = tokio::select! {
@@ -318,14 +404,13 @@ impl AppState {
                 if state.agent(&name).is_err() {
                     break "the orchestrator ended";
                 }
-                let mut kept = inbox.lock().unwrap();
                 for event in events {
-                    if let Event::Add { agent, .. } = &event {
-                        if state.orchestrator_for(agent).as_deref() != Some(pane.as_str()) {
-                            continue;
-                        }
+                    if state.orchestrator_for(&event.agent).as_deref() != Some(pane.as_str()) {
+                        continue;
                     }
-                    kept.apply(event);
+                    if let Err(e) = inbox.add(&event.stamped()) {
+                        tracing::warn!(%pane, "cannot write an inbox event: {e}");
+                    }
                 }
             };
             tracing::info!(%pane, why, "orchestrator inbox stops");
@@ -338,11 +423,99 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_brief_names_the_pane_in_its_inbox_commands() {
-        let text = brief("p7", OrchestratorScope::Space);
-        assert!(text.contains("wheel inbox ack p7 <ids>") && text.contains("wheel inbox list p7"), "{text}");
+    fn the_brief_names_the_folder_and_the_automated_marker() {
+        let text = brief(OrchestratorScope::Space, "/o");
+        assert!(text.contains("Your folder is /o.") && text.contains("/o/inbox/cur") && text.contains("`[Automated:`"), "{text}");
         assert!(text.contains("--confirmed"), "{text}");
-        assert!(brief("p7", OrchestratorScope::Global).contains("Your scope is global"));
+        assert!(brief(OrchestratorScope::Global, "/o").contains("Your scope is global"));
+    }
+
+    /// wheel-eg4e.20.1: a routed agent's permission request and finished turn and the
+    /// orchestrator's own dispatch land as three files in `inbox/new`, in order; the folder's
+    /// `tools/on-event` runs once at start and once per file; the person's next message carries
+    /// them and moves them to `inbox/cur`, and an agent's message carries none.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn events_land_in_the_folder_and_ride_on_the_persons_message() {
+        use wheel_proto::{AgentState, InboxKind, PermInfo, PermWhy, ServerMsg};
+        let dir = std::env::temp_dir().join(format!("wheel-orchestrator-maildir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let folder = dir.join("orch");
+        std::fs::create_dir_all(folder.join("tools")).unwrap();
+        let log = dir.join("on-event.log");
+        let script = folder.join("tools/on-event");
+        std::fs::write(&script, format!("#!/bin/sh\necho \"$1\" >> {}\n", log.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pane = |id: &str, agent: &str| serde_json::json!({"node": "pane", "id": id, "kind": "agent", "agent": agent, "harness": "claude"});
+        let saved = serde_json::json!({
+            "spaces": [{"id": "s1", "name": "orch", "cwd": folder.to_str().unwrap(), "focus": "p1", "root": {
+                "node": "split", "id": "x1", "axis": "horizontal", "ratio": 0.5, "a": pane("p1", "w1"), "b": pane("p2", "w2"),
+            }}],
+            "next_id": 10,
+        });
+        let file = dir.join("spaces.json");
+        std::fs::write(&file, saved.to_string()).unwrap();
+        let state = AppState::new(String::new(), "t".into(), dir.clone(), std::path::PathBuf::new());
+        state.setting_set("agent.claude.command", dir.join("none").to_str().unwrap(), None, true).unwrap();
+        state.restore_spaces(file).await.unwrap();
+        state.setting_set("agent.claude.command", "/usr/bin/true", None, true).unwrap();
+        let start = crate::server::AgentStart { orchestrator: Some(OrchestratorScope::Global), ..Default::default() };
+        state.spawn_agent("w1", ("p1", "claude"), ("/tmp", "/tmp"), start).unwrap();
+        let inbox = state.orchestrator_inbox("p1").unwrap();
+        assert_eq!(inbox.dir, folder, "a global orchestrator's folder is its space's");
+
+        let wait = |want: usize| {
+            let inbox = inbox.clone();
+            async move {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while inbox.pending().len() < want && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        let perm = PermInfo { id: "q1".into(), agent: "w2".into(), title: "Bash: cargo test".into(), options: Vec::new(), tool_call: None, why: PermWhy::default() };
+        let _ = state.global.send(ServerMsg::PermRequested { perm });
+        let _ = state.global.send(ServerMsg::AgentStateChanged { agent: "w2".into(), state: AgentState::Busy { queued: 0 } });
+        let _ = state.global.send(ServerMsg::AgentStateChanged { agent: "w2".into(), state: AgentState::Ready });
+        wait(2).await;
+        state.orchestrator_dispatched(Some("p1"), "w2", "fix the parser\nthen run the tests");
+        state.orchestrator_dispatched(Some("p2"), "w1", "an agent that is no orchestrator dispatches nothing");
+        wait(3).await;
+        let pending = inbox.pending();
+        let got: Vec<(InboxKind, String)> = pending.iter().map(|(_, e)| e.as_ref().map(|e| (e.kind, e.text.clone())).unwrap()).collect();
+        assert_eq!(
+            got,
+            [
+                (InboxKind::Permission, "w2 needs permission: Bash: cargo test".to_string()),
+                (InboxKind::Finished, "w2 finished its turn".to_string()),
+                (InboxKind::Dispatched, "sent w2: fix the parser".to_string()),
+            ]
+        );
+        assert!(std::fs::read_dir(folder.join("inbox/tmp")).unwrap().next().is_none(), "no partial file is left in tmp");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let ran = loop {
+            let ran = std::fs::read_to_string(&log).unwrap_or_default();
+            if ran.lines().count() >= 4 || Instant::now() > deadline {
+                break ran;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let paths: Vec<String> = pending.iter().map(|(p, _)| p.display().to_string()).collect();
+        assert_eq!(ran.lines().collect::<Vec<_>>(), [&["start".to_string()][..], &paths[..]].concat(), "once at start, then once per file");
+
+        let (same, none) = state.orchestrator_attach(Some("p2"), "w1", "from an agent".into());
+        assert_eq!((same.as_str(), none.len()), ("from an agent", 0), "an agent's message is not the person's");
+        let (text, attached) = state.orchestrator_attach(None, "w1", "what happened?".into());
+        assert!(text.starts_with("what happened?\n\n[Automated: 3 inbox events from wheeld"), "{text}");
+        assert!(text.contains("w2 finished its turn") && text.ends_with("sent w2: fix the parser"), "{text}");
+        state.orchestrator_told("w1", &attached);
+        assert!(inbox.pending().is_empty());
+        assert_eq!(std::fs::read_dir(folder.join("inbox/cur")).unwrap().count(), 3);
+        let (again, _) = state.orchestrator_attach(None, "w1", "and now?".into());
+        assert_eq!(again, "and now?", "told once");
+        state.stop_agents();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// wheel-eg4e.19.14: an orchestrator whose agent is not running (a reload that ended it and

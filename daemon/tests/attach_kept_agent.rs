@@ -143,7 +143,7 @@ async fn an_attach_to_a_kept_agent_streams_once_it_starts() {
         .unwrap();
     let started = op(
         &url,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(3),
             pane: pane.clone(),
             kind: StartKind::Agent,

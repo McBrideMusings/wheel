@@ -270,7 +270,7 @@ async fn start_agent_as(
     let started = client_op(
         &mut ws,
         9003,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9003),
             pane: pane.into(),
             kind: StartKind::Agent,
@@ -337,7 +337,7 @@ async fn pane_start_reply(url: &str, pane: &str, message: &str) -> ServerMsg {
     let mut ws = connect(url).await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9005),
             pane: pane.into(),
             kind: StartKind::Agent,
@@ -380,7 +380,7 @@ async fn a_turn_streams_back_from_an_agent_pane_with_the_persons_config_and_the_
     ) {}
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(2),
             text: "hello, show setup".into(),
@@ -457,7 +457,7 @@ async fn a_permission_request_reaches_every_client_and_the_first_answer_wins() {
     while !matches!(recv(&mut asker).await, ServerMsg::AgentAttached { .. }) {}
     send(
         &mut asker,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(2),
             text: "needs permission".into(),
@@ -618,7 +618,7 @@ async fn a_queued_message_shows_at_once_and_starts_inside_the_running_turn() {
     let perm = next_perm(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(12),
             text: "second".into(),
@@ -733,7 +733,7 @@ async fn a_cancel_stops_one_turn_and_the_queued_message_still_runs() {
     next_perm(&mut ws).await;
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: None,
             text: "second".into(),
@@ -797,7 +797,7 @@ async fn a_prompt_cancelled_before_the_agent_takes_it_in_leaves_the_transcript()
             }
         }
     }
-    send(&mut ws, ClientMsg::AgentSend { agent: agent.clone(), req: None, text: "second".into() }).await;
+    send(&mut ws, ClientMsg::AgentSend { from: None, agent: agent.clone(), req: None, text: "second".into() }).await;
     while !matches!(
         recv(&mut ws).await,
         ServerMsg::Agent { event: StampedEvent { event: AgentEvent::TurnEnd { turn: 2, .. }, .. }, .. }
@@ -837,7 +837,7 @@ async fn attach_and_send(ws: &mut Ws, agent: &str, text: &str) {
     ) {}
     send(
         ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.into(),
             req: Some(11),
             text: text.into(),
@@ -1325,7 +1325,7 @@ async fn a_crashed_agent_is_restarted_and_keeps_working() {
     );
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(20),
             text: "back again".into(),
@@ -1386,7 +1386,7 @@ async fn pane_start_in(url: &str, pane: &str, dir: &str) -> ServerMsg {
     let mut ws = connect(url).await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9006),
             pane: pane.into(),
             kind: StartKind::Agent,
@@ -1485,7 +1485,7 @@ async fn an_agent_whose_directory_is_gone_gives_up_and_says_why() {
     let mut ws = connect(&url).await;
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(1),
             agent: agent.into(),
             text: "anyone?".into(),
@@ -1534,7 +1534,7 @@ async fn an_agent_that_was_ready_before_it_stopped_starts_its_count_over() {
     for round in 0..3u64 {
         send(
             &mut ws,
-            ClientMsg::AgentSend {
+            ClientMsg::AgentSend { from: None,
                 req: Some(100 + round),
                 agent: agent.clone(),
                 text: "die now".into(),
@@ -1635,7 +1635,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     // request raised before it returned would never reach `next_perm`.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(5),
             agent: agent.clone(),
             text: "needs permission".into(),
@@ -1677,7 +1677,7 @@ async fn an_agent_asks_under_its_own_name_and_its_pane_closing_withdraws_the_req
     for (agent, req) in [(agent.as_str(), 3), (other.as_str(), 4)] {
         send(
             &mut ws,
-            ClientMsg::AgentSend {
+            ClientMsg::AgentSend { from: None,
                 req: Some(req),
                 agent: agent.into(),
                 text: "needs permission".into(),
@@ -1832,7 +1832,7 @@ async fn restart_with_an_agent(
 async fn reply(ws: &mut Ws, agent: &str, text: &str) -> String {
     send(
         ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(300),
             agent: agent.into(),
             text: text.into(),
@@ -1958,7 +1958,7 @@ async fn an_agent_in_a_turn_when_wheeld_stops_is_told_once_that_the_turn_ended()
     let mut ws = connect(&url).await;
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(2),
             agent: busy.clone(),
             text: "needs permission".into(),
@@ -2224,7 +2224,7 @@ async fn a_conversation_cannot_change_while_the_agent_is_working() {
     // A turn that stops on a permission request keeps the agent busy until it is answered.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(800),
             agent: agent.clone(),
             text: "needs permission".into(),
@@ -2373,7 +2373,7 @@ async fn agent_cancel(ws: &mut Ws, target: &str, req: u64) -> ServerMsg {
 async fn queue(ws: &mut Ws, target: &str, text: &str, req: u64) {
     send(
         ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(req),
             agent: target.into(),
             text: text.into(),
@@ -3360,7 +3360,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     // While a turn runs the pane stays a chat, and says why.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(407),
             agent: agent.clone(),
             text: "work slowly 1".into(),
@@ -3409,7 +3409,7 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
     // The agent the chat ran in is gone with it.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(405),
             agent: agent.clone(),
             text: "anyone there".into(),
@@ -3606,7 +3606,7 @@ async fn a_pane_shows_a_codex_conversation_as_a_terminal_or_a_chat_one_program_a
     // While a turn runs the pane stays a chat, and says why.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(507),
             agent: agent.clone(),
             text: "work slowly".into(),
@@ -3977,7 +3977,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
     let before = layout(&url).await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9303),
             pane: pane.clone(),
             kind: StartKind::Agent,
@@ -4008,7 +4008,7 @@ async fn status_lists_each_agent_and_a_missing_program_refuses_the_start_naming_
     // A name no agent has is refused too, and neither start changed the layout.
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9304),
             pane,
             kind: StartKind::Agent,
@@ -4047,7 +4047,7 @@ async fn an_agent_pane_names_its_agent_and_keeps_it_across_a_restart() {
     let started = client_op(
         &mut ws,
         9310,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9310),
             pane,
             kind: StartKind::Agent,
@@ -4092,7 +4092,7 @@ async fn start_with_permissions(
     let mut ws = connect(url).await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9400),
             pane: pane.into(),
             kind: StartKind::Agent,
@@ -4418,7 +4418,7 @@ async fn a_codex_command_approval_shows_a_card_and_the_answer_resolves_it() {
     // A denial reaches Codex as a decline, and its tool call fails.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(62),
             text: "permission again".into(),
@@ -4676,7 +4676,7 @@ async fn a_pi_extension_dialog_shows_a_card_and_the_answer_reaches_pi() {
     // `deny` picks the way out, which pi reads as a cancelled dialog.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(62),
             agent: agent.clone(),
             text: "permission".into(),
@@ -4730,7 +4730,7 @@ async fn a_cancel_aborts_a_pi_turn_and_a_failed_reply_fails_it() {
     assert_eq!(text, "echo: after");
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(81),
             agent: agent.clone(),
             text: "fail now".into(),
@@ -4903,7 +4903,7 @@ async fn a_pane_and_its_space_follow_the_agent_through_a_permission_request() {
     let mut asker = connect(&url).await;
     send(
         &mut asker,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(2),
             text: "needs permission".into(),
@@ -5058,7 +5058,7 @@ async fn a_relaunched_agent_resumes_the_conversation_it_was_in() {
 
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(600),
             text: "die now".into(),
@@ -5114,7 +5114,7 @@ async fn a_clear_empties_the_transcript_and_the_pane_saves_the_new_conversation_
 
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             agent: agent.clone(),
             req: Some(701),
             text: "/clear".into(),
@@ -5199,7 +5199,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
     let started = client_op(
         &mut ws,
         9320,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9320),
             pane: pane.clone(),
             kind: StartKind::Agent,
@@ -5230,7 +5230,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
     let (_, other) = space(&url, "/tmp").await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9321),
             pane: other,
             kind: StartKind::Agent,
@@ -5262,7 +5262,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
     let (_, third) = space(&url, "/tmp").await;
     send(
         &mut ws,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9322),
             pane: third.clone(),
             kind: StartKind::Agent,
@@ -5292,7 +5292,7 @@ async fn pane_start_runs_the_agent_on_the_model_asked_for_and_status_shows_it() 
     let started = client_op(
         &mut ws,
         9323,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9323),
             pane: third,
             kind: StartKind::Agent,
@@ -5328,7 +5328,7 @@ async fn a_codex_agent_pane_restarts_in_the_approval_policy_a_person_chose() {
     let started = client_op(
         &mut ws,
         9340,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9340),
             pane,
             kind: StartKind::Agent,
@@ -5382,7 +5382,7 @@ async fn an_agent_pane_runs_on_its_model_again_after_a_restart() {
     let started = client_op(
         &mut ws,
         9330,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(9330),
             pane,
             kind: StartKind::Agent,
@@ -5551,7 +5551,7 @@ async fn a_chat_agent_sees_the_spaces_artifacts_in_its_brief_up_to_twenty() {
             ) {}
             send(
                 &mut ws,
-                ClientMsg::AgentSend {
+                ClientMsg::AgentSend { from: None,
                     agent,
                     req: Some(2),
                     text: "show setup".into(),
@@ -6381,7 +6381,7 @@ async fn agent_events_queue_in_the_orchestrators_inbox() {
     assert!(inbox(&mut ws, &orchestrator_pane, 97).await[0].told, "the first listing marked the item told");
 
     // 3. The same event again is the same item.
-    send(&mut ws, ClientMsg::AgentSend { req: Some(98), agent: mine.clone(), text: "hello again".into() }).await;
+    send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(98), agent: mine.clone(), text: "hello again".into() }).await;
     let mut items = Vec::new();
     for _ in 0..50 {
         items = inbox(&mut ws, &orchestrator_pane, 99).await;
@@ -6945,7 +6945,7 @@ async fn a_reloaded_agent_pane_carries_on_its_conversation() {
     // taken back.
     send(
         &mut ws,
-        ClientMsg::AgentSend {
+        ClientMsg::AgentSend { from: None,
             req: Some(901),
             agent: agent.clone(),
             text: "needs permission".into(),
@@ -7125,12 +7125,12 @@ async fn a_mirror_of_an_agent_streams_its_transcript_and_sends_and_answers_for_i
         events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { turn: 1, .. })),
         "{events:?}"
     );
-    send(&mut ws, ClientMsg::AgentSend { req: Some(5), agent: mirror.clone(), text: "again".into() }).await;
+    send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(5), agent: mirror.clone(), text: "again".into() }).await;
     let text = turn_text(&mut ws).await;
     assert!(!text.is_empty(), "the source agent answered a message sent to its mirror");
 
     // Case 5: a permission request answered through the mirror answers the source's.
-    send(&mut ws, ClientMsg::AgentSend { req: Some(3), agent: mirror.clone(), text: "needs permission".into() }).await;
+    send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(3), agent: mirror.clone(), text: "needs permission".into() }).await;
     let perm = next_perm(&mut ws).await;
     assert_eq!(perm.agent, agent);
     client_op(&mut ws, 4, ClientMsg::PermAnswer { req: Some(4), id: perm.id.clone(), choice: "allow".into() }).await;

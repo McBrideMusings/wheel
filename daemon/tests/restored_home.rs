@@ -162,7 +162,7 @@ async fn a_restored_agent_asks_the_shell_for_any_home_it_did_not_pick() {
         .unwrap();
     let started = op(
         &url,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(3),
             pane: pane.clone(),
             kind: StartKind::Agent,

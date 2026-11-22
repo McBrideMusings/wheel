@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 pub const BREAKS: &[(u32, &str)] = &[
     (1, "wheeld lists the operations it handles"),
     (2, "an orchestrator is an agent pane: orchestrator_start makes one (a global one in the Orchestrator space) and names its pane, and orchestrator_stop and the inbox ops take that pane"),
+    (3, "the inbox ops are gone: an orchestrator's inbox is a Maildir in its folder, and its new events ride on the person's next message"),
 ];
 
 /// This build's compatibility level: the last entry of [`BREAKS`].

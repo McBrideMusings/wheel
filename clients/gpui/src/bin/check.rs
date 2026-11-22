@@ -7431,7 +7431,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(menu_state["item"]["badge"].as_u64() == Some(background as u64), "the item's badge reads {}, the windows leave {background} spaces unshown", menu_state["item"]["badge"]);
     let badge_before = menu_state["item"]["badge"].clone();
     // A permission the fixture agent raises counts in the row of the space holding it.
-    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into() }))?;
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { from: None, req: None, agent: agent.to_owned(), text: "permission".into() }))?;
     let mut waiting_state = Value::Null;
     for _ in 0..300 {
         pump(connection, 100, layouts, window, cx).await?;

@@ -1,5 +1,5 @@
 //! What the orchestrator's inbox is told about: wheeld's global broadcast reduced to agent
-//! lifecycle events, each one short line (`crate::inbox` keeps them). Raw transcripts never come
+//! lifecycle events, each one short line (`crate::inbox` writes them). Raw transcripts never come
 //! through here.
 
 use std::collections::{HashMap, HashSet};
@@ -7,19 +7,22 @@ use std::time::{Duration, Instant};
 
 use wheel_proto::{AgentState, InboxKind, ServerMsg};
 
-/// One agent event, or a permission request that no longer waits.
+/// One agent event.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Event {
-    Add {
-        /// The agent the event is about.
-        agent: String,
-        kind: InboxKind,
-        text: String,
-        /// The permission request a `permission` event is about.
-        perm: Option<String>,
-    },
-    /// Permission request `perm` was answered.
-    Resolved { perm: String },
+pub(crate) struct Event {
+    /// The agent the event is about.
+    pub agent: String,
+    pub kind: InboxKind,
+    pub text: String,
+    /// The permission request a `permission` or `answered` event is about.
+    pub perm: Option<String>,
+}
+
+impl Event {
+    /// The event as an inbox file holds it, stamped now.
+    pub(crate) fn stamped(self) -> wheel_proto::InboxEvent {
+        wheel_proto::InboxEvent { kind: self.kind, agent: self.agent, text: self.text, at_ms: crate::inbox::now_ms(), perm: self.perm }
+    }
 }
 
 /// Turns the broadcast into events. It remembers which agents are busy and since when, so a
@@ -30,16 +33,20 @@ pub(crate) struct Filter {
     busy: HashMap<String, Instant>,
     /// Busy agents already reported over the limit this turn.
     overdue: HashSet<String>,
+    /// The agent each waiting permission request is from, so its answer names the agent.
+    perms: HashMap<String, String>,
 }
 
 impl Filter {
     /// The event `msg` makes, if it makes one; `now` stamps a turn that starts.
     pub(crate) fn event(&mut self, msg: &ServerMsg, now: Instant) -> Option<Event> {
         let add = |agent: &str, kind, text: String| {
-            Some(Event::Add { agent: agent.to_string(), kind, text, perm: None })
+            Some(Event { agent: agent.to_string(), kind, text, perm: None })
         };
         match msg {
-            ServerMsg::PermRequested { perm } => Some(Event::Add {
+            ServerMsg::PermRequested { perm } => {
+                self.perms.insert(perm.id.clone(), perm.agent.clone());
+                Some(Event {
                 agent: perm.agent.clone(),
                 kind: InboxKind::Permission,
                 text: if wheel_proto::is_irreversible(&perm.title) {
@@ -48,8 +55,17 @@ impl Filter {
                     format!("{} needs permission: {}", perm.agent, perm.title)
                 },
                 perm: Some(perm.id.clone()),
-            }),
-            ServerMsg::PermResolved { id, .. } => Some(Event::Resolved { perm: id.clone() }),
+            })
+            }
+            ServerMsg::PermResolved { id, choice } => {
+                let agent = self.perms.remove(id)?;
+                Some(Event {
+                    text: format!("{agent}'s permission request was answered: {choice}"),
+                    agent,
+                    kind: InboxKind::Answered,
+                    perm: Some(id.clone()),
+                })
+            }
             ServerMsg::AgentStateChanged { agent, state } => {
                 let was_busy = !matches!(state, AgentState::Busy { .. }) && self.end_turn(agent);
                 match state {
@@ -76,7 +92,7 @@ impl Filter {
         for (agent, since) in &self.busy {
             let ran = now.saturating_duration_since(*since);
             if ran >= limit && self.overdue.insert(agent.clone()) {
-                events.push(Event::Add {
+                events.push(Event {
                     agent: agent.clone(),
                     kind: InboxKind::OverTime,
                     text: format!("{agent} has worked on one turn for {}", minutes(ran)),
@@ -113,7 +129,7 @@ impl Filter {
 
 /// The event a failed build or test command makes (`crate::agent::build_command`).
 pub(crate) fn build_failed(agent: &str, command: &str) -> Event {
-    Event::Add {
+    Event {
         agent: agent.to_string(),
         kind: InboxKind::BuildFailed,
         text: format!("{agent} ran a build or test that failed: {command}"),
@@ -154,7 +170,7 @@ mod tests {
 
     fn text(event: Option<Event>) -> (InboxKind, String) {
         match event {
-            Some(Event::Add { kind, text, .. }) => (kind, text),
+            Some(Event { kind, text, .. }) => (kind, text),
             other => panic!("not an added event: {other:?}"),
         }
     }
@@ -164,7 +180,7 @@ mod tests {
         let event = Filter::default().event(&perm("q1", "Bash: cargo test"), Instant::now());
         assert_eq!(
             event,
-            Some(Event::Add {
+            Some(Event {
                 agent: "w5".into(),
                 kind: InboxKind::Permission,
                 text: "w5 needs permission: Bash: cargo test".into(),
@@ -180,9 +196,21 @@ mod tests {
     }
 
     #[test]
-    fn an_answered_request_is_resolved() {
+    fn an_answered_request_names_the_agent_that_asked() {
+        let mut filter = Filter::default();
         let msg = ServerMsg::PermResolved { id: "q1".into(), choice: "allow".into() };
-        assert_eq!(Filter::default().event(&msg, Instant::now()), Some(Event::Resolved { perm: "q1".into() }));
+        assert_eq!(filter.event(&msg, Instant::now()), None, "a request it never saw");
+        filter.event(&perm("q1", "Bash: cargo test"), Instant::now());
+        assert_eq!(
+            filter.event(&msg, Instant::now()),
+            Some(Event {
+                agent: "w5".into(),
+                kind: InboxKind::Answered,
+                text: "w5's permission request was answered: allow".into(),
+                perm: Some("q1".into()),
+            })
+        );
+        assert_eq!(filter.event(&msg, Instant::now()), None, "answered once");
     }
 
     #[test]
@@ -226,7 +254,7 @@ mod tests {
         let events = filter.overdue(start + Duration::from_secs(1860), limit);
         assert_eq!(
             events,
-            vec![Event::Add {
+            vec![Event {
                 agent: "w5".into(),
                 kind: InboxKind::OverTime,
                 text: "w5 has worked on one turn for 31 minutes".into(),

@@ -143,7 +143,7 @@ async fn a_kept_agent_survives_a_start_during_the_restore() {
         .unwrap();
     let started = op(
         &url,
-        ClientMsg::PaneStart {
+        ClientMsg::PaneStart { from: None,
             req: Some(3),
             pane: pane.clone(),
             kind: StartKind::Agent,

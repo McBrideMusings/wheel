@@ -97,7 +97,7 @@ impl Client {
                 match path {
                     "/agent" => {
                         self.set_draft(&agent, String::new());
-                        self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text: request.body.clone() });
+                        self.send(&ClientMsg::AgentSend { from: None, req: None, agent: agent.clone(), text: request.body.clone() });
                     }
                     "/agent/draft" => {
                         self.set_draft(&agent, request.body.clone());
@@ -225,7 +225,7 @@ impl Client {
                     "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
                     "agent" => {
                         let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
-                        self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None });
+                        self.send(&ClientMsg::PaneStart { from: None, req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None });
                     }
                     _ => return refuse(BAD, "kind must be terminal or agent"),
                 }
