@@ -1,0 +1,6 @@
+{
+  "bead": "wheel-eg4e.19.33",
+  "prompt": "fit comp B chat",
+  "backend": "gemini",
+  "source": "eg4e11/shots4/orchestrator-pinned-light.png"
+}
