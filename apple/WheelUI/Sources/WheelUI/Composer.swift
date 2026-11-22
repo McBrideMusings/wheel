@@ -250,6 +250,13 @@ public struct Composer: View {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
                 }
                 Spacer()
+                #if os(iOS)
+                // hack: placeholders, in place and sized, that do nothing until wheel-eg4e.19.31 builds dictation and voice mode.
+                Button("Dictate", systemImage: "mic") { UILog.info("composer: dictate tapped, not built") }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.chat("composer", "Dictate"))
+                    .accessibilityIdentifier("dictate")
+                #endif
                 if showsStop {
                     #if os(macOS)
                     Text("esc").font(ChatFont.meta).foregroundStyle(.tertiary)
@@ -260,6 +267,12 @@ public struct Composer: View {
                         .font(.title2)
                         .help("Stop the current turn (Esc)")
                         .disabled(!enabled)
+                } else if showsVoice {
+                    Button("Voice mode", systemImage: "waveform.circle.fill") { UILog.info("composer: voice mode tapped, not built") }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.chat("composer", "Voice mode"))
+                        .font(.title2)
+                        .accessibilityIdentifier("voice mode")
                 } else {
                     Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
                         .labelStyle(.iconOnly)
@@ -294,6 +307,15 @@ public struct Composer: View {
     }
 
     private var showsStop: Bool { busy && !hasContent }
+
+    /// The right button starts voice mode while the field is empty and the agent idle, on the phone.
+    private var showsVoice: Bool {
+        #if os(iOS)
+        !busy && !hasContent
+        #else
+        false
+        #endif
+    }
 
     private var canSend: Bool { enabled && hasContent && attachmentsReady }
 

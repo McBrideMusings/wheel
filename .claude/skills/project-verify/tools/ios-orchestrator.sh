@@ -47,6 +47,13 @@ if step chrome; then
   check "no agents sheet opened" noplog "agents sheet: eye tapped"
   ack chrome
 fi
+if step keyboard; then
+  # wheel-eg4e.19.41: with the keyboard up the chat, composer included, ends at the keyboard's top.
+  kb_top() { grep -o 'keyboard up, top [0-9]*' "$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)/Documents/phone.log" | tail -1 | awk '{print $4}'; }
+  on_keyboard() { local t b; t="$(kb_top)"; b="$(cat "$SYNC/chat-bottom" 2>/dev/null)"; echo "keyboard top $t, chat bottom $b"; [ -n "$t" ] && [ -n "$b" ] && [ $((t - b)) -ge -2 ] && [ $((t - b)) -le 2 ]; }
+  check "the composer sits on the keyboard" on_keyboard
+  ack keyboard
+fi
 if step model; then
   check "phone.log names the model pick" plog "set .* model to "
   check "phone.log names Clear chat" plog "clear chat "

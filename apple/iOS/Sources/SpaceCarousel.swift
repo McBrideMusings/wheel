@@ -12,6 +12,8 @@ struct SpaceCarousel: View {
     @State private var titleOpen = false
     /// The page handle's laid-out height, which the floating button keeps clear of.
     @State private var handleHeight: CGFloat = 40
+    /// While the keyboard is up the page handle goes, so the composer sits on the keyboard (wheel-eg4e.19.41).
+    @State private var keyboardUp = false
     @State private var sheetTab = ThumbTab.spaces
     @State private var sheetScope = AgentScope.all
     @State private var paletteOpen = false
@@ -59,7 +61,7 @@ struct SpaceCarousel: View {
                             }
                             .tabViewStyle(.page(indexDisplayMode: .never))
                         }
-                        if !landscape {
+                        if !landscape && !keyboardUp {
                             pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                         }
                     }
@@ -104,6 +106,12 @@ struct SpaceCarousel: View {
             if let space = model.activeSpace, let new, new != Pages.trayID, new != space.focus { model.focus(space: space.id, pane: new) }
         }
         .task { await driveFromEnvironment() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            keyboardUp = true
+            let top = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY ?? 0
+            Log.info("keyboard up, top \(Int(top.rounded()))")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
         .sheet(isPresented: $settingsOpen) {
             SettingsView(model: model, tab: $settingsTab, project: $settingsProject)
         }
@@ -397,7 +405,7 @@ struct SpaceCarousel: View {
     @ViewBuilder private func floatButton(pages: Pages, landscape: Bool) -> some View {
         if let chatPane = model.orchestratorPane, let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first, shown != chatPane,
            case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
-            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape ? 8 : handleHeight) {
+            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape || keyboardUp ? 8 : handleHeight) {
                 Log.info("float: back to the chat")
                 go(chatPane)
             }

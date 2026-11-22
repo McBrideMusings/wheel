@@ -53,10 +53,21 @@ final class OrchestratorUITests: XCTestCase {
 
         // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "no keyboard button while the keyboard is down")
+        // The .19.31 placeholders (wheel-eg4e.19.41): a mic, and voice mode in Send's place while the field is empty.
+        XCTAssertTrue(chat.buttons["dictate"].exists, "the composer has the dictation button")
+        XCTAssertTrue(chat.buttons["voice mode"].exists, "an empty field shows voice mode")
+        XCTAssertFalse(chat.buttons["Send"].exists, "an empty field shows no Send")
+        let chatDown = chat.frame.height
         chat.textViews.firstMatch.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
         let hide = app.buttons["hide keyboard"]
         XCTAssertTrue(hide.waitForExistence(timeout: 5), "the composer shows the keyboard button")
+        // The composer sits on the keyboard: no page handle between them. XCUITest's keyboard frame starts under the
+        // suggestion bar, so the script compares the chat's bottom with the top the app's keyboard notification gave.
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(app.otherElements["page handle"].exists, "no page handle while the keyboard is up")
+        try? "\(Int(chat.frame.maxY.rounded()))".write(toFile: "\(env["WHEEL_SYNC_DIR"] ?? "")/chat-bottom", atomically: true, encoding: .utf8)
+        sync("keyboard")
         shot("keyboard")
         hide.tap()
         XCTAssertTrue(waitFor { !self.app.keyboards.firstMatch.exists }, "the button hid the keyboard")
