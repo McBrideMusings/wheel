@@ -6178,6 +6178,14 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     window.update(cx, |c, _, _| c.select_space(&grid))?;
     let back = until!("Spaces mode after a sidebar pick", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
     ensure!(back["cards"].as_array().is_none_or(Vec::is_empty), "the Orchestrator space's card stayed over the Spaces mode space: {}", back["cards"]);
+    // A focus request naming the orchestrator's pane, from Spaces mode, opens Orchestrator mode on it (wheel-eg4e.19.20).
+    let (ok, _, err) = run_pumped(&["pane", "focus", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane focus {pane} failed: {err}");
+    until!("Orchestrator mode on the focused orchestrator pane", |s: &Value| s["title"]["mode"] == "orchestrator" && s["active"] == space.as_str());
+    let focused = window.update(cx, |c, _, _| c.focus.current.clone())?;
+    ensure!(focused.as_deref() == Some(pane.as_str()), "wheel pane focus {pane} left the focus on {focused:?}");
+    pick_mode(window, "spaces", cx).await?;
+    until!("Spaces mode again after the focus request", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
     let (ok, _, err) = run_pumped(&["orchestrator", "stop", &pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
     let report = json!({"space": space, "pane": pane, "start": button, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,

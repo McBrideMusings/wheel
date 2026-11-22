@@ -961,6 +961,11 @@ impl Client {
     }
     /// Show `space` of the session shown.
     pub fn select_space(&mut self, space: &str) {
+        // The Orchestrator space is in no session: Orchestrator mode is what shows it.
+        if self.orchestrator_space() == Some(space) {
+            self.set_mode("orchestrator");
+            return;
+        }
         // A space picked from the sidebar or the tabs is a Spaces mode space.
         if self.mode == "orchestrator" && self.session_spaces().iter().any(|s| s.id == space) {
             self.set_mode("spaces");
