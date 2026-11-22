@@ -63,7 +63,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "the button goes with the keyboard")
 
         // The composer's + menu (wheel-eg4e.19.35): Model picks another model, and the check follows what the agent
-        // took; Clear chat empties the transcript.
+        // took; Clear chat asks first (wheel-eg4e.19.38), cancelling keeps the transcript, and confirming empties it.
         chat.textViews.firstMatch.tap()
         chat.textViews.firstMatch.typeText("hello")
         chat.buttons["Send"].tap()
@@ -90,6 +90,20 @@ final class OrchestratorUITests: XCTestCase {
         chat.buttons["Attach"].tap()
         XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens again")
         app.buttons["Clear chat"].tap()
+        let confirm = app.buttons["confirm clear chat"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Clear chat asks before clearing")
+        shot("clear-confirm")
+        // The question is a popover on iOS 26, with no Cancel button: a tap outside it cancels.
+        let outside = app.otherElements["PopoverDismissRegion"]
+        if outside.exists { outside.tap() } else { app.buttons["Cancel"].tap() }
+        XCTAssertTrue(waitFor { !confirm.exists }, "a tap outside closes the question")
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertFalse(chat.staticTexts["Message the global orchestrator."].exists, "cancelling kept the transcript")
+        chat.buttons["Attach"].tap()
+        XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens a third time")
+        app.buttons["Clear chat"].tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Clear chat asks again")
+        confirm.tap()
         XCTAssertTrue(chat.staticTexts["Message the global orchestrator."].waitForExistence(timeout: 10), "Clear chat emptied the transcript")
         sync("model")
 

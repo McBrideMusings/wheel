@@ -7,17 +7,20 @@ import WheelUI
 
 /// The composer's paperclip on the phone: Photo Library (several at once), Take Photo where the
 /// device has a camera, and Choose File, when wheeld takes uploads; then the agent's Model, a check on
-/// the current one, when the agent offers one, and Clear chat. Every pick lands in the pane's `AttachmentTray`.
+/// the current one, when the agent offers one, and Clear chat, which asks first, where the harness resets on `/clear`.
+/// Every pick lands in the pane's `AttachmentTray`.
 struct AttachMenu: View {
     let tray: AttachmentTray
     /// Whether wheeld takes uploads: without, the menu holds Model and Clear chat alone.
     let canAttach: Bool
     @ObservedObject var chat: AgentChat
     let setModel: (ConfigOption, String) -> Void
-    let clear: () -> Void
+    /// Starts the conversation over; nil for a harness that does not reset on `/clear`, which gets no Clear chat.
+    let clear: (() -> Void)?
     @State private var photosOpen = false
     @State private var cameraOpen = false
     @State private var filesOpen = false
+    @State private var confirmClear = false
     @State private var picked: [PhotosPickerItem] = []
 
     var body: some View {
@@ -44,9 +47,17 @@ struct AttachMenu: View {
                 .accessibilityIdentifier("model menu")
                 .accessibilityValue(choices.first { $0.value == current }?.name ?? current)
             }
-            Button("Clear chat", systemImage: "trash") { clear() }
+            if clear != nil {
+                Button("Clear chat", systemImage: "trash") { confirmClear = true }
+            }
         } label: {
             Label("Attach", systemImage: "paperclip").labelStyle(.iconOnly)
+        }
+        .confirmationDialog("Clear this chat?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Clear chat", role: .destructive) { clear?() }
+                .accessibilityIdentifier("confirm clear chat")
+        } message: {
+            Text("The agent starts a new conversation.")
         }
         // `.compatible` has Photos hand over a HEIC as JPEG, the form an agent can read.
         .photosPicker(isPresented: $photosOpen, selection: $picked, maxSelectionCount: 10, matching: .images,

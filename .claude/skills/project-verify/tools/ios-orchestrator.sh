@@ -50,6 +50,8 @@ fi
 if step model; then
   check "phone.log names the model pick" plog "set .* model to "
   check "phone.log names Clear chat" plog "clear chat "
+  one_clear() { [ "$(grep -c 'clear chat ' "$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)/Documents/phone.log")" = 1 ]; }
+  check "Cancel sent no /clear: one clear in phone.log" one_clear
   A="$(w status --json | jq -r --arg p "$G" '.. | objects | select(.id? == $p) | .agent // empty' | head -1)"
   M="$(cat "$SYNC/picked-model" 2>/dev/null)"
   took_model() { [ -n "$M" ] && w agent config "$A" 2>&1 | grep -i model | grep -q -- "$M"; }

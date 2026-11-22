@@ -33,6 +33,12 @@ public enum AgentPanes {
         harness == "claude" || harness == "codex"
     }
 
+    /// Whether `/clear` starts the harness's conversation over: Claude Code resets on it; Codex and Pi take it as
+    /// an ordinary message.
+    public static func canClear(harness: String?) -> Bool {
+        harness == "claude"
+    }
+
     /// Permission requests waiting in each space, by space id: a request belongs to the space
     /// whose agent pane runs the agent that asked, or whose web pane's refresh command asked
     /// (its agent is the pane id).

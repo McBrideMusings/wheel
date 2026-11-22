@@ -56,7 +56,7 @@ struct AgentPane: View {
                 pickFiles: nil,
                 attachMenu: tray.map {
                     AnyView(AttachMenu(tray: $0, canAttach: model.canAttach, chat: chat,
-                                       setModel: { model.setConfig(chat, $0, to: $1) }, clear: { model.clearChat(chat) }))
+                                       setModel: { model.setConfig(chat, $0, to: $1) }, clear: AgentPanes.canClear(harness: harness) ? { model.clearChat(chat) } : nil))
                 },
                 attachments: tray?.chips ?? [],
                 removeAttachment: { tray?.remove($0) },
