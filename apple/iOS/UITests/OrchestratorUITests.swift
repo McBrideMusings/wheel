@@ -133,6 +133,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(["idle", "working", "needs you"].contains(float.value as? String ?? ""), "the button carries the state: \(String(describing: float.value))")
         let win = app.windows.firstMatch
         XCTAssertGreaterThan(float.frame.midX, win.frame.midX, "the button starts at the right")
+        XCTAssertLessThan(float.frame.maxY, handle.frame.minY, "the button sits above the bottom bar: \(float.frame) over \(handle.frame)")
         shot("page")
         float.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.2, thenDragTo: win.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.45)))

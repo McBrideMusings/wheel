@@ -10,6 +10,8 @@ struct SpaceCarousel: View {
     @State private var openTray: String?
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
+    /// The page handle's laid-out height, which the floating button keeps clear of.
+    @State private var handleHeight: CGFloat = 40
     @State private var sheetTab = ThumbTab.spaces
     @State private var sheetScope = AgentScope.all
     @State private var paletteOpen = false
@@ -363,6 +365,7 @@ struct SpaceCarousel: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page handle")
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { handleHeight = $0 }
         .accessibilityAction(named: "Open spaces and agents") { if !orchestratorMode { titleOpen = true } }
         .accessibilityAdjustableAction { direction in
             switch direction {
@@ -394,7 +397,7 @@ struct SpaceCarousel: View {
     @ViewBuilder private func floatButton(pages: Pages, landscape: Bool) -> some View {
         if let chatPane = model.orchestratorPane, let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first, shown != chatPane,
            case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
-            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape ? 8 : 48) {
+            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape ? 8 : handleHeight) {
                 Log.info("float: back to the chat")
                 go(chatPane)
             }
