@@ -1,0 +1,25 @@
+id	text	terms
+u01	Next. What's waiting on me?	next|waiting
+u02	Back to the plugin hot reload topic.	plugin|hot reload
+u03	Tell wheel two to run cargo test in the daemon folder.	wheel two|cargo test|daemon
+u04	Yes, push it to main.	push|main
+u05	No, don't deploy the client yet. Wait until the build is green.	deploy|client|build|green
+u06	Show me the diff for pull request two twelve.	diff|pull request
+u07	Implement wheel dash e one x k dot one in a new worktree.	implement|worktree
+u08	Run npm test and tell me when it finishes.	npm test
+u09	Open the Swift file called Composer and look at the voice mode button.	swift|composer|voice mode
+u10	Restart wheelhouse after the build, not wheeld.	wheelhouse|wheeld
+u11	Rebase the branch on origin main and resolve the conflicts.	rebase|origin main|conflicts
+u12	What does the git log say since yesterday?	git log
+u13	Ask the llama broker agent why the JSON parser fails on empty arrays.	llama broker|json|parser
+u14	Triage. Quick ones first.	triage
+u15	Close the topic. It's resolved.	close|topic|resolved
+u16	Let's talk about the Live Activity on the lock screen.	live activity|lock screen
+u17	Approve the npm install but deny the force push.	npm install|force push
+u18	Put the ADR on screen and read me the decision section.	adr|decision
+u19	How much context is left in the orchestrator session?	context|orchestrator
+u20	Mute the pushes from the logship space for an hour.	pushes|logship
+u21	Kill the dev server on port seven four two two.	dev server|port
+u22	Compare WhisperKit and FluidAudio on the iPhone.	whisperkit|fluidaudio|iphone
+u23	Use the GPUI client, not the SwiftUI one.	gpui|swiftui
+u24	Summarize what the swarm landed overnight, then stop.	swarm|landed
