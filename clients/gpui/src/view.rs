@@ -1254,8 +1254,13 @@ impl Client {
     pub fn footer_items_all(&self, agent: &str) -> Vec<(String, String)> {
         let Some(t) = self.transcripts.get(agent) else { return vec![] };
         let (space, leaf) = self.spaces.iter().find_map(|s| s.shown().find(|l| l.agent.as_deref() == Some(agent)).map(|l| (s.id.clone(), l.clone()))).unzip();
-        let pane = leaf.as_ref().map(|l| l.id.clone()).unwrap_or_default();
-        footer_items(&self.footer_items_for(space.as_deref()), t, leaf.as_ref(), &self.agents, self.raw_context.contains(&pane))
+        footer_items(&self.footer_items_for(space.as_deref()), t, leaf.as_ref(), &self.agents)
+    }
+    /// What `agent`'s context ring reads beside it: the percent, or the raw figures after a click.
+    pub fn context_text(&self, agent: &str) -> Option<String> {
+        let t = self.transcripts.get(agent)?;
+        let pane = self.spaces.iter().find_map(|s| s.shown().find(|l| l.agent.as_deref() == Some(agent)).map(|l| l.id.clone()))?;
+        Some(context_text(Some(t), self.raw_context.contains(&pane)))
     }
     /// The config controls for `agent` as drawn, (option id, text), in order.
     pub fn config_controls(&self, agent: &str) -> Vec<(String, String)> {
@@ -2225,7 +2230,10 @@ impl Client {
                     }
                     None => None,
                 };
-                let fit = self.composer_fit_for(window, agent, r.w);
+                let raw = self.raw_context.contains(&p.leaf.id);
+                // The model control and the context ring sit in the composer row (design §8.1), so the draft wraps short of them.
+                let extras = composer_extras_for(window, agent.and_then(|a| self.transcripts.get(a)), raw, r.w);
+                let fit = self.composer_fit_for(window, agent, r.w - extras.w);
                 composer_h = fit.height;
                 let input = agent.map(|a| self.composer_input(a, window, cx));
                 let t = agent.and_then(|a| self.transcripts.get(a));
@@ -2233,7 +2241,7 @@ impl Client {
                     list(state, cx.processor(move |this, ix, _, cx| this.column_item(&a, ix, cx))).size_full()
                 });
                 let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
-                let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
+                let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents);
                 // The pane's padding and its 1 px border on each side.
                 let (items, more) = fit_footer(window, items, t, r.w - 2. * PAD - 2.);
                 if let Some(a) = agent {
@@ -2259,8 +2267,11 @@ impl Client {
                 });
                 let busy = t.is_some_and(Transcript::busy);
                 let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
+                // As tall as the row's buttons, so a draft growing the box leaves it on the first line.
+                let model = agent.zip(model_option(t)).filter(|_| extras.model).map(|(a, o)| config_control(&p.leaf.id, a, o, footer.menu.as_deref(), self.menu_at, &self.controls, cx).h(px(composer::ROW_BUTTON)));
+                let ring = agent.map(|a| context_ring(&p.leaf.id, a, t, raw, extras.figure, harness, &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, speaker, stop }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, speaker, model, ring, stop }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2852,6 +2863,9 @@ struct Composer<'a> {
     error: Option<&'a str>,
     /// The read-aloud toggle after the paperclip (`composer::speaker_button`).
     speaker: Option<gpui::Stateful<gpui::Div>>,
+    /// The agent's model control and its context ring, after the draft (`config_control`, `context_ring`).
+    model: Option<gpui::Stateful<gpui::Div>>,
+    ring: Option<gpui::Stateful<gpui::Div>>,
     /// The stop button at the row's end (`composer::stop_button`).
     stop: Option<gpui::Stateful<gpui::Div>>,
 }
@@ -2890,6 +2904,8 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                 .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
                     .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h)))))
                 .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
+                .children(composer.model)
+                .children(composer.ring)
                 .children(composer.stop)
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
@@ -3032,8 +3048,7 @@ struct FooterRow {
 const FOOTER_TEXT: f32 = 12.;
 const FOOTER_GAP: f32 = 10.;
 const CONTROL_GAP: f32 = 6.;
-/// The context meter's bar and the gap between it and its figure.
-const METER: f32 = 28.;
+/// The gap between the context ring and its figure.
 const METER_GAP: f32 = 6.;
 /// A control's padding, both sides together.
 const CONTROL_PAD: f32 = 8.;
@@ -3043,12 +3058,12 @@ const CONTROL_PAD: f32 = 8.;
 /// dropped from the end, never clipped.
 fn fit_footer(window: &Window, items: Vec<(String, String)>, t: Option<&Transcript>, width: f32) -> (Vec<(String, String)>, bool) {
     let measure = |text: &str| title::text_width(window, text, FOOTER_TEXT).ceil();
-    let config = t.map(|t| t.config.as_slice()).unwrap_or_default();
+    let config = footer_config(t);
     let controls: f32 = config.iter().map(|o| measure(&footer::control_text(o)) + CONTROL_PAD).sum::<f32>() + CONTROL_GAP * config.len().saturating_sub(1) as f32;
     // An item with no text draws nothing and takes no slot, as `PriorityRow` skips a zero-width one.
     let mut items = items;
     items.retain(|(_, text)| !text.is_empty());
-    let widths: Vec<f32> = items.iter().map(|(item, text)| measure(text) + if item == "context" { METER + METER_GAP } else { 0. }).collect();
+    let widths: Vec<f32> = items.iter().map(|(_, text)| measure(text)).collect();
     let keep = footer::fit(&widths, FOOTER_GAP, measure("\u{2026}"), width - controls - FOOTER_GAP);
     let more = keep < items.len();
     items.truncate(keep);
@@ -3057,93 +3072,182 @@ fn fit_footer(window: &Window, items: Vec<(String, String)>, t: Option<&Transcri
 
 /// The status line under the composer (the Swift client's `ConfigRow`): the footer's items in the
 /// order `chat.footer.items` says, as many as fit with "…" for the rest, then the agent's config
-/// controls at the right, each a menu of its choices the pointer or the arrow keys and Return
-/// pick from. The context meter is a 28 by 4 bar with the percent beside it; a click on it reads
-/// the raw figures instead. Each piece names itself in a tooltip, in the Swift client's words.
+/// controls but the model at the right (`footer_config`), each a menu of its choices. Each piece
+/// names itself in a tooltip, in the Swift client's words. The context and the model are the
+/// composer row's (design §8.1).
 fn footer_row(pane: &str, agent: &str, t: Option<&Transcript>, footer: FooterRow, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let FooterRow { items, more, harness, menu, menu_at } = footer;
     let mut left = div().flex().items_center().gap(px(FOOTER_GAP)).overflow_hidden().whitespace_nowrap().flex_1().min_w_0().text_xs().text_color(rgb(0x8fa89b));
     for (item, text) in &items {
         let help = footer::item_help(item, text, t.and_then(|t| t.context.as_ref()), t.and_then(|t| t.footer.as_ref()), &harness);
         let id = gpui::ElementId::Name(format!("footer-{pane}-{item}").into());
-        if item == "context" {
-            let context = t.and_then(|t| t.context);
-            let fraction = context.as_ref().map(footer::fraction).unwrap_or(0.);
-            let tint = context.as_ref().map(footer::tint).unwrap_or(0x7fb89a);
-            let pane = pane.to_owned();
-            left = left.child(div().id(id).when_some(help.clone(), |d, h| d.tooltip(crate::tooltip::tip(&h))).relative().flex().items_center().gap(px(METER_GAP)).flex_none().cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                    this.press("context".into());
-                    if !this.raw_context.remove(&pane) {
-                        this.raw_context.insert(pane.clone());
-                    }
-                    cx.notify();
-                }))
-                .child(div().w(px(METER)).h(px(4.)).rounded_full().bg(rgba(0xffffff26)).overflow_hidden()
-                    .child(div().w(px(METER * fraction)).h(px(4.)).rounded_full().bg(rgb(tint))))
-                .child(div().text_color(rgb(if context.is_some() { 0x8fa89b } else { 0x4f6a5c })).child(text.clone()))
-                .child(recorded(agent, "context", controls)));
-        } else {
-            left = left.child(div().id(id).when_some(help.clone(), |d, h| d.tooltip(crate::tooltip::tip(&h))).relative().flex_none().child(text.clone()).child(recorded(agent, &format!("footer:{item}"), controls)));
-        }
+        left = left.child(div().id(id).when_some(help.clone(), |d, h| d.tooltip(crate::tooltip::tip(&h))).relative().flex_none().child(text.clone()).child(recorded(agent, &format!("footer:{item}"), controls)));
     }
     if more {
         left = left.child(div().id(gpui::ElementId::Name(format!("footer-{pane}-more").into())).tooltip(crate::tooltip::tip(footer::MORE_HELP)).flex_none().child("\u{2026}"));
     }
     let mut right = div().flex().items_center().gap(px(CONTROL_GAP)).flex_none().text_xs();
-    for option in t.map(|t| t.config.as_slice()).unwrap_or_default() {
-        let choices = footer::control_choices(option);
-        let settable = !choices.is_empty();
-        let (agent_id, option_id) = (agent.to_owned(), option.id.clone());
-        let mut control = div().id(gpui::ElementId::Name(format!("control-{pane}-{}", option.id).into())).tooltip(crate::tooltip::tip(&footer::control_help(option))).relative().flex().items_center().px(px(CONTROL_PAD / 2.)).rounded_sm().bg(rgb(0x22302a)).text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
-            .child(footer::control_text(option))
-            .child(recorded(agent, &option.id, controls));
-        if settable {
-            control = control.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                // The pane under the control closes any menu on a press; this press is the control's.
-                cx.stop_propagation();
-                this.press(format!("control {option_id}"));
-                this.toggle_menu(&agent_id, &option_id);
-                cx.notify();
-            }));
-        }
-        if menu.as_deref() == Some(option.id.as_str()) {
-            // Its bounds go to the bridge's overlay, so a card's page view in the transcript never covers it.
-            let mut list = div().relative().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
-                .child(recorded(agent, &format!("menu:{}", option.id), controls))
-                .child(div().px_2().py_1().text_color(rgb(0x8fa89b)).child(option.name.clone()));
-            let current = footer::control_current(option);
-            for (row, (value, name)) in choices.into_iter().enumerate() {
-                let (agent_id, option_id, value_id) = (agent.to_owned(), option.id.clone(), value.clone());
-                let unchanged = value == current;
-                let mut entry = div().relative().px_2().py_1().cursor_pointer().flex().gap_2();
-                if row == menu_at {
-                    entry = entry.bg(rgb(0x31483e));
-                }
-                list = list.child(entry
-                    .child(div().w(px(12.)).child(if unchanged { "✓" } else { "" }))
-                    .child(name)
-                    .child(recorded(agent, &format!("{}:{value}", option.id), controls))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.pick_config(&agent_id, &option_id, &value_id);
-                        cx.notify();
-                    })));
-            }
-            control = control.child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window().child(list)));
-        }
-        right = right.child(control);
+    for option in footer_config(t) {
+        right = right.child(config_control(pane, agent, option, menu.as_deref(), menu_at, controls, cx));
     }
     div().flex_none().h(px(FOOTER)).mt_1().flex().items_center().gap(px(FOOTER_GAP)).child(left).child(right)
 }
 
+/// The config option the composer row carries: the one the agent files under `model`, as the
+/// phone's `ModelMenu` picks it.
+fn model_option(t: Option<&Transcript>) -> Option<&wheel_proto::ConfigOption> {
+    t?.config.iter().find(|o| o.category.as_deref() == Some("model"))
+}
+
+/// The config options the status line keeps: all but `model_option`'s.
+fn footer_config(t: Option<&Transcript>) -> Vec<&wheel_proto::ConfigOption> {
+    t.map(|t| t.config.iter().filter(|o| o.category.as_deref() != Some("model")).collect()).unwrap_or_default()
+}
+
+/// One config control: its current choice in a chip that opens the menu of its choices when
+/// `menu` names it, the row `menu_at` lit for the arrow keys and Return.
+fn config_control(pane: &str, agent: &str, option: &wheel_proto::ConfigOption, menu: Option<&str>, menu_at: usize, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let choices = footer::control_choices(option);
+    let settable = !choices.is_empty();
+    let (agent_id, option_id) = (agent.to_owned(), option.id.clone());
+    let mut control = div().id(gpui::ElementId::Name(format!("control-{pane}-{}", option.id).into())).tooltip(crate::tooltip::tip(&footer::control_help(option))).relative().flex().flex_none().items_center().px(px(CONTROL_PAD / 2.)).rounded_sm().bg(rgb(0x22302a)).text_xs().text_color(rgb(if settable { 0xd9e8e1 } else { 0x6f8a7c }))
+        .child(footer::control_text(option))
+        .child(recorded(agent, &option.id, controls));
+    if settable {
+        control = control.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            // The pane under the control closes any menu on a press; this press is the control's.
+            cx.stop_propagation();
+            this.press(format!("control {option_id}"));
+            this.toggle_menu(&agent_id, &option_id);
+            cx.notify();
+        }));
+    }
+    if menu == Some(option.id.as_str()) {
+        // Its bounds go to the bridge's overlay, so a card's page view in the transcript never covers it.
+        let mut list = div().relative().flex().flex_col().min_w(px(120.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
+            .child(recorded(agent, &format!("menu:{}", option.id), controls))
+            .child(div().px_2().py_1().text_color(rgb(0x8fa89b)).child(option.name.clone()));
+        let current = footer::control_current(option);
+        for (row, (value, name)) in choices.into_iter().enumerate() {
+            let (agent_id, option_id, value_id) = (agent.to_owned(), option.id.clone(), value.clone());
+            let unchanged = value == current;
+            let mut entry = div().relative().px_2().py_1().cursor_pointer().flex().gap_2();
+            if row == menu_at {
+                entry = entry.bg(rgb(0x31483e));
+            }
+            list = list.child(entry
+                .child(div().w(px(12.)).child(if unchanged { "✓" } else { "" }))
+                .child(name)
+                .child(recorded(agent, &format!("{}:{value}", option.id), controls))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.pick_config(&agent_id, &option_id, &value_id);
+                    cx.notify();
+                })));
+        }
+        control = control.child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window().child(list)));
+    }
+    control
+}
+
+/// The context ring's diameter and stroke, and the gap between composer-row pieces (`gap_2`).
+const RING: f32 = 14.;
+const RING_STROKE: f32 = 2.;
+const ROW_GAP: f32 = 8.;
+
+/// What the context ring reads beside it: "37%", or "74K / 200K" while `raw`; "0%" before the agent reports.
+fn context_text(t: Option<&Transcript>, raw: bool) -> String {
+    t.and_then(|t| t.context.as_ref()).map(|c| if raw { footer::raw_text(c) } else { footer::short_text(c) }).unwrap_or_else(|| "0%".into())
+}
+
+/// The narrowest the draft gets before the composer row gives up its extras.
+const MIN_DRAFT: f32 = 80.;
+
+/// Which of the composer row's extras show and the room they take, each with its gap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Extras {
+    model: bool,
+    figure: bool,
+    w: f32,
+}
+
+/// The extras for a row with `room` left beside its buttons: the ring always, its figure
+/// (`figure_w` wide) and the model control (`model_w`, none when the agent offers no model) while
+/// the draft keeps `MIN_DRAFT`; the figure goes first, then the model, so the stop button stays in the box.
+fn composer_extras(room: f32, model_w: Option<f32>, figure_w: f32) -> Extras {
+    let ring = RING + ROW_GAP;
+    let figure = METER_GAP + figure_w;
+    let model = model_w.map_or(0., |w| w + CONTROL_PAD + ROW_GAP);
+    for (model_on, figure_on) in [(true, true), (true, false), (false, false)] {
+        let w = ring + if figure_on { figure } else { 0. } + if model_on { model } else { 0. };
+        if room - w >= MIN_DRAFT || !model_on {
+            return Extras { model: model_on && model_w.is_some(), figure: figure_on, w };
+        }
+    }
+    unreachable!()
+}
+
+/// `composer_extras` for transcript `t` in a pane `pane_w` wide.
+fn composer_extras_for(window: &Window, t: Option<&Transcript>, raw: bool, pane_w: f32) -> Extras {
+    let measure = |text: &str| title::text_width(window, text, FOOTER_TEXT).ceil();
+    composer_extras(pane_w - composer::COMPOSER_CHROME, model_option(t).map(|o| measure(&footer::control_text(o))), measure(&context_text(t, raw)))
+}
+
+/// The context ring in the composer row: the share of the window in use as an arc from the top,
+/// tinted as `footer::tint` says, with the percent beside it while `figure`; a click reads the raw figures instead.
+fn context_ring(pane: &str, agent: &str, t: Option<&Transcript>, raw: bool, figure: bool, harness: &str, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let context = t.and_then(|t| t.context);
+    let fraction = context.as_ref().map(footer::fraction).unwrap_or(0.);
+    let tint = context.as_ref().map(footer::tint).unwrap_or(0x7fb89a);
+    let text = context_text(t, raw);
+    let help = footer::item_help("context", &text, context.as_ref(), t.and_then(|t| t.footer.as_ref()), harness);
+    let pane_id = pane.to_owned();
+    div().id(gpui::ElementId::Name(format!("context-{pane}").into())).when_some(help, |d, h| d.tooltip(crate::tooltip::tip(&h)))
+        .relative().flex().flex_none().items_center().gap(px(METER_GAP)).h(px(composer::ROW_BUTTON)).cursor_pointer().text_xs()
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.press("context".into());
+            if !this.raw_context.remove(&pane_id) {
+                this.raw_context.insert(pane_id.clone());
+            }
+            cx.notify();
+        }))
+        .child(canvas(|_, _, _| (), move |bounds, _, window, _| paint_ring(bounds, fraction, tint, window)).flex_none().w(px(RING)).h(px(RING)))
+        .when(figure, |d| d.child(div().text_color(rgb(if context.is_some() { 0x8fa89b } else { 0x4f6a5c })).child(text)))
+        .child(recorded(agent, "context", controls))
+}
+
+/// The ring's track, then its `fraction` clockwise from the top in `tint`. Each arc is drawn in
+/// two halves, so a full one is a circle.
+fn paint_ring(bounds: Bounds<Pixels>, fraction: f32, tint: u32, window: &mut Window) {
+    use std::f32::consts::PI;
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let (cx, cy, r) = (w / 2., h / 2., (w.min(h) - RING_STROKE) / 2.);
+    let at = |a: f32| gpui::point(px(cx + r * a.cos()), px(cy + r * a.sin()));
+    let arc = |from: f32, to: f32| {
+        let mut path = gpui::PathBuilder::stroke(px(RING_STROKE));
+        path.move_to(at(from));
+        path.arc_to(gpui::point(px(r), px(r)), px(0.), false, true, at((from + to) / 2.));
+        path.arc_to(gpui::point(px(r), px(r)), px(0.), false, true, at(to));
+        path.translate(bounds.origin);
+        path.build().ok()
+    };
+    let top = -PI / 2.;
+    if let Some(track) = arc(top, top + 2. * PI) {
+        window.paint_path(track, rgba(0xffffff26));
+    }
+    if fraction > 0. && let Some(used) = arc(top, top + 2. * PI * fraction.min(1.)) {
+        window.paint_path(used, rgb(tint));
+    }
+}
+
 /// The footer's items for a transcript as text, (item, text), in the order the setting says; an
 /// item with nothing to show is left out (`ChatView.swift`'s `footerItem`).
-fn footer_items(order: &[String], t: &Transcript, leaf: Option<&Leaf>, agents: &[AgentInfo], raw: bool) -> Vec<(String, String)> {
+fn footer_items(order: &[String], t: &Transcript, leaf: Option<&Leaf>, agents: &[AgentInfo]) -> Vec<(String, String)> {
     let mut out = vec![];
     for item in order {
         let text = match item.as_str() {
-            "context" => Some(t.context.as_ref().map(|c| if raw { footer::raw_text(c) } else { footer::short_text(c) }).unwrap_or_else(|| "0%".into())),
+            // `context` is the composer row's ring (`context_ring`).
             "background" => t.footer.as_ref().and_then(footer::background_text),
             "directory" => t.footer.as_ref().map(footer::shown_directory),
             "home" => leaf.map(|l| {
@@ -3350,6 +3454,19 @@ fn same_dir(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod orchestrator_dir_tests {
     use super::*;
+
+    #[test]
+    fn the_composer_row_drops_the_ring_figure_then_the_model_before_squeezing_the_draft() {
+        let all = composer_extras(400., Some(60.), 30.);
+        assert_eq!((all.model, all.figure), (true, true));
+        assert_eq!(all.w, RING + ROW_GAP + METER_GAP + 30. + 60. + CONTROL_PAD + ROW_GAP);
+        let tight = composer_extras(all.w + MIN_DRAFT - 1., Some(60.), 30.);
+        assert_eq!((tight.model, tight.figure), (true, false));
+        let narrow = composer_extras(120., Some(60.), 30.);
+        assert_eq!((narrow.model, narrow.figure, narrow.w), (false, false, RING + ROW_GAP));
+        let no_model = composer_extras(400., None, 30.);
+        assert_eq!((no_model.model, no_model.figure, no_model.w), (false, true, RING + ROW_GAP + METER_GAP + 30.));
+    }
 
     #[test]
     fn the_orchestrator_folder_is_the_setting_else_beside_the_machine_file() {

@@ -22,10 +22,10 @@ const COMPOSER_LINES: usize = 10;
 const COMPOSER_INSET: f32 = 10.;
 /// The paperclip and the read-aloud toggle at the start of the composer row and the stop button
 /// at its end, each this wide.
-const ROW_BUTTON: f32 = 18.;
+pub(super) const ROW_BUTTON: f32 = 18.;
 /// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
 /// border and `px_2`, the paperclip, the read-aloud toggle and the stop button, each with its gap.
-const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
+pub(super) const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.

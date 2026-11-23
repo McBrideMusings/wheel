@@ -1,7 +1,8 @@
 //! The window's title row as the Swift client draws it (`TitleRow.swift`, ADR-0037): the sidebar
 //! button beside the traffic lights, the session menu, the mode menu, the left `[[title.button]]`
 //! entries, then the window's title while the sidebar is open or the space tabs while it is
-//! hidden, and at the right end the right entries, Processes, ⌘K, the pin and New Space. Every
+//! hidden, and at the right end the right entries, Processes, ⌘K, the pin, New Space and the
+//! settings gear. Every
 //! button is an icon in a fixed slot, so a state change moves no neighbour; the tabs take only
 //! the width left between the two groups. wheeld merges the machine's and the project's entries
 //! by id before they get here; an entry marked `hidden` removes the built-in of that id.
@@ -86,6 +87,8 @@ pub enum Hit {
     Palette,
     Pin,
     NewSpace,
+    /// The gear at the row's right end; a press opens Settings (design §8.1).
+    Settings,
 }
 
 /// One thing drawn in the row: a button in its slot, a tab, or the title.
@@ -132,6 +135,7 @@ pub fn frame_id(hit: &Hit) -> Option<String> {
         Hit::Palette => "palette".into(),
         Hit::Pin => "pin".into(),
         Hit::NewSpace => "new-space".into(),
+        Hit::Settings => "settings".into(),
         Hit::Space(_) | Hit::Title => return None,
     })
 }
@@ -203,7 +207,7 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
         }
     }
     let left_end = x - GAP;
-    // The right group, laid from the right edge in: New Space, the pin, ⌘K, Processes, then the right entries.
+    // The right group, laid from the right edge in: the gear, New Space, the pin, ⌘K, Processes, then the right entries.
     let mut right_chips: Vec<Chip> = vec![];
     let mut rx = width - TRAILING;
     let mut right = |chip: Chip, right_chips: &mut Vec<Chip>| {
@@ -213,6 +217,9 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
         right_chips.push(chip);
         rx -= RIGHT_GAP;
     };
+    if !hidden("settings") {
+        right(button(Hit::Settings, 0., "gearshape", "Settings"), &mut right_chips);
+    }
     if !hidden("new-space") {
         right(button(Hit::NewSpace, 0., "plus", "New space from a folder"), &mut right_chips);
     }
@@ -320,21 +327,24 @@ mod tests {
     #[test]
     fn the_built_ins_sit_in_the_swift_order_at_fixed_slots() {
         let r = row(1200., true, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None, None);
-        assert_eq!(ids(&r), ["sidebar", "session", "mode", "title", "processes", "palette", "pin", "new-space"]);
+        assert_eq!(ids(&r), ["sidebar", "session", "mode", "title", "processes", "palette", "pin", "new-space", "settings"]);
         assert_eq!(r.chips[0].rect, Rect { x: 78., y: 6., w: 28., h: 26. });
         assert_eq!(r.chips[1].rect.x, 112.);
         assert_eq!(r.chips[2].rect.x, 146.);
-        let new_space = r.chips.last().unwrap();
-        assert_eq!(new_space.rect.x + new_space.rect.w, 1190.);
+        let gear = r.chips.last().unwrap();
+        assert_eq!((gear.hit.clone(), gear.icon.as_str()), (Hit::Settings, "gearshape"));
+        assert_eq!(gear.rect.x + gear.rect.w, 1190.);
         assert_eq!(r.chips[r.chips.len() - 2].rect.x, 1200. - 10. - 28. - 2. - 28.);
-        assert_eq!(r.chips[4].rect.x, 1200. - 10. - 4. * 28. - 3. * 2.);
+        assert_eq!(r.chips[4].rect.x, 1200. - 10. - 5. * 28. - 4. * 2.);
+        let hidden_gear = row(1200., true, &[hidden("settings")], &named("s", 2), Some("s1"), "s 1", false, "spaces", None, None);
+        assert_eq!(hidden_gear.chips.last().unwrap().hit, Hit::NewSpace, "hidden = true removes the gear");
         assert!(r.track.is_none());
     }
 
     #[test]
     fn the_queue_tray_shows_in_orchestrator_mode_only_with_its_count_and_tone() {
         let shown = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((3, "red")), None);
-        assert_eq!(ids(&shown), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space"]);
+        assert_eq!(ids(&shown), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space", "settings"]);
         let tray = shown.chips.iter().find(|c| c.hit == Hit::Queue).unwrap();
         assert_eq!((tray.badge.as_deref(), tray.tint.as_deref()), (Some("3"), Some("red")));
         let empty = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((0, "gray")), None);
@@ -368,7 +378,7 @@ mod tests {
         let spaces = row(1200., false, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None, None);
         let orchestrator = row(1200., false, &[], &named("s", 2), Some("so"), "Orchestrator", false, "orchestrator", None, None);
         assert!(ids(&spaces).iter().any(|id| id.starts_with("tab")), "Spaces mode with the sidebar closed shows tabs: {:?}", ids(&spaces));
-        assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space"]);
+        assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space", "settings"]);
         assert!(!orchestrator.chips[0].enabled, "the sidebar button is disabled");
         assert_eq!(orchestrator.chips[0].rect, spaces.chips[0].rect, "and holds its place");
         assert!(orchestrator.track.is_none() && orchestrator.tabs.is_empty());
@@ -378,7 +388,7 @@ mod tests {
     fn entries_take_their_side_in_order_and_hidden_ones_remove_built_ins() {
         let plugins = vec![entry("vpn", TitleSide::Right, true), hidden("pin"), entry("deploy", TitleSide::Left, false), entry("logs", TitleSide::Right, true)];
         let r = row(1200., true, &plugins, &named("s", 1), Some("s1"), "s 1", false, "spaces", None, None);
-        assert_eq!(ids(&r), ["sidebar", "session", "mode", "plugin-deploy", "title", "plugin-vpn", "plugin-logs", "processes", "palette", "new-space"]);
+        assert_eq!(ids(&r), ["sidebar", "session", "mode", "plugin-deploy", "title", "plugin-vpn", "plugin-logs", "processes", "palette", "new-space", "settings"]);
         let deploy = &r.chips[3];
         assert_eq!(deploy.rect.x, 180.);
         assert!(!deploy.pressable && deploy.label == "deploy tip");
@@ -387,7 +397,7 @@ mod tests {
         assert_eq!(logs.rect.x - vpn.rect.x, 30.);
         // A hidden sidebar button shifts the session menu into its place; no space hides the space's buttons.
         let r = row(1200., true, &[hidden("sidebar")], &[], None, "", false, "spaces", None, None);
-        assert_eq!(ids(&r), ["session", "mode", "title", "palette", "pin", "new-space"]);
+        assert_eq!(ids(&r), ["session", "mode", "title", "palette", "pin", "new-space", "settings"]);
         assert_eq!(r.chips[0].rect.x, 78.);
     }
 

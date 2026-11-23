@@ -1622,15 +1622,23 @@ async fn transcript_cards(run: Run, agent_pane: String, agent_name: String, cli_
 async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
-    // The footer under the composer: the context meter (three turns answered, 10,000 tokens each
-    // of a 200,000 window), the directory, the agent's home, and the config controls the agent
-    // offers, sorted model first. A click on the meter reads the raw figures; a click on a
-    // control opens its menu; picking a value asks wheeld and the control follows the agent's
-    // own list.
+    // The composer row carries the model control and the context ring (design §8.1): the ring
+    // reads three turns answered, 10,000 tokens each of a 200,000 window. The footer under it
+    // has the directory, the agent's home, and the other config controls. A click on the ring
+    // reads the raw figures; a click on a control opens its menu; picking a value asks wheeld
+    // and the control follows the agent's own list.
     let footer_before = window.update(cx, |c, _, _| c.footer_items_all(&agent_name))?;
     let item = |items: &[(String, String)], name: &str| items.iter().find(|(i, _)| i == name).map(|(_, t)| t.clone());
-    let context_text = item(&footer_before, "context").ok_or_else(|| anyhow::anyhow!("no context item in the footer: {footer_before:?}"))?;
-    ensure!(context_text.ends_with('%') && context_text != "0%", "the context meter after three turns reads {context_text:?} (items {footer_before:?})");
+    ensure!(item(&footer_before, "context").is_none(), "the footer still lists the context: {footer_before:?}");
+    let context_text = window.update(cx, |c, _, _| c.context_text(&agent_name))?.unwrap_or_default();
+    ensure!(context_text.ends_with('%') && context_text != "0%", "the context ring after three turns reads {context_text:?}");
+    let bounds = |cx: &mut AsyncApp, id: &str| window.update(cx, |c, _, _| c.control_bounds(&agent_name, id));
+    let (composer_b, model_b, ring_b, mode_b) = (bounds(cx, "composer")?, bounds(cx, "model")?, bounds(cx, "context")?, bounds(cx, "mode")?);
+    let inside = |b: Option<(f32, f32, f32, f32)>, outer: (f32, f32, f32, f32)| b.is_some_and(|b| b.0 >= outer.0 && b.1 >= outer.1 && b.0 + b.2 <= outer.0 + outer.2 + 0.5 && b.1 + b.3 <= outer.1 + outer.3 + 0.5);
+    let composer_b = composer_b.ok_or_else(|| anyhow::anyhow!("the composer was not drawn"))?;
+    ensure!(inside(model_b, composer_b) && inside(ring_b, composer_b), "the model {model_b:?} and the ring {ring_b:?} are not in the composer row {composer_b:?}");
+    ensure!(model_b.zip(ring_b).is_some_and(|(m, r)| m.0 + m.2 <= r.0), "the model {model_b:?} is not left of the ring {ring_b:?}");
+    ensure!(mode_b.is_some_and(|m| m.1 >= composer_b.1 + composer_b.3), "the mode control {mode_b:?} is not in the footer under the composer {composer_b:?}");
     ensure!(item(&footer_before, "directory").is_some_and(|d| d.starts_with('~') || d.starts_with('/')), "no directory in the footer: {footer_before:?}");
     ensure!(item(&footer_before, "home").is_some(), "no home in the footer: {footer_before:?}");
     let controls = window.update(cx, |c, _, _| c.config_controls(&agent_name))?;
@@ -1644,8 +1652,8 @@ async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: Stri
     press(&native, meter);
     tick(cx, 200).await;
     draw(window, None, cx)?;
-    let raw_text = item(&window.update(cx, |c, _, _| c.footer_texts(&agent_name))?.0, "context").unwrap_or_default();
-    ensure!(raw_text.contains(" / "), "the meter after a click reads {raw_text:?}, wanted the raw figures");
+    let raw_text = window.update(cx, |c, _, _| c.context_text(&agent_name))?.unwrap_or_default();
+    ensure!(raw_text.contains(" / "), "the ring after a click reads {raw_text:?}, wanted the raw figures");
     draw(window, Some(output.join("client-footer.png")), cx)?;
     let model = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model"))?.ok_or_else(|| anyhow::anyhow!("the model control was not drawn"))?;
     press(&native, model);
@@ -3396,7 +3404,7 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     }
     draw(window, None, cx)?;
     let order = row_ids(&title);
-    ensure!(order == ["sidebar", "session", "mode", "plugin-build", "plugin-deploy", "title", "plugin-vpn", "processes", "palette", "new-space"], "the title row's order: {order:?} ({title})");
+    ensure!(order == ["sidebar", "session", "mode", "plugin-build", "plugin-deploy", "title", "plugin-vpn", "processes", "palette", "new-space", "settings"], "the title row's order: {order:?} ({title})");
     let build = chip_of(&title, "plugin-build");
     ensure!(build["icon"] == "hammer.fill" && build["tint"] == "green" && build["badge"] == "2", "the machine entry's state did not land: {build}");
     let vpn = chip_of(&title, "plugin-vpn");
@@ -3425,6 +3433,12 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     window.update(cx, |c, _, _| c.press_plugin("deploy"))?;
     let log_has = |cx: &mut AsyncApp, needle: &str| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.state_json()["log"].as_array().is_some_and(|l| l.iter().any(|e| e.as_str().is_some_and(|e| e.contains(needle)))))?) };
     ensure!(log_has(cx, "title button deploy: an indicator")?, "a press on deploy should be ignored and logged");
+    // The gear at the row's right end opens Settings (design §8.1).
+    ensure!(chip_of(&title, "settings")["icon"] == "gearshape" && order.last().is_some_and(|id| id == "settings"), "the gear: {}", chip_of(&title, "settings"));
+    click_chip(window, Hit::Settings, cx).await?;
+    ensure!(window.update(cx, |c, _, _| c.settings_open)?, "a click on the gear opened no Settings");
+    window.update(cx, |c, _, _| c.close_settings())?;
+    draw(window, None, cx)?;
     // The mode menu, opened by a real click, then a real click on each row: every mode but
     // Spaces hides every pane and draws its placeholder, and no title-row button moves.
     click_chip(window, Hit::Mode, cx).await?;

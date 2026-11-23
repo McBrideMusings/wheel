@@ -171,6 +171,7 @@ impl Client {
             Hit::Palette => self.open_command_palette(crate::command_palette::Mode::Root),
             Hit::Pin => self.set_pinned(!self.pinned),
             Hit::NewSpace => self.open_new_space_palette(),
+            Hit::Settings => self.open_settings(),
         }
     }
     /// A press on a `[[title.button]]` entry: wheeld runs its command in the space's directory.
