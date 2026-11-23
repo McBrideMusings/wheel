@@ -3399,8 +3399,8 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
         let hidden = mode != "spaces";
         wait(&native, &format!("every pane hidden={hidden} in {mode} mode"), |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == hidden), cx).await?;
         draw(window, Some(output.join(format!("client-mode-{mode}.png"))), cx)?;
-        // Every button; the title between the groups is not one, and the queue tray is Orchestrator mode's own.
-        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title" && id != "queue").collect::<Vec<_>>();
+        // Every button; the title between the groups is not one, and the queue tray and topic line are Orchestrator mode's own.
+        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title" && id != "queue" && id != "topic").collect::<Vec<_>>();
         let frames = buttons(row_frames(cx)?);
         ensure!(frames == buttons(spaces_row.clone()), "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
         let icon = wheel_gpui::header::MODES.iter().find(|m| m.0 == mode).map(|m| m.2).unwrap_or_default();
@@ -6208,11 +6208,29 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let tray_at = tray["frame"].clone();
     until!("the tray unbadged in its slot once its Queue pane closes", |s: &Value| s["orchestrator"]["queue"]["pane"].is_null()
         && s["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == "queue" && c["badge"].is_null() && c["frame"] == tray_at));
-    // Leaving the mode shows the Spaces mode space again; coming back shows the orchestrator's space.
+    // The topic line (wheel-zxts.6.2): no threads/current yet, so no line, and the title sits on the upper of the mode's two lines.
+    let row_chip = |s: &Value, id: &str| s["title"]["row"].as_array().and_then(|r| r.iter().find(|c| c["id"] == id)).cloned().unwrap_or(Value::Null);
+    let untopiced = until!("no topic line before threads/current exists", |s: &Value| s["orchestrator"]["topic"]["id"].is_null());
+    ensure!(row_chip(&untopiced, "topic").is_null(), "a topic line with no topic: {}", row_chip(&untopiced, "topic"));
+    let title_at = row_chip(&untopiced, "title")["frame"].clone();
+    std::fs::create_dir_all(std::path::Path::new(&dir).join("threads"))?;
+    std::fs::write(std::path::Path::new(&dir).join("threads/current"), "plugin-reload\n")?;
+    std::fs::write(std::path::Path::new(&dir).join("threads/plugin-reload.md"), "---\ntitle: wheel · plugin hot reload\n---\n\n## Decisions\n- Keep pane state in the backend feed.\n")?;
+    // Leaving the mode shows the Spaces mode space again; coming back shows the orchestrator's space and reads the topic.
     pick_mode(window, "spaces", cx).await?;
     until!("the Spaces mode space back, with the sidebar as the person left it", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str() && s["sidebar"]["shown"] == sidebar_open);
     pick_mode(window, "orchestrator", cx).await?;
     until!("the orchestrator's space shown again", |s: &Value| s["active"] == space.as_str() && s["cards"].as_array().is_some_and(|c| c.len() == 1));
+    let topiced = until!("the topic line under the title", |s: &Value| s["orchestrator"]["topic"]["id"] == "plugin-reload" && !row_chip(s, "topic").is_null());
+    ensure!(topiced["orchestrator"]["topic"]["title"] == "wheel · plugin hot reload", "the topic's title: {}", topiced["orchestrator"]["topic"]);
+    ensure!(row_chip(&topiced, "title")["frame"] == title_at, "the title moved when the topic line came: {} against {title_at}", row_chip(&topiced, "title")["frame"]);
+    click_chip(window, Hit::Topic, cx).await?;
+    let notes = until!("the topic notes open", |s: &Value| s["orchestrator"]["topic"]["open"] == true);
+    ensure!(notes["orchestrator"]["topic"]["notes"] == "## Decisions\n- Keep pane state in the backend feed.", "the notes: {}", notes["orchestrator"]["topic"]["notes"]);
+    draw(window, Some(output.join("client-orchestrator-topic.png")), cx)?;
+    window.update(cx, |c, _, _| c.close_topic())?;
+    until!("the topic notes closed", |s: &Value| s["orchestrator"]["topic"]["open"] == false);
+    draw(window, Some(output.join("client-orchestrator-topic-line.png")), cx)?;
     // A space picked in the sidebar is a Spaces mode space: the mode ends.
     window.update(cx, |c, _, _| c.select_space(&grid))?;
     let back = until!("Spaces mode after a sidebar pick", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());

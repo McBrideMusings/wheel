@@ -24,6 +24,10 @@ pub const TRAILING: f32 = 10.0;
 pub const SPACER: f32 = 8.0;
 /// The window title's leading padding while the sidebar is open.
 pub const TITLE_LEAD: f32 = 4.0;
+/// Orchestrator mode's two lines: the title's, then the topic line's under it.
+pub const TITLE_Y: f32 = 3.0;
+pub const TITLE_H: f32 = 17.0;
+pub const TOPIC_H: f32 = 15.0;
 /// `SpaceTabs`: every tab the same width between these, inside a track with a 2 pt inset.
 pub const TAB_NARROWEST: f32 = 72.0;
 pub const TAB_WIDEST: f32 = 220.0;
@@ -77,6 +81,8 @@ pub enum Hit {
     Processes,
     /// Orchestrator mode's queue tray (ADR-0054).
     Queue,
+    /// Orchestrator mode's topic line under the title; a press opens the topic's notes.
+    Topic,
     Palette,
     Pin,
     NewSpace,
@@ -122,6 +128,7 @@ pub fn frame_id(hit: &Hit) -> Option<String> {
         Hit::Plugin(id) => format!("plugin-{id}"),
         Hit::Processes => "processes".into(),
         Hit::Queue => "queue".into(),
+        Hit::Topic => "topic".into(),
         Hit::Palette => "palette".into(),
         Hit::Pin => "pin".into(),
         Hit::NewSpace => "new-space".into(),
@@ -162,9 +169,10 @@ fn plugin(info: &TitleButtonInfo, x: f32) -> Chip {
 /// The row for a window `width` points wide. `plugins` are the space's merged entries;
 /// `spaces` are (id, name) of the session shown; `space` is the one shown and `space_name` its
 /// name; `mode` is one of `MODES`' ids; `queue` is the queue tray's badge count and tone once its
-/// feed has a value (Orchestrator mode only; the tray holds its slot, unbadged, before that).
+/// feed has a value (Orchestrator mode only; the tray holds its slot, unbadged, before that);
+/// `topic` is the orchestrator's current topic's title (Orchestrator mode only).
 #[allow(clippy::too_many_arguments)]
-pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: &[(String, String)], space: Option<&str>, space_name: &str, pinned: bool, mode: &str, queue: Option<(usize, &str)>) -> Row {
+pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: &[(String, String)], space: Option<&str>, space_name: &str, pinned: bool, mode: &str, queue: Option<(usize, &str)>, topic: Option<&str>) -> Row {
     let hidden = |id: &str| plugins.iter().any(|p| p.hidden && p.id == id);
     let shown: Vec<&TitleButtonInfo> = plugins.iter().filter(|p| !p.hidden).collect();
     let has_space = space.is_some();
@@ -240,7 +248,16 @@ pub fn row(width: f32, sidebar_open: bool, plugins: &[TitleButtonInfo], spaces: 
     let mut tab_w = TAB_WIDEST;
     let mut scrolls = false;
     let mut tabs = vec![];
-    if sidebar_open || orchestrator {
+    if orchestrator {
+        // Two lines in every state of the mode, so the title stays put when a topic is set or cleared: the title,
+        // and under it the topic line (design §7 screen 3).
+        let x0 = left_end + GAP + TITLE_LEAD;
+        let w = (right_start - SPACER - x0).max(0.);
+        chips.push(Chip { hit: Hit::Title, rect: Rect { x: x0, y: TITLE_Y, w, h: TITLE_H }, label: space_name.to_owned(), active: false, icon: String::new(), badge: None, tint: None, enabled: true, pressable: false });
+        if let Some(topic) = topic {
+            chips.push(Chip { hit: Hit::Topic, rect: Rect { x: x0, y: TITLE_Y + TITLE_H, w, h: TOPIC_H }, label: topic.to_owned(), active: false, icon: "doc.text".into(), badge: None, tint: None, enabled: true, pressable: true });
+        }
+    } else if sidebar_open {
         let x0 = left_end + GAP + TITLE_LEAD;
         chips.push(Chip { hit: Hit::Title, rect: Rect { x: x0, y: BUTTON_Y, w: (right_start - SPACER - x0).max(0.), h: BUTTON_H }, label: space_name.to_owned(), active: false, icon: String::new(), badge: None, tint: None, enabled: true, pressable: false });
     } else if !spaces.is_empty() {
@@ -302,7 +319,7 @@ mod tests {
 
     #[test]
     fn the_built_ins_sit_in_the_swift_order_at_fixed_slots() {
-        let r = row(1200., true, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None);
+        let r = row(1200., true, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None, None);
         assert_eq!(ids(&r), ["sidebar", "session", "mode", "title", "processes", "palette", "pin", "new-space"]);
         assert_eq!(r.chips[0].rect, Rect { x: 78., y: 6., w: 28., h: 26. });
         assert_eq!(r.chips[1].rect.x, 112.);
@@ -316,24 +333,40 @@ mod tests {
 
     #[test]
     fn the_queue_tray_shows_in_orchestrator_mode_only_with_its_count_and_tone() {
-        let shown = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((3, "red")));
+        let shown = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((3, "red")), None);
         assert_eq!(ids(&shown), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space"]);
         let tray = shown.chips.iter().find(|c| c.hit == Hit::Queue).unwrap();
         assert_eq!((tray.badge.as_deref(), tray.tint.as_deref()), (Some("3"), Some("red")));
-        let empty = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((0, "gray")));
+        let empty = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", Some((0, "gray")), None);
         let empty_tray = empty.chips.iter().find(|c| c.hit == Hit::Queue).unwrap();
         assert!(empty_tray.badge.is_none(), "no badge for an empty queue");
         assert_eq!(empty_tray.rect, tray.rect, "and the button holds its slot");
-        let unread = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", None);
+        let unread = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", None, None);
         assert_eq!(unread.chips, empty.chips, "before the feed's first value the row is the empty queue's");
-        let spaces = row(1200., false, &[], &named("s", 1), Some("s1"), "s 1", false, "spaces", Some((3, "red")));
+        let spaces = row(1200., false, &[], &named("s", 1), Some("s1"), "s 1", false, "spaces", Some((3, "red")), None);
         assert!(!spaces.chips.iter().any(|c| c.hit == Hit::Queue), "no tray outside Orchestrator mode");
     }
 
     #[test]
+    fn the_topic_line_sits_under_the_title_and_the_title_holds_its_place_without_one() {
+        let with = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", None, Some("wheel · reload"));
+        let without = row(1200., false, &[], &named("s", 1), Some("so"), "Orchestrator", false, "orchestrator", None, None);
+        let title = |r: &Row| r.chips.iter().find(|c| c.hit == Hit::Title).unwrap().rect;
+        let topic = with.chips.iter().find(|c| c.hit == Hit::Topic).unwrap();
+        assert_eq!(topic.label, "wheel · reload");
+        assert!(topic.pressable);
+        assert_eq!((topic.rect.x, topic.rect.y), (title(&with).x, title(&with).y + title(&with).h));
+        assert!(topic.rect.y + topic.rect.h <= HEIGHT);
+        assert_eq!(title(&with), title(&without), "the title stays put with no topic");
+        assert!(!without.chips.iter().any(|c| c.hit == Hit::Topic));
+        let spaces = row(1200., true, &[], &named("s", 1), Some("s1"), "s 1", false, "spaces", None, Some("wheel · reload"));
+        assert!(!spaces.chips.iter().any(|c| c.hit == Hit::Topic), "no topic line outside Orchestrator mode");
+    }
+
+    #[test]
     fn orchestrator_mode_shows_the_title_not_tabs_and_disables_the_sidebar_button_in_place() {
-        let spaces = row(1200., false, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None);
-        let orchestrator = row(1200., false, &[], &named("s", 2), Some("so"), "Orchestrator", false, "orchestrator", None);
+        let spaces = row(1200., false, &[], &named("s", 2), Some("s1"), "s 1", false, "spaces", None, None);
+        let orchestrator = row(1200., false, &[], &named("s", 2), Some("so"), "Orchestrator", false, "orchestrator", None, None);
         assert!(ids(&spaces).iter().any(|id| id.starts_with("tab")), "Spaces mode with the sidebar closed shows tabs: {:?}", ids(&spaces));
         assert_eq!(ids(&orchestrator), ["sidebar", "session", "mode", "title", "queue", "processes", "palette", "pin", "new-space"]);
         assert!(!orchestrator.chips[0].enabled, "the sidebar button is disabled");
@@ -344,7 +377,7 @@ mod tests {
     #[test]
     fn entries_take_their_side_in_order_and_hidden_ones_remove_built_ins() {
         let plugins = vec![entry("vpn", TitleSide::Right, true), hidden("pin"), entry("deploy", TitleSide::Left, false), entry("logs", TitleSide::Right, true)];
-        let r = row(1200., true, &plugins, &named("s", 1), Some("s1"), "s 1", false, "spaces", None);
+        let r = row(1200., true, &plugins, &named("s", 1), Some("s1"), "s 1", false, "spaces", None, None);
         assert_eq!(ids(&r), ["sidebar", "session", "mode", "plugin-deploy", "title", "plugin-vpn", "plugin-logs", "processes", "palette", "new-space"]);
         let deploy = &r.chips[3];
         assert_eq!(deploy.rect.x, 180.);
@@ -353,20 +386,20 @@ mod tests {
         let logs = r.chips.iter().find(|c| c.hit == Hit::Plugin("logs".into())).unwrap();
         assert_eq!(logs.rect.x - vpn.rect.x, 30.);
         // A hidden sidebar button shifts the session menu into its place; no space hides the space's buttons.
-        let r = row(1200., true, &[hidden("sidebar")], &[], None, "", false, "spaces", None);
+        let r = row(1200., true, &[hidden("sidebar")], &[], None, "", false, "spaces", None, None);
         assert_eq!(ids(&r), ["session", "mode", "title", "palette", "pin", "new-space"]);
         assert_eq!(r.chips[0].rect.x, 78.);
     }
 
     #[test]
     fn a_state_change_moves_no_neighbour() {
-        let plain = row(1200., true, &[entry("vpn", TitleSide::Left, true)], &named("s", 1), Some("s1"), "s 1", false, "spaces", None);
+        let plain = row(1200., true, &[entry("vpn", TitleSide::Left, true)], &named("s", 1), Some("s1"), "s 1", false, "spaces", None, None);
         let mut badged = entry("vpn", TitleSide::Left, true);
         badged.badge = Some("12".into());
         badged.tint = Some("green".into());
         badged.icon = "lock.fill".into();
         badged.enabled = false;
-        let with = row(1200., true, &[badged], &named("s", 1), Some("s1"), "s 1", true, "agents", None);
+        let with = row(1200., true, &[badged], &named("s", 1), Some("s1"), "s 1", true, "agents", None, None);
         let rects = |r: &Row| r.chips.iter().map(|c| (frame_id(&c.hit), c.rect)).collect::<Vec<_>>();
         assert_eq!(rects(&plain), rects(&with));
         assert_eq!(with.chips[3].badge.as_deref(), Some("12"));
@@ -379,23 +412,23 @@ mod tests {
     fn every_mode_keeps_every_button_in_place() {
         // Every button, not the title between the groups, whose text narrows for a button only one mode has.
         // The queue tray is Orchestrator mode's own button; every other one keeps its place beside it.
-        let rects = |mode: &str| row(1200., true, &[entry("vpn", TitleSide::Left, true), entry("lock", TitleSide::Right, true)], &named("s", 2), Some("s1"), "s 1", false, mode, None).chips.iter()
+        let rects = |mode: &str| row(1200., true, &[entry("vpn", TitleSide::Left, true), entry("lock", TitleSide::Right, true)], &named("s", 2), Some("s1"), "s 1", false, mode, None, None).chips.iter()
             .filter(|c| c.hit != Hit::Queue).filter_map(|c| frame_id(&c.hit).map(|id| (id, c.rect))).collect::<Vec<_>>();
         for (id, _, icon) in MODES {
             assert_eq!(rects(id), rects("spaces"), "{id}");
-            assert_eq!(row(1200., true, &[], &named("s", 1), Some("s1"), "s 1", false, id, None).chips[2].icon, icon);
+            assert_eq!(row(1200., true, &[], &named("s", 1), Some("s1"), "s 1", false, id, None, None).chips[2].icon, icon);
         }
     }
 
     #[test]
     fn tabs_share_the_room_between_the_groups_and_keep_the_active_one_in_view() {
-        let one = row(1200., false, &[], &named("s", 1), Some("s1"), "s 1", false, "spaces", None);
+        let one = row(1200., false, &[], &named("s", 1), Some("s1"), "s 1", false, "spaces", None, None);
         assert_eq!(one.tab_width, 220.);
         let track = one.track.unwrap();
         assert_eq!(track.x, 180.);
         assert_eq!(track.w, 224.);
         assert_eq!(ids(&one)[3], "tab:s1");
-        let many = row(900., false, &[], &named("s", 30), Some("s30"), "s 30", false, "spaces", None);
+        let many = row(900., false, &[], &named("s", 30), Some("s30"), "s 30", false, "spaces", None, None);
         assert_eq!(many.tab_width, 72.);
         assert!(many.scrolls);
         let tabs: Vec<&Chip> = many.chips.iter().filter(|c| matches!(c.hit, Hit::Space(_))).collect();
@@ -407,8 +440,8 @@ mod tests {
         assert_eq!(many.tabs.len(), 30);
         assert!(many.tabs[0].x < track.x);
         assert_eq!(many.tabs[29], tabs.last().unwrap().rect);
-        assert!(one.tabs.len() == 1 && row(1200., true, &[], &named("s", 3), Some("s1"), "s 1", false, "spaces", None).tabs.is_empty());
-        let first = row(900., false, &[], &named("s", 30), Some("s1"), "s 1", false, "spaces", None);
+        assert!(one.tabs.len() == 1 && row(1200., true, &[], &named("s", 3), Some("s1"), "s 1", false, "spaces", None, None).tabs.is_empty());
+        let first = row(900., false, &[], &named("s", 30), Some("s1"), "s 1", false, "spaces", None, None);
         assert_eq!(first.chips.iter().find(|c| matches!(c.hit, Hit::Space(_))).unwrap().hit, Hit::Space("s1".into()));
         // The right group stays put whatever the tabs do.
         assert_eq!(one.chips.last().unwrap().rect.x, 1200. - 38.);

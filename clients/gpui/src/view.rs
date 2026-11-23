@@ -32,6 +32,7 @@ pub use sidebar::pane_window_closed;
 mod perms;
 mod procs;
 mod queue;
+mod topic;
 mod running;
 mod settings;
 pub mod server;
@@ -370,6 +371,8 @@ pub struct Client {
     pub procs: crate::procs::Procs,
     /// Orchestrator mode's queue tray: its feed subscription, value and popover.
     pub queue: crate::queue::Tray,
+    /// Orchestrator mode's topic line: the current topic, its reads, and the notes card.
+    pub topic: crate::topic::Line,
     /// What the connected wheeld offers (its ops and levels), from its last `status`; None before
     /// it answered. A feature that sends an op asks `server_has` first (ADR-0050).
     pub server_offer: Option<wheel_proto::Offer>,
@@ -532,7 +535,7 @@ impl Client {
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
-            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(),
+            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
@@ -590,8 +593,10 @@ impl Client {
                             self.on_file_image(*req, path, *found, mime.as_deref(), data.as_deref(), error.as_deref(), version.as_deref(), *unchanged);
                             return false;
                         }
-                        ServerMsg::FilePeek { req, path, found, .. } => {
-                            self.on_file_probe(*req, path, *found);
+                        ServerMsg::FilePeek { req, path, found, lines, .. } => {
+                            if !self.on_topic_peek(*req, *found, lines) {
+                                self.on_file_probe(*req, path, *found);
+                            }
                             return false;
                         }
                         ServerMsg::Plugins { req, plugins } => {
@@ -668,6 +673,7 @@ impl Client {
                                             self.orchestrator_dir = Some(dir);
                                             self.show_orchestrator_space();
                                             self.sync_queue();
+                                            self.read_topic();
                                         }
                                     }
                                     // Machine-wide, whichever space the list was resolved for.
@@ -712,8 +718,14 @@ impl Client {
                                 self.on_retract(agent, turn);
                             }
                             self.note_cards([&event.event]);
+                            self.topic_after(agent, &event.event);
                         }
-                        ServerMsg::AgentAttached { events, .. } => self.note_cards(events.iter().map(|e| &e.event)),
+                        ServerMsg::AgentAttached { agent, events, .. } => {
+                            self.note_cards(events.iter().map(|e| &e.event));
+                            if self.orchestrator_agent().as_deref() == Some(agent.as_str()) {
+                                self.read_topic();
+                            }
+                        }
                         _ => {}
                     }
                     for (agent, t) in &mut self.transcripts {
@@ -1740,6 +1752,10 @@ impl Client {
             self.close_queue();
             return true;
         }
+        if self.topic.open && self.confirmation.is_none() && k.key == "escape" {
+            self.close_topic();
+            return true;
+        }
         // The process card takes every key while it is open and nothing is over it: its filter, and Esc to close.
         if self.procs.open.is_some() && self.confirmation.is_none() {
             self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
@@ -2592,6 +2608,9 @@ impl Render for Client {
         }
         if self.queue.open {
             root = root.child(self.queue_overlay(w, h, cx));
+        }
+        if self.topic.open && let Some(card) = self.topic_overlay(w, h, cx) {
+            root = root.child(card);
         }
         // The popover closes when its pane is gone or holds another agent.
         if let Some(p) = &self.conversations.open && self.agent_in(&p.pane).as_ref() != Some(&p.agent) {

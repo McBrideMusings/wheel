@@ -101,7 +101,8 @@ impl Client {
         };
         // The title shows while the sidebar is open, and while its name field is up.
         let queue = self.queue.queue();
-        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode, queue.as_ref().map(|q| (q.count, q.tone.as_str())))
+        let topic = self.shown_topic().map(|t| t.title.as_str());
+        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode, queue.as_ref().map(|q| (q.count, q.tone.as_str())), topic)
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -166,6 +167,7 @@ impl Client {
             Hit::Title => {}
             Hit::Processes => self.toggle_processes(),
             Hit::Queue => self.toggle_queue(),
+            Hit::Topic => self.toggle_topic(),
             Hit::Palette => self.open_command_palette(crate::command_palette::Mode::Root),
             Hit::Pin => self.set_pinned(!self.pinned),
             Hit::NewSpace => self.open_new_space_palette(),
@@ -220,6 +222,11 @@ impl Client {
             self.menu = None;
             self.ask_space_settings();
             self.sync_view();
+        }
+        if mode == "orchestrator" {
+            self.read_topic();
+        } else {
+            self.close_topic();
         }
     }
     /// In Orchestrator mode, show the space open on the orchestrator's folder: its folder setting
@@ -407,6 +414,13 @@ impl Client {
                         cx.notify();
                     }));
                 }
+                Hit::Topic => {
+                    // The topic line (the phone's `TopicLine`): a document icon, the title cut at the end, a chevron.
+                    el = el.justify_start().gap_1().rounded_sm().cursor_pointer().hover(|s| s.bg(rgb(0x1f2b26))).text_xs().text_color(rgb(TOPIC_TINT))
+                        .children(self.symbol(&chip.icon, 10., TOPIC_TINT))
+                        .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(chip.label.clone()))
+                        .child(div().flex_none().child("›"));
+                }
                 Hit::Title => {
                     // A double click names the window; a right press opens the title's menu.
                     el = el.justify_start().child(self.window_title_element(&chip.label))
@@ -563,6 +577,7 @@ impl Client {
             "space": self.orchestrator_space(),
             "empty": self.mode == "orchestrator" && self.grid_off(),
             "queue": self.queue_json(),
+            "topic": self.topic_json(),
         })
     }
 
@@ -906,6 +921,8 @@ impl Client {
 /// What Orchestrator mode says while no space is open on the orchestrator's folder, before the
 /// folder, and while wheeld has not yet said which folder it is.
 pub const ORCHESTRATOR_NONE: &str = "Open a space with an agent pane on";
+/// The topic line's colour: the accent links take in the chat.
+const TOPIC_TINT: u32 = 0x7fb89a;
 pub const ORCHESTRATOR_READING: &str = "Reading the orchestrator folder…";
 
 /// The width of `text` at `size` in the window's font.

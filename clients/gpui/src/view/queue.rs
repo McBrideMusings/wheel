@@ -16,7 +16,7 @@ impl Client {
         Some((pane.id.clone(), space.cwd.clone()))
     }
     /// The agent in the orchestrator space's chat pane.
-    fn orchestrator_agent(&self) -> Option<String> {
+    pub(super) fn orchestrator_agent(&self) -> Option<String> {
         let space = self.orchestrator_space()?;
         self.spaces.iter().find(|s| s.id == space)?.all().find(|l| l.kind == "agent" && l.mirror.is_none())?.agent.clone()
     }
