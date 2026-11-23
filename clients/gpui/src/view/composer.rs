@@ -26,8 +26,9 @@ const ROW_BUTTON: f32 = 18.;
 /// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
 /// border and `px_2`, the paperclip, the microphone and the stop button with the gaps between.
 const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
-/// The prompt above the composer that names the model before dictation downloads it.
-const DICTATION_PROMPT: f32 = 58.;
+/// The prompt above the composer that names the model before dictation downloads it: five lines
+/// of `text_xs` and its padding, so the source and the folder show in a split pane.
+const DICTATION_PROMPT: f32 = 84.;
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.
@@ -638,7 +639,8 @@ pub(super) fn mic_symbol(d: &crate::native::Dictation, agent: &str) -> (&'static
 
 /// The prompt's height above `agent`'s composer: there while its tap waits on the model.
 pub(super) fn dictation_prompt_height(d: &crate::native::Dictation, agent: Option<&str>) -> f32 {
-    if agent.is_some() && d.phase == "asking" && d.owner.as_deref() == agent { DICTATION_PROMPT } else { 0. }
+    // With the `mt_1` above it, as `command_list_height` counts its own.
+    if agent.is_some() && d.phase == "asking" && d.owner.as_deref() == agent { DICTATION_PROMPT + 4. } else { 0. }
 }
 
 /// What the model download fetches, where from and where it is kept, with Download and Cancel

@@ -166,7 +166,7 @@ pub fn dictated(draft: &str, text: &str) -> String {
 /// The prompt above the composer the first time the microphone is pressed with no model here:
 /// what the download fetches, from where, and where it is kept (ADR-0013).
 pub fn dictation_prompt(m: &crate::native::DictationModel) -> String {
-    format!("Dictation turns your voice into text on this Mac with {}, a {} model downloaded once from {} into {}. Your voice never leaves the Mac.", m.name, m.size, m.source, m.folder)
+    format!("Dictation needs {} ({}), downloaded once from {} into {}. Your voice never leaves this Mac.", m.name, m.size, m.source, m.folder)
 }
 
 /// The line under the composer's text while dictation works for `agent`, or its failure there.
