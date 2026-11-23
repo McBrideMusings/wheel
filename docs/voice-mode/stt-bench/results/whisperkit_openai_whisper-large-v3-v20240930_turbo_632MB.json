@@ -1,0 +1,346 @@
+{
+  "base_mb" : 1.9535598754882812,
+  "clips" : [
+    {
+      "audio_s" : 2.7879375,
+      "id" : "u01",
+      "latency_s" : 0.45670294761657715,
+      "set" : "clean",
+      "text" : "Next, what's waiting on me?"
+    },
+    {
+      "audio_s" : 3.1547499999999999,
+      "id" : "u02",
+      "latency_s" : 0.46027493476867676,
+      "set" : "clean",
+      "text" : "Back to the plugin hot reload topic."
+    },
+    {
+      "audio_s" : 3.8922500000000002,
+      "id" : "u03",
+      "latency_s" : 0.50526094436645508,
+      "set" : "clean",
+      "text" : "Tell Wheel 2 to run cargo test in the daemon folder."
+    },
+    {
+      "audio_s" : 2.5659375,
+      "id" : "u04",
+      "latency_s" : 0.44739794731140137,
+      "set" : "clean",
+      "text" : "Yes, push it to Maine."
+    },
+    {
+      "audio_s" : 5.3786874999999998,
+      "id" : "u05",
+      "latency_s" : 0.52604210376739502,
+      "set" : "clean",
+      "text" : "No, don't deploy the client yet, wait until the build is green"
+    },
+    {
+      "audio_s" : 3.9706874999999999,
+      "id" : "u06",
+      "latency_s" : 0.46884298324584961,
+      "set" : "clean",
+      "text" : "Show me the diff for pull request 212."
+    },
+    {
+      "audio_s" : 4.2870625000000002,
+      "id" : "u07",
+      "latency_s" : 0.52828001976013184,
+      "set" : "clean",
+      "text" : "Implement wheel-e1xk.1 in a new work tree."
+    },
+    {
+      "audio_s" : 3.6891875000000001,
+      "id" : "u08",
+      "latency_s" : 0.48005795478820801,
+      "set" : "clean",
+      "text" : "Run NPM test and tell me when it finishes."
+    },
+    {
+      "audio_s" : 4.5828125000000002,
+      "id" : "u09",
+      "latency_s" : 0.52732300758361816,
+      "set" : "clean",
+      "text" : "Open the Swift file called Composer and look at the Voice Mode button."
+    },
+    {
+      "audio_s" : 3.8500624999999999,
+      "id" : "u10",
+      "latency_s" : 0.49575710296630859,
+      "set" : "clean",
+      "text" : "Restart wheelhouse after the build, not wheeled."
+    },
+    {
+      "audio_s" : 4.623875,
+      "id" : "u11",
+      "latency_s" : 0.49842298030853271,
+      "set" : "clean",
+      "text" : "Rebase the branch on origin main and resolve the conflicts."
+    },
+    {
+      "audio_s" : 3.6823125000000001,
+      "id" : "u12",
+      "latency_s" : 0.46560704708099365,
+      "set" : "clean",
+      "text" : "What does the Git log say since yesterday?"
+    },
+    {
+      "audio_s" : 5.0530625000000002,
+      "id" : "u13",
+      "latency_s" : 0.54284191131591797,
+      "set" : "clean",
+      "text" : "Ask the Lama Broker Agent why the JSON parser fails on empty arrays."
+    },
+    {
+      "audio_s" : 2.9253125,
+      "id" : "u14",
+      "latency_s" : 0.44944202899932861,
+      "set" : "clean",
+      "text" : "Triage."
+    },
+    {
+      "audio_s" : 3.0428125000000001,
+      "id" : "u15",
+      "latency_s" : 0.45568490028381348,
+      "set" : "clean",
+      "text" : "Close the topic. It's resolved."
+    },
+    {
+      "audio_s" : 3.9196875000000002,
+      "id" : "u16",
+      "latency_s" : 0.49302208423614502,
+      "set" : "clean",
+      "text" : "Let's talk about the live activity on the lock screen."
+    },
+    {
+      "audio_s" : 4.1604999999999999,
+      "id" : "u17",
+      "latency_s" : 0.47596299648284912,
+      "set" : "clean",
+      "text" : "approve the NPM install but deny the force push"
+    },
+    {
+      "audio_s" : 4.8448124999999997,
+      "id" : "u18",
+      "latency_s" : 0.50483191013336182,
+      "set" : "clean",
+      "text" : "Put the ADR on screen and read me the decision section."
+    },
+    {
+      "audio_s" : 3.9038124999999999,
+      "id" : "u19",
+      "latency_s" : 0.52987301349639893,
+      "set" : "clean",
+      "text" : "How much context is left in the orchestrator session?"
+    },
+    {
+      "audio_s" : 3.5265,
+      "id" : "u20",
+      "latency_s" : 0.69643604755401611,
+      "set" : "clean",
+      "text" : "Mute the pushes from the log ship space for an hour."
+    },
+    {
+      "audio_s" : 3.5169999999999999,
+      "id" : "u21",
+      "latency_s" : 0.57608199119567871,
+      "set" : "clean",
+      "text" : "Kill the dev server on port 7422."
+    },
+    {
+      "audio_s" : 3.926625,
+      "id" : "u22",
+      "latency_s" : 0.54139697551727295,
+      "set" : "clean",
+      "text" : "Compare WhisperKit and Fluid Audio on the iPhone."
+    },
+    {
+      "audio_s" : 4.1393125,
+      "id" : "u23",
+      "latency_s" : 0.48030805587768555,
+      "set" : "clean",
+      "text" : "Use the GPUI client, not the SwiftUI one"
+    },
+    {
+      "audio_s" : 4.6106875,
+      "id" : "u24",
+      "latency_s" : 0.4855189323425293,
+      "set" : "clean",
+      "text" : "Summarize what the swarm landed overnight, then stop."
+    },
+    {
+      "audio_s" : 2.7879375,
+      "id" : "u01",
+      "latency_s" : 0.45172297954559326,
+      "set" : "noisy",
+      "text" : "Next, what's waiting on me?"
+    },
+    {
+      "audio_s" : 3.1547499999999999,
+      "id" : "u02",
+      "latency_s" : 0.47374796867370605,
+      "set" : "noisy",
+      "text" : "Back to the plug-in hot reload topic."
+    },
+    {
+      "audio_s" : 3.8922500000000002,
+      "id" : "u03",
+      "latency_s" : 0.49740099906921387,
+      "set" : "noisy",
+      "text" : "Tell wheel 2 to run cargo test in the demon folder."
+    },
+    {
+      "audio_s" : 2.5659375,
+      "id" : "u04",
+      "latency_s" : 0.44653999805450439,
+      "set" : "noisy",
+      "text" : "Yes, push it to main."
+    },
+    {
+      "audio_s" : 5.3786874999999998,
+      "id" : "u05",
+      "latency_s" : 0.53000998497009277,
+      "set" : "noisy",
+      "text" : "No, don't deploy the client yet, wait until the build is green."
+    },
+    {
+      "audio_s" : 3.9706874999999999,
+      "id" : "u06",
+      "latency_s" : 0.47374701499938965,
+      "set" : "noisy",
+      "text" : "Show me the tip for Core Quest 212."
+    },
+    {
+      "audio_s" : 4.2870625000000002,
+      "id" : "u07",
+      "latency_s" : 0.53768491744995117,
+      "set" : "noisy",
+      "text" : "Implement wheel-e1xk.1 in a new work tree."
+    },
+    {
+      "audio_s" : 3.6891875000000001,
+      "id" : "u08",
+      "latency_s" : 0.51391100883483887,
+      "set" : "noisy",
+      "text" : "Run MPM test and tell me when it finishes."
+    },
+    {
+      "audio_s" : 4.5828125000000002,
+      "id" : "u09",
+      "latency_s" : 0.65430903434753418,
+      "set" : "noisy",
+      "text" : "Open the Swift file called Composer and look at the Voice Mode button."
+    },
+    {
+      "audio_s" : 3.8500624999999999,
+      "id" : "u10",
+      "latency_s" : 0.58915901184082031,
+      "set" : "noisy",
+      "text" : "Restart wheelhouse after the build, not wheeled."
+    },
+    {
+      "audio_s" : 4.623875,
+      "id" : "u11",
+      "latency_s" : 0.58379995822906494,
+      "set" : "noisy",
+      "text" : "Rebase the branch on origin main and resolve the conflicts."
+    },
+    {
+      "audio_s" : 3.6823125000000001,
+      "id" : "u12",
+      "latency_s" : 0.49504399299621582,
+      "set" : "noisy",
+      "text" : "What was the good log say since yesterday?"
+    },
+    {
+      "audio_s" : 5.0530625000000002,
+      "id" : "u13",
+      "latency_s" : 0.56703996658325195,
+      "set" : "noisy",
+      "text" : "Ask the Lama Broker Agent why the JSON parser fails on empty arrays."
+    },
+    {
+      "audio_s" : 2.9253125,
+      "id" : "u14",
+      "latency_s" : 0.44682300090789795,
+      "set" : "noisy",
+      "text" : "Pretty much. Quick ones first."
+    },
+    {
+      "audio_s" : 3.0428125000000001,
+      "id" : "u15",
+      "latency_s" : 0.45495903491973877,
+      "set" : "noisy",
+      "text" : "Close the topic, it's resolved."
+    },
+    {
+      "audio_s" : 3.9196875000000002,
+      "id" : "u16",
+      "latency_s" : 0.50867998600006104,
+      "set" : "noisy",
+      "text" : "Let's talk about the live activity on the lock screen."
+    },
+    {
+      "audio_s" : 4.1604999999999999,
+      "id" : "u17",
+      "latency_s" : 0.49325692653656006,
+      "set" : "noisy",
+      "text" : "Approve the NPM install but deny the force push."
+    },
+    {
+      "audio_s" : 4.8448124999999997,
+      "id" : "u18",
+      "latency_s" : 0.49799096584320068,
+      "set" : "noisy",
+      "text" : "Put the ADR on screen and read me the decision section."
+    },
+    {
+      "audio_s" : 3.9038124999999999,
+      "id" : "u19",
+      "latency_s" : 0.48082292079925537,
+      "set" : "noisy",
+      "text" : "How much context is left in the orchestrator session?"
+    },
+    {
+      "audio_s" : 3.5265,
+      "id" : "u20",
+      "latency_s" : 0.50170505046844482,
+      "set" : "noisy",
+      "text" : "Mute the pushes from the log ship space for an hour."
+    },
+    {
+      "audio_s" : 3.5169999999999999,
+      "id" : "u21",
+      "latency_s" : 0.45774495601654053,
+      "set" : "noisy",
+      "text" : "Kill the dev server on port 7422"
+    },
+    {
+      "audio_s" : 3.926625,
+      "id" : "u22",
+      "latency_s" : 0.47488498687744141,
+      "set" : "noisy",
+      "text" : "Compare whisper kit and fluid audio on the iPhone."
+    },
+    {
+      "audio_s" : 4.1393125,
+      "id" : "u23",
+      "latency_s" : 0.48902702331542969,
+      "set" : "noisy",
+      "text" : "Use the GPUI client, not the SwiftUI one."
+    },
+    {
+      "audio_s" : 4.6106875,
+      "id" : "u24",
+      "latency_s" : 0.50728797912597656,
+      "set" : "noisy",
+      "text" : "Summarize what this warm air did overnight, then stop."
+    }
+  ],
+  "end_mb" : 229.43850708007812,
+  "engine" : "whisperkit\/openai_whisper-large-v3-v20240930_turbo_632MB",
+  "load_s" : 3.1406339406967163,
+  "peak_mb" : 257.46975708007812,
+  "spec" : "whisperkit:openai_whisper-large-v3-v20240930_turbo_632MB"
+}

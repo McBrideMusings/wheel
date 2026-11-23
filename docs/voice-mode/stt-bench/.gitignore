@@ -1,0 +1,9 @@
+fixture/clean/
+fixture/noisy/
+models/
+whisper.cpp/
+Bench/.build/
+DerivedData-ios/
+BenchApp/BenchApp.xcodeproj/
+results/mac/
+results/iphone/*.log
