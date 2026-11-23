@@ -23,6 +23,7 @@ mod guidance;
 mod homes;
 pub mod host;
 mod keybind;
+mod leases;
 mod link_patterns;
 pub mod checkout;
 pub mod login_path;

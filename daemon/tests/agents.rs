@@ -6320,7 +6320,7 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     send(&mut b, ClientMsg::OrchestratorRelease { req: Some(91) }).await;
     loop {
         if let ServerMsg::Error { req: Some(91), message, .. } = recv(&mut b).await {
-            assert!(message.contains("does not own orchestrator"), "{message:?}");
+            assert!(message.contains("does not hold orchestrator"), "{message:?}");
             break;
         }
     }
@@ -6361,6 +6361,108 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     send(&mut a, ClientMsg::OrchestratorRelease { req: Some(94) }).await;
     loop {
         if let ServerMsg::Ok { req: 94 } = recv(&mut a).await {
+            break;
+        }
+    }
+}
+
+/// The first `lease` event for `key` that `ws` hears, skipping other keys and other messages.
+async fn next_lease(ws: &mut Ws, key: &str) -> Option<String> {
+    loop {
+        if let ServerMsg::Lease { key: k, owner } = recv(ws).await {
+            if k == key {
+                return owner;
+            }
+        }
+    }
+}
+
+/// The voice lease, as the phone and the Mac use it: one holder; the other client claiming takes it and
+/// the first hears that it lost it, within a second; leases on other keys are untouched; a non-holder
+/// cannot release; closing the holder's connection frees it; `status` lists both ops.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_client_holds_voice_and_a_claim_elsewhere_takes_it() {
+    let url = start_daemon().await;
+    let mut phone = connect(&url).await;
+    let mut mac = connect(&url).await;
+
+    send(&mut phone, ClientMsg::Status { req: Some(100) }).await;
+    let ops = loop {
+        if let ServerMsg::Status { req: Some(100), ops, .. } = recv(&mut phone).await {
+            break ops;
+        }
+    };
+    assert!(ops.iter().any(|o| o == "lease_claim") && ops.iter().any(|o| o == "lease_release"), "{ops:?}");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(101), key: "voice".into() }).await;
+    let phone_id = loop {
+        if let ServerMsg::LeaseClaimed { req: 101, key, owner } = recv(&mut phone).await {
+            assert_eq!(key, "voice");
+            break owner;
+        }
+    };
+    assert_eq!(next_lease(&mut mac, "voice").await, Some(phone_id.clone()));
+
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(102), key: "other".into() }).await;
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(103), key: "voice".into() }).await;
+    let mac_id = loop {
+        if let ServerMsg::LeaseClaimed { req: 103, owner, .. } = recv(&mut mac).await {
+            break owner;
+        }
+    };
+    assert_ne!(phone_id, mac_id);
+    let lost = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let owner = next_lease(&mut phone, "voice").await;
+            if owner != Some(phone_id.clone()) {
+                break owner;
+            }
+        }
+    })
+    .await
+    .expect("the phone hears within a second that the Mac took voice");
+    assert_eq!(lost, Some(mac_id.clone()));
+
+    // A client that missed that event reads the holder from `status`.
+    send(&mut phone, ClientMsg::Status { req: Some(107) }).await;
+    let leases = loop {
+        if let ServerMsg::Status { req: Some(107), leases, .. } = recv(&mut phone).await {
+            break leases;
+        }
+    };
+    assert_eq!(leases.get("voice"), Some(&mac_id), "{leases:?}");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(108), key: "Voice Mode!".into() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(108), message, .. } = recv(&mut phone).await {
+            assert!(message.contains("lease key"), "{message:?}");
+            break;
+        }
+    }
+
+    send(&mut phone, ClientMsg::LeaseRelease { req: Some(104), key: "voice".into() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(104), message, .. } = recv(&mut phone).await {
+            assert!(message.contains("does not hold voice"), "{message:?}");
+            break;
+        }
+    }
+
+    drop(mac);
+    let mut freed = std::collections::HashMap::new();
+    while freed.len() < 2 {
+        if let ServerMsg::Lease { key, owner } = recv(&mut phone).await {
+            if owner.is_none() {
+                freed.insert(key, ());
+            }
+        }
+    }
+    assert!(freed.contains_key("voice") && freed.contains_key("other"), "closing frees every key it held");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(105), key: "voice".into() }).await;
+    send(&mut phone, ClientMsg::LeaseRelease { req: Some(106), key: "voice".into() }).await;
+    loop {
+        if let ServerMsg::Ok { req: 106 } = recv(&mut phone).await {
             break;
         }
     }
