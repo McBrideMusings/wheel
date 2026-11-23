@@ -1220,7 +1220,7 @@ impl Client {
     }
     /// The bridge's hole for the menu or the preview, which sit over the grid's native views.
     pub(super) fn sync_sidebar_overlay(&mut self) {
-        if self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() {
+        if self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() || self.queue.open {
             return;
         }
         // GPUI draws over the native views only inside one rect: the open menu, else the lit drop

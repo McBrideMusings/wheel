@@ -31,6 +31,7 @@ pub use pairing_copy::{copied as copied_pairing_code, ensure as ensure_pairing_c
 pub use sidebar::pane_window_closed;
 mod perms;
 mod procs;
+mod queue;
 mod running;
 mod settings;
 pub mod server;
@@ -367,6 +368,8 @@ pub struct Client {
     pub toast_log: Vec<String>,
     /// The process card and the lists behind it.
     pub procs: crate::procs::Procs,
+    /// Orchestrator mode's queue tray: its feed subscription, value and popover.
+    pub queue: crate::queue::Tray,
     /// What the connected wheeld offers (its ops and levels), from its last `status`; None before
     /// it answered. A feature that sends an op asks `server_has` first (ADR-0050).
     pub server_offer: Option<wheel_proto::Offer>,
@@ -529,7 +532,7 @@ impl Client {
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
-            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
+            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
@@ -568,7 +571,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_queue_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -664,6 +667,7 @@ impl Client {
                                         if self.orchestrator_dir.as_ref() != Some(&dir) {
                                             self.orchestrator_dir = Some(dir);
                                             self.show_orchestrator_space();
+                                            self.sync_queue();
                                         }
                                     }
                                     // Machine-wide, whichever space the list was resolved for.
@@ -769,6 +773,8 @@ impl Client {
                 // The kept plugin panes ask the new endpoint for their scripts.
                 self.native.plugin_endpoint(&self.endpoint.ws);
                 self.link = Link::Up;
+                // A subscription lives on one connection: the next layout subscribes again.
+                self.queue.subscribed = None;
                 self.images.reconnected();
                 server::link(true);
                 // The notice follows the next `status`; closing it stays closed for the same key
@@ -861,6 +867,7 @@ impl Client {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
         self.ask_space_settings();
+        self.sync_queue();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
         let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| (l.id.clone(), l.kind.clone())).collect();
@@ -1729,6 +1736,10 @@ impl Client {
             self.close_title_menu();
             return true;
         }
+        if self.queue.open && self.confirmation.is_none() && k.key == "escape" {
+            self.close_queue();
+            return true;
+        }
         // The process card takes every key while it is open and nothing is over it: its filter, and Esc to close.
         if self.procs.open.is_some() && self.confirmation.is_none() {
             self.procs_key(&k.key, k.key_char.as_deref(), k.modifiers.platform || k.modifiers.control);
@@ -2578,6 +2589,9 @@ impl Render for Client {
         }
         if self.procs.open.is_some() {
             root = root.child(self.processes_overlay(w, h, cx));
+        }
+        if self.queue.open {
+            root = root.child(self.queue_overlay(w, h, cx));
         }
         // The popover closes when its pane is gone or holds another agent.
         if let Some(p) = &self.conversations.open && self.agent_in(&p.pane).as_ref() != Some(&p.agent) {

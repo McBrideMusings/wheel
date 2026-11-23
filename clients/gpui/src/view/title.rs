@@ -100,7 +100,8 @@ impl Client {
             None => "waiting for wheeld".into(),
         };
         // The title shows while the sidebar is open, and while its name field is up.
-        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode)
+        let queue = self.queue.queue();
+        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode, queue.as_ref().map(|q| (q.count, q.tone.as_str())))
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -164,6 +165,7 @@ impl Client {
             Hit::Space(id) => self.select_space(&id.clone()),
             Hit::Title => {}
             Hit::Processes => self.toggle_processes(),
+            Hit::Queue => self.toggle_queue(),
             Hit::Palette => self.open_command_palette(crate::command_palette::Mode::Root),
             Hit::Pin => self.set_pinned(!self.pinned),
             Hit::NewSpace => self.open_new_space_palette(),
@@ -425,6 +427,8 @@ impl Client {
                 _ => {
                     let plugin = matches!(chip.hit, Hit::Plugin(_));
                     let colour = if !chip.enabled { 0x5a7266 } else if plugin { tint(chip.tint.as_deref()).unwrap_or(TEXT) } else { DIM };
+                    // The queue's badge is a pill in its urgency's colour with dark text (design §8.1); other badges stay red.
+                    let (badge_bg, badge_text) = if chip.hit == Hit::Queue { (tint(chip.tint.as_deref()).unwrap_or(0x8e8e93), 0x1c1c1e) } else { (BADGE_RED, 0xffffff) };
                     el = el.rounded_md().hover(|s| s.bg(rgb(0x1f2b26)));
                     if chip.pressable {
                         el = el.cursor_pointer();
@@ -435,7 +439,7 @@ impl Client {
                         self.symbol(&chip.icon, 13., colour).unwrap_or_else(|| div().text_xs().text_color(rgb(colour)).child(chip.icon.clone()).into_any_element())
                     };
                     el = el.child(div().relative().w(px(16.)).h(px(16.)).flex().items_center().justify_center().child(face).children(chip.badge.clone().map(|badge| {
-                        div().absolute().top(px(-6.)).right(px(-8.)).px(px(3.)).rounded_full().bg(rgb(BADGE_RED)).text_color(rgb(0xffffff)).font_weight(FontWeight::BOLD)
+                        div().absolute().top(px(-6.)).right(px(-8.)).px(px(3.)).rounded_full().bg(rgb(badge_bg)).text_color(rgb(badge_text)).font_weight(FontWeight::BOLD)
                             .text_size(px(8.)).line_height(px(11.)).child(badge)
                     })));
                 }
@@ -558,6 +562,7 @@ impl Client {
             "dir": self.orchestrator_dir,
             "space": self.orchestrator_space(),
             "empty": self.mode == "orchestrator" && self.grid_off(),
+            "queue": self.queue_json(),
         })
     }
 

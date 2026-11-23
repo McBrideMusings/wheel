@@ -3399,8 +3399,8 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
         let hidden = mode != "spaces";
         wait(&native, &format!("every pane hidden={hidden} in {mode} mode"), |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == hidden), cx).await?;
         draw(window, Some(output.join(format!("client-mode-{mode}.png"))), cx)?;
-        // Every button; the title between the groups is not one.
-        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title").collect::<Vec<_>>();
+        // Every button; the title between the groups is not one, and the queue tray is Orchestrator mode's own.
+        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title" && id != "queue").collect::<Vec<_>>();
         let frames = buttons(row_frames(cx)?);
         ensure!(frames == buttons(spaces_row.clone()), "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
         let icon = wheel_gpui::header::MODES.iter().find(|m| m.0 == mode).map(|m| m.2).unwrap_or_default();
@@ -6169,6 +6169,45 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let listed = [f["x"].as_f64().unwrap_or(-1.), f["y"].as_f64().unwrap_or(-1.), f["w"].as_f64().unwrap_or(-1.), f["h"].as_f64().unwrap_or(-1.)];
     let in_grid = [want[0] - area[0], want[1] - area[1], want[2], want[3]];
     ensure!(ok && near(listed, in_grid), "after the drags wheel pane ls --json lists {listed:?} for {pane}, not {in_grid:?} ({err})");
+    // The queue tray (wheel-zxts.6.1): a queue in the orchestrator's folder with one P0 item, read through a
+    // backgrounded Queue pane, badges the tray red; its card lists the item, and pressing the item asks about it.
+    let run_in = |prog: &str, args: &[&str]| std::process::Command::new(prog).args(args).current_dir(&dir).output();
+    ensure!(run_in("git", &["init", "-q"])?.status.success(), "git init in {dir} failed");
+    let init = run_in("bd", &["init", "--quiet", "--prefix", "oq"])?;
+    ensure!(init.status.success(), "bd init in {dir} failed: {}", String::from_utf8_lossy(&init.stderr));
+    let made_item = run_in("bd", &["create", "Allow rm of the build folder?", "-p", "0", "--labels", "needs-you", "--metadata", r#"{"kind":"permission","space":"wheel","agent":"w9"}"#, "--silent"])?;
+    ensure!(made_item.status.success(), "bd create in {dir} failed: {}", String::from_utf8_lossy(&made_item.stderr));
+    let item = String::from_utf8_lossy(&made_item.stdout).trim().to_owned();
+    let (ok, out, err) = run_pumped(&["pane", "split", &pane, "--background"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane split {pane} --background failed: {err}");
+    let queue_pane = out.lines().last().unwrap_or_default().trim().to_owned();
+    let (ok, _, err) = run_pumped(&["pane", "kind", &queue_pane, "plugin", "--plugin", "wheelhouse", "--plugin-pane", "queue"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane kind {queue_pane} plugin wheelhouse/queue failed: {err}");
+    let badged = until!("the queue tray badged red with one item", |s: &Value| s["orchestrator"]["queue"]["count"] == 1 && s["orchestrator"]["queue"]["tone"] == "red");
+    ensure!(badged["orchestrator"]["queue"]["pane"] == queue_pane.as_str(), "the tray reads through {} not the Queue pane {queue_pane}", badged["orchestrator"]["queue"]["pane"]);
+    let tray = badged["title"]["row"].as_array().and_then(|r| r.iter().find(|c| c["id"] == "queue")).cloned().unwrap_or(Value::Null);
+    ensure!(tray["badge"] == "1" && tray["tint"] == "red", "the tray chip: {tray}");
+    click_chip(window, Hit::Queue, cx).await?;
+    let opened = until!("the queue card open", |s: &Value| s["orchestrator"]["queue"]["open"] == true);
+    ensure!(opened["orchestrator"]["queue"]["groups"][0]["items"] == json!([item]), "the card's Needs you group: {}", opened["orchestrator"]["queue"]["groups"]);
+    draw(window, Some(output.join("client-orchestrator-queue.png")), cx)?;
+    window.update(cx, |c, _, _| c.ask_about(&item))?;
+    until!("the queue card closed by the press", |s: &Value| s["orchestrator"]["queue"]["open"] == false);
+    let asked = format!("Let's talk about {item}: Allow rm of the build folder?");
+    let mut read = String::new();
+    for _ in 0..50 {
+        let (_, out, _) = run_pumped(&["agent", "read", &pane], &mut connection, &mut layouts, window, cx).await?;
+        read = out;
+        if read.contains(&asked) {
+            break;
+        }
+    }
+    ensure!(read.contains(&asked), "the press never reached the orchestrator's chat as {asked:?}: {read}");
+    let (ok, _, err) = run_pumped(&["pane", "close", &queue_pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane close {queue_pane} failed: {err}");
+    let tray_at = tray["frame"].clone();
+    until!("the tray unbadged in its slot once its Queue pane closes", |s: &Value| s["orchestrator"]["queue"]["pane"].is_null()
+        && s["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == "queue" && c["badge"].is_null() && c["frame"] == tray_at));
     // Leaving the mode shows the Spaces mode space again; coming back shows the orchestrator's space.
     pick_mode(window, "spaces", cx).await?;
     until!("the Spaces mode space back, with the sidebar as the person left it", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str() && s["sidebar"]["shown"] == sidebar_open);
@@ -6189,7 +6228,7 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let (ok, _, err) = run_pumped(&["space", "close", &space], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space close {space} failed: {err}");
     let report = json!({"dir": dir, "space": space, "pane": pane, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,
-        "sidebar": {"open": sidebar_open, "shown_in_mode": false, "button": sidebar_chip}});
+        "sidebar": {"open": sidebar_open, "shown_in_mode": false, "button": sidebar_chip}, "queue": {"item": item, "tray": tray}});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, report))
 }
 
