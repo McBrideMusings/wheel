@@ -139,7 +139,13 @@ public final class Dictation {
         Task {
             do {
                 let recorder = file.map(Recorder.init(file:)) ?? Recorder()
-                try await recorder.start()
+                do {
+                    try await recorder.start()
+                } catch {
+                    // A tap installed or a session activated before the failure is undone here.
+                    recorder.stop()
+                    throw error
+                }
                 // Stopped or cancelled while the microphone was being granted.
                 guard phase == .recording, self.owner == owner else { recorder.stop(); return }
                 self.recorder = recorder
@@ -237,9 +243,10 @@ private final class Recorder: @unchecked Sendable {
     /// Stop the microphone and hand back everything it heard.
     @discardableResult
     func stop() -> [Float] {
-        if file == nil, engine.isRunning {
+        if file == nil {
+            // Also after a start that failed part way: the tap and the session may be set up with the engine stopped.
             engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+            if engine.isRunning { engine.stop() }
             #if os(iOS)
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             #endif
