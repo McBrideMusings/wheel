@@ -5837,6 +5837,89 @@ async fn one_client_holds_voice_and_a_claim_elsewhere_takes_it() {
     }
 }
 
+/// What an op answered: Ok, or the error's message.
+async fn op_result(ws: &mut Ws, req: u64, msg: ClientMsg) -> Result<(), String> {
+    send(ws, msg).await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::Ok { req: r } if r == req => return Ok(()),
+            ServerMsg::Error { req: Some(r), message, .. } if r == req => return Err(message),
+            _ => {}
+        }
+    }
+}
+
+/// The agent `status` names as voice mode's.
+async fn status_voice(ws: &mut Ws, req: u64) -> Option<String> {
+    send(ws, ClientMsg::Status { req: Some(req) }).await;
+    loop {
+        if let ServerMsg::Status { req: Some(r), voice, .. } = recv(ws).await {
+            if r == req {
+                return voice;
+            }
+        }
+    }
+}
+
+/// `agent_voice`: refused without the `voice` lease and for a Codex agent; with it, the named Claude
+/// agent's next turn carries the voice line through its `UserPromptSubmit` hook and `status` names it;
+/// another client taking the lease, and the holder's connection closing, each turn the line off.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_voice_holder_names_an_agent_whose_turns_carry_the_voice_line() {
+    let url = start_daemon().await;
+    let (_, pane) = space(&url, "/tmp").await;
+    let agent = start_agent(&url, &pane, None).await;
+    let codex = codex_agent(&url).await;
+    let mut phone = connect(&url).await;
+    let mut mac = connect(&url).await;
+    let mut chat = connect(&url).await;
+    attach(&mut chat, &agent, 50).await;
+    let voice = |req, agent: Option<&str>| ClientMsg::AgentVoice { req: Some(req), agent: agent.map(String::from) };
+
+    let refused = op_result(&mut phone, 201, voice(201, Some(&agent))).await;
+    assert!(refused.as_ref().is_err_and(|m| m.contains("does not hold the voice lease")), "{refused:?}");
+    assert_eq!(reply(&mut chat, &agent, "show voice").await.lines().next(), Some("voice: -"));
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(202), key: "voice".into() }).await;
+    while !matches!(recv(&mut phone).await, ServerMsg::LeaseClaimed { req: 202, .. }) {}
+    let refused = op_result(&mut phone, 203, voice(203, Some(&codex))).await;
+    assert!(refused.as_ref().is_err_and(|m| m.contains("Codex has no way to take the voice line")), "{refused:?}");
+    op_result(&mut phone, 204, voice(204, Some(&pane))).await.unwrap();
+    assert_eq!(status_voice(&mut chat, 205).await, Some(agent.clone()), "a pane id names its agent");
+    let text = reply(&mut chat, &agent, "show voice").await;
+    assert!(text.starts_with("voice: Voice mode is on: the"), "{text:?}");
+
+    // The Mac takes voice over: the phone's agent is voiced no longer.
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(206), key: "voice".into() }).await;
+    while !matches!(recv(&mut mac).await, ServerMsg::LeaseClaimed { req: 206, .. }) {}
+    assert_eq!(status_voice(&mut chat, 207).await, None);
+    assert_eq!(reply(&mut chat, &agent, "show voice").await.lines().next(), Some("voice: -"));
+    let refused = op_result(&mut phone, 208, voice(208, Some(&agent))).await;
+    assert!(refused.is_err(), "the phone no longer holds voice");
+
+    // The Mac names it, then closes: the line goes with its connection.
+    op_result(&mut mac, 209, voice(209, Some(&agent))).await.unwrap();
+    assert_eq!(status_voice(&mut chat, 210).await, Some(agent.clone()));
+    drop(mac);
+    let mut cleared = None;
+    for req in 211..260 {
+        cleared = status_voice(&mut chat, req).await;
+        if cleared.is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(cleared, None, "closing the holder's connection clears the voiced agent");
+    assert_eq!(reply(&mut chat, &agent, "show voice").await.lines().next(), Some("voice: -"));
+
+    // Naming none clears it.
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(261), key: "voice".into() }).await;
+    while !matches!(recv(&mut phone).await, ServerMsg::LeaseClaimed { req: 261, .. }) {}
+    op_result(&mut phone, 262, voice(262, Some(&agent))).await.unwrap();
+    op_result(&mut phone, 263, voice(263, None)).await.unwrap();
+    assert_eq!(status_voice(&mut chat, 264).await, None);
+}
+
 /// What `agent_card` answered: Ok, or the error's message.
 async fn card_reply(ws: &mut Ws, req: u64, agent: &str, pane: Option<&str>, artifact: Option<&str>) -> Result<(), String> {
     send(ws, ClientMsg::AgentCard { req: Some(req), agent: agent.into(), pane: pane.map(String::from), artifact: artifact.map(String::from) }).await;

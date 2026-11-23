@@ -72,6 +72,17 @@ impl Leases {
         });
     }
 
+    /// Run `f` while `peer` holds `key`, with the table locked so the holder cannot change meanwhile;
+    /// refused when it does not hold it.
+    pub(crate) fn while_held(&self, key: &str, peer: SocketAddr, f: impl FnOnce()) -> Result<(), String> {
+        let held = self.held.lock().unwrap();
+        if held.get(key) != Some(&peer) {
+            return Err(format!("this connection does not hold the {key} lease"));
+        }
+        f();
+        Ok(())
+    }
+
     /// Every held key and its holder's id, for `status`.
     pub(crate) fn holders(&self) -> BTreeMap<String, String> {
         let held = self.held.lock().unwrap();
@@ -99,11 +110,59 @@ impl crate::server::AppState {
         self.leases.gone(peer, |k, o| self.lease_changed(k, o));
     }
 
+    /// Name the agent voice mode talks to, or clear it; only the `voice` holder may (ADR-0055).
+    pub(crate) fn agent_voice(&self, agent: Option<&str>, peer: SocketAddr) -> Result<(), String> {
+        let agent = agent.map(|a| self.resolve_agent(a).map(|r| r.agent)).transpose()?;
+        if let Some(agent) = &agent {
+            if agent.harness() != crate::resume::Harness::Claude {
+                return Err(format!("{} has no way to take the voice line", agent.harness().title()));
+            }
+        }
+        // Checked under the table's lock, so a takeover cannot land between the check and the mark.
+        self.leases.while_held("voice", peer, || {
+            self.set_voiced(agent.map(|a| (peer, a)));
+        })
+    }
+
+    /// Move the voice line to `next`, turning it off on the agent that had it.
+    fn set_voiced(&self, next: Option<(SocketAddr, std::sync::Arc<crate::agent::Agent>)>) {
+        let mut voiced = self.voiced.lock().unwrap();
+        voice_off(voiced.take());
+        if let Some((peer, agent)) = &next {
+            agent.set_voice(true);
+            tracing::info!(agent = %agent.name, %peer, "voice line on");
+        }
+        *voiced = next;
+    }
+
+    /// Turn the voice line off when the voiced agent and its connection match `pred`.
+    fn clear_voiced_if(&self, pred: impl FnOnce(&SocketAddr, &std::sync::Arc<crate::agent::Agent>) -> bool) {
+        let mut voiced = self.voiced.lock().unwrap();
+        if voiced.as_ref().is_some_and(|(p, a)| pred(p, a)) {
+            voice_off(voiced.take());
+        }
+    }
+
+    /// `agent` ended: voice mode talks to nobody when it was the one.
+    pub(crate) fn voice_ended(&self, agent: &std::sync::Arc<crate::agent::Agent>) {
+        self.clear_voiced_if(|_, a| std::sync::Arc::ptr_eq(a, agent));
+    }
+
     fn lease_changed(&self, key: &str, owner: Option<String>) {
+        if key == "voice" {
+            self.clear_voiced_if(|peer, _| owner.as_deref() != Some(peer.to_string().as_str()));
+        }
         let _ = self.global.send(wheel_proto::ServerMsg::Lease {
             key: key.to_owned(),
             owner,
         });
+    }
+}
+
+fn voice_off(was: Option<(SocketAddr, std::sync::Arc<crate::agent::Agent>)>) {
+    if let Some((peer, agent)) = was {
+        agent.set_voice(false);
+        tracing::info!(agent = %agent.name, %peer, "voice line off");
     }
 }
 

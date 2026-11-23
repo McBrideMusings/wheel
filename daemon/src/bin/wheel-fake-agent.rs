@@ -35,6 +35,9 @@
 //! - "slow start" (sent with a `uuid`) is held unread for up to five seconds; an `interrupt`
 //!   meanwhile drops it, names it in `still_queued` and ends the turn with nothing of it kept;
 //! - "show model" reports `model: <the --model flag>` (`-` when there is none);
+//! - "show voice" fires the `UserPromptSubmit` hooks `initialize` registered, as Claude Code does
+//!   before each prompt, and reports `voice: <the first five words of their additionalContext>`
+//!   (`-` when they added none, `no hook` when none is registered);
 //! - a line "guarded <Tool> <path or command>" calls `Write`, `Edit` or `NotebookEdit` on the path,
 //!   or `Bash` with the command, as tool call "call-guarded"; it asks permission only when the
 //!   `--settings` JSON lists the tool under `permissions.ask`, and reports `guarded <Tool>: ran
@@ -300,6 +303,8 @@ struct State {
     waiting: Mutex<HashSet<String>>,
     /// The id of a "slow start" prompt that has not been taken in yet: an interrupt now drops it.
     starting: Mutex<Option<String>>,
+    /// The `UserPromptSubmit` hook callback ids `initialize` registered.
+    prompt_hooks: Mutex<Vec<String>>,
 }
 
 /// A user message read from stdin.
@@ -411,6 +416,32 @@ impl Turn {
         self.line(entry);
     }
 
+    /// Fire every registered `UserPromptSubmit` hook and say the first five words of the context
+    /// they add.
+    async fn prompt_hooks(&self) -> String {
+        let hooks = self.state.prompt_hooks.lock().unwrap().clone();
+        if hooks.is_empty() {
+            return "no hook".into();
+        }
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let mut added = Vec::new();
+        for hook in hooks {
+            let request = format!("fake-hook-{}", NEXT.fetch_add(1, Ordering::SeqCst));
+            let (tx, rx) = oneshot::channel();
+            self.state.answers.lock().unwrap().insert(request.clone(), tx);
+            self.out.send(json!({"type": "control_request", "request_id": request, "request": {
+                "subtype": "hook_callback", "callback_id": hook,
+                "input": {"hook_event_name": "UserPromptSubmit", "prompt": ""}
+            }}));
+            if let Ok(context) = rx.await {
+                if context != "-" {
+                    added.push(context.split_whitespace().take(5).collect::<Vec<_>>().join(" "));
+                }
+            }
+        }
+        if added.is_empty() { "-".into() } else { added.join(" | ") }
+    }
+
     /// Ask permission for tool call `id`, and wait for the answer: `allow`, `deny`, or none when
     /// the turn was interrupted first.
     ///
@@ -504,6 +535,10 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         if !turn.pause(ms).await {
             return out_of_time(turn);
         }
+    }
+    if text.contains("show voice") {
+        let line = turn.prompt_hooks().await;
+        turn.say(&format!("voice: {line}\n"));
     }
     if text.contains("show model") {
         turn.say(&format!(
@@ -991,6 +1026,7 @@ async fn main() {
         interrupt: Notify::new(),
         waiting: Mutex::new(HashSet::new()),
         starting: Mutex::new(None),
+        prompt_hooks: Mutex::new(Vec::new()),
     });
     let (prompts, mut prompts_rx) = mpsc::unbounded_channel::<Prompt>();
     let reader_out = out.clone();
@@ -1036,6 +1072,10 @@ async fn main() {
                     let id = response["request_id"].as_str().unwrap_or_default();
                     let answer = &response["response"];
                     let mut behavior = answer["behavior"].as_str().unwrap_or("deny").to_string();
+                    // A hook's answer has no behavior: what it carries is the context it adds.
+                    if answer.get("behavior").is_none() && id.starts_with("fake-hook-") {
+                        behavior = answer["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or("-").to_string();
+                    }
                     if let Some(message) = answer["message"].as_str() {
                         *reader_state.refusal.lock().unwrap() = Some(message.to_string());
                     }
@@ -1209,6 +1249,13 @@ fn control(out: &Out, state: &State, message: &Value) {
     };
     match request["subtype"].as_str() {
         Some("initialize") => {
+            *state.prompt_hooks.lock().unwrap() = request["hooks"]["UserPromptSubmit"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|m| m["hookCallbackIds"].as_array().into_iter().flatten())
+                .filter_map(|id| id.as_str().map(String::from))
+                .collect();
             let models: Vec<Value> = MODELS
                 .iter()
                 .map(|(value, resolved, name)| json!({"value": value, "resolvedModel": resolved, "displayName": name, "description": format!("{name} model")}))

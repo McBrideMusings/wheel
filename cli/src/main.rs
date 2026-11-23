@@ -299,7 +299,8 @@ enum RemoteCommand {
 enum GuidanceCommand {
     /// Print what an agent is given when its pane starts: Wheel's brief, then the person's
     /// guidance for every agent, then the agent's own. The real brief has the pane's artifacts
-    /// and seat line between Wheel's brief and the guidance; they differ per pane and are not here.
+    /// and seat line between Wheel's brief and the guidance; they differ per pane and are not here. For
+    /// Claude it ends with the voice line each turn carries while voice mode talks to the agent.
     Show {
         /// The agent (claude, codex, pi); without it only the guidance for every agent follows the brief.
         #[arg(long)]
@@ -1423,6 +1424,14 @@ enum AgentCommand {
     /// harness, model, status}`, `status` being `idle`, `working`, `needs_you` or `stopped`. It
     /// ends when the daemon goes away.
     Watch,
+    /// Talk to an agent in voice mode until this command is stopped: take the `voice` lease and
+    /// name the agent, so each of its turns carries the voice line asking for short spoken replies
+    /// (ADR-0055). Prints the agent's name once it is set, and ends with an error when another
+    /// connection takes the lease. Claude agents only.
+    Voice {
+        /// An agent pane's id or its agent name.
+        agent: String,
+    },
     /// Print the conversations an agent holds for its directory, newest first, marking the one
     /// its pane is in.
     Conversations {
@@ -2789,6 +2798,26 @@ async fn agent_watch(conn: &mut Conn) -> Result<(), Fail> {
             }
         }
         while conn.recv(Duration::from_millis(100)).await?.is_some() {}
+    }
+}
+
+/// Hold the `voice` lease with `agent` named until the process is stopped or the lease is taken.
+async fn agent_voice(conn: &mut Conn, agent: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let ServerMsg::LeaseClaimed { owner, .. } = conn
+        .call(ClientMsg::LeaseClaim { req: Some(req), key: "voice".into() }, req)
+        .await?
+    else {
+        return Err(Fail::Other("unexpected reply to lease_claim".into()));
+    };
+    simple(conn, |req| ClientMsg::AgentVoice { req: Some(req), agent: Some(agent.clone()) }).await?;
+    println!("{agent}");
+    loop {
+        if let Some(ServerMsg::Lease { key, owner: now }) = conn.recv(Duration::from_secs(3600)).await? {
+            if key == "voice" && now.as_deref() != Some(owner.as_str()) {
+                return Err(Fail::Other(format!("another connection took the voice lease ({})", now.unwrap_or_default())));
+            }
+        }
     }
 }
 
@@ -6487,6 +6516,7 @@ async fn main() -> ExitCode {
                 agent_wait(&mut conn, agent, timeout).await
             }
             Command::Agent(AgentCommand::Watch) => agent_watch(&mut conn).await,
+            Command::Agent(AgentCommand::Voice { agent }) => agent_voice(&mut conn, agent).await,
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {
                 let id = perm_id(&mut conn, id).await?;
@@ -6670,13 +6700,17 @@ async fn main() -> ExitCode {
             }
             Command::Guidance(GuidanceCommand::Show { agent }) => {
                 let req = conn.req();
-                let ServerMsg::Guidance { given, .. } = conn
+                let voiced = agent.as_deref().is_none_or(|a| a == "claude");
+                let ServerMsg::Guidance { given, voice_line, .. } = conn
                     .call(ClientMsg::GuidanceLs { req: Some(req), agent }, req)
                     .await?
                 else {
                     return Err(Fail::Other("unexpected reply to guidance show".into()));
                 };
                 print!("{given}");
+                if voiced && !voice_line.is_empty() {
+                    print!("\nWhile voice mode talks to a Claude agent, each of its turns also carries, hidden from the transcript:\n{voice_line}");
+                }
                 Ok(())
             }
             Command::Guidance(GuidanceCommand::Path { agent }) => {

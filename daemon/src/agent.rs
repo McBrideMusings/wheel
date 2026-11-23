@@ -281,6 +281,9 @@ pub struct Agent {
     /// The permission mode and sandbox the next agent process starts with: the ones the agent
     /// was configured with, the mode moved to whatever the last process was in.
     permissions: Mutex<AgentPermissions>,
+    /// Set while voice mode talks to this agent: each turn carries the voice line (ADR-0055). Every
+    /// process this agent starts reads the same flag, so a restart or another conversation keeps it.
+    voice: Arc<AtomicBool>,
 }
 
 /// What an agent calls with the command when a build or test it ran fails.
@@ -462,6 +465,7 @@ impl Agent {
             harness: config.agent,
             model: config.model.clone(),
             permissions: Mutex::new(config.permissions.clone()),
+            voice: Arc::default(),
         });
         agent.pump_task_output(output_pings);
         let run = agent.clone();
@@ -1667,11 +1671,22 @@ impl Agent {
             conversation,
             model: config.model.clone(),
             permissions,
+            voice: self.voice.clone(),
         });
         if let Ok(agent) = &launched {
             self.agent_pid.store(agent._group.0, Ordering::SeqCst);
         }
         launched
+    }
+
+    /// Which program this agent runs.
+    pub fn harness(&self) -> Harness {
+        self.harness
+    }
+
+    /// Turn the voice line on or off for this agent's next turns.
+    pub fn set_voice(&self, on: bool) {
+        self.voice.store(on, Ordering::SeqCst);
     }
 
     /// The pid of the agent process this agent runs now, if one has started.
@@ -2580,6 +2595,7 @@ mod tests {
             harness: Harness::Claude,
             model: None,
             permissions: Mutex::new(AgentPermissions::default()),
+            voice: Arc::default(),
         };
         (agent, cmd_rx)
     }

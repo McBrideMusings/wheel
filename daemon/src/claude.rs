@@ -286,6 +286,7 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         steered: HashMap::new(),
         prompt: None,
         dropped: false,
+        voice: launch.voice.clone(),
     };
     tokio::spawn(driver.run(stdout, inputs, child, last_error));
     Ok(DriverHandle {
@@ -295,6 +296,22 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         withdraws: true,
         _group: ProcessGroup(pid),
     })
+}
+
+/// The id of the one hook this host registers: `UserPromptSubmit`, which carries the voice line.
+const VOICE_HOOK: &str = "wheel_voice";
+
+/// What each turn of the agent voice mode talks to carries as hidden context (ADR-0055).
+pub(crate) const VOICE_LINE: &str = include_str!("voice.md");
+
+/// The answer to the agent's `hook_callback` request: the voice line as the turn's added context
+/// when `voice` is on and the hook is this host's, nothing otherwise.
+fn hook_answer(request: &Value, voice: bool) -> Value {
+    if voice && request["callback_id"] == VOICE_HOOK {
+        json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": VOICE_LINE}})
+    } else {
+        json!({})
+    }
 }
 
 /// A request this side sent the agent, waiting for its `control_response`.
@@ -413,6 +430,9 @@ struct Driver {
     /// The running turn was interrupted before the agent took its prompt in, so the agent keeps
     /// nothing of the prompt.
     dropped: bool,
+    /// Set while each turn carries the voice line (ADR-0055), read when the agent's
+    /// `UserPromptSubmit` hook asks.
+    voice: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Driver {
@@ -426,7 +446,9 @@ impl Driver {
         let mut lines = stdout.lines();
         let mut failed = None;
         if let Err(e) = self
-            .request(Pending::Initialize, json!({"subtype": "initialize"}))
+            .request(Pending::Initialize, json!({"subtype": "initialize", "hooks": {
+                "UserPromptSubmit": [{"matcher": null, "hookCallbackIds": [VOICE_HOOK]}]
+            }}))
             .await
         {
             failed = Some(e);
@@ -916,6 +938,15 @@ impl Driver {
             .unwrap_or_default()
             .to_string();
         let request = &message["request"];
+        if request["subtype"] == "hook_callback" {
+            let response = hook_answer(request, self.voice.load(std::sync::atomic::Ordering::SeqCst));
+            if response != json!({}) {
+                tracing::info!(pid = self.pid, "voice line sent");
+            }
+            return self
+                .write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": response}}))
+                .await;
+        }
         if request["subtype"] != "can_use_tool" {
             tracing::info!(pid = self.pid, subtype = %request["subtype"], "agent request refused: not one this host answers");
             return self
@@ -1891,6 +1922,17 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_hook_carries_the_voice_line_only_while_voice_is_on() {
+        let request = json!({"subtype": "hook_callback", "callback_id": "wheel_voice", "input": {"hook_event_name": "UserPromptSubmit"}});
+        let on = super::hook_answer(&request, true);
+        assert_eq!(on["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        assert_eq!(on["hookSpecificOutput"]["additionalContext"], super::VOICE_LINE);
+        assert_eq!(super::hook_answer(&request, false), json!({}));
+        let other = json!({"subtype": "hook_callback", "callback_id": "hook_7"});
+        assert_eq!(super::hook_answer(&other, true), json!({}));
+    }
+
+    #[test]
     fn a_fork_resumes_the_source_as_a_copy_stopped_at_the_message() {
         use crate::driver::{Conversation, Launch};
         let launch = |turns| Launch {
@@ -1903,6 +1945,7 @@ mod tests {
             conversation: Conversation::Fork { from: "src".into(), turns, id: "new".into() },
             model: None,
             permissions: Default::default(),
+            voice: Default::default(),
         };
         let cut = super::arguments(&launch(1), Some("a1b"));
         let at = cut.iter().position(|a| a == "--resume-session-at").unwrap();
@@ -1930,6 +1973,7 @@ mod tests {
             conversation: Conversation::New("c".into()),
             model: None,
             permissions: Default::default(),
+            voice: Default::default(),
         };
         let args = super::arguments(&launch, None);
         let at = args.iter().position(|a| a == "--allowedTools").unwrap();
@@ -1953,6 +1997,7 @@ mod tests {
             conversation: Conversation::New("c".into()),
             model: None,
             permissions: Default::default(),
+            voice: Default::default(),
         };
         let denies = |rules: &str| {
             std::fs::write(dir.join(".claude/settings.json"), format!(r#"{{"permissions":{{"allow":{rules}}}}}"#)).unwrap();

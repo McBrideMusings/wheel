@@ -464,7 +464,7 @@ impl Client {
                 self.settings.builtins.edited = Some((name.clone(), edited.clone()));
                 true
             }
-            ServerMsg::Guidance { req, brief, given, files } => {
+            ServerMsg::Guidance { req, brief, given, files, .. } => {
                 if Some(*req) != self.settings_reqs.guidance {
                     return false;
                 }

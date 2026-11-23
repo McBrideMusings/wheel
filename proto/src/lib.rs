@@ -814,6 +814,16 @@ pub enum ClientMsg {
         req: Option<u64>,
         key: String,
     },
+    /// Name the agent voice mode talks to (an agent or an agent pane), or none to clear it. Each turn of
+    /// that agent then carries the voice line, asking for short spoken replies, as hidden context (ADR-0055).
+    /// Refused unless this connection holds the `voice` lease, and for an agent with no way to take the
+    /// line; cleared when the lease leaves this connection. Replies `ok`.
+    AgentVoice {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     /// Stop an agent's current turn. Queued messages are left alone: taking one back is
     /// `agent_unsend`.
     AgentCancel {
@@ -2238,6 +2248,9 @@ pub enum ServerMsg {
         /// `lease` event, or connected after it, reads who holds what.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         leases: std::collections::BTreeMap<String, String>,
+        /// The agent voice mode talks to (`agent_voice`), whose turns carry the voice line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<String>,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2835,6 +2848,9 @@ pub enum ServerMsg {
         /// they differ per pane and are left out here.
         given: String,
         files: Vec<GuidanceFile>,
+        /// What each turn of a Claude agent carries, hidden, while voice mode talks to it (ADR-0055).
+        #[serde(default)]
+        voice_line: String,
     },
     /// The path `GuidancePath` made.
     GuidancePath {

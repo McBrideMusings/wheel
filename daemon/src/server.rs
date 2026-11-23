@@ -161,6 +161,9 @@ pub struct AppState {
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection holding each named lease: `voice`, `orchestrator` (`crate::leases`).
     pub(crate) leases: crate::leases::Leases,
+    /// The agent voice mode talks to and the connection that named it, which holds `voice`
+    /// (`agent_voice`); cleared when that lease leaves the connection.
+    pub(crate) voiced: Mutex<Option<(SocketAddr, Arc<Agent>)>>,
     /// One queue per event hook, so each runs its events in order (`crate::hooks`).
     pub(crate) hook_runs: crate::hooks::Runs,
     /// A pane agent's failed build or test command, as (agent, command), for the event hooks
@@ -387,6 +390,7 @@ impl AppState {
             agent_added: watch::channel(()).0,
             agent_timing: Mutex::new(AgentTiming::default()),
             leases: Default::default(),
+            voiced: Mutex::new(None),
             hook_runs: Default::default(),
             build_failures: broadcast::channel(64).0,
             agent_starts: Mutex::new(HashSet::new()),
@@ -823,6 +827,7 @@ impl AppState {
         let agent = self.agents.lock().unwrap().remove(name);
         self.drop_card_pages(name, 0);
         if let Some(agent) = agent {
+            self.voice_ended(&agent);
             agent.stop(&self.perms);
         }
     }
@@ -832,6 +837,7 @@ impl AppState {
         let agent = self.agents.lock().unwrap().remove(name);
         self.drop_card_pages(name, 0);
         if let Some(agent) = agent {
+            self.voice_ended(&agent);
             agent.stop_and_wait(&self.perms).await;
         }
     }
@@ -1008,6 +1014,7 @@ impl AppState {
             .await
             .unwrap_or_default();
         let requests = self.requests.lock().unwrap().clone();
+        let voice = self.voiced.lock().unwrap().as_ref().map(|(_, a)| a.name.clone());
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1015,6 +1022,7 @@ impl AppState {
             compat: wheel_proto::COMPAT,
             ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
             leases: self.leases.holders(),
+            voice,
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
@@ -1691,6 +1699,10 @@ async fn handle(
                 tracing::info!(%peer, key, "lease release");
                 req.map(|req| ServerMsg::Ok { req })
             }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::AgentVoice { req, agent } => match state.agent_voice(agent.as_deref(), peer) {
+            Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => Some(failed(req, message)),
         },
         ClientMsg::AgentCancel { req, agent } => {
@@ -2883,6 +2895,7 @@ async fn handle(
                 brief,
                 given,
                 files,
+                voice_line: crate::claude::VOICE_LINE.to_owned(),
             }),
             Err(message) => {
                 tracing::warn!(%message, "guidance ls failed");

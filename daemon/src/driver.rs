@@ -71,6 +71,8 @@ pub struct Launch {
     /// The permission mode to start in, in the agent's own terms, and Codex's sandbox; a field
     /// left unset leaves the agent's default.
     pub permissions: AgentPermissions,
+    /// Set while each turn should carry the voice line (ADR-0055); only Claude reads it.
+    pub voice: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Codex's sandbox values.

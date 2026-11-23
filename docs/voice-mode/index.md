@@ -24,7 +24,7 @@ The orchestrator is the main user: you talk through what's in the queue, give in
 - **In the orchestrator, topics apply unchanged** (orchestrator doc §4.2): "next", "back to X" and "triage" work by voice, and nothing from the queue is spoken unless you ask.
 - **Turn-taking:** detection on the device decides when you've stopped speaking (a voice-activity detector, e.g. Silero VAD), then sends the transcript. Hold-to-talk is a setting for noisy places.
 - **Interrupting:** tap the orb or start talking while the agent speaks. Speech stops at once, the unspoken rest of the reply is dropped from audio (it's still in the chat), and it listens.
-- **Spoken replies stay short.** Agents get a voice line in their brief (or a hook while voice is active): short sentences, summarize rather than read out code, and put anything long on screen.
+- **Spoken replies stay short.** While the voice client holds the `voice` lease and names an agent (`agent_voice`), each of that agent's turns carries the voice line (`daemon/src/voice.md`) as hidden context through a `UserPromptSubmit` hook: short spoken sentences, summarize rather than read out code, and put anything long on screen. Claude agents only; Codex and pi refuse (ADR-0055).
 - **Showing things:** when the agent refers to a diff, pane or doc, it shows it above the orb with `wheel agent card`. Tapping it opens it full screen.
 
 ## 4. Approvals
@@ -83,7 +83,7 @@ A Spaces agent pane (W11482 in llama-broker) in voice mode. The layout is the sa
 | Text to speech | On the device, system voice |
 | The conversation | The agent's own session in wheeld; voice sends text with `agent_send` and reads the transcript stream like any client |
 | Lock to one active voice client | wheeld (a small generic lock per agent, or for the whole daemon) |
-| Voice line in the brief while active | Agent hook or brief, set by the client when voice starts and cleared when it ends |
+| Voice line while active | wheeld answers the Claude agent's `UserPromptSubmit` hook with it while the `voice` lease holder names that agent (`agent_voice`); it clears with the lease (ADR-0055) |
 | Panes during voice | Client: voice is a layer over the normal agent view, so pane navigation is unchanged |
 
 ## 7. Settings
@@ -96,8 +96,7 @@ These sit under Settings in the orchestrator doc:
 
 1. Pick the transcription model and library (WhisperKit or whisper.cpp); measure delay and battery on the phone.
 2. Wheeld lock for one active voice client.
-3. A voice-mode brief line or hook so spoken replies stay short.
-4. Live Activity and audio session background on iOS.
-5. The part shared by every agent view: the orb, captions, the pill, and the approval card.
+3. Live Activity and audio session background on iOS.
+4. The part shared by every agent view: the orb, captions, the pill, and the approval card.
 
 Design canvas: https://claude.ai/artifact/XfjmQGaLfjHkYHJ2338FcF (Mobile page, Voice mode row).
