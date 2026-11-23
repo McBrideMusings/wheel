@@ -361,7 +361,7 @@ local function page(st, data, snap)
             { label = "Clean up merged", n = #doomed, action = { type = "cleanup" }, help = help, first = true },
         }
         local actions = list.actions(snap.scripts or NONE, took, #shown, "branch names", "branches", nil, more)
-        table.insert(children, list.bar(SPEC, st.list, options, actions))
+        table.insert(children, list.bar(SPEC, st.list, options, actions, st))
         local t = if st.tab == "history" then history_table(st, snap, now) else branches_table(st, snap, shown, now)
         table.insert(children, kit.box("v", { t }, {}))
     end
@@ -376,6 +376,7 @@ local function init(previous)
 end
 
 local function update(state, msg)
+    if kit.set_provider(state, msg) then return end
     if msg.action then
         local failed = msg.error ~= nil
         local words = if failed then msg.error else (type(msg.result) == "table" and msg.result.said) or "Done."
@@ -399,13 +400,13 @@ local function update(state, msg)
         end
     elseif t == "row_button" then
         if state.dir and msg.branch and msg.name then
-            wheel.action("wheelhouse.branch_button", { dir = state.dir, branch = msg.branch, name = msg.name })
+            wheel.action("wheelhouse.branch_button", { provider = state.provider, dir = state.dir, branch = msg.branch, name = msg.name })
         end
     elseif t == "cleanup" then
         if state.dir then wheel.action("wheelhouse.branch_cleanup", { dir = state.dir }) end
     elseif t == "list.run" then
         if state.dir and msg.script then
-            wheel.action("wheelhouse.run_list", { dir = state.dir, script = msg.script, ids = state.ids or {}, view = "repo" })
+            wheel.action("wheelhouse.run_list", { provider = state.provider, dir = state.dir, script = msg.script, ids = state.ids or {}, view = "repo" })
         end
     end
 end

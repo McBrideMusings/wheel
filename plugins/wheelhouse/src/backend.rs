@@ -58,7 +58,7 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
 const FEEDS: [&str; 11] = ["beads", "beads_graph", "queue", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
-const ACTIONS: [&str; 16] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "branch_cleanup", "branch_button", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
+const ACTIONS: [&str; 17] = ["press", "run_list", "issue_create", "issue_button", "issue_close", "branch_delete", "branch_cleanup", "branch_button", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
 const REPO_EVERY: Duration = Duration::from_secs(120);
@@ -534,6 +534,11 @@ impl Core {
         let arg = |k: &str| p.args.get(k).and_then(Value::as_str).map(String::from);
         let dir = arg("dir").filter(|d| d.starts_with('/')).ok_or_else(|| bad(format!("{} needs args.dir, an absolute directory", p.action)))?;
         let pane = p.caller.get("pane").and_then(Value::as_str).unwrap_or_default().to_string();
+        let provider = match p.args.get("provider") {
+            None => None,
+            Some(v) if matches!(v.as_str(), Some("claude" | "codex")) => arg("provider"),
+            Some(v) => return Err(bad(format!("unsupported action provider {v}; choose claude or codex"))),
+        };
         let said = match p.action.as_str() {
             "press" => {
                 let bead = arg("bead").ok_or_else(|| bad("press needs args.bead".into()))?;
@@ -544,7 +549,7 @@ impl Core {
                         let _ = tx.send(Msg::RefreshFeed(feed.into(), changed_dir.clone()));
                     }
                 };
-                tokio::task::spawn_blocking(move || beads_feed::press(&dir, &bead, &pane, changed)).await
+                tokio::task::spawn_blocking(move || beads_feed::press(&dir, &bead, &pane, provider.as_deref(), changed)).await
             }
             "run_list" => {
                 let script = arg("script").ok_or_else(|| bad("run_list needs args.script".into()))?;
@@ -560,13 +565,13 @@ impl Core {
                 let issues = view == "issues";
                 let done = tokio::task::spawn_blocking(move || {
                     if view == "repo" {
-                        repo_feed::run_list(&dir, &script, &ids, &pane)
+                        repo_feed::run_list(&dir, &script, &ids, &pane, provider.as_deref())
                     } else if view == "prs" {
-                        prs_feed::run_list(&dir, &script, &ids, &pane)
+                        prs_feed::run_list(&dir, &script, &ids, &pane, provider.as_deref())
                     } else if view == "issues" {
-                        issues_feed::run_list(&dir, &script, &ids, &pane)
+                        issues_feed::run_list(&dir, &script, &ids, &pane, provider.as_deref())
                     } else {
-                        beads_feed::run_list(&dir, &script, &ids, &pane)
+                        beads_feed::run_list(&dir, &script, &ids, &pane, provider.as_deref())
                     }
                 })
                 .await;
@@ -575,6 +580,11 @@ impl Core {
                     let _ = self.tx.send(Msg::RefreshFeed("issues".into(), changed_dir));
                 }
                 done
+            }
+            "issue_button" => {
+                let name = arg("name").ok_or_else(|| bad("issue_button needs args.name".into()))?;
+                let number = p.args.get("number").and_then(crate::core::number_of).ok_or_else(|| bad("issue_button needs args.number".into()))?;
+                tokio::task::spawn_blocking(move || issues_feed::button(&dir, &pane, number, &name, provider.as_deref())).await
             }
             "issue_create" => {
                 let title = arg("title").unwrap_or_default();
@@ -609,7 +619,7 @@ impl Core {
                 let branch = arg("branch").ok_or_else(|| bad("branch_button needs args.branch".into()))?;
                 let name = arg("name").ok_or_else(|| bad("branch_button needs args.name".into()))?;
                 let changed_dir = dir.clone();
-                let done = tokio::task::spawn_blocking(move || repo_feed::button(&dir, &pane, &branch, &name)).await;
+                let done = tokio::task::spawn_blocking(move || repo_feed::button(&dir, &pane, &branch, &name, provider.as_deref())).await;
                 // The button may make a worktree: read the project again whether or not it went through.
                 let _ = self.tx.send(Msg::RefreshFeed("repo".into(), changed_dir));
                 done
@@ -652,7 +662,7 @@ impl Core {
                 let agents = self.agents.clone();
                 tokio::task::spawn_blocking(move || {
                     let origin = Origin { dir, pane: if pane.is_empty() { "default".into() } else { pane } };
-                    agents.start(&origin, &brief, None, None).map(|pane| format!("Started the agent in pane {pane}"))
+                    agents.start(&origin, &brief, provider.as_deref(), None).map(|pane| format!("Started the agent in pane {pane}"))
                 })
                 .await
             }

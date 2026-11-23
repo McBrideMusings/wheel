@@ -213,4 +213,19 @@ function M.column(key, label, width, tree, wide, sortable)
     return { key = key, label = label, width = width, tree = tree or nil, wide = wide or nil, sortable = sortable or nil }
 end
 
+function M.provider(state)
+    return ui.ChoicePicker{
+        variant = "mutuallyExclusive", displayStyle = "menu", label = "Action provider", value = { state.provider or "default" },
+        options = { { label = "Default agent", value = "default" }, { label = "Claude", value = "claude" }, { label = "Codex", value = "codex" } },
+        on_change = { type = "set_provider" }, modifiers = { { fixedSize = true } },
+    }
+end
+
+function M.set_provider(state, msg)
+    if msg.type ~= "set_provider" then return false end
+    local v = if type(msg.value) == "table" then msg.value[1] else msg.value
+    if v == "claude" or v == "codex" then state.provider = v elseif v == "default" then state.provider = nil end
+    return true
+end
+
 return M

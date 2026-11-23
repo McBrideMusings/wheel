@@ -198,6 +198,7 @@ local function inputs_class()
             { "displayStyle chips: one toggle button per option (several can be on)", put("ChoicePicker", nil, { label = "Filter", options = opts(), value = { "a" }, variant = "multipleSelection", displayStyle = "chips" }) },
             { "mutuallyExclusive, displayStyle chips: a segmented control at every width; a page wanting a menu when it does not fit sends a ViewThatFits of both", put("ChoicePicker", nil, { label = "Filter", options = opts(), value = { "a" }, variant = "mutuallyExclusive", displayStyle = "chips" }) },
             { "displayStyle menu, or no style: a menu, as wide as its widest option; a frame or fixedSize modifier sets its width", put("ChoicePicker", nil, { label = "Filter", options = opts(), value = { "a" }, variant = "mutuallyExclusive", displayStyle = "menu" }) },
+            { "Action provider", put("ChoicePicker", nil, { label = "Action provider", options = { { label = "Default agent", value = "default" }, { label = "Claude", value = "claude" }, { label = "Codex", value = "codex" } }, value = { "default" }, variant = "mutuallyExclusive", displayStyle = "menu", modifiers = { { fixedSize = true } } }) },
             { "filterable", put("ChoicePicker", nil, { label = "Filter", options = opts(), value = { "a" }, variant = "mutuallyExclusive", filterable = true }) },
         } },
         { "Slider", "Slider", {

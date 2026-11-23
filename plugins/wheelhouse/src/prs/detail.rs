@@ -49,6 +49,7 @@ pub struct Button {
     /// Read for `[prs.buttons]` only: a Repo button's is always empty.
     pub on: Vec<String>,
     pub run: String,
+    pub providers: crate::core::buttons::Providers,
     /// Run it with `PR_WORKTREE` set to a worktree on the PR's or branch's branch, made first when none exists.
     pub worktree: bool,
 }
@@ -64,8 +65,9 @@ pub fn buttons_in(files: &[crate::core::buttons::File], view: &str) -> Vec<Butto
         .into_iter()
         .map(|(name, s)| Button {
             name,
+            providers: crate::core::buttons::Providers::read(s),
             label: s.get("label").and_then(|v| v.as_str()).map(String::from),
-            on: s.get("on").filter(|_| view == "prs").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            on: s.get("on").filter(|_| view != "repo").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
             run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             worktree: s.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false),
         })
@@ -307,12 +309,14 @@ impl Target {
 
 /// Run button `b` of `view` (`prs` or `repo`) for `target`, in a worktree first when the button asks for one. `fork_pr`
 /// is the target's PR number when that PR comes from a fork.
-pub fn run_button(origin: &Origin, view: &str, repo: &str, target: &Target, fork_pr: Option<i64>, b: &Button) -> Result<(), String> {
+pub fn run_button(origin: &Origin, view: &str, repo: &str, target: &Target, fork_pr: Option<i64>, b: &Button, provider: Option<&str>) -> Result<(), String> {
+    let provider = b.providers.selected(label(b), provider)?;
     let wt = if b.worktree { Some(worktree(&origin.dir, repo, &target.branch, fork_pr)?) } else { None };
     let number = target.number.map(|n| n.to_string()).unwrap_or_default();
     let (title, branch, url) = (target.title.clone(), target.branch.clone(), target.url.clone());
     let mut env = vec![("PR_NUMBER", number.as_str()), ("PR_TITLE", title.as_str()), ("PR_BRANCH", branch.as_str()), ("PR_URL", url.as_str()),
         ("PR_REPO", repo), ("PR_PATH", origin.dir.as_str())];
+    if let Some(p) = provider { env.push(("WHEEL_ACTION_PROVIDER", p)); }
     if let Some(w) = &wt {
         env.push(("PR_WORKTREE", w.as_str()));
     }

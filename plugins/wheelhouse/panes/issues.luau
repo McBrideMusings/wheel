@@ -155,6 +155,12 @@ local function modal(st, issue)
     local footer = {
         kit.label(if st.said then st.said else "", { tone = if st.said_bad then "bad" else "ok", weight = "semibold" }),
     }
+    if #(issue.buttons or NONE) > 0 then
+        table.insert(footer, kit.provider(st))
+        for _, b in issue.buttons do
+            table.insert(footer, kit.button(b.label, { type = "issue_button", name = b.name }))
+        end
+    end
     if issue.state == "open" then
         table.insert(footer, kit.button("Close issue", { type = "close_issue" }, { help = "Close this issue on GitHub" }))
     end
@@ -259,7 +265,7 @@ local function page(st, data, snap)
         status,
         new,
         list.find(st.list, {}),
-        list.bar(SPEC, st.list, options, actions),
+        list.bar(SPEC, st.list, options, actions, st),
         kit.box("v", { issues_table(st, snap, shown, now) }, {}),
         ui.Column{ spacing = 0, table.unpack(cut) },
         -- A closed panel is a Modal that is not presented, so the open one is replaced rather than left behind.
@@ -275,6 +281,7 @@ local function init(previous)
 end
 
 local function update(state, msg)
+    if kit.set_provider(state, msg) then return end
     if msg.action then
         local failed = msg.error ~= nil
         local text = if failed then msg.error else (type(msg.result) == "table" and msg.result.said) or (type(msg.result) == "string" and msg.result) or "Done."
@@ -288,7 +295,7 @@ local function update(state, msg)
             -- Dismiss the modal only when it still shows the issue that was closed.
             if not failed and state.sel == state.closing then state.sel = nil end
             state.closing = nil
-        elseif msg.action == "wheelhouse.run_list" then
+        elseif msg.action == "wheelhouse.issue_button" or msg.action == "wheelhouse.run_list" then
             state.said, state.said_bad = text, failed
         end
         return
@@ -311,6 +318,8 @@ local function update(state, msg)
         state.sel = nil
     elseif not dir then
         return
+    elseif t == "issue_button" and state.sel then
+        wheel.action("wheelhouse.issue_button", { dir = dir, number = state.sel, name = msg.name, provider = state.provider })
     elseif t == "create_issue" then
         local title = string.match(state.draft or "", "^%s*(.-)%s*$")
         state.creating = title
@@ -320,7 +329,7 @@ local function update(state, msg)
         wheel.action("wheelhouse.issue_close", { dir = dir, number = math.floor(state.sel) })
     elseif t == "list.run" then
         if msg.script then
-            wheel.action("wheelhouse.run_list", {
+            wheel.action("wheelhouse.run_list", { provider = state.provider,
                 dir = dir, script = msg.script, ids = state.ids or {}, view = "issues", pane = state.pane or "",
             })
         end

@@ -9,6 +9,38 @@ use super::*;
 /// Characters of an issue's body the feed carries.
 const BODY_CUT: usize = 3000;
 
+fn applies(button: &crate::prs::detail::Button, issue: &Issue, viewer: &str) -> bool {
+    let mine = issue.assignees.iter().any(|a| a.eq_ignore_ascii_case(viewer));
+    let unassigned = issue.assignees.is_empty();
+    issue.state == "open" && button.on.iter().any(|on| match on.as_str() {
+        "any" => true,
+        "todo" => (mine || unassigned) && !issue.has_pr,
+        "has-pr" => issue.has_pr,
+        "mine" => mine,
+        "unassigned" => unassigned,
+        "others" => !mine && !unassigned,
+        _ => false,
+    })
+}
+
+pub fn button(dir: &str, pane: &str, number: i64, name: &str, provider: Option<&str>) -> Result<String, String> {
+    let snap = collect(dir);
+    if let Some(e) = snap.error { return Err(e); }
+    let issue = snap.issues.iter().find(|i| i.number == number).ok_or_else(|| format!("no issue #{number}"))?;
+    let button = snap.buttons.iter().find(|b| b.name == name && applies(b, issue, &snap.viewer))
+        .ok_or_else(|| format!("no applicable issue button {name} for #{number}"))?;
+    let number = number.to_string();
+    let repo = crate::prs::repo_of(dir)?;
+    let labels = issue.labels.join(",");
+    let mut env = vec![("ISSUE_NUMBER", number.as_str()), ("ISSUE_REPO", &repo), ("ISSUE_TITLE", &issue.title),
+        ("ISSUE_LABELS", &labels), ("ISSUE_URL", &issue.url), ("ISSUE_PATH", dir)];
+    if let Some(p) = button.providers.selected(name, provider)? { env.push(("WHEEL_ACTION_PROVIDER", p)); }
+    let log = std::env::temp_dir().join(format!("wheel-issue-{}-{}.log", number, crate::beads::sane(name)));
+    let label = crate::prs::detail::label(button);
+    run::button(label, &button.run, dir, pane, &env, &log)?;
+    Ok(format!("{label} started for #{number}."))
+}
+
 /// The `issues` feed's value for the project in `dir`.
 pub fn value(dir: &str) -> Value {
     snapshot_value(&collect(dir), crate::core::now())
@@ -31,17 +63,18 @@ fn snapshot_value(s: &Snapshot, at: i64) -> Value {
             "body": i.body.chars().take(BODY_CUT).collect::<String>(),
             "url": i.url,
             "updated": i.updated,
+            "buttons": s.buttons.iter().filter(|b| applies(b, i, &s.viewer)).map(|b| json!({"name": b.name, "label": crate::prs::detail::label(b)})).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "scripts": s.scripts.iter().map(|x| json!({ "name": x.name, "label": x.label() })).collect::<Vec<_>>(),
     })
 }
 
 /// Run the project's `[issues.list]` button `script` over the issue numbers `ids` for the pane `pane`.
-pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str) -> Result<String, String> {
+pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str, provider: Option<&str>) -> Result<String, String> {
     let (scripts, _) = crate::core::buttons::scripts(dir, "issues");
     let repo = crate::core::project::name_of(dir);
     let pane = if pane.is_empty() { "default" } else { pane };
-    crate::core::buttons::run_list(&scripts, script, ids, "ISSUE_NUMBERS", &[("ISSUE_REPO", repo.as_str()), ("ISSUE_PATH", dir)], dir, pane, "issues")
+    crate::core::buttons::run_list(&scripts, script, ids, "ISSUE_NUMBERS", &[("ISSUE_REPO", repo.as_str()), ("ISSUE_PATH", dir)], dir, pane, "issues", provider)
 }
 
 #[cfg(test)]
@@ -50,15 +83,15 @@ mod tests {
 
     #[test]
     fn the_issues_value_has_the_documented_keys_and_cuts_a_long_body() {
-        let i = Issue { number: 4, title: "t".into(), state: "open".into(), labels: vec!["bug".into()], assignees: vec!["me".into()], author: "a".into(), body: "x".repeat(4000), url: "https://u".into(), updated: 9 };
-        let s = Snapshot { name: "t".into(), issues: vec![i], error: None, scripts: vec![], problems: vec!["p".into()] };
+        let i = Issue { number: 4, title: "t".into(), state: "open".into(), labels: vec!["bug".into()], assignees: vec!["me".into()], author: "a".into(), body: "x".repeat(4000), url: "https://u".into(), updated: 9, has_pr: false };
+        let s = Snapshot { name: "t".into(), issues: vec![i], error: None, scripts: vec![], problems: vec!["p".into()], ..Default::default() };
         let v = snapshot_value(&s, 100);
         let keys: std::collections::BTreeSet<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(keys, ["now", "name", "error", "problems", "issues", "scripts"].into_iter().collect());
         assert_eq!((v["now"].as_i64(), v["name"].as_str(), v["problems"].clone()), (Some(100), Some("t"), json!(["p"])));
         let r = &v["issues"][0];
         let ik: std::collections::BTreeSet<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(ik, ["number", "title", "state", "labels", "assignees", "author", "body", "url", "updated"].into_iter().collect());
+        assert_eq!(ik, ["buttons", "number", "title", "state", "labels", "assignees", "author", "body", "url", "updated"].into_iter().collect());
         assert_eq!((r["number"].as_i64(), r["state"].as_str(), r["updated"].as_i64()), (Some(4), Some("open"), Some(9)));
         assert_eq!((r["labels"].clone(), r["assignees"].clone()), (json!(["bug"]), json!(["me"])));
         assert_eq!(r["body"].as_str().unwrap().chars().count(), 3000);
@@ -76,6 +109,6 @@ mod tests {
     fn run_list_refuses_an_unknown_script() {
         let dir = std::env::temp_dir().join("wheelhouse-issues-run-list");
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(run_list(&dir.to_string_lossy(), "nope", &["1".into()], "p"), Err("no list button nope".into()));
+        assert_eq!(run_list(&dir.to_string_lossy(), "nope", &["1".into()], "p", None), Err("no list button nope".into()));
     }
 }

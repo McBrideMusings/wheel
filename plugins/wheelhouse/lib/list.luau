@@ -270,7 +270,7 @@ end
 -- The filter row: one popover of ticks per filter (`options[i]` gives the i-th filter's { value, text } in the spec's
 -- order) and Clear on the left, `actions` (the list actions button) at the far right. Each popover's title says what it
 -- holds ("Any label", "Status not: done"); Clear is hidden, not removed, when nothing narrows the list, so nothing moves.
-function M.bar(spec, l, options, actions)
+function M.bar(spec, l, options, actions, state)
     local menus = {}
     for i, f in spec.filters do
         local opts = options[i] or NONE
@@ -308,7 +308,9 @@ function M.bar(spec, l, options, actions)
     local clear = kit.button("Clear", { type = "list.clear" }, { style = "link", disabled = not M.active(l), hideOff = true })
     table.insert(menus, clear)
     local narrow = kit.box("h", menus, { spacing = 6, align = "center" })
-    local bar = kit.box("h", { narrow, actions }, { spacing = 16, align = "center", padding = { 4, 0, 0, 0 } })
+    local controls = kit.box("h", { kit.provider(state), actions }, { spacing = 6 })
+    kit.modify(controls, { fixedSize = { horizontal = true } })
+    local bar = kit.box("h", { narrow, controls }, { spacing = 16, align = "center", padding = { 4, 0, 0, 0 } })
     bar.justify = "spaceBetween"
     kit.modify(bar, { frame = { maxWidth = "infinity" } })
     return bar

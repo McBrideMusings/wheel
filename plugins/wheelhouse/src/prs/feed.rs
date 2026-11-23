@@ -169,7 +169,7 @@ pub fn act(action: &str, dir: &str, pane: &str, args: &Value) -> Result<String, 
         "pr_button" => {
             let name = text("name").ok_or("pr_button needs args.name")?;
             let b = snap.buttons.iter().find(|b| b.name == name).ok_or_else(|| format!("no button {name}"))?;
-            detail::run_button(&origin, "prs", snap.repo.as_deref().unwrap_or(""), &detail::Target::of_pr(&pr), cross().then_some(number), b)?;
+            detail::run_button(&origin, "prs", snap.repo.as_deref().unwrap_or(""), &detail::Target::of_pr(&pr), cross().then_some(number), b, args["provider"].as_str())?;
             Ok(format!("{} started for #{number}. See the new pane.", detail::label(b)))
         }
         other => Err(format!("no PR action {other}")),
@@ -177,11 +177,11 @@ pub fn act(action: &str, dir: &str, pane: &str, args: &Value) -> Result<String, 
 }
 
 /// Run the project's `[prs.list]` button `script` over the PR numbers `ids` for the pane `pane`.
-pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str) -> Result<String, String> {
+pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str, provider: Option<&str>) -> Result<String, String> {
     let (scripts, _) = crate::core::buttons::scripts(dir, "prs");
     let repo = repo_of(dir).unwrap_or_default();
     let pane = if pane.is_empty() { "default" } else { pane };
-    crate::core::buttons::run_list(&scripts, script, ids, "PR_NUMBERS", &[("PR_REPO", repo.as_str()), ("PR_PATH", dir)], dir, pane, "PRs")
+    crate::core::buttons::run_list(&scripts, script, ids, "PR_NUMBERS", &[("PR_REPO", repo.as_str()), ("PR_PATH", dir)], dir, pane, "PRs", provider)
 }
 
 #[cfg(test)]
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn the_prs_value_has_the_documented_keys_and_clock_times() {
-        let b = Button { name: "fix".into(), label: Some("Make mergeable".into()), on: vec!["fix".into()], run: "true".into(), worktree: true };
+        let b = Button { name: "fix".into(), providers: Default::default(), label: Some("Make mergeable".into()), on: vec!["fix".into()], run: "true".into(), worktree: true };
         let s = Snapshot { name: "t".into(), repo: Some("o/t".into()), me: Some("me".into()), prs: vec![pr()], error: None, fetched: 1000, buttons: vec![b], scripts: vec![] };
         let v = snapshot_value(&s, 1100, |t| format!("c{t}"));
         let keys: std::collections::BTreeSet<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();

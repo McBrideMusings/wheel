@@ -200,7 +200,7 @@ function M.pane(mode)
             modifiers = { { frame = { minWidth = 120, maxWidth = "infinity" } } },
         }
         local start = kit.button("Start agent", { type = "start_agent" }, { disabled = string.match(brief, "^%s*$") ~= nil })
-        local starter = kit.box("h", { field, start }, { spacing = 8, widths = { "flex", false }, padding = { 12, 0, 0, 0 } })
+        local starter = kit.box("h", { field, kit.provider(state), start }, { spacing = 8, widths = { "flex", false, false }, padding = { 12, 0, 0, 0 } })
 
         local body
         if loaded then
@@ -225,6 +225,7 @@ function M.pane(mode)
     end
 
     local function update(state, msg)
+        if kit.set_provider(state, msg) then return end
         if msg.action then
             if msg.action == "wheelhouse.agent_start" then
                 if msg.error ~= nil then
@@ -241,7 +242,7 @@ function M.pane(mode)
             state.brief = if type(msg.value) == "string" then msg.value else ""
         elseif msg.type == "start_agent" and state.dir and not string.match(state.brief or "", "^%s*$") then
             state.said = nil
-            wheel.action("wheelhouse.agent_start", { dir = state.dir, brief = state.brief })
+            wheel.action("wheelhouse.agent_start", { dir = state.dir, brief = state.brief, provider = state.provider })
         end
     end
 

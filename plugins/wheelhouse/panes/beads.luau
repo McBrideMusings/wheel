@@ -842,7 +842,7 @@ local function page(state, data, snap, stale, panes)
         st.dir = data.cwd
         st.ids = took
         local actions = list.actions(snap.scripts or NONE, took, #listed, "ids", "beads")
-        table.insert(children, list.bar(SPEC, st.list, options, actions))
+        table.insert(children, list.bar(SPEC, st.list, options, actions, st))
         local sheet
         if drew then
             local body
@@ -890,6 +890,7 @@ local function forget(state, id)
 end
 
 local function update(state, msg)
+    if kit.set_provider(state, msg) then return end
     if msg.action then
         -- What wheeld answered for an action this pane called.
         local failed = msg.error ~= nil
@@ -971,11 +972,11 @@ local function update(state, msg)
     elseif t == "press" then
         if state.dir and msg.bead then
             table.insert(state.pressed, msg.bead)
-            wheel.action("wheelhouse.press", { dir = state.dir, bead = msg.bead })
+            wheel.action("wheelhouse.press", { provider = state.provider, dir = state.dir, bead = msg.bead })
         end
     elseif t == "list.run" then
         if state.dir and msg.script then
-            wheel.action("wheelhouse.run_list", { dir = state.dir, script = msg.script, ids = state.ids or {} })
+            wheel.action("wheelhouse.run_list", { provider = state.provider, dir = state.dir, script = msg.script, ids = state.ids or {} })
         end
     end
 end

@@ -69,7 +69,7 @@ fn press_pane(pane: &str) -> &str {
 
 /// Press `bead`'s button in the project `dir` for the pane `pane`: focus its pane, resume it or
 /// start it, as its state says. `changed` runs whenever a press claims or releases a bead.
-pub fn press(dir: &str, bead: &str, pane: &str, changed: impl Fn() + Send + Sync + 'static) -> Result<String, String> {
+pub fn press(dir: &str, bead: &str, pane: &str, provider: Option<&str>, changed: impl Fn() + Send + Sync + 'static) -> Result<String, String> {
     let pane = press_pane(pane);
     let mut snap = collect(dir);
     fill_acts(&mut snap);
@@ -91,10 +91,26 @@ pub fn press(dir: &str, bead: &str, pane: &str, changed: impl Fn() + Send + Sync
         return Err(format!("{bead} has no command for {}", act.label));
     };
     let log = std::env::temp_dir().join(format!("wheel-beads-{}.log", sane(&b.id)));
-    let conversation = buttons::recorded(&buttons::records_file(), &snap.path, bead).map(|r| r.conversation).unwrap_or_default();
+    let record = buttons::recorded(&buttons::records_file(), &snap.path, bead);
+    let conversation = record.as_ref().map(|r| r.conversation.as_str()).unwrap_or_default();
     let mut env = vec![("BEAD_ID", b.id.as_str()), ("BEAD_TITLE", &b.title), ("BEAD_TYPE", &b.kind), ("BEAD_REPO", &snap.name), ("BEAD_PATH", &snap.path)];
+    let group = if epic { &snap.buttons.epic } else { &snap.buttons.task };
+    if act.state == State::Fresh {
+        if let Some(p) = group.as_ref().unwrap().start_providers.selected(&act.label, provider)? {
+            env.push(("WHEEL_ACTION_PROVIDER", p));
+        }
+    }
     if act.state == State::Saved {
-        env.push(("CONVERSATION", conversation.as_str()));
+        let supported = group.as_ref().and_then(|g| g.resume_provider.as_deref());
+        let saved = record.as_ref().and_then(|r| r.provider.as_deref());
+        for requested in [provider, saved.filter(|_| supported.is_some())].into_iter().flatten() {
+            match supported {
+                Some(p) if p == requested => {}
+                Some(p) => return Err(format!("the configured resume command supports {p}, but the conversation or selection requires {requested}")),
+                None => return Err(format!("resume.provider must name {requested} before this command can resume that provider")),
+            }
+        }
+        env.push(("CONVERSATION", conversation));
     }
     if !buttons::claim(&snap.path, bead) {
         return Err(format!("{bead} is already starting"));
@@ -104,11 +120,11 @@ pub fn press(dir: &str, bead: &str, pane: &str, changed: impl Fn() + Send + Sync
     let (path, id, after) = (snap.path.clone(), bead.to_string(), changed.clone());
     let remember = move |started: Option<String>| {
         if let Some(pane) = started.filter(|p| !p.is_empty()) {
-            let conversation = buttons::conversation_of(&path, &pane).unwrap_or_else(|e| {
+            let record = buttons::pane_record(&path, &pane).unwrap_or_else(|e| {
                 eprintln!("beads: {id}: {e}");
-                String::new()
+                buttons::Record { pane, conversation: String::new(), provider: None }
             });
-            if let Err(e) = buttons::record(&buttons::records_file(), &path, &id, buttons::Record { pane, conversation }) {
+            if let Err(e) = buttons::record(&buttons::records_file(), &path, &id, record) {
                 eprintln!("beads: could not record {id}: {e}");
             }
         }
@@ -126,9 +142,9 @@ pub fn press(dir: &str, bead: &str, pane: &str, changed: impl Fn() + Send + Sync
 }
 
 /// Run the project's list button `script` over `ids` for the pane `pane`.
-pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str) -> Result<String, String> {
+pub fn run_list(dir: &str, script: &str, ids: &[String], pane: &str, provider: Option<&str>) -> Result<String, String> {
     let (scripts, _) = crate::core::buttons::scripts(dir, "beads");
     let name = crate::core::project::name_of(dir);
     let env = [("BEAD_REPO", name.as_str()), ("BEAD_PATH", dir)];
-    crate::core::buttons::run_list(&scripts, script, ids, "BEAD_IDS", &env, dir, press_pane(pane), "beads")
+    crate::core::buttons::run_list(&scripts, script, ids, "BEAD_IDS", &env, dir, press_pane(pane), "beads", provider)
 }

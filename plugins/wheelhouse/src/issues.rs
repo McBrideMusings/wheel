@@ -15,6 +15,7 @@ pub struct Issue {
     pub state: String,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub has_pr: bool,
     pub author: String,
     pub body: String,
     pub url: String,
@@ -29,11 +30,13 @@ pub struct Snapshot {
     pub error: Option<String>,
     /// The list buttons under `[issues.list]` in the machine's and the project's wheel.toml.
     pub scripts: Vec<crate::core::buttons::Script>,
+    pub buttons: Vec<crate::prs::detail::Button>,
+    pub viewer: String,
     /// What was wrong with the wheel.toml, shown on the page without hiding the issues.
     pub problems: Vec<String>,
 }
 
-const FIELDS: &str = "number,title,state,labels,assignees,author,body,url,updatedAt";
+const FIELDS: &str = "number,title,state,labels,assignees,author,body,url,updatedAt,closedByPullRequestsReferences";
 
 fn issue(v: &Value) -> Issue {
     let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
@@ -46,6 +49,7 @@ fn issue(v: &Value) -> Issue {
         state: s("state").to_lowercase(),
         labels: names("labels", "name"),
         assignees: names("assignees", "login"),
+        has_pr: v["closedByPullRequestsReferences"].as_array().is_some_and(|prs| !prs.is_empty()),
         author: v["author"]["login"].as_str().unwrap_or("").to_string(),
         body: s("body"),
         url: s("url"),
@@ -77,8 +81,12 @@ pub fn close(dir: &str, number: i64) -> Result<(), String> {
 
 pub fn collect(dir: &str) -> Snapshot {
     let mut s = Snapshot { name: crate::core::project::name_of(dir), ..Default::default() };
-    let (scripts, problems) = crate::core::buttons::scripts(dir, "issues");
-    s.scripts = scripts;
+    let (files, problems) = crate::core::buttons::files(dir);
+    s.scripts = crate::core::buttons::scripts_of(&files, "issues");
+    s.buttons = crate::prs::detail::buttons_in(&files, "issues");
+    if !s.buttons.is_empty() {
+        s.viewer = run::gh(dir, &["api", "user", "--jq", ".login"]).unwrap_or_default().trim().to_string();
+    }
     s.problems = problems;
     match list(dir) {
         Ok(i) => s.issues = i,

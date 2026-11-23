@@ -36,6 +36,8 @@ pub struct Verb {
 pub struct Group {
     pub start: Verb,
     pub resume: Verb,
+    pub resume_provider: Option<String>,
+    pub start_providers: crate::core::buttons::Providers,
     pub focus: Verb,
 }
 
@@ -71,6 +73,8 @@ pub struct Act {
 pub struct Record {
     pub pane: String,
     pub conversation: String,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 fn verb(t: &toml_edit::Item, name: &str) -> Verb {
@@ -86,7 +90,7 @@ fn verb(t: &toml_edit::Item, name: &str) -> Verb {
 
 fn group(files: &[File], kind: &str) -> Option<Group> {
     let t = crate::core::buttons::table(files, &["beads", kind])?;
-    Some(Group { start: verb(t, "start"), resume: verb(t, "resume"), focus: verb(t, "focus") })
+    Some(Group { start: verb(t, "start"), start_providers: t.get("start").map(crate::core::buttons::Providers::read).unwrap_or_default(), resume: verb(t, "resume"), resume_provider: t.get("resume").and_then(|v| v.get("provider")).and_then(|v| v.as_str()).map(String::from), focus: verb(t, "focus") })
 }
 
 /// The buttons `files` write, the project's tables replacing the machine's.
@@ -226,14 +230,16 @@ pub fn open_panes(dir: &str) -> Result<HashSet<String>, String> {
     }
 }
 
-/// The conversation `wheel pane info <pane>` prints.
-pub fn conversation_of(dir: &str, pane: &str) -> Result<String, String> {
+/// Capture the harness that actually started, including when the Wheel setting selected it.
+pub fn pane_record(dir: &str, pane: &str) -> Result<Record, String> {
     let info = crate::core::run::text("wheel", dir, &["pane", "info", pane])?;
-    info.lines()
-        .find_map(|l| l.strip_prefix("Conversation:"))
-        .map(|c| c.trim().to_string())
-        .filter(|c| !c.is_empty())
-        .ok_or_else(|| format!("pane {pane} has no conversation"))
+    let field = |prefix: &str| info.lines().find_map(|l| l.strip_prefix(prefix)).map(str::trim);
+    let conversation = field("Conversation:").filter(|c| !c.is_empty()).ok_or_else(|| format!("pane {pane} has no conversation"))?;
+    let provider = field("Program:").map(|name| match name {
+        "Claude Code" => "claude".to_string(),
+        other => other.to_ascii_lowercase(),
+    });
+    Ok(Record { pane: pane.into(), conversation: conversation.into(), provider })
 }
 
 #[cfg(test)]
@@ -245,7 +251,7 @@ mod tests {
             label: Some(format!("{prefix} {n}")),
             run: run.then(|| format!("{n}.sh")),
         };
-        Group { start: v("start", true), resume: v("resume", true), focus: v("focus", false) }
+        Group { start: v("start", true), start_providers: Default::default(), resume: v("resume", true), resume_provider: None, focus: v("focus", false) }
     }
 
     fn buttons() -> Buttons {
@@ -253,7 +259,7 @@ mod tests {
     }
 
     fn rec(p: &str) -> Record {
-        Record { pane: p.into(), conversation: "c1".into() }
+        Record { pane: p.into(), conversation: "c1".into(), provider: None }
     }
 
     fn open(p: &[&str]) -> HashSet<String> {

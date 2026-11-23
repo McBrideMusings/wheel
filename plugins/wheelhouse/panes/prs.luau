@@ -281,7 +281,7 @@ local function loaded_sections(st, pr, d, now)
         .. " · updated " .. ago_words(d.updated, now), {})))
     table.insert(c, fact("GitHub", ui.Link{ title = pr.url, destination = pr.url }))
 
-    local agents = { { "default", "Default agent" } }
+    local agents = { { "default", "Use action provider" } }
     for _, a in d.agents or NONE do table.insert(agents, { a, a }) end
     local function key(text)
         return kit.label(text, { tone = "muted", size = 12 })
@@ -420,7 +420,7 @@ local function modal(st, snap, pr, d, now)
     local body = kit.box("v", c, { spacing = 12, align = "start" })
 
     -- The footer keeps every control in its place: one that does not apply is disabled, never missing.
-    local footer = {}
+    local footer = { kit.provider(st) }
     local ran = st.ran
     table.insert(footer, kit.label(if ran then ran.text else "", {
         tone = if ran and ran.bad then "bad" else "ok", weight = "semibold",
@@ -576,7 +576,7 @@ local function page(st, data, snap)
         for _, b in snap.buttons or NONE do labels[b.name] = b.label or b.name end
         st.labels = labels
         local actions = list.actions(snap.scripts or NONE, took, #shown, "PR numbers", "PRs", nil, more)
-        table.insert(children, list.bar(SPEC, st.list, options, actions))
+        table.insert(children, list.bar(SPEC, st.list, options, actions, st))
         table.insert(children, kit.box("v", { prs_table(st, snap, shown, now) }, {}))
         local cut = {}
         if #shown > MAX_ROWS then
@@ -628,11 +628,12 @@ end
 local function run_batch(state, dir, name, numbers)
     state.batch = { label = (state.labels or NONE)[name] or name, numbers = numbers, left = #numbers, failed = 0 }
     for _, n in numbers do
-        wheel.action("wheelhouse.pr_button", { dir = dir, number = n, name = name })
+        wheel.action("wheelhouse.pr_button", { provider = state.provider, dir = dir, number = n, name = name })
     end
 end
 
 local function update(state, msg)
+    if kit.set_provider(state, msg) then return end
     if msg.action then
         local failed = msg.error ~= nil
         local text = if failed then msg.error else (type(msg.result) == "table" and msg.result.said) or "Done."
@@ -699,7 +700,7 @@ local function update(state, msg)
         wheel.action("wheelhouse.pr_refresh", { dir = dir })
     elseif t == "list.run" then
         if msg.script then
-            wheel.action("wheelhouse.run_list", { dir = dir, script = msg.script, ids = state.ids or {}, view = "prs" })
+            wheel.action("wheelhouse.run_list", { provider = state.provider, dir = dir, script = msg.script, ids = state.ids or {}, view = "prs" })
         end
     elseif t == "row_button" then
         if msg.name and tonumber(msg.number) then
@@ -720,9 +721,9 @@ local function update(state, msg)
         elseif t == "pr_checkout" then
             wheel.action("wheelhouse.pr_checkout", { dir = dir, number = number })
         elseif t == "pr_worktree" then
-            wheel.action("wheelhouse.pr_worktree", { dir = dir, number = number, agent = state.agent, open = state.open })
+            wheel.action("wheelhouse.pr_worktree", { dir = dir, number = number, agent = if state.agent == "default" then state.provider or "default" else state.agent, open = state.open })
         elseif t == "pr_button" and msg.name then
-            wheel.action("wheelhouse.pr_button", { dir = dir, number = number, name = msg.name })
+            wheel.action("wheelhouse.pr_button", { provider = state.provider, dir = dir, number = number, name = msg.name })
         end
     end
 end

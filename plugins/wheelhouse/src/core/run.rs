@@ -74,6 +74,7 @@ pub fn button_then(
 ) -> Result<(), String> {
     let file = std::fs::File::create(log).map_err(|e| format!("{}: {e}", log.display()))?;
     let mut command = Command::new("/bin/sh");
+    command.env_remove("WHEEL_ACTION_PROVIDER");
     if pane != "default" {
         command.env("WHEEL_PANE", pane);
     }

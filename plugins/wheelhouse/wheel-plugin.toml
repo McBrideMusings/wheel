@@ -43,7 +43,7 @@ id = "issues"
 title = "Issues"
 script = "panes/issues.luau"
 reads = ["wheelhouse.issues"]
-actions = ["wheelhouse.issue_create", "wheelhouse.issue_close", "wheelhouse.run_list"]
+actions = ["wheelhouse.issue_button", "wheelhouse.issue_create", "wheelhouse.issue_close", "wheelhouse.run_list"]
 
 [[pane]]
 id = "project"

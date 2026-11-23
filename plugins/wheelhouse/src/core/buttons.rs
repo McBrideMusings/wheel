@@ -86,11 +86,34 @@ pub fn table<'a>(files: &'a [File], path: &[&str]) -> Option<&'a Item> {
     files.iter().filter_map(|f| at(&f.doc, path)).last().filter(|t| enabled(t))
 }
 
+/// An absent declaration preserves the legacy command under Default. An empty list
+/// explicitly marks a provider-independent action such as opening a space.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Providers(Option<Vec<String>>);
+
+impl Providers {
+    pub fn read(item: &Item) -> Self {
+        Self(item.get("providers").and_then(Item::as_array).map(|values| {
+            values.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect()
+        }))
+    }
+
+    pub fn selected<'a>(&self, label: &str, provider: Option<&'a str>) -> Result<Option<&'a str>, String> {
+        let Some(p) = provider else { return Ok(None) };
+        match &self.0 {
+            Some(names) if names.is_empty() => Ok(None),
+            Some(names) if names.iter().any(|name| name == p) => Ok(Some(p)),
+            _ => Err(format!("{label} does not declare support for {p} in wheel.toml")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Script {
     pub name: String,
     pub label: Option<String>,
     pub run: String,
+    pub providers: Providers,
 }
 
 impl Script {
@@ -111,6 +134,7 @@ pub fn scripts_of(files: &[File], table: &str) -> Vec<Script> {
         .into_iter()
         .map(|(name, s)| Script {
             name,
+            providers: Providers::read(s),
             label: s.get("label").and_then(|v| v.as_str()).map(String::from),
             run: s.get("run").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         })
@@ -120,7 +144,7 @@ pub fn scripts_of(files: &[File], table: &str) -> Vec<Script> {
 /// Run the list button `name` of `scripts` over `ids`: the shell runs in `dir` with `var` (BEAD_IDS,
 /// ISSUE_NUMBERS) holding the ids space separated, plus `env`, for the pane `pane`. The words for
 /// the page on success; an error for a button neither file wrote, an empty list or a failed run.
-pub fn run_list(scripts: &[Script], name: &str, ids: &[String], var: &str, env: &[(&str, &str)], dir: &str, pane: &str, what: &str) -> Result<String, String> {
+pub fn run_list(scripts: &[Script], name: &str, ids: &[String], var: &str, env: &[(&str, &str)], dir: &str, pane: &str, what: &str, provider: Option<&str>) -> Result<String, String> {
     let Some(sc) = scripts.iter().find(|x| x.name == name) else {
         return Err(format!("no list button {name}"));
     };
@@ -130,6 +154,7 @@ pub fn run_list(scripts: &[Script], name: &str, ids: &[String], var: &str, env: 
     let joined = ids.join(" ");
     let mut all = vec![(var, joined.as_str())];
     all.extend_from_slice(env);
+    if let Some(p) = sc.providers.selected(sc.label(), provider)? { all.push(("WHEEL_ACTION_PROVIDER", p)); }
     let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let log = std::env::temp_dir().join(format!("wheel-{what}-list-{safe}.log"));
     crate::core::run::button(sc.label(), &sc.run, dir, pane, &all, &log)?;
@@ -141,19 +166,33 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn explicit_choices_require_support_and_neutral_commands_keep_their_environment() {
+        let doc: DocumentMut = "[review]\nproviders=['claude','codex']\n[fixed]\nproviders=['claude']\n[open]\nproviders=[]\n[legacy]\nrun='true'".parse().unwrap();
+        for name in ["review", "fixed", "open", "legacy"] {
+            let supported = Providers::read(&doc[name]);
+            assert_eq!(supported.selected(name, None), Ok(None));
+            match name {
+                "review" => assert_eq!(supported.selected(name, Some("codex")), Ok(Some("codex"))),
+                "open" => assert_eq!(supported.selected(name, Some("codex")), Ok(None)),
+                _ => assert!(supported.selected(name, Some("codex")).is_err()),
+            }
+        }
+    }
+
+    #[test]
     fn a_list_button_runs_with_the_ids_and_refuses_an_unknown_one_or_an_empty_list() {
         let dir = std::env::temp_dir().join(format!("wheelhouse-run-list-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("env.txt");
         let scripts = vec![
-            Script { name: "go".into(), label: Some("Go".into()), run: format!("printf '%s|%s|%s' \"$BEAD_IDS\" \"$BEAD_REPO\" \"$WHEEL_PANE\" > {}", out.display()) },
+            Script { name: "go".into(), providers: Providers::default(), label: Some("Go".into()), run: format!("printf '%s|%s|%s' \"$BEAD_IDS\" \"$BEAD_REPO\" \"$WHEEL_PANE\" > {}", out.display()) },
         ];
         let ids = vec!["t-2".to_string(), "t-1".to_string()];
         let d = dir.to_str().unwrap();
-        assert_eq!(run_list(&scripts, "go", &ids, "BEAD_IDS", &[("BEAD_REPO", "t")], d, "p7", "beads").unwrap(), "Go started over 2 beads. See the new pane.");
+        assert_eq!(run_list(&scripts, "go", &ids, "BEAD_IDS", &[("BEAD_REPO", "t")], d, "p7", "beads", None).unwrap(), "Go started over 2 beads. See the new pane.");
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "t-2 t-1|t|p7", "the ids reach the shell in the order given");
-        assert_eq!(run_list(&scripts, "nope", &ids, "BEAD_IDS", &[], d, "p7", "beads"), Err("no list button nope".into()));
-        assert_eq!(run_list(&scripts, "go", &[], "BEAD_IDS", &[], d, "p7", "beads"), Err("the list is empty".into()));
+        assert_eq!(run_list(&scripts, "nope", &ids, "BEAD_IDS", &[], d, "p7", "beads", None), Err("no list button nope".into()));
+        assert_eq!(run_list(&scripts, "go", &[], "BEAD_IDS", &[], d, "p7", "beads", None), Err("the list is empty".into()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
