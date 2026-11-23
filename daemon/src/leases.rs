@@ -114,7 +114,7 @@ impl crate::server::AppState {
     pub(crate) fn agent_voice(&self, agent: Option<&str>, peer: SocketAddr) -> Result<(), String> {
         let agent = agent.map(|a| self.resolve_agent(a).map(|r| r.agent)).transpose()?;
         if let Some(agent) = &agent {
-            if agent.harness() != crate::resume::Harness::Claude {
+            if !matches!(agent.harness(), crate::resume::Harness::Claude | crate::resume::Harness::Pi) {
                 return Err(format!("{} has no way to take the voice line", agent.harness().title()));
             }
         }

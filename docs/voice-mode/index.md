@@ -24,7 +24,7 @@ The orchestrator is the main user: you talk through what's in the queue, give in
 - **In the orchestrator, topics apply unchanged** (orchestrator doc §4.2): "next", "back to X" and "triage" work by voice, and nothing from the queue is spoken unless you ask.
 - **Turn-taking:** detection on the device decides when you've stopped speaking (a voice-activity detector, e.g. Silero VAD), then sends the transcript. Hold-to-talk is a setting for noisy places.
 - **Interrupting:** tap the orb or start talking while the agent speaks. Speech stops at once, the unspoken rest of the reply is dropped from audio (it's still in the chat), and it listens.
-- **Spoken replies stay short.** While the voice client holds the `voice` lease and names an agent (`agent_voice`), each of that agent's turns carries the voice line (`daemon/src/voice.md`) as hidden context through a `UserPromptSubmit` hook: short spoken sentences, summarize rather than read out code, and put anything long on screen. Claude agents only; Codex and pi refuse (ADR-0055).
+- **Spoken replies stay short.** While the voice client holds the `voice` lease and names an agent (`agent_voice`), each of that agent's turns carries the voice line (`daemon/src/voice.md`) as hidden context: short spoken sentences, summarize rather than read out code, and put anything long on screen. Claude takes it through a `UserPromptSubmit` hook, pi through Wheel's extension adding it to each run's system prompt; Codex refuses (ADR-0055).
 - **Showing things:** when the agent refers to a diff, pane or doc, it shows it above the orb with `wheel agent card`. Tapping it opens it full screen.
 
 ## 4. Approvals

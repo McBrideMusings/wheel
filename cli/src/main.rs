@@ -1434,7 +1434,7 @@ enum AgentCommand {
     /// Talk to an agent in voice mode until this command is stopped: take the `voice` lease and
     /// name the agent, so each of its turns carries the voice line asking for short spoken replies
     /// (ADR-0055). Prints the agent's name once it is set, and ends with an error when another
-    /// connection takes the lease. Claude agents only.
+    /// connection takes the lease. Claude and pi agents only.
     Voice {
         /// An agent pane's id or its agent name.
         agent: String,
