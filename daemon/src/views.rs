@@ -168,8 +168,9 @@ impl AppState {
         let claude_dir = (Some(&home) != configured.as_ref()).then(|| home.display().to_string());
         let name = self.new_id('w');
         let carried = self.view_options.lock().unwrap().get(pane).cloned();
-        let (mut options, mut permissions) =
-            carried.map_or_else(Default::default, |c| (c.options, c.permissions));
+        let (mut options, mut permissions, mut visited) =
+            carried.map_or_else(Default::default, |c| (c.options, c.permissions, c.visited));
+        crate::spaces::visit(&mut visited, &agent.conversation);
         if kind == Harness::Codex {
             // Codex persists these settings itself. Replaying the old chat controls would
             // overwrite an explicit policy/reviewer or profile change made in its TUI.
@@ -193,6 +194,7 @@ impl AppState {
             agent: name.clone(),
             harness: kind.name().into(),
             conversation: Some(agent.conversation.clone()),
+            visited,
             state: None,
             model: None,
             context: None,
@@ -219,12 +221,13 @@ impl AppState {
     /// Turn an agent pane into a terminal running the same agent on the same conversation.
     async fn view_as_terminal(&self, pane: &str) -> Result<(), String> {
         let (kind, space_cwd) = self.kind_and_space(pane)?;
-        let (name, kind, cwd, picked) = match kind {
+        let (name, kind, cwd, picked, visited) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
             PaneKind::Agent {
                 agent,
                 harness,
                 place,
+                visited,
                 ..
             } => {
                 let kind = Harness::parse(&harness).ok_or_else(|| {
@@ -234,7 +237,7 @@ impl AppState {
                 // The agent's picks are the pane's: its shell starts with them. An empty one
                 // picks no override for an agent, so the shell is not given it.
                 let picked = place.env.into_iter().filter(|(_, v)| !v.is_empty()).collect::<std::collections::BTreeMap<_, _>>();
-                (agent, kind, place.cwd, picked)
+                (agent, kind, place.cwd, picked, visited)
             }
             other => return Err(not_switchable(pane, &other)),
         };
@@ -267,6 +270,7 @@ impl AppState {
             CarriedView {
                 options,
                 permissions,
+                visited,
             },
         );
         let agent = TermAgent {

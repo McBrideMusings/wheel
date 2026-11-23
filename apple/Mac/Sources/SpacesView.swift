@@ -603,7 +603,7 @@ struct PaneView: View {
             } else {
                 ProgressView()
             }
-        case let .agent(agent, harness):
+        case let .agent(agent, harness, _):
             if let chat = model.chats[agent] {
                 // A new agent in the same pane starts with a fresh draft and scroll position.
                 AgentBody(model: model, paneId: paneId, agent: harness, chat: chat)
@@ -745,7 +745,7 @@ struct PaneHeader: View {
         }
         // The conversations list, from the header button, the ⋯ menu or the empty conversation's "Show all…".
         .popover(isPresented: Binding(get: { model.conversationsPane == paneId }, set: { if !$0, model.conversationsPane == paneId { model.conversationsPane = nil } }), arrowEdge: .bottom) {
-            if case let .agent(agent, _) = kind, let chat = model.chats[agent] {
+            if case let .agent(agent, _, _) = kind, let chat = model.chats[agent] {
                 ConversationPicker(chat: chat, actions: model.conversationActions(chat, pane: paneId))
             }
         }
@@ -868,7 +868,7 @@ struct PaneHeader: View {
             if let web = model.webPanes[paneId] { WebTitle(web: web) } else { Text(artifact.name) }
         case let .browser(url):
             if let browser = model.browserPanes[paneId] { BrowserTitle(browser: browser) } else { Text(url) }
-        case let .agent(agent, harness):
+        case let .agent(agent, harness, _):
             if let chat = model.chats[agent] {
                 AgentTitle(model: model, chat: chat, paneId: paneId, agent: harness)
             } else {
@@ -1416,7 +1416,7 @@ struct PaneRestoreCover: View {
             RestoreShade(text: model.restartExpected ? "wheeld is restarting" : "wheeld is not connected", ring: model.restartExpected, blocks: true)
         } else if model.restoringPanes.contains(paneId) {
             switch kind {
-            case let .agent(agent, _):
+            case let .agent(agent, _, _):
                 if let chat = model.chats[agent] { AgentRestore(model: model, paneId: paneId, chat: chat) }
             case let .terminal(term, _):
                 if let terminal = model.terminals[term] { TerminalRestore(model: model, paneId: paneId, terminal: terminal) }

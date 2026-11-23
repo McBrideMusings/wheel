@@ -58,7 +58,7 @@ extension AppModel {
         focus(pane: pane)
         switch kind {
         case let .terminal(term, _): terminals[term]?.view?.requestFocus()
-        case let .agent(agent, _): chats[agent]?.composerFocusRequest += 1
+        case let .agent(agent, _, _): chats[agent]?.composerFocusRequest += 1
         case .empty: break
         default:
             // A page has no keyboard of its own to give; the shell that had it must not keep it.

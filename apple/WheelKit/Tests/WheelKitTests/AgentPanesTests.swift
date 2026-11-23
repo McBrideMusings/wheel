@@ -14,6 +14,9 @@ struct AgentPanesTests {
         // The agent's saved conversation id is the daemon's to keep; a client shows the pane as before.
         let saved = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p6","kind":"agent","agent":"w8","harness":"claude","conversation":"abc"}"#.utf8))
         #expect(saved == .pane(id: "p6", kind: .agent(agent: "w8", harness: "claude")))
+        // The conversations the pane has shown come oldest first, the current one last.
+        let visited = try JSONDecoder().decode(Node.self, from: Data(#"{"node":"pane","id":"p7","kind":"agent","agent":"w9","harness":"claude","conversation":"c3","visited":["c1","c2","c3"]}"#.utf8))
+        #expect(visited == .pane(id: "p7", kind: .agent(agent: "w9", harness: "claude", visited: ["c1", "c2", "c3"])))
     }
 
     /// A waiting request counts against the space whose agent pane runs the agent that asked.

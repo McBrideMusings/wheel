@@ -181,6 +181,11 @@ final class PhoneModel {
     private(set) var chats: [String: AgentChat] = [:]
     /// The files each agent pane's composer holds for its next message, keyed by pane id.
     private(set) var trays: [String: AttachmentTray] = [:]
+    /// Each agent pane's earlier conversations, drawn dimmed above its transcript, keyed by pane
+    /// id, with the agent they belong to: a pane that shows another agent starts a new store.
+    private var earlier: [String: (agent: String, store: EarlierConversations)] = [:]
+    /// The pane and conversation each `agent_conversation_history` sent reads.
+    private var historyReqs: [UInt64: (pane: String, id: String)] = [:]
     /// What the connected server offers, from its last status; `.none` until one arrives, so
     /// nothing whose op the server may lack shows before the server has said (ADR-0050).
     private(set) var serverOffer: ServerOffer = .none
@@ -397,6 +402,8 @@ final class PhoneModel {
         agents = []
         artifacts = nil
         menuReqs = []
+        earlier = [:]
+        historyReqs = [:]
         consoleOutbox = [:]
         consoleReqs = [:]
         agentReqs = [:]
@@ -437,7 +444,15 @@ final class PhoneModel {
             guard let self else { return }
             let wasConnected = connection == .connected
             connection = state
-            if state != .connected { for terminal in terminals.values { terminal.attached = false } }
+            if state != .connected {
+                for terminal in terminals.values { terminal.attached = false }
+                // A read in flight is lost with the connection; the next layout makes the stores
+                // again, and each divider asks once more.
+                if !historyReqs.isEmpty {
+                    historyReqs = [:]
+                    earlier = [:]
+                }
+            }
             if wasConnected, state != .connected { for link in pluginPanes.values { link.dropped() } }
             if state != .connected { links.forget(); consoleReqs = [:] }
             if case .connected = state {
@@ -660,6 +675,12 @@ final class PhoneModel {
             consoleAnswered(req)
             menuReqs.remove(req)
             spaceReqs.remove(req)
+        case let .conversationHistory(req, agent, id, found, events):
+            guard let asked = historyReqs.removeValue(forKey: req), let store = earlier[asked.pane]?.store else { break }
+            if found { store.loaded(id, agent: agent, events: events) } else { store.gone(id) }
+            Log.info("pane \(asked.pane) earlier \(id): \(found ? "\(events.count) events" : "not in the store")")
+        case let .conversation(req, agent, id):
+            if menuReqs.remove(req) != nil { Log.info("agent \(agent) resumed \(id)") }
         case let .paneView(req, pane, view, conversation):
             menuReqs.remove(req)
             Log.info("pane \(pane) view \(view?.rawValue ?? "-") conversation \(conversation ?? "-")")
@@ -692,6 +713,10 @@ final class PhoneModel {
                 Log.info("setting \(field.key) refused: \(message)")
             }
             if let req { startWhenMade[req] = nil }
+            if let req, let asked = historyReqs.removeValue(forKey: req) {
+                // A refusal (a harness wheeld cannot read without loading) leaves Resume usable.
+                Log.info("pane \(asked.pane) earlier \(asked.id) refused: \(message)")
+            }
             if let req, menuReqs.remove(req) != nil {
                 menuError = message
                 Log.info("pane op refused: \(message)")
@@ -960,6 +985,7 @@ final class PhoneModel {
             tray.uploads = { [weak self] in self?.uploads() }
             trays[pane] = tray
         }
+        syncEarlier()
         guard let client else { return }
         let agents = Set(AgentPanes.agents(spaces).values)
         for name in chats.keys where !agents.contains(name) {
@@ -989,6 +1015,58 @@ final class PhoneModel {
             chats[name] = chat
             attach(chat)
         }
+    }
+
+    /// The earlier conversations agent pane `pane` draws above its transcript.
+    func earlier(for pane: String) -> EarlierConversations {
+        earlier[pane]?.store ?? .none
+    }
+
+    /// Give each agent pane the conversations it showed before its current one (the last of
+    /// `visited`); a server that cannot read a past conversation gets none drawn.
+    private func syncEarlier() {
+        let reads = serverOffer.has("agent_conversation_history")
+        var shown: [String: (agent: String, ids: [String])] = [:]
+        for space in spaces {
+            for pane in space.allPanes {
+                if case let .agent(agent, _, visited) = pane.kind {
+                    shown[pane.id] = (agent, reads ? Array(visited.dropLast()) : [])
+                }
+            }
+        }
+        for pane in earlier.keys where shown[pane]?.agent != earlier[pane]?.agent {
+            earlier[pane] = nil
+        }
+        for (pane, want) in shown {
+            let store: EarlierConversations
+            if let held = earlier[pane]?.store {
+                store = held
+            } else {
+                store = EarlierConversations()
+                store.load = { [weak self] id in self?.readEarlier(pane: pane, agent: want.agent, id: id) }
+                store.resume = { [weak self] id in self?.resumeEarlier(pane: pane, agent: want.agent, id: id) }
+                earlier[pane] = (want.agent, store)
+            }
+            let was = store.list.map(\.id)
+            store.show(want.ids)
+            if was != want.ids { Log.info("pane \(pane) earlier conversations: \(want.ids.joined(separator: ","))") }
+        }
+    }
+
+    private func readEarlier(pane: String, agent: String, id: String) {
+        guard let client else { return }
+        let req = client.req()
+        historyReqs[req] = (pane, id)
+        Log.info("pane \(pane) reading earlier \(id)")
+        client.send(.agentConversationHistory(req: req, agent: agent, id: id))
+    }
+
+    private func resumeEarlier(pane: String, agent: String, id: String) {
+        guard let client else { return }
+        let req = client.req()
+        menuReqs.insert(req)
+        Log.info("pane \(pane) resume \(id)")
+        client.send(.agentConversationResume(req: req, agent: agent, id: id))
     }
 
     /// Stream an agent's conversation; `agent_attached` resets its transcript.

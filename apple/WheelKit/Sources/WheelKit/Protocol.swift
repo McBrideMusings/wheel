@@ -213,6 +213,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// Put the agent back in the past conversation `id`; replies `conversation`, and every
     /// attached client is sent its replayed transcript.
     case agentConversationResume(req: UInt64?, agent: String, id: String)
+    /// Read past conversation `id` of the agent's store without loading it, to draw it above the
+    /// one the agent is in; replies `conversationHistory`. Claude Code's store only.
+    case agentConversationHistory(req: UInt64?, agent: String, id: String)
     /// Fork the agent's conversation through its first `turns` turns into a new agent pane beside
     /// its own. Replies `started` with the new pane and agent. Needs protocol 28; Pi cannot.
     case agentFork(req: UInt64?, agent: String, turns: UInt32)
@@ -472,6 +475,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_conversation_new", "agent": agent]; put(req)
         case let .agentConversationResume(req, agent, id):
             o = ["op": "agent_conversation_resume", "agent": agent, "id": id]; put(req)
+        case let .agentConversationHistory(req, agent, id):
+            o = ["op": "agent_conversation_history", "agent": agent, "id": id]; put(req)
         case let .agentFork(req, agent, turns):
             o = ["op": "agent_fork", "agent": agent, "turns": turns]; put(req)
         case let .spaceRename(req, space, name):
@@ -1329,6 +1334,9 @@ public enum ServerMsg: Sendable {
     case conversations(req: UInt64, agent: String, conversations: [ConversationInfo], more: Bool)
     /// The conversation an agent is in after a new or a resume: the agent's id for it.
     case conversation(req: UInt64, agent: String, id: String)
+    /// Past conversation `id` of an agent, for `agentConversationHistory`: its events, none
+    /// stamped. `found` is false, with no events, when the agent's store does not hold it.
+    case conversationHistory(req: UInt64, agent: String, id: String, found: Bool, events: [StampedEvent])
     case permRequested(PermInfo)
     case permResolved(id: String, choice: String)
     /// The usage board, in reply to `usage`.
@@ -1537,6 +1545,10 @@ extension ServerMsg: Decodable {
         case "conversation":
             self = .conversation(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
                                  id: try c.decode(String.self, forKey: .id))
+        case "conversation_history":
+            self = .conversationHistory(req: try c.decode(UInt64.self, forKey: .req), agent: try c.decode(String.self, forKey: .agent),
+                                        id: try c.decode(String.self, forKey: .id), found: try c.decode(Bool.self, forKey: .found),
+                                        events: try c.decodeIfPresent([StampedEvent].self, forKey: .events) ?? [])
         case "usage": self = .usage(req: try c.decode(UInt64.self, forKey: .req), board: try c.decode(UsageBoard.self, forKey: .board))
         case "title_buttons": self = .titleButtons(req: try c.decode(UInt64.self, forKey: .req), space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))
         case "title_buttons_changed": self = .titleButtonsChanged(space: try c.decode(String.self, forKey: .space), buttons: try c.decode([TitleButtonInfo].self, forKey: .buttons))

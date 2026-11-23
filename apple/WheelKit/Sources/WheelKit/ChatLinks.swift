@@ -601,7 +601,7 @@ extension ChatLinks {
     public static func place(ofAgent agent: String, in spaces: [SpaceInfo]) -> (space: String, cwd: String, pane: String)? {
         for space in spaces {
             for pane in space.ownedPanes {
-                if case let .agent(name, _) = pane.kind, name == agent { return (space.id, space.cwd, pane.id) }
+                if case let .agent(name, _, _) = pane.kind, name == agent { return (space.id, space.cwd, pane.id) }
             }
         }
         return nil
@@ -614,7 +614,7 @@ extension ChatLinks {
         for space in spaces {
             for pane in space.allPanes {
                 var part = "\(space.id) \(space.cwd) \(chip(for: pane.id, in: [space]) ?? pane.id)"
-                if case let .agent(name, _) = pane.kind { part += " \(name)" }
+                if case let .agent(name, _, _) = pane.kind { part += " \(name)" }
                 parts.append(part)
             }
         }
@@ -632,7 +632,7 @@ extension ChatLinks {
                 case let .terminal(_, agent): what = agent.map { AgentInfo.title(of: $0.name) } ?? "Terminal"
                 case let .web(artifact): what = artifact.name
                 case .browser: what = "Browser"
-                case let .agent(_, agent): what = AgentInfo.title(of: agent)
+                case let .agent(_, agent, _): what = AgentInfo.title(of: agent)
                 case let .unknown(kind, _): what = kind
                 }
                 return "\(id) · \(what)"

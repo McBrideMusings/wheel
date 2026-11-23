@@ -9,7 +9,7 @@ public enum AgentPanes {
         for space in spaces {
             for pane in space.allPanes {
                 switch pane.kind {
-                case let .agent(agent, _): out[pane.id] = agent
+                case let .agent(agent, _, _): out[pane.id] = agent
                 default: break
                 }
             }
@@ -21,7 +21,7 @@ public enum AgentPanes {
     public static func harness(ofAgent agent: String, in spaces: [SpaceInfo]) -> String? {
         for space in spaces {
             for pane in space.ownedPanes {
-                if case let .agent(name, harness) = pane.kind, name == agent { return harness }
+                if case let .agent(name, harness, _) = pane.kind, name == agent { return harness }
             }
         }
         return nil

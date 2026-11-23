@@ -44,11 +44,12 @@ pub(crate) struct AgentStart {
 }
 
 /// An agent pane's choices while the pane is a terminal: the model and mode (config option id,
-/// value) and the permissions it was started with.
+/// value), the permissions it was started with and the conversations it had shown.
 #[derive(Clone)]
 pub(crate) struct CarriedView {
     pub options: Vec<(String, String)>,
     pub permissions: AgentPermissions,
+    pub visited: Vec<String>,
 }
 
 /// Messages queued for one client. When a client stops reading, its terminal forwarders block
@@ -1800,6 +1801,32 @@ async fn handle(
                     }),
                     Err(message) => {
                         tracing::warn!(%peer, %message, "agent conversation ls failed");
+                        Some(failed(req, message))
+                    }
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
+        ClientMsg::AgentConversationHistory { req, agent, id } => {
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let read = match state.resolve_agent(&agent) {
+                    Ok(found) => found.agent.conversation_history(&id).await,
+                    Err(message) => Err(message),
+                };
+                let reply = match read {
+                    Ok(events) => req.map(|req| ServerMsg::ConversationHistory {
+                        req,
+                        agent,
+                        id,
+                        found: events.is_some(),
+                        events: events.unwrap_or_default(),
+                    }),
+                    Err(message) => {
+                        tracing::warn!(%peer, %message, "agent conversation history failed");
                         Some(failed(req, message))
                     }
                 };

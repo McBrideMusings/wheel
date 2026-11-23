@@ -2076,6 +2076,15 @@ pub enum ClientMsg {
         agent: String,
         turns: u32,
     },
+    /// Read past conversation `id` of the agent's store without loading it, to draw it above the
+    /// one the agent is in. Replies `conversation_history`. Refused for an agent whose harness's
+    /// store wheeld cannot read (only Claude Code's can be).
+    AgentConversationHistory {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        agent: String,
+        id: String,
+    },
     /// Put the agent in a past conversation, named by the `id` a `conversations` entry carries.
     /// The agent replays it and that history becomes the transcript, which every attached client
     /// is sent. A load that fails leaves the agent in the conversation it was already in.
@@ -2447,6 +2456,17 @@ pub enum ServerMsg {
         /// Whether older conversations remain after this page.
         #[serde(default)]
         more: bool,
+    },
+    /// Past conversation `id` of an agent, for `agent_conversation_history`: its events as the
+    /// transcript would hold them, turns numbered from 1, none stamped. `found` is false, with no
+    /// events, when the agent's store does not hold it.
+    ConversationHistory {
+        req: u64,
+        agent: String,
+        id: String,
+        found: bool,
+        #[serde(default)]
+        events: Vec<StampedEvent>,
     },
     /// The conversation an agent is in now, after a `agent_conversation_new` or
     /// `agent_conversation_resume`: the agent's own id for it.
@@ -3072,6 +3092,7 @@ impl ServerMsg {
             | ServerMsg::AgentQueued { req, .. }
             | ServerMsg::AgentWaited { req, .. }
             | ServerMsg::Conversations { req, .. }
+            | ServerMsg::ConversationHistory { req, .. }
             | ServerMsg::Conversation { req, .. }
             | ServerMsg::Artifact { req, .. }
             | ServerMsg::Artifacts { req, .. }
@@ -4676,6 +4697,11 @@ pub enum PaneKind {
         agent: String,
         harness: String,
         conversation: Option<String>,
+        /// Every conversation the pane has shown, in the order it last showed each, oldest first;
+        /// the last is `conversation`. wheeld appends one whenever the agent's conversation
+        /// changes (a start, `agent_conversation_new`, `agent_conversation_resume`), moving an id
+        /// it holds to the end, and saves it with the pane.
+        visited: Vec<String>,
         state: Option<Box<AgentState>>,
         /// The model the pane's agent was started on, saved so a restart runs the agent on it
         /// again; the listing (`status`) replaces it with the model the running agent reports.
@@ -4828,6 +4854,8 @@ enum KnownPaneKind {
         harness: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        visited: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<AgentState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4904,6 +4932,7 @@ impl Serialize for PaneKind {
                 agent,
                 harness,
                 conversation,
+                visited,
                 state,
                 model,
                 context,
@@ -4916,6 +4945,7 @@ impl Serialize for PaneKind {
                     agent: agent.clone(),
                     harness: harness.clone(),
                     conversation: conversation.clone(),
+                    visited: visited.clone(),
                     state: state.as_deref().cloned(),
                     model: model.clone(),
                     context: *context,
@@ -5009,6 +5039,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 agent,
                 harness,
                 conversation,
+                visited,
                 state,
                 model,
                 context,
@@ -5023,6 +5054,7 @@ impl<'de> Deserialize<'de> for PaneKind {
                 agent,
                 harness,
                 conversation,
+                visited,
                 state: state.map(Box::new),
                 model,
                 context,

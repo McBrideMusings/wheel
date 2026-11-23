@@ -2353,6 +2353,7 @@ impl AppState {
             agent: name.clone(),
             harness: harness.to_string(),
             conversation: None,
+            visited: Vec::new(),
             state: None,
             model,
             context: None,
@@ -3104,6 +3105,7 @@ impl AppState {
                 let PaneKind::Agent {
                     agent,
                     conversation,
+                    visited,
                     ..
                 } = kind
                 else {
@@ -3116,6 +3118,9 @@ impl AppState {
                     tracing::info!(%agent, conversation = ?running, "agent pane saves its conversation");
                     *conversation = running;
                     changed = true;
+                }
+                if let Some(id) = conversation {
+                    changed |= visit(visited, id);
                 }
             });
         }
@@ -3214,6 +3219,17 @@ fn unknown_in(node: &Node) -> Vec<(&str, &str)> {
             all
         }
     }
+}
+
+/// Note that a pane shows conversation `id` now: it goes last in `visited`, moved there when the
+/// pane showed it before. True when `visited` changed.
+pub(crate) fn visit(visited: &mut Vec<String>, id: &str) -> bool {
+    if visited.last().map(String::as_str) == Some(id) {
+        return false;
+    }
+    visited.retain(|seen| seen != id);
+    visited.push(id.to_string());
+    true
 }
 
 /// An agent pane as saved: its agent id, the program it runs and the conversation it keeps.
