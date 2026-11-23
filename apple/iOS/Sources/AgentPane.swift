@@ -81,7 +81,8 @@ struct AgentPane: View {
                 busy: chat.isBusy,
                 stop: { model.cancel(chat) },
                 takeBack: { chat.takeBack() },
-                readAloud: $chat.readsAloud
+                readAloud: $chat.readsAloud,
+                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
             )
             .padding(10)
         }

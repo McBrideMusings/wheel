@@ -412,20 +412,16 @@ struct SpaceCarousel: View {
     private func go(_ id: String) { withAnimation { page = id } }
 
     /// Under Orchestrator mode's title: the current topic's line on every page, which opens its notes, then the
-    /// orchestrator's model menu while its chat is the shown page, else the shown page's name.
+    /// shown page's name on every page but the chat (whose model menu is on its composer).
     private func orchestratorDetail(pages: Pages) -> AnyView? {
         guard orchestratorMode else { return nil }
         let topic = model.orchestratorTopic
-        var chat: AgentChat?
-        if let chatPane = model.orchestratorPane, (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == chatPane,
-           case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind {
-            chat = model.chats[agent]
-        }
-        let name = chat == nil ? shownPageName(pages: pages) : nil
-        guard topic != nil || chat != nil || name != nil else { return nil }
+        let onChat = model.orchestratorPane != nil
+            && (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == model.orchestratorPane
+        let name = onChat ? nil : shownPageName(pages: pages)
+        guard topic != nil || name != nil else { return nil }
         return AnyView(VStack(alignment: .leading, spacing: 0) {
             if let topic { TopicLine(topic: topic) }
-            if let chat { ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) } }
             if let name {
                 Text(name).font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     .frame(minHeight: 22)

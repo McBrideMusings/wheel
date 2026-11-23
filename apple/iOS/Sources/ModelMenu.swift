@@ -2,7 +2,7 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-/// The agent's model as a small menu, its current name with a chevron, for the line under a chat's title; nothing when
+/// The agent's model as a small menu, its current name with a chevron, for the composer's row; nothing when
 /// the agent offers no model choice. A pick checks the model the agent took, not the one tapped.
 struct ModelMenu: View {
     @ObservedObject var chat: AgentChat

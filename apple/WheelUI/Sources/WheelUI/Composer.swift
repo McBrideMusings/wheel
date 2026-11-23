@@ -52,6 +52,8 @@ public struct Composer: View {
     /// Whether this conversation's replies are read aloud; nil draws no speaker control.
     @Binding var readAloud: Bool
     let showsReadAloud: Bool
+    /// The pane's own controls for the row, drawn left of the mic and send: the phone's model menu.
+    var accessory: AnyView?
 
     public init(
         placeholder: String,
@@ -74,8 +76,10 @@ public struct Composer: View {
         sendNow: @escaping () -> Void = {},
         takeBack: @escaping () -> Bool = { false },
         permissionKey: ((PermissionKey) -> Bool)? = nil,
-        readAloud: Binding<Bool>? = nil
+        readAloud: Binding<Bool>? = nil,
+        accessory: AnyView? = nil
     ) {
+        self.accessory = accessory
         self._readAloud = readAloud ?? .constant(false)
         self.showsReadAloud = readAloud != nil
         self.takeBack = takeBack
@@ -261,6 +265,9 @@ public struct Composer: View {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
                 }
                 Spacer()
+                // Right of the spacer, so its width (a model's name, the menu arriving with the agent's config) moves
+                // no other control.
+                if let accessory { accessory }
                 #if os(iOS)
                 // hack: placeholders, in place and sized, that do nothing until wheel-eg4e.19.31 builds dictation and voice mode.
                 Button("Dictate", systemImage: "mic") { UILog.info("composer: dictate tapped, not built") }

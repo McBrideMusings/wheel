@@ -7,7 +7,7 @@ import WheelUI
 
 /// The composer's + on the phone: Photo Library (several at once), Take Photo where the device has a camera, and Choose
 /// File, when wheeld takes uploads; then Clear chat, which asks first, where the harness resets on `/clear`. The model
-/// is picked under the chat's title (`ModelMenu`).
+/// is picked on the composer's row (`ModelMenu`).
 /// Every pick lands in the pane's `AttachmentTray`.
 struct AttachMenu: View {
     let tray: AttachmentTray

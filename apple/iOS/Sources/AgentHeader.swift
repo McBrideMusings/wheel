@@ -33,7 +33,6 @@ struct AgentHeader: View {
                     if harness.caseInsensitiveCompare(agent) != .orderedSame {
                         Text("· \(harness)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) }
                     Spacer(minLength: 8)
                     if let context = chat.context {
                         ContextRing(fraction: context.fraction, hot: context.percent > 80)

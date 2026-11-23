@@ -50,9 +50,14 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
         let here = (title.frame, app.buttons["Pane menu"].frame)
         XCTAssertFalse(app.otherElements["page handle"].exists, "Orchestrator mode has no page handle")
-        // The model is the title's one detail, on the chat.
-        XCTAssertTrue(app.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is under the title")
-        XCTAssertGreaterThan(app.buttons["model menu"].frame.minY, title.frame.maxY - 1, "the model sits under the title")
+        // The model menu is on the composer's row (design M10), the pane's only one, between the + and the mic.
+        XCTAssertTrue(chat.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is in the chat")
+        XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "one model menu on the screen")
+        let plus = chat.buttons["Attach"].frame, menu = chat.buttons["model menu"].frame
+        XCTAssertGreaterThan(menu.minX, plus.maxX - 1, "the model sits right of the +")
+        XCTAssertLessThan(menu.maxX, chat.buttons["dictate"].frame.minX + 1, "the model sits left of the mic")
+        XCTAssertLessThan(abs(menu.midY - plus.midY), 8, "the model sits on the composer's row")
+        XCTAssertGreaterThan(menu.minY, chat.textViews.firstMatch.frame.maxY - 1, "the model sits under the text field")
         sync("chrome")
 
         // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
@@ -93,7 +98,7 @@ final class OrchestratorUITests: XCTestCase {
         let keyboardTop = app.keyboards.firstMatch.frame.minY
         chat.buttons["Attach"].tap()
         XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens")
-        XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "the + menu holds no Model; only the title's")
+        XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "the + menu holds no Model; only the composer's")
         XCTAssertTrue(app.buttons["Clear chat"].isHittable, "Clear chat is on top, not behind the keyboard")
         XCTAssertLessThanOrEqual(app.buttons["Clear chat"].frame.maxY, keyboardTop, "the menu ends above the keyboard")
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "the composer let go of the keyboard")
