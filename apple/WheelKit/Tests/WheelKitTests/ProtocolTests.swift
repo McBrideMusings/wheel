@@ -554,6 +554,15 @@ struct ProtocolTests {
             Issue.record("wrong case"); return
         }
         #expect(id == "c1")
+        #expect(try ClientMsg.agentConversationHistory(req: 4, agent: "w1", id: "c0").json() == #"{"agent":"w1","id":"c0","op":"agent_conversation_history","req":4}"#)
+        guard case let .conversationHistory(hreq, _, hid, found, events) = try ServerMsg.decode(
+            #"{"ev":"conversation_history","req":4,"agent":"w1","id":"c0","found":true,"events":[{"kind":"user","text":"hi","turn":1},{"kind":"text","text":"hello","turn":1}]}"#
+        ) else { Issue.record("wrong case"); return }
+        #expect(hreq == 4 && hid == "c0" && found && events.count == 2)
+        guard case let .conversationHistory(_, _, _, gone, none) = try ServerMsg.decode(#"{"ev":"conversation_history","req":5,"agent":"w1","id":"cx","found":false}"#) else {
+            Issue.record("wrong case"); return
+        }
+        #expect(!gone && none.isEmpty)
     }
 
     /// A row says how long ago its conversation was worked in, whether the agent's timestamp has

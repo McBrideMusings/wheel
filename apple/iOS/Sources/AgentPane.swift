@@ -30,7 +30,8 @@ struct AgentPane: View {
                     }, uniquingKeysWith: { first, _ in first }),
                     count: model.perms.count
                 ),
-                look: model.appearance(forAgent: chat.name)
+                look: model.appearance(forAgent: chat.name),
+                earlier: model.earlier(for: pane)
             )
             .environment(\.chatLinks, model.links)
             .overlay { TaskFullView(chat: chat) { model.readTaskOutput(chat, task: $0) } }

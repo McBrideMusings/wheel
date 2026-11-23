@@ -213,7 +213,7 @@ struct SpaceCarousel: View {
             TerminalPageSurface(model: model, term: term)
                 // The surface draws its own opaque background, so the tint goes over it.
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
-        } else if case let .agent(agent, harness) = pane.kind, let chat = model.chats[agent] {
+        } else if case let .agent(agent, harness, _) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat,
                       orchestrator: pane.id == model.orchestratorPane)
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
@@ -399,7 +399,7 @@ struct SpaceCarousel: View {
     /// The orchestrator's model menu, under the title while its chat is the shown page.
     private func orchestratorDetail(pages: Pages) -> AnyView? {
         guard orchestratorMode, let chatPane = model.orchestratorPane, (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == chatPane,
-              case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent]
+              case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent]
         else { return nil }
         return AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
     }
@@ -407,7 +407,7 @@ struct SpaceCarousel: View {
     /// Orchestrator mode's way back to the chat, over every page but the chat, clear of the bottom bar.
     @ViewBuilder private func floatButton(pages: Pages, landscape: Bool) -> some View {
         if let chatPane = model.orchestratorPane, let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first, shown != chatPane,
-           case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
+           case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
             OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count) {
                 Log.info("float: back to the chat")
                 go(chatPane)
@@ -502,7 +502,7 @@ struct SpaceCarousel: View {
         let firstAgent: () -> (pane: String, agent: String)? = {
             let panes = model.activeSpace?.root.readingOrder ?? []
             return panes.lazy.compactMap { pane -> (String, String)? in
-                if case let .agent(agent, _) = pane.kind { (pane.id, agent) } else { nil }
+                if case let .agent(agent, _, _) = pane.kind { (pane.id, agent) } else { nil }
             }.first
         }
         if let paths = env["WHEEL_ATTACH"] {
@@ -695,7 +695,7 @@ private struct PluginEmbed: View {
             switch (embed.kind, kind) {
             case (.artifact, _):
                 model.artifactEmbed(host: host, name: embed.pane)
-            case let (.agentChat, .agent(agent, harness)?) where model.chats[agent] != nil:
+            case let (.agentChat, .agent(agent, harness, _)?) where model.chats[agent] != nil:
                 AgentPane(model: model, pane: embed.pane, agent: agent, harness: harness, chat: model.chats[agent]!)
             case let (.terminal, .terminal(term, _)?):
                 // A new identity per term: a pane that starts another shell gets a new surface.
@@ -760,7 +760,7 @@ private struct PanePlaceholder: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if case let .agent(_, agent) = kind {
+            if case let .agent(_, agent, _) = kind {
                 AgentLogo(agent: agent).frame(width: 40, height: 40)
             } else {
                 Image(systemName: symbol).font(.largeTitle)

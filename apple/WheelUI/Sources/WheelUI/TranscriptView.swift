@@ -13,15 +13,18 @@ public struct TranscriptView: View {
     let look: ChatAppearance
     /// What an empty conversation can do about past ones; nil leaves it showing only `empty`.
     let conversations: ConversationActions?
+    /// The conversations the pane showed before this one, drawn dimmed above it.
+    @ObservedObject var earlier: EarlierConversations
     @Environment(\.transcriptPlatform) private var platform
     @Environment(\.spaceShown) private var spaceShown
 
-    public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, conversations: ConversationActions? = nil) {
+    public init(chat: AgentChat, empty: String, permissions: PermissionQueue = PermissionQueue(), look: ChatAppearance = .standard, conversations: ConversationActions? = nil, earlier: EarlierConversations = .none) {
         self.chat = chat
         self.empty = empty
         self.permissions = permissions
         self.look = look
         self.conversations = conversations
+        self.earlier = earlier
     }
 
     /// Go to the last item while the view follows the end.
@@ -37,7 +40,7 @@ public struct TranscriptView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if chat.rows.isEmpty {
+        if chat.rows.isEmpty && earlier.list.isEmpty {
             // Outside the scroll view, so it sits in the middle of the space the transcript has
             // rather than pinned to the bottom of an empty scroll.
             VStack(spacing: 12) {
@@ -79,6 +82,35 @@ public struct TranscriptView: View {
             // of the rows past the viewport could ask for another update at the end of every
             // update, and the main thread never got back to its run loop.
             List {
+                ForEach(earlier.list) { past in
+                    EarlierDivider(item: past, block: conversationBlock(chat)) { earlier.resume(past.id) }
+                        .frame(maxWidth: look.maxWidth ?? .infinity)
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 12, leading: 14, bottom: 4, trailing: 14))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .onAppear { earlier.request(past.id) }
+                    if let old = past.chat {
+                        ForEach(Array(old.items.enumerated()), id: \.element.id) { index, item in
+                            ChatItemView(chat: old, item: item, copyable: false, context: RowContext())
+                                .opacity(0.5)
+                                .frame(maxWidth: look.maxWidth ?? .infinity)
+                                .frame(maxWidth: .infinity)
+                                .listRowInsets(EdgeInsets(top: gap(before: index, in: old.items), leading: 14, bottom: 0, trailing: 14))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+                if items.isEmpty {
+                    Text(empty)
+                        .font(look.body)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 14, bottom: 12, trailing: 14))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     ChatItemView(chat: chat, item: item, copyable: replyEnds.contains(item.id), context: context)
                         .frame(maxWidth: look.maxWidth ?? .infinity)

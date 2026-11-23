@@ -50,7 +50,7 @@ enum PhoneCommands {
             return "\(name) — \(stateWords(status))"
         }
         switch kind {
-        case let .agent(name, _): return agent(name)
+        case let .agent(name, _, _): return agent(name)
         case let .terminal(_, name?): return agent(name.name)
         case .terminal: return "Terminal"
         case let .web(artifact): return artifact.name
