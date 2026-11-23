@@ -431,6 +431,12 @@ fn append_end(node: &mut Node, split_id: &str, leaf: Node) {
     };
 }
 
+/// `dir` resolved through symlinks, unchanged when it cannot be: a client finds a space by comparing
+/// its folder with a path wheeld reports resolved (`orchestrator.dir`), so a space holds the real one.
+pub(crate) fn real_dir(dir: &str) -> String {
+    std::fs::canonicalize(dir).map_or_else(|_| dir.to_string(), |p| p.display().to_string())
+}
+
 /// A space's name: `name` trimmed, else the last component of its directory, else the directory.
 fn space_name(name: Option<&str>, cwd: &str) -> String {
     name.map(|n| n.trim().to_string())
@@ -976,6 +982,7 @@ impl AppState {
         if !path.is_absolute() || !path.is_dir() {
             return Err(format!("{cwd} is not an absolute path to a directory"));
         }
+        let cwd = real_dir(&cwd);
         let name = space_name(name.as_deref(), &cwd);
         let (id, pane) = (self.new_id('s'), self.new_id('p'));
         let space = SpaceInfo {
@@ -2735,6 +2742,7 @@ impl AppState {
         self.next_id.fetch_max(next_id, Ordering::SeqCst);
         // A title is the running program's; the programs started now set their own.
         for space in &mut loaded.spaces {
+            space.cwd = real_dir(&space.cwd);
             for tree in space.trees_mut() {
                 each_leaf_mut(tree, &mut |leaf| {
                     if let Node::Pane { title, .. } = leaf {

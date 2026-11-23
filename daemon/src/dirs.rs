@@ -81,8 +81,10 @@ impl AppState {
                     .collect()
             };
             list(&expanded, Path::new(&expanded), |p| {
+                // A space holds its folder resolved; the folder listed may be reached through a link.
+                let p = crate::spaces::real_dir(p);
                 open.iter()
-                    .find(|(cwd, _)| cwd == p)
+                    .find(|(cwd, _)| *cwd == p)
                     .map(|(_, id)| id.clone())
             })
         } else {

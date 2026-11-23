@@ -18,6 +18,9 @@ use wheel_proto::{SettingInfo, SettingOrigin};
 
 use crate::server::AppState;
 
+/// The orchestrator's folder (ADR-0054).
+const ORCHESTRATOR_DIR: &str = "orchestrator.dir";
+
 /// The file holding settings, in a project's directory and in the instance directory alike.
 pub(crate) const FILE: &str = "wheel.toml";
 
@@ -531,7 +534,7 @@ const KEYS: [Key; 69] = [
         help: "The program an agent pane running pi starts, with any arguments of its own (a --model, say); found on PATH when it has no directory. Read from this machine's file only.",
     },
     Key {
-        id: "orchestrator.dir",
+        id: ORCHESTRATOR_DIR,
         accepts: Accepts::Directory,
         default: "",
         help: "The folder of the orchestrator: a client's Orchestrator mode shows the agent pane of the space open on it. Empty means the orchestrator folder beside this machine's wheel.toml, ~/.wheel/orchestrator. Read from this machine's file only.",
@@ -1205,15 +1208,26 @@ impl AppState {
                 let project_sets = (!machine_only(k.id))
                     .then(|| project.sets.get(k.id))
                     .flatten();
-                // Roots have no fixed default: it follows the recent spaces.
+                // Roots have no fixed default: it follows the recent spaces. The orchestrator's
+                // folder defaults to the one beside the machine file.
                 let default = match k.id {
                     SPACES_ROOTS => self.default_roots(),
+                    ORCHESTRATOR_DIR => machine_path.with_file_name("orchestrator").display().to_string(),
                     _ => k.default.to_string(),
                 };
                 let (value, origin) = match (project_sets, machine.sets.get(k.id)) {
                     (Some(v), _) => (v.clone(), SettingOrigin::Project),
+                    // An empty orchestrator folder means the default one.
+                    (None, Some(v)) if k.id == ORCHESTRATOR_DIR && v.is_empty() => (default.clone(), SettingOrigin::Machine),
                     (None, Some(v)) => (v.clone(), SettingOrigin::Machine),
                     (None, None) => (default.clone(), SettingOrigin::Default),
+                };
+                // A path in effect is reported resolved, as a space's folder is held, so a client
+                // comparing the two (`orchestrator.dir`) matches through a symlink.
+                let value = match k.accepts {
+                    Accepts::Directory if !value.is_empty() => std::fs::canonicalize(&value)
+                        .map_or(value, |p| p.display().to_string()),
+                    _ => value,
                 };
                 // The project's problem first: it is the layer that would have won, so it is the
                 // one a person is surprised by.

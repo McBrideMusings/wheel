@@ -3849,6 +3849,39 @@ mod tests {
     use super::*;
     use wheel_proto::{NewPaneKind, Node, PluginPaneRef};
 
+    /// A folder reached through a symlink is held and reported as its real path, so a client
+    /// comparing a space's folder with `orchestrator.dir` finds the space.
+    #[test]
+    fn a_space_folder_and_a_directory_setting_are_resolved_through_symlinks() {
+        let base = std::env::temp_dir().join(format!("wheel-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let real = std::fs::canonicalize(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let machine = base.join("wheel.toml");
+        std::fs::write(&machine, format!("[orchestrator]\ndir = \"{}\"\n", link.display())).unwrap();
+        let state = AppState::with_machine_file("/dev/null".into(), "t".into(), base.join("inst"), machine.clone(), "/bin/false".into());
+        let space = state.space_create(link.display().to_string(), None, true, None, None).unwrap();
+        assert_eq!(space.cwd, real.display().to_string());
+        let (_, settings) = state.settings_ls(None).unwrap();
+        let dir = settings.iter().find(|s| s.key == "orchestrator.dir").unwrap();
+        assert_eq!(dir.value, real.display().to_string());
+        assert_eq!(dir.machine.as_deref(), Some(link.display().to_string().as_str()), "the file's own text stays as written");
+        // Unset, the default folder beside the machine file is reported resolved too.
+        std::fs::write(&machine, "").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("orchestrator")).unwrap();
+        let (_, settings) = state.settings_ls(None).unwrap();
+        let dir = settings.iter().find(|s| s.key == "orchestrator.dir").unwrap();
+        assert_eq!(dir.value, real.display().to_string());
+        // A folder listed through the link is marked as the space open on it.
+        let (_, dirs, _) = state.dir_list(&base.display().to_string());
+        let listed = dirs.iter().find(|d| d.name == "link").unwrap();
+        assert_eq!(listed.space.as_deref(), Some(space.id.as_str()));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     /// A feed forward ends with the refusal when the pane that held the grant changes kind. The
     /// state, the plugin folder and the spaces are real; only the connection is a channel.
     #[tokio::test]

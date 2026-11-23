@@ -199,7 +199,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     };
     assert_eq!(
         (spaces[0].name.as_str(), spaces[0].cwd.as_str()),
-        ("tmp", "/tmp")
+        ("tmp", "/private/tmp")
     );
     let Node::Pane {
         id: first,
@@ -240,7 +240,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         .find(|t| t.id == term)
         .expect("terminal is listed");
     assert!(info.alive);
-    assert_eq!(info.cwd, "/tmp");
+    assert_eq!(info.cwd, "/private/tmp");
 
     ok(
         &mut ws,
@@ -602,7 +602,7 @@ async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() 
     let mut ws = connect(&url).await;
     let ask = ClientMsg::SpaceRecent { req: Some(7) };
     assert!(recent(call(&mut ws, ask.clone()).await).is_empty());
-    for cwd in ["/tmp", "/private/tmp", "/tmp"] {
+    for cwd in ["/private/tmp", "/private/var", "/private/tmp"] {
         let id = created(&mut ws, new_space(cwd)).await;
         ok(
             &mut ws,
@@ -614,7 +614,7 @@ async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() 
         )
         .await;
     }
-    let want = vec!["/tmp".to_string(), "/private/tmp".to_string()];
+    let want = vec!["/private/tmp".to_string(), "/private/var".to_string()];
     assert_eq!(recent(call(&mut ws, ask.clone()).await), want);
     drop(ws);
     first_daemon.abort();
@@ -4286,7 +4286,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     assert_eq!(spaces.len(), 3);
     assert_eq!([&spaces[0].id, &spaces[2].id], [&s1, &s2]);
     assert_eq!(spaces[1].name, "moved");
-    assert_eq!(spaces[1].cwd, "/tmp");
+    assert_eq!(spaces[1].cwd, "/private/tmp", "a space holds its folder resolved");
     assert_eq!(only_pane(&spaces[1]), a1);
     assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
     assert_eq!(only_pane(&spaces[0]), a2);
@@ -4546,8 +4546,8 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     }
     assert_eq!(
         cwd_of("p5"),
-        "/tmp",
-        "a directory that has gone falls back to the space's"
+        "/private/tmp",
+        "a directory that has gone falls back to the space's, resolved"
     );
 
     let resume = format!("--resume {AGENT}");
@@ -5232,7 +5232,7 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
         std::slice::from_ref(&home)
     );
 
-    for cwd in ["/tmp", "/private/tmp"] {
+    for cwd in ["/usr/lib", "/private/tmp"] {
         let id = created(&mut ws, new_space(cwd)).await;
         ok(
             &mut ws,
@@ -5244,10 +5244,10 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
         )
         .await;
     }
-    assert_eq!(get(&mut ws).await, "~,/private,/");
+    assert_eq!(get(&mut ws).await, "~,/private,/usr");
     assert_eq!(
         roots(call(&mut ws, ClientMsg::DirRoots { req: Some(9) }).await),
-        [home, "/private".to_string(), "/".to_string()]
+        [home, "/private".to_string(), "/usr".to_string()]
     );
 }
 
@@ -8319,6 +8319,8 @@ async fn a_plugin_pane_resolves_serves_its_script_and_pushes_a_save() {
     std::fs::write(package.join("main.luau"), "-- one").unwrap();
     let inst = dir.join("inst");
     std::fs::create_dir_all(&inst).unwrap();
+    // A space holds its folder resolved through symlinks, as the temporary directory is.
+    let (space_a, space_b) = (space_a.canonicalize().unwrap(), space_b.canonicalize().unwrap());
     let (url, _daemon) = start_daemon(Some(inst.join("spaces.json"))).await;
     let mut ws = connect(&url).await;
     let id_of = |spaces: &[SpaceInfo], cwd: &std::path::Path| {
