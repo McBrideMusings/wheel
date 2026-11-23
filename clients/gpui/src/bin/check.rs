@@ -322,7 +322,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
     let (run, running_report) = running_strip(run, agent_pane.clone(), agent_name.clone(), cx).await?;
     let (run, running_full_report) = running_full_view(run, agent_pane.clone(), agent_name.clone(), cx).await?;
-    let conversations_report = json!({"reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let (run, read_aloud_report) = read_aloud_toggle(run, agent_pane.clone(), agent_name.clone(), cx).await?;
+    let conversations_report = json!({"read_aloud_toggle": read_aloud_report, "reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
@@ -863,6 +864,57 @@ async fn agent_send(pane: &str, text: &str, cx: &mut AsyncApp) -> Result<()> {
     child.kill()?;
     child.wait()?;
     anyhow::bail!("wheel agent send {text:?} did not finish in 70 s")
+}
+
+/// The composer's read-aloud toggle (wheel-e1xk.3): a press turns it on for this conversation, and
+/// the next finished turn is handed to the app's synthesizer keyed by its last reply; a second press
+/// turns it off, stops that speech at once, and the turn after is not read.
+async fn read_aloud_toggle(mut run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let (window, native) = (run.window, run.native.clone());
+    let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
+    let spoken = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.starts_with(&format!("transcript {agent_name}: read aloud the turn's reply: "))).collect()) };
+    let toggle = |cx: &mut AsyncApp| -> Result<Value> {
+        draw(window, None, cx)?;
+        let b = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "read-aloud"))?.ok_or_else(|| anyhow::anyhow!("{agent_name}'s composer drew no read-aloud toggle"))?;
+        let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
+        native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+        Ok(window.update(cx, |c, _, _| c.state_json()["reads_aloud"].clone())?)
+    };
+    let on = toggle(cx)?;
+    ensure!(on == json!([agent_name]), "a press on the read-aloud toggle left reads_aloud {on}");
+    draw(window, Some(run.output.join("client-read-aloud-on.png")), cx)?;
+    let before = spoken(cx)?.len();
+    agent_send(&agent_pane, "read this one aloud", cx).await?;
+    let mut heard = None;
+    for _ in 0..100 {
+        // The check hands wheeld's messages to the window only here, the turn's end among them.
+        pump(&mut run.connection, 50, &mut run.layouts, window, cx).await?;
+        if let Some(line) = spoken(cx)?.get(before) {
+            heard = Some(line.clone());
+            break;
+        }
+    }
+    let key = window.update(cx, |c, _, _| c.transcripts[&agent_name].last_reply().map(|(id, _)| format!("{agent_name}#{id}")))?;
+    let heard = heard.ok_or_else(|| anyhow::anyhow!("the turn ended with read-aloud on and nothing was spoken"))?;
+    let key = key.ok_or_else(|| anyhow::anyhow!("the turn wrote no reply to read"))?;
+    ensure!(heard.ends_with(&format!(": {}", json!(key))), "the finished turn was spoken as {heard:?}, not keyed {key}");
+    let off = toggle(cx)?;
+    ensure!(off == json!([]), "a second press left reads_aloud {off}");
+    let mut stopped = Value::Null;
+    for _ in 0..100 {
+        stopped = window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?;
+        if stopped.is_null() {
+            break;
+        }
+        tick(cx, 20).await;
+    }
+    ensure!(stopped.is_null(), "turning read-aloud off left the window reading {stopped}");
+    agent_send(&agent_pane, "this one stays quiet", cx).await?;
+    pump(&mut run.connection, 1000, &mut run.layouts, window, cx).await?;
+    let after = spoken(cx)?.len();
+    ensure!(after == before + 1, "a turn that ended with read-aloud off was spoken: {} line(s) after the first", after - before - 1);
+    Ok((run, json!({"on": on, "heard": heard, "key": key, "off": off, "stopped": stopped.is_null(), "quiet_after_off": true})))
 }
 
 /// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the

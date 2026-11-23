@@ -115,6 +115,25 @@ impl Client {
         self.press(format!("play {agent} {ix}"));
         self.log(format!("transcript {agent}: read aloud row {ix}: {}", answer["playing"]));
     }
+    /// The composer's read-aloud toggle: on, `agent`'s next finished reply is spoken; off stops
+    /// its speech at once and leaves another conversation's alone (`AgentChat.readsAloud`).
+    pub fn toggle_reads_aloud(&mut self, agent: &str) {
+        let on = !self.reads_aloud.remove(agent);
+        if on {
+            self.reads_aloud.insert(agent.to_owned());
+        } else {
+            self.native.call(serde_json::json!({"op": "read_aloud_stop", "owner": agent}));
+        }
+        self.press(format!("read-aloud {agent}"));
+        self.log(format!("transcript {agent}: read aloud {}", if on { "on" } else { "off" }));
+    }
+    /// Speak `agent`'s turn that just ended, keyed by its last reply so that reply's play button
+    /// shows stop while it is read.
+    pub(super) fn speak_last_reply(&mut self, agent: &str) {
+        let Some((id, text)) = self.transcripts.get(agent).and_then(Transcript::last_reply) else { return };
+        let answer = self.native.call(serde_json::json!({"op": "read_aloud_speak", "text": text, "owner": agent, "key": format!("{agent}#{id}")}));
+        self.log(format!("transcript {agent}: read aloud the turn's reply: {}", answer["playing"]));
+    }
     /// The copy button on reply `ix`, with RowView.swift's glyph and tooltip.
     pub(super) fn copy_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let a = agent.to_owned();

@@ -25,7 +25,14 @@ public final class ReadAloud {
 
     private init() {
         finish.onEnd = { [weak self] utterance in
-            guard let self, self.current.map(ObjectIdentifier.init) == utterance else { return }
+            guard let self else { return }
+            #if os(iOS)
+            // Music that ducked under the speech comes back once nothing is being said.
+            if !self.synthesizer.isSpeaking {
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
+            #endif
+            guard self.current.map(ObjectIdentifier.init) == utterance else { return }
             self.current = nil
             self.playing = nil
         }
@@ -42,6 +49,15 @@ public final class ReadAloud {
         lastSpoken = text
         spokenCount += 1
         UILog.info("read aloud: \(text.count) character(s)")
+        #if os(iOS)
+        // Speech is what the person asked for, so it plays through the silent switch, and music ducks under it.
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            UILog.info("read aloud: audio session: \(error.localizedDescription)")
+        }
+        #endif
         let utterance = AVSpeechUtterance(string: text)
         current = utterance
         playing = key

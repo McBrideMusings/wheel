@@ -243,6 +243,16 @@ impl Transcript {
         ends
     }
 
+    /// What read-aloud speaks when a turn ends (WheelKit's `lastReply`): every reply after the
+    /// last sent message, joined, keyed by the last of them so its play button shows stop. None
+    /// when that turn wrote no reply.
+    pub fn last_reply(&self) -> Option<(usize, String)> {
+        let start = self.rows.iter().rposition(|r| matches!(r.kind, Kind::User { queued: false, .. })).map_or(0, |i| i + 1);
+        let replies: Vec<&Row> = self.rows[start..].iter().filter(|r| matches!(r.kind, Kind::Reply(_))).collect();
+        let text = replies.iter().filter_map(|r| match &r.kind { Kind::Reply(t) => Some(t.as_str()), _ => None }).collect::<Vec<_>>().join("\n\n");
+        Some((replies.last()?.id, text))
+    }
+
     /// Rows above the queued messages.
     fn settled(&self) -> usize {
         self.rows.len() - self.queued_turns.len()
@@ -688,6 +698,25 @@ mod tests {
     }
     fn ev(t: &mut Transcript, event: serde_json::Value) {
         t.on_message(&msg(json!({"ev":"agent","agent":"a1","event":event})), "a1");
+    }
+    /// Read-aloud speaks the whole last turn's replies, not the turns before it.
+    #[test]
+    fn last_reply_joins_the_last_turns_replies() {
+        let mut t = Transcript::default();
+        assert_eq!(t.last_reply(), None);
+        for (turn, prompt) in [(1, "one"), (2, "two")] {
+            ev(&mut t, json!({"kind":"user","text":prompt,"turn":turn}));
+            ev(&mut t, json!({"kind":"turn_start","turn":turn}));
+            ev(&mut t, json!({"kind":"text","text":format!("first of {prompt}")}));
+            ev(&mut t, json!({"kind":"tool_call","id":format!("t{turn}"),"title":"Read","tool_kind":"read","status":"completed"}));
+            ev(&mut t, json!({"kind":"text","text":format!("last of {prompt}")}));
+            ev(&mut t, json!({"kind":"turn_end","turn":turn,"stop_reason":"end_turn"}));
+        }
+        let last = t.rows.iter().rev().find(|r| matches!(r.kind, Kind::Reply(_))).unwrap().id;
+        assert_eq!(t.last_reply(), Some((last, "first of two\n\nlast of two".to_owned())));
+        ev(&mut t, json!({"kind":"user","text":"three","turn":3}));
+        ev(&mut t, json!({"kind":"turn_start","turn":3}));
+        assert_eq!(t.last_reply(), None);
     }
     /// The fork button's rules (`ChatFork.swift`, `lastRepliesOfFinishedTurns`): each reply forks
     /// through the prompts at or above it, the running turn's replies do not, a reply before any

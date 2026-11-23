@@ -768,6 +768,7 @@ impl Client {
         out["message_menu"] = self.message_menu_json();
         out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
         out["read_aloud"] = json!(self.read_aloud);
+        out["reads_aloud"] = json!(self.reads_aloud.iter().collect::<std::collections::BTreeSet<_>>());
         out
     }
 }

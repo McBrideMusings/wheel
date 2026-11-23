@@ -1624,6 +1624,15 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             watchReadAloud()
             ReadAloud.shared.toggle(value["text"] as? String ?? "", for: value["owner"] as? String ?? "", key: value["key"] as? String ?? "")
             return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
+        case "read_aloud_speak":
+            // A finished reply of a conversation whose read-aloud is on (`AgentChat.readsAloud`).
+            watchReadAloud()
+            ReadAloud.shared.speak(value["text"] as? String ?? "", for: value["owner"] as? String ?? "", key: value["key"] as? String)
+            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
+        case "read_aloud_stop":
+            // That conversation's read-aloud turned off: its speech stops at once, nobody else's.
+            ReadAloud.shared.stop(for: value["owner"] as? String ?? "")
+            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
         case "terminal_look": restyle(value)
         case "term_drop":
             // What a drop of these files does, for the check: the drag itself needs a real pointer.

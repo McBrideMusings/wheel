@@ -398,6 +398,9 @@ pub struct Client {
     /// The reply the app's one synthesizer reads now, as `agent#row id` (`ReadAloud.playing`),
     /// told by the bridge to every window.
     read_aloud: Option<String>,
+    /// The agents whose finished replies are spoken (the composer's read-aloud toggle): per
+    /// conversation, off until the person turns it on, and never history loaded on attach.
+    reads_aloud: HashSet<String>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -528,7 +531,7 @@ impl Client {
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_offer: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -711,6 +714,11 @@ impl Client {
                     }
                     for (agent, t) in &mut self.transcripts {
                         t.on_message(&message, agent);
+                    }
+                    if let ServerMsg::Agent { agent, event } = &*message {
+                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") && self.reads_aloud.contains(agent) {
+                            self.speak_last_reply(agent);
+                        }
                     }
                     false
                 }
@@ -2192,10 +2200,14 @@ impl Client {
                 let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
                 let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
+                let speaker = agent.map(|a| {
+                    let on = self.reads_aloud.contains(a);
+                    composer::speaker_button(a, on, title::symbol(&self.native, &self.symbols, if on { "speaker.wave.2.fill" } else { "speaker.slash" }, 13., 0x8fa89b), &self.controls, cx)
+                });
                 let busy = t.is_some_and(Transcript::busy);
                 let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, stop }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, speaker, stop }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2777,6 +2789,8 @@ struct Composer<'a> {
     fit: composer::ComposerFit,
     input: Option<gpui::Entity<InputState>>,
     error: Option<&'a str>,
+    /// The read-aloud toggle after the paperclip (`composer::speaker_button`).
+    speaker: Option<gpui::Stateful<gpui::Div>>,
     /// The stop button at the row's end (`composer::stop_button`).
     stop: Option<gpui::Stateful<gpui::Div>>,
 }
@@ -2810,6 +2824,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                 .text_color(rgb(0xd9e8e1)).overflow_hidden()
                 .flex().gap_2()
                 .children(attach.clip)
+                .children(composer.speaker)
                 // As wide as `composer_fit` wrapped it, so the box is as tall as its lines.
                 .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
                     .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h)))))

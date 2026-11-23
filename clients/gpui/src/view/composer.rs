@@ -20,11 +20,12 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
-/// The paperclip at the start of the composer row and the stop button at its end, each this wide.
+/// The paperclip and the read-aloud toggle at the start of the composer row and the stop button
+/// at its end, each this wide.
 const ROW_BUTTON: f32 = 18.;
 /// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
-/// border and `px_2`, the paperclip and the stop button with the gap after and before them.
-const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 2. * (ROW_BUTTON + 8.);
+/// border and `px_2`, the paperclip, the read-aloud toggle and the stop button, each with its gap.
+const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.
@@ -558,6 +559,22 @@ pub(super) fn paperclip(agent: &str, icon: Option<gpui::AnyElement>, controls: &
         }))
         .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
         .child(recorded(agent, "attach", controls))
+}
+
+/// The read-aloud toggle after the paperclip (Composer.swift's), `icon` the SF Symbol the bridge
+/// drew for its state: on, each of this agent's finished replies is spoken; off stops it at once.
+pub(super) fn speaker_button(agent: &str, on: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let a = agent.to_owned();
+    let help = if on { "Stop reading replies aloud" } else { "Read this agent's replies aloud" };
+    div().id(gpui::ElementId::Name(format!("read-aloud-{agent}").into())).tooltip(crate::tooltip::tip(help))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
+        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.toggle_reads_aloud(&a);
+            cx.stop_propagation();
+            cx.notify();
+        }))
+        .child(icon.unwrap_or_else(|| div().text_xs().child(if on { "on" } else { "off" }).into_any_element()))
+        .child(recorded(agent, "read-aloud", controls))
 }
 
 /// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
