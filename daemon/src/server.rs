@@ -1999,6 +1999,7 @@ async fn handle(
         }),
         ClientMsg::SpaceRename { req, space, name } => done(req, state.space_rename(&space, &name)),
         ClientMsg::PaneRename { req, pane, name } => done(req, state.pane_rename(&pane, &name)),
+        ClientMsg::PanePush { req, pane, on } => done(req, state.pane_push(&pane, on)),
         ClientMsg::SpaceClose { req, id, if_empty } => done(req, state.space_close(&id, if_empty)),
         ClientMsg::Focus { req, space, pane } => done(
             req,

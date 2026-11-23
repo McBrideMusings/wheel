@@ -1026,7 +1026,7 @@ enum PaneCommand {
     /// typing and answering act on the source. It holds only the source's id and closes when the
     /// source does. Prints the mirror's id.
     Mirror {
-        /// The pane to show, in any space of the same session.
+        /// The pane to show, in any space of any session.
         source: String,
         /// The space the mirror goes in (an id or a name).
         #[arg(long)]
@@ -1332,6 +1332,13 @@ enum PaneCommand {
         pane: String,
         /// The name; omit it to clear the pane's name.
         name: Option<String>,
+    },
+    /// Turn a pane's own pushes (needs you, stopped, a long turn done) on or off. A quiet pane
+    /// stays quiet through moves and kind changes; `wheel push send --pane` still sends.
+    Push {
+        pane: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
 }
 
@@ -2751,6 +2758,7 @@ fn agent_rows(node: &wheel_proto::Node, space: &wheel_proto::SpaceInfo, out: &mu
             name,
             title,
             kind: wheel_proto::PaneKind::Agent { agent, harness, model, place, .. },
+            ..
         } => out.push(serde_json::json!({
             "name": name.as_ref().or(title.as_ref()),
             "space": space.name,
@@ -6281,6 +6289,14 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 req: Some(req),
                 pane,
                 name: name.unwrap_or_default(),
+            })
+            .await
+        }
+        PaneCommand::Push { pane, state } => {
+            simple(conn, |req| ClientMsg::PanePush {
+                req: Some(req),
+                pane,
+                on: state == "on",
             })
             .await
         }
