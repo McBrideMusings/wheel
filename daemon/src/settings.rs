@@ -1224,9 +1224,10 @@ impl AppState {
                 };
                 // A path in effect is reported resolved, as a space's folder is held, so a client
                 // comparing the two (`orchestrator.dir`) matches through a symlink.
+                // A folder not made yet is resolved through the part of it that exists, as the
+                // space later opened on it will be.
                 let value = match k.accepts {
-                    Accepts::Directory if !value.is_empty() => std::fs::canonicalize(&value)
-                        .map_or(value, |p| p.display().to_string()),
+                    Accepts::Directory if !value.is_empty() => real_path(Path::new(&value)).display().to_string(),
                     _ => value,
                 };
                 // The project's problem first: it is the layer that would have won, so it is the
@@ -1632,19 +1633,20 @@ pub(crate) fn rewrite(
     Ok(true)
 }
 
-/// Where `path` really is: resolved when it exists, else its parent resolved with the name
-/// joined on, so a file not written yet is judged by the directory it would land in.
+/// Where `path` really is: its nearest existing ancestor resolved through symlinks with the rest
+/// joined on, so a file or folder not made yet is judged by where it would land. Unchanged when no
+/// ancestor resolves.
 fn real_path(path: &Path) -> PathBuf {
-    if let Ok(real) = path.canonicalize() {
-        return real;
+    for base in path.ancestors() {
+        if let Ok(real) = base.canonicalize() {
+            // Joining an empty rest would add a trailing `/`.
+            return match path.strip_prefix(base) {
+                Ok(rest) if !rest.as_os_str().is_empty() => real.join(rest),
+                _ => real,
+            };
+        }
     }
-    match (
-        path.parent().and_then(|p| p.canonicalize().ok()),
-        path.file_name(),
-    ) {
-        (Some(parent), Some(name)) => parent.join(name),
-        _ => path.to_path_buf(),
-    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -1660,6 +1662,19 @@ mod tests {
         assert_eq!(super::resolved_path(&link.join("wheel.toml")), real.join("wheel.toml"));
         let missing = std::path::Path::new("/no/such/folder/wheel.toml");
         assert_eq!(super::resolved_path(missing), missing);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_path_not_made_yet_resolves_through_its_nearest_existing_ancestor() {
+        let dir = std::env::temp_dir().join(format!("wheel-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let real = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(dir.file_name().unwrap()).join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(super::real_path(&link), real);
+        assert_eq!(super::real_path(&link.join("a/b")), real.join("a/b"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
