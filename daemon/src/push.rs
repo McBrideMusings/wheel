@@ -271,9 +271,10 @@ impl AppState {
             .is_ok_and(|list| list.split(',').any(|e| e == event.name()))
     }
 
-    /// Send `notice` in the background when `push.events` lists its event and a phone is waiting.
+    /// Send `notice` in the background when `push.events` lists its event, its pane is not quiet
+    /// (`pane_push`) and a phone is waiting.
     fn push_notify(self: &Arc<Self>, notice: Notice) {
-        if !self.push_wanted(notice.event) || self.devices.push_tokens().is_empty() {
+        if !self.push_wanted(notice.event) || self.pane_quiet(&notice.pane) || self.devices.push_tokens().is_empty() {
             return;
         }
         let state = self.clone();

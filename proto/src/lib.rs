@@ -1130,8 +1130,8 @@ pub enum ClientMsg {
     },
     /// Make a mirror of `source` in `space`: a pane that draws the source's live content and holds
     /// only its id. It takes the space's lone empty pane, else goes where `panes.placement` puts a
-    /// split of the space's last grid pane. `source` must not be a mirror, and must be in the same
-    /// session. Replies `created` with the mirror's id.
+    /// split of the space's last grid pane. `source` must not be a mirror; it may be in any space
+    /// of any session. Replies `created` with the mirror's id.
     PaneMirror {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -1305,6 +1305,15 @@ pub enum ClientMsg {
         stage: Option<WorkStage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+    },
+    /// Whether a pane sends pushes of its own (`needs_you`, `failed`, `turn_done`): `on: false`
+    /// makes it quiet. Saved with the pane, kept when it moves or changes kind. A `push_send`
+    /// naming the pane still sends.
+    PanePush {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+        on: bool,
     },
     /// Name a pane. Every client is told through the layout broadcast; the name is saved with the
     /// pane. An empty name clears it, and the pane reads its title or its kind again.
@@ -3936,6 +3945,10 @@ pub enum Node {
         /// conversation title. Live: wheeld drops it on restore and the program sets it again.
         #[serde(rename = "pane_title", default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The pane sends no push of its own (`pane_push`). Saved with the pane, kept when it
+        /// moves or changes kind.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
         #[serde(flatten)]
         kind: PaneKind,
     },
@@ -4665,7 +4678,8 @@ pub enum PaneKind {
     /// Another pane's live content drawn in a second place (`pane_mirror`): `source` is that
     /// pane's id, the only thing a mirror holds. Each client draws the source's kind, attached to
     /// the source's terminal, agent or page, so typing or answering in a mirror acts on the
-    /// source. wheeld closes a mirror when its source is gone from the mirror's session.
+    /// source. `source` may be in any space of any session; wheeld closes a mirror when its source
+    /// is gone.
     Mirror { source: String, extra: Extra },
     /// A kind this build does not know (saved by a newer one), kept whole so saving the
     /// layout writes it back unchanged.

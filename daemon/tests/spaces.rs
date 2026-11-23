@@ -9156,3 +9156,70 @@ async fn a_mirror_of_a_web_pane_serves_its_sources_page() {
     assert!(response.ends_with("\r\n\r\n<p>source page</p>"), "{response}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn quiet_of(spaces: &[SpaceInfo], pane: &str) -> bool {
+    spaces.iter().flat_map(|s| s.trees()).any(|t| quiet_in(t, pane))
+}
+
+fn quiet_in(node: &Node, pane: &str) -> bool {
+    match node {
+        Node::Pane { id, quiet, .. } => id == pane && *quiet,
+        Node::Split { a, b, .. } => quiet_in(a, pane) || quiet_in(b, pane),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_shows_a_pane_of_another_session_and_closes_only_with_it() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    let home = created(&mut ws, new_space("/tmp")).await;
+    let other = created(&mut ws, ClientMsg::SessionNew { req: Some(2), name: "other".into() }).await;
+    let away = created(
+        &mut ws,
+        ClientMsg::SpaceCreate { req: Some(3), cwd: "/tmp".into(), name: None, focus: false, background: false, pane: None, session: Some(other.clone()) },
+    )
+    .await;
+    let (spaces, _) = layout(&mut ws).await;
+    let at = |id: &str| spaces.iter().find(|s| s.id == id).unwrap().clone();
+    let source = first_pane(&at(&away).root);
+    ok(&mut ws, terminal(&source)).await;
+
+    // The source sits in another session than the space the mirror goes in.
+    let mirror = created(&mut ws, ClientMsg::PaneMirror { req: Some(4), source: source.clone(), space: home.clone() }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let (shown, kind) = wheel_proto::shown_pane(&spaces, &mirror).unwrap();
+    assert_eq!(shown, source);
+    assert!(matches!(kind, PaneKind::Terminal { .. }), "{kind:?}");
+
+    // Moving the source's space to yet another session keeps the mirror.
+    let third = created(&mut ws, ClientMsg::SessionNew { req: Some(5), name: "third".into() }).await;
+    ok(&mut ws, ClientMsg::SessionMove { req: Some(6), space: away.clone(), session: third, index: None }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(spaces.iter().any(|s| s.site_of(&mirror).is_some()), "the mirror outlives its source's move");
+
+    // Closing the source closes the mirror.
+    ok(&mut ws, ClientMsg::PaneClose { req: Some(7), pane: source.clone() }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(spaces.iter().all(|s| s.site_of(&mirror).is_none()), "the mirror closed with its source");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_quiet_pane_stays_quiet_through_a_kind_change_until_its_push_is_on() {
+    let (url, _) = start_daemon(None).await;
+    let mut ws = connect(&url).await;
+    created(&mut ws, new_space("/tmp")).await;
+    let (spaces, _) = layout(&mut ws).await;
+    let pane = first_pane(&spaces[0].root);
+    assert!(!quiet_of(&spaces, &pane), "a pane pushes until told otherwise");
+    ok(&mut ws, ClientMsg::PanePush { req: Some(2), pane: pane.clone(), on: false }).await;
+    ok(&mut ws, terminal(&pane)).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(quiet_of(&spaces, &pane), "a kind change keeps the pane quiet");
+    ok(&mut ws, ClientMsg::PanePush { req: Some(3), pane: pane.clone(), on: true }).await;
+    let (spaces, _) = layout(&mut ws).await;
+    assert!(!quiet_of(&spaces, &pane));
+    match call(&mut ws, ClientMsg::PanePush { req: Some(4), pane: "p-none".into(), on: false }).await {
+        ServerMsg::Error { message, .. } => assert!(message.contains("no pane p-none"), "{message}"),
+        other => panic!("expected an error, got {other:?}"),
+    }
+}

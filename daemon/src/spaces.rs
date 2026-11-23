@@ -294,6 +294,7 @@ fn rebuild(node: &mut Node, strategy: Placement, split_id: &str, new_id: &str) -
         work: None,
         name: None,
         title: None,
+        quiet: false,
         kind: PaneKind::empty(),
     });
     let n = leaves.len();
@@ -377,6 +378,7 @@ pub fn split(node: &mut Node, pane: &str, dir: Dir, split_id: &str, new_id: &str
         work: None,
         name: None,
         title: None,
+        quiet: false,
         kind: PaneKind::empty(),
     };
     insert_beside(node, pane, dir, split_id, new).is_ok()
@@ -448,6 +450,7 @@ fn leaf_placeholder() -> Node {
         work: None,
         name: None,
         title: None,
+        quiet: false,
         kind: PaneKind::empty(),
     }
 }
@@ -489,6 +492,7 @@ pub(crate) fn take_leaf(
                     work: None,
                     name: None,
                     title: None,
+                    quiet: false,
                     kind: PaneKind::empty(),
                 },
             };
@@ -890,18 +894,16 @@ impl AppState {
         self.sync_plugin_watch();
     }
 
-    /// Close every mirror whose source is no longer a pane of the mirror's own session, or is itself
-    /// a mirror: a mirror never shows a dead pane. Runs on every layout change ([`AppState::changed`]), so a source that
-    /// closes, leaves with its space, or moves to another session takes its mirrors.
+    /// Close every mirror whose source is no longer a pane of any space, or is itself a mirror: a
+    /// mirror never shows a dead pane. Runs on every layout change ([`AppState::changed`]), so a
+    /// source that closes, or leaves with its space, takes its mirrors.
     fn close_lost_mirrors(&self, spaces: &mut Spaces) {
         loop {
             let lost = spaces.spaces.iter().find_map(|space| {
-                let session = spaces.session_holding(&space.id);
                 space_panes(space).into_iter().find_map(|(pane, kind)| {
                     let PaneKind::Mirror { source, .. } = kind else { return None };
                     let alive = spaces.spaces.iter().any(|other| {
-                        spaces.session_holding(&other.id) == session
-                            && space_find(other, source).is_some_and(|k| !matches!(k, PaneKind::Mirror { .. }))
+                        space_find(other, source).is_some_and(|k| !matches!(k, PaneKind::Mirror { .. }))
                     });
                     (!alive).then(|| (space.id.clone(), pane.to_string(), source.clone()))
                 })
@@ -986,6 +988,7 @@ impl AppState {
                 work: None,
                 name: None,
                 title: None,
+                quiet: false,
                 kind: PaneKind::empty(),
             },
             status: None,
@@ -1185,6 +1188,37 @@ impl AppState {
         Ok(())
     }
 
+    /// Let `pane` send pushes of its own, or with `on` false make it quiet.
+    pub fn pane_push(&self, pane: &str, on: bool) -> Result<(), String> {
+        let mut spaces = self.spaces.lock().unwrap();
+        let Some(Node::Pane { quiet, .. }) = spaces
+            .spaces
+            .iter_mut()
+            .find_map(|s| space_leaf_mut(s, pane))
+        else {
+            return Err(format!("no pane {pane}"));
+        };
+        if *quiet == !on {
+            return Ok(());
+        }
+        *quiet = !on;
+        tracing::info!(%pane, push = on, "pane push");
+        self.changed(&mut spaces);
+        Ok(())
+    }
+
+    /// Whether `pane` sends no push of its own (`pane_push`).
+    pub(crate) fn pane_quiet(&self, pane: &str) -> bool {
+        let spaces = self.spaces.lock().unwrap();
+        let quiet = spaces
+            .spaces
+            .iter()
+            .flat_map(|s| s.trees())
+            .find_map(|t| find_leaf(t, pane))
+            .is_some_and(|leaf| matches!(leaf, Node::Pane { quiet: true, .. }));
+        quiet
+    }
+
     /// Put the title a program set on every pane `shows` picks, and tell every client. Not saved
     /// on its own: the restore drops titles, and the program sets its title again.
     pub(crate) fn retitle(&self, title: Option<String>, shows: impl Fn(&PaneKind) -> bool) {
@@ -1334,6 +1368,7 @@ impl AppState {
                 work: None,
                 name: None,
                 title: None,
+                quiet: false,
                 kind: PaneKind::empty(),
             };
             let placed = match site {
@@ -1582,16 +1617,13 @@ impl AppState {
     }
 
     /// Make a mirror of `source` in space `space` (`pane_mirror`): it takes the space's lone empty
-    /// pane, else goes where `panes.placement` splits the space's last grid pane. Refused for a
-    /// source that is a mirror, or that sits in another session. Returns the mirror's id.
+    /// pane, else goes where `panes.placement` splits the space's last grid pane. The source may be
+    /// in any space of any session; one that is a mirror is refused. Returns the mirror's id.
     pub fn pane_mirror(&self, source: &str, space: &str) -> Result<String, String> {
         let (lone_empty, last) = {
             let spaces = self.spaces.lock().unwrap();
             let target = spaces.index(space)?;
             let from = spaces.holding(source)?;
-            if spaces.session_holding(&spaces.spaces[from].id) != spaces.session_holding(&spaces.spaces[target].id) {
-                return Err(format!("{source} is in another session than space {space}; a mirror shows a pane of its own session"));
-            }
             if matches!(space_find(&spaces.spaces[from], source), Some(PaneKind::Mirror { .. })) {
                 return Err(format!("{source} is a mirror; mirror its source instead"));
             }
@@ -3362,6 +3394,7 @@ mod tests {
             work: None,
             name: None,
             title: None,
+            quiet: false,
             kind: PaneKind::empty(),
         }
     }

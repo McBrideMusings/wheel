@@ -1030,6 +1030,16 @@ fn push_key_pem() -> String {
     )
 }
 
+/// The pane leaf with id `pane` anywhere in a `status` reply.
+fn leaf_json(value: &serde_json::Value, pane: &str) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) if map.get("node").is_some_and(|n| n == "pane") && map.get("id").is_some_and(|i| i == pane) => value.clone(),
+        serde_json::Value::Object(map) => map.values().map(|v| leaf_json(v, pane)).find(|v| !v.is_null()).unwrap_or_default(),
+        serde_json::Value::Array(items) => items.iter().map(|v| leaf_json(v, pane)).find(|v| !v.is_null()).unwrap_or_default(),
+        _ => serde_json::Value::Null,
+    }
+}
+
 async fn next_push(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Pushed>) -> Pushed {
     tokio::time::timeout(Duration::from_secs(20), rx.recv())
         .await
@@ -1119,6 +1129,34 @@ async fn a_phone_with_a_token_is_pushed_when_an_agent_needs_the_person() {
     let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
     let wheel_proto::ServerMsg::Status { spaces, .. } = status else { panic!("expected status") };
     let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+
+    // A quiet pane's agent waits on the person and sends nothing: the next push is the loud pane's.
+    let split = local_req(&mut cli, serde_json::json!({"op":"pane_split","req":20,"pane":pane,"dir":"right"})).await;
+    assert_eq!(split["ev"], "created", "{split}");
+    let quiet = split["id"].as_str().unwrap().to_string();
+    let muted = local_req(&mut cli, serde_json::json!({"op":"pane_push","req":21,"pane":quiet,"on":false})).await;
+    assert_eq!(muted["ev"], "ok", "{muted}");
+    let held = local_req(&mut cli, serde_json::json!({"op":"status","req":22})).await;
+    assert_eq!(leaf_json(&held, &quiet)["quiet"], true, "the layout keeps the pane quiet: {held}");
+    let started = local_req(&mut cli, serde_json::json!({"op":"pane_start","req":23,"pane":quiet,"kind":"agent"})).await;
+    let quiet_agent = started["agent"].as_str().unwrap().to_string();
+    let queued = local_req(
+        &mut cli,
+        serde_json::json!({"op":"agent_send","req":24,"agent":quiet_agent,"text":"needs permission"}),
+    )
+    .await;
+    assert_eq!(queued["ev"], "agent_queued", "{queued}");
+    let mut waits = false;
+    for _ in 0..200 {
+        let held = local_req(&mut cli, serde_json::json!({"op":"status","req":25})).await;
+        if leaf_json(&held, &quiet)["status"]["kind"] == "needs_you" {
+            waits = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(waits, "the quiet pane's agent waits on the person");
+
     let started = local_req(
         &mut cli,
         serde_json::json!({"op":"pane_start","req":9,"pane":pane,"kind":"agent"}),
