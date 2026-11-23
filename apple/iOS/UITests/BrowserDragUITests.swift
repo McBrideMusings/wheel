@@ -21,7 +21,7 @@ final class BrowserDragUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launchEnvironment["WHEEL_NOTIFICATIONS"] = "off"
         app.launch()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40), "the title shows once paired")
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")
         expectDots("[grid] grid")
         XCTAssertTrue(app.buttons["browser-home"].waitForExistence(timeout: 20), "the browser row shows")
         sync("loaded")

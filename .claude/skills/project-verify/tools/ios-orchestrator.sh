@@ -42,7 +42,7 @@ fi
 if step chat; then
   check "phone.log records the mode" plog "mode spaces -> orchestrator"
   check "the chat is the first page" plog "orchestrator pages: $G"
-  check "the title names the orchestrator" plog "title: Orchestrator"
+  check "the chat shows no page name under the title" plog "page name: none"
   check "nothing pinned the orchestrator" noplog "pinned $G"
   ack chat
 fi
@@ -78,7 +78,7 @@ if step spawn; then
 fi
 if step page; then
   check "the new pane is a page after the chat" plog "orchestrator pages: $G, .*$N"
-  check "the title named the new page" plog "title: notes"
+  check "the new page is named under the title" plog "page name: notes"
   check "the floating button snapped to the left" plog "float: dragged to the left"
   check "a tap on the floating button showed the chat" plog "float: back to the chat"
   # The next step's reply names this pane and the agent pane in the other space.

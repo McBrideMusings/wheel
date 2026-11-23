@@ -21,7 +21,7 @@ final class TitleMenuUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        let title = app.buttons["title"]
+        let title = app.buttons["space switcher"]
         XCTAssertTrue(title.waitForExistence(timeout: 40), "the title shows once paired")
         expectTitle("wheel", session: "wheel")
         shot("chat")
@@ -136,8 +136,8 @@ final class TitleMenuUITests: XCTestCase {
 
     private func expectTitle(_ space: String, session: String, timeout: TimeInterval = 10) {
         let label = "\(space), session \(session)"
-        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'title' AND label == %@", label)).firstMatch
-        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "title reads '\(label)', has '\(app.buttons["title"].label)'")
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'space switcher' AND label == %@", label)).firstMatch
+        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "title reads '\(label)', has '\(app.buttons["space switcher"].label)'")
     }
 
     /// Saves the screen as `<shots>/title-menu-<name>-<light|dark>.png`.

@@ -19,66 +19,100 @@ enum TitleMenuRequest: Equatable {
     case newSpace
 }
 
-/// The phone's title, at the bar's left: the shown space, a ▾, and how many agents wait for the
-/// person in any space. The count has a reserved slot, blank at zero, so the name never moves.
-/// A tap opens the title menu. In Orchestrator mode it is the shown page's name alone, with no menu, dots or count.
+/// The phone's title, at the bar's left: the mode menu ("Spaces ⌄"), which only switches modes, and the context line
+/// under it. In Spaces mode the line is the shown space and page, with the space's dots and how many agents wait for the
+/// person in any space, and a tap opens the space switcher; in Agents mode it is the shown session and opens the same
+/// switcher; in Orchestrator mode the carousel's `detail` stands there (the topic, then the model or the page's name).
+/// The count has a reserved slot, blank at zero, so the name never moves.
 struct TitleButton: View {
     let model: PhoneModel
+    /// The space switcher's sheet.
     @Binding var open: Bool
-    /// Orchestrator mode's title for the shown page; nil in another mode.
-    var orchestratorTitle: String?
-    /// The line under Orchestrator mode's title: the orchestrator's model menu on its chat.
+    /// The shown page's name, for Spaces mode's context line.
+    var pageName: String?
+    /// Orchestrator mode's lines under the title.
     var detail: AnyView?
 
     /// The shown space's name.
     private var name: String { model.activeSpace?.name ?? "No space" }
 
     var body: some View {
-        let waiting = model.needsYouCount
-        if let orchestratorTitle {
-            // The title over its one detail, as Messages heads a conversation.
-            VStack(alignment: .leading, spacing: 0) {
-                // As tall as Spaces mode's label; the HStack, not the Text, is the element, so it reports that height.
-                HStack { Text(orchestratorTitle).font(.headline).lineLimit(1).truncationMode(.middle) }
-                    .frame(height: Self.rowHeight)
-                    .foregroundStyle(.primary)
-                    .contentShape(Rectangle())
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityIdentifier("title")
-                    .accessibilityLabel(orchestratorTitle)
-                    .alignmentGuide(.titleRow) { $0[VerticalAlignment.center] }
-                detail
-            }
-        } else {
-            Button { open = true } label: { label(waiting: waiting) }
+        VStack(alignment: .leading, spacing: 0) {
+            ModeMenu(mode: model.mode) { model.setMode($0) }
+                .frame(height: Self.rowHeight)
                 .alignmentGuide(.titleRow) { $0[VerticalAlignment.center] }
-                .buttonStyle(.plain)
-                .tint(.primary)
-                .accessibilityIdentifier("title")
-                .accessibilityLabel("\(name), session \(model.shownSession?.name ?? "none")")
-                .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            if model.mode == WindowMode.orchestrator {
+                detail
+            } else {
+                contextLine
+            }
         }
     }
 
-    private func label(waiting: Int) -> some View {
-        HStack(spacing: 4) {
-            Text(name).font(.headline).lineLimit(1).truncationMode(.middle)
-            Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
-            Text(waiting > 0 ? "\(waiting)" : "")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.orange)
-                .frame(minWidth: 22, alignment: .leading)
-                .accessibilityIdentifier("needs you count")
+    private var contextLine: some View {
+        let waiting = model.needsYouCount
+        let spaces = model.mode == WindowMode.spaces
+        let session = model.shownSession?.name ?? "No session"
+        return Button { open = true } label: {
+            HStack(spacing: 4) {
+                Image(systemName: spaces ? "folder" : "rectangle.stack").font(.caption)
+                // The space and the page are two texts, so the space's name stays put as the page changes.
+                Text(spaces ? name : session).lineLimit(1)
+                if spaces, let pageName { Text("· \(pageName)").lineLimit(1).truncationMode(.middle) }
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                if spaces, let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
+                Text(waiting > 0 ? "\(waiting)" : "")
+                    .font(.footnote.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.orange)
+                    .frame(minWidth: 22, alignment: .leading)
+                    .accessibilityIdentifier("needs you count")
+            }
+            .font(.footnote)
+            .frame(minHeight: 22)
+            .contentShape(Rectangle())
         }
-        .frame(height: Self.rowHeight)
-        .foregroundStyle(.primary)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+        .accessibilityIdentifier("space switcher")
+        .accessibilityLabel(spaces ? "\(name), session \(session)" : "Session \(session)")
+        .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
     }
 
-    /// The title row's height in every mode, so switching modes moves no name.
+    /// The title row's height in every mode, so switching modes moves no control.
     private static let rowHeight: CGFloat = 22
+}
+
+/// The bar's title: the shown mode's name and a ⌄; a tap opens the three modes, a check on the shown one (M11, S3).
+private struct ModeMenu: View {
+    let mode: String
+    let pick: (String) -> Void
+
+    var body: some View {
+        let shown = WindowMode.entry(mode)
+        Menu {
+            Picker("Mode", selection: Binding(get: { mode }, set: { new in
+                Log.info("mode menu: picked \(new)")
+                pick(new)
+            })) {
+                ForEach(WindowMode.menu, id: \.id) { entry in
+                    Text(entry.title).tag(entry.id)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 4) {
+                Text(shown.title).font(.headline).lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .contentShape(Rectangle())
+        }
+        // A menu's label wears the accent; the title reads as a title, as Spaces mode's name did.
+        .tint(.primary)
+        .accessibilityLabel("Mode")
+        .accessibilityValue(shown.title)
+        .accessibilityIdentifier("mode")
+    }
 }
 
 /// The Thumb sheet: the shown session's spaces as a flat list in the session's own order (the Mac

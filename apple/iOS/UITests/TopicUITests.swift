@@ -17,12 +17,12 @@ final class TopicUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
         pick("Orchestrator")
 
-        // No threads/current: the title stands alone.
-        let title = app.descendants(matching: .any)["title"].firstMatch
-        XCTAssertTrue(waitFor(20) { title.label == "Orchestrator" }, "Orchestrator mode titles its chat: \(title.label)")
+        // No threads/current: the title, the mode menu, stands over the model alone.
+        let title = app.buttons["mode"]
+        XCTAssertTrue(waitFor(20) { title.value as? String == "Orchestrator" }, "the title reads Orchestrator: \(String(describing: title.value))")
         Thread.sleep(forTimeInterval: 2)
         let line = app.buttons["topic"]
         XCTAssertFalse(line.exists, "no current topic shows no context line")
@@ -34,7 +34,8 @@ final class TopicUITests: XCTestCase {
         XCTAssertTrue(line.waitForExistence(timeout: 30), "the turn's end shows the topic line")
         XCTAssertEqual(line.label, "wheel · plugin hot reload")
         XCTAssertGreaterThan(line.frame.minY, title.frame.maxY - 1, "the topic line sits under the title")
-        XCTAssertLessThan(line.frame.minX, app.buttons["mode"].frame.minX, "the topic line sits left of the header's buttons")
+        XCTAssertEqual(line.frame.minX, title.frame.minX, accuracy: 1, "the topic line lines up under the title")
+        XCTAssertLessThan(line.frame.maxX, app.buttons["Pane menu"].frame.minX, "the topic line sits left of the header's buttons")
         XCTAssertEqual(app.buttons["mode"].frame, modeBefore, "the topic line moves no header button")
         XCTAssertEqual(app.buttons["Pane menu"].frame, menuBefore, "the topic line moves no header button")
         shot("line")

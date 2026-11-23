@@ -12,6 +12,7 @@ struct AgentPane: View {
     let harness: String
     @ObservedObject var chat: AgentChat
     var orchestrator = false
+    @State private var keyboardUp = false
 
     var body: some View {
         let mine = model.perms.filter { $0.agent == chat.name }
@@ -34,6 +35,18 @@ struct AgentPane: View {
                 earlier: model.earlier(for: pane)
             )
             .environment(\.chatLinks, model.links)
+            // While the keyboard is up, a tap or a drag on the conversation hides it (design §8.1). A layer over the
+            // transcript takes them: the list's own scroll and its rows never see a touch in the empty space under a short
+            // conversation. The pager is an ancestor, so its sideways swipe still changes page through the layer.
+            .overlay {
+                if keyboardUp {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { hideKeyboard("tap") }
+                        .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in hideKeyboard("drag") })
+                        .accessibilityHidden(true)
+                }
+            }
             .overlay { TaskFullView(chat: chat) { model.readTaskOutput(chat, task: $0) } }
             RunningStrip(chat: chat)
                 .padding([.horizontal, .top], 10)
@@ -74,6 +87,15 @@ struct AgentPane: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(orchestrator ? "orchestrator chat" : "agent pane \(pane)")
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
+    }
+
+    private func hideKeyboard(_ how: String) {
+        guard keyboardUp else { return }
+        keyboardUp = false
+        let hidden = UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        Log.info("transcript \(how): keyboard \(hidden ? "hidden" : "was not up")")
     }
 }
 

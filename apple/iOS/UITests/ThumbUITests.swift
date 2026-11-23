@@ -18,7 +18,7 @@ final class ThumbUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        let title = app.buttons["title"]
+        let title = app.buttons["space switcher"]
         XCTAssertTrue(title.waitForExistence(timeout: 40), "the title shows once paired")
 
         // Story 6: the top-left shows the space and how many agents wait; the name never moves.
@@ -157,7 +157,7 @@ final class ThumbUITests: XCTestCase {
     }
 
     private func expectName(_ space: String) {
-        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'title' AND label BEGINSWITH %@", "\(space), ")).firstMatch
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'space switcher' AND label BEGINSWITH %@", "\(space), ")).firstMatch
         XCTAssertTrue(shown.waitForExistence(timeout: 10), "the title shows \(space)")
     }
 

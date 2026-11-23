@@ -16,7 +16,7 @@ final class OrchestratorUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 20))
 
         // With no space on the orchestrator folder the mode names the folder and starts nothing (ADR-0054).
@@ -36,23 +36,20 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(any("pin sheet").exists, "no pin sheet in Orchestrator mode")
         XCTAssertFalse(any("page dots").exists, "no page dots in Orchestrator mode")
         XCTAssertFalse(chat.buttons["agent-header"].exists, "the chat has no agent header row")
-        XCTAssertEqual(title.label, "Orchestrator", "the title names the orchestrator")
+        XCTAssertEqual(shownPage, "Orchestrator", "the chat is the shown page, with no page name under the title")
         XCTAssertTrue(chat.staticTexts["Message"].exists, "the composer says Message")
         XCTAssertTrue(chat.staticTexts["Message the orchestrator."].exists, "the empty transcript says Message the orchestrator.")
         shot("chat")
         sync("chat")
 
-        // One global orchestrator: the title is a label with no menu, there is no eye, no search and no page handle. The
-        // ⋯ holds its place; the mode button closes up beside it, with no empty slot between them.
-        XCTAssertFalse(app.buttons["title"].exists, "the title is no button in Orchestrator mode")
+        // One global orchestrator: the title is the mode menu with no space switcher under it, there is no eye, no
+        // search and no page handle, and the ⋯ holds its place.
+        XCTAssertEqual(title.value as? String, "Orchestrator", "the title is the mode menu on Orchestrator")
+        XCTAssertFalse(app.buttons["space switcher"].exists, "no space switcher in Orchestrator mode")
         XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
         XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
-        let here = (app.buttons["mode"].frame, app.buttons["Pane menu"].frame)
-        title.tap()
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertFalse(app.buttons["space wheel"].exists, "a tap on the title opens no menu")
+        let here = (title.frame, app.buttons["Pane menu"].frame)
         XCTAssertFalse(app.otherElements["page handle"].exists, "Orchestrator mode has no page handle")
-        let modeToMenu = app.buttons["Pane menu"].frame.minX - app.buttons["mode"].frame.maxX
         // The model is the title's one detail, on the chat.
         XCTAssertTrue(app.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is under the title")
         XCTAssertGreaterThan(app.buttons["model menu"].frame.minY, title.frame.maxY - 1, "the model sits under the title")
@@ -103,7 +100,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Clear chat"].exists, "the + menu has Clear chat")
         shot("plus-menu")
         let outsideMenu = app.otherElements["PopoverDismissRegion"]
-        if outsideMenu.exists { outsideMenu.tap() } else { title.tap() }
+        if outsideMenu.exists { outsideMenu.tap() } else { app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap() }
         XCTAssertTrue(waitFor { !self.app.buttons["Clear chat"].exists }, "the + menu closed")
         let modelMenu = app.buttons["model menu"]
         modelMenu.tap()
@@ -148,15 +145,19 @@ final class OrchestratorUITests: XCTestCase {
         sync("fullscreen")
 
         // The orchestrator opens a pane in its space: it is a page after the chat, a swipe shows it under its own name,
-        // and still no dots show.
+        // and still no dots show. One left swipe from the chat shows the space's first pane (design M9).
         sync("spawn")
-        var swipes = 0
-        while title.label != "notes" && swipes < 4 {
+        swipePage()
+        XCTAssertTrue(waitFor { self.shownPage != "Orchestrator" }, "a left swipe from the chat shows the first pane")
+        XCTAssertFalse(chat.isHittable, "the chat is off screen after one swipe")
+        var swipes = 1
+        while shownPage != "notes" && swipes < 4 {
             swipePage()
             Thread.sleep(forTimeInterval: 1)
             swipes += 1
         }
-        XCTAssertEqual(title.label, "notes", "a swipe shows the pane the orchestrator opened, named in the title")
+        XCTAssertEqual(shownPage, "notes", "a swipe shows the pane the orchestrator opened, named under the title")
+        XCTAssertEqual(title.value as? String, "Orchestrator", "the title stays the mode menu on a pane page")
         XCTAssertFalse(any("page dots").exists, "no page dots with two pages")
         XCTAssertFalse(chat.isHittable, "the chat is off screen")
         // The floating button (wheel-eg4e.19.34): on every page but the chat, its value the orchestrator's state. A
@@ -173,7 +174,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertGreaterThan(float.frame.minX, 0, "the button stays on screen: \(float.frame)")
         shot("float-left")
         float.tap()
-        XCTAssertTrue(waitFor { self.title.label == "Orchestrator" }, "a tap on the button shows the chat: \(title.label)")
+        XCTAssertTrue(waitFor { self.shownPage == "Orchestrator" }, "a tap on the button shows the chat: \(shownPage)")
         XCTAssertFalse(float.exists, "no button over the chat")
         sync("page")
 
@@ -191,10 +192,10 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(chat.links.matching(NSPredicate(format: "label BEGINSWITH %@", "\(elsewhere) ")).firstMatch.exists, "\(elsewhere), in another space, is no link")
         shot("links")
         link.tap()
-        XCTAssertTrue(waitFor { self.title.label == "notes" }, "the link slid to the notes page: \(title.label)")
+        XCTAssertTrue(waitFor { self.shownPage == "notes" }, "the link slid to the notes page: \(shownPage)")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.exists, "still in Orchestrator mode")
         float.tap()
-        XCTAssertTrue(waitFor { self.title.label == "Orchestrator" }, "back on the chat: \(title.label)")
+        XCTAssertTrue(waitFor { self.shownPage == "Orchestrator" }, "back on the chat: \(shownPage)")
         sync("link")
 
         // The scroll-to-bottom arrow (wheel-eg4e.19.32): it shows once the transcript leaves its end, and a tap goes back.
@@ -216,12 +217,10 @@ final class OrchestratorUITests: XCTestCase {
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
-        // A normal inter-button gap is what Spaces mode puts between the mode button and the next control.
-        let spacesGap = app.buttons["agents"].frame.minX - app.buttons["mode"].frame.maxX
-        XCTAssertLessThanOrEqual(modeToMenu, spacesGap + 2, "no empty slot between the mode button and the ⋯: \(modeToMenu) pt against Spaces mode's \(spacesGap) pt")
-        XCTAssertLessThan(app.buttons["mode"].frame.minX, here.0.minX, "Spaces mode's search sits where Orchestrator mode's mode button was")
+        XCTAssertEqual(title.frame.minX, here.0.minX, accuracy: 0.5, "the mode menu holds its place across the modes")
+        XCTAssertEqual(title.frame.midY, here.0.midY, accuracy: 0.5, "the mode menu holds its row across the modes")
         XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
-        app.buttons["title"].tap()
+        app.buttons["space switcher"].tap()
         XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the first space")
         XCTAssertTrue(app.buttons["space orchestrator"].exists, "the title menu lists the orchestrator's space")
         shot("lists")
@@ -243,18 +242,18 @@ final class OrchestratorUITests: XCTestCase {
         app.buttons["Done"].tap()
         // The phone reopens to the mode and page it showed last (wheel-eg4e.19.36): leave it on the notes page.
         var out = 0
-        while title.label != "notes" && out < 4 {
+        while shownPage != "notes" && out < 4 {
             swipePage()
             Thread.sleep(forTimeInterval: 1)
             out += 1
         }
-        XCTAssertEqual(title.label, "notes", "the notes page shows before the relaunch")
+        XCTAssertEqual(shownPage, "notes", "the notes page shows before the relaunch")
         app.terminate()
         // The pairing code is spent; the relaunch connects with the credential the first launch saved.
         app.launchEnvironment.removeValue(forKey: "WHEEL_PAIR_JSON")
         app.launch()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.waitForExistence(timeout: 40), "Orchestrator mode restored")
-        XCTAssertTrue(waitFor { self.title.label == "notes" }, "the relaunch shows the notes page: \(title.label)")
+        XCTAssertTrue(waitFor { self.shownPage == "notes" }, "the relaunch shows the notes page: \(shownPage)")
         XCTAssertTrue(float.waitForExistence(timeout: 5), "the floating button is over the notes page")
         XCTAssertLessThan(float.frame.midX, app.windows.firstMatch.frame.midX, "the button is still at the left after a relaunch")
         XCTAssertFalse(any("pin sheet").exists, "no pin sheet after a relaunch")
@@ -265,7 +264,13 @@ final class OrchestratorUITests: XCTestCase {
 
     private var chat: XCUIElement { app.otherElements["orchestrator chat"] }
     private var float: XCUIElement { app.buttons["orchestrator float"] }
-    private var title: XCUIElement { app.descendants(matching: .any)["title"].firstMatch }
+    /// The bar's title: the mode menu.
+    private var title: XCUIElement { app.buttons["mode"] }
+    /// The shown page's name under the title, "Orchestrator" on the chat, which shows none.
+    private var shownPage: String {
+        let name = any("page name")
+        return name.exists ? name.label : "Orchestrator"
+    }
 
     private func any(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
 

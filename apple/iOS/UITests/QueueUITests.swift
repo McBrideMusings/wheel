@@ -21,7 +21,7 @@ final class QueueUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
 
         // Spaces mode has the agents eye and no tray.
         XCTAssertTrue(app.buttons["agents"].waitForExistence(timeout: 20))
@@ -33,7 +33,6 @@ final class QueueUITests: XCTestCase {
         XCTAssertTrue(tray.waitForExistence(timeout: 30), "Orchestrator mode shows the queue tray")
         XCTAssertTrue(waitFor { tray.value as? String == "2 red" }, "the badge reads 2 in red: \(String(describing: tray.value))")
         XCTAssertFalse(app.buttons["agents"].exists, "the tray replaces the eye")
-        XCTAssertGreaterThan(tray.frame.minX, app.buttons["mode"].frame.maxX - 1, "the tray sits right of the mode button, in the eye's slot")
         XCTAssertLessThan(tray.frame.maxX, app.buttons["Pane menu"].frame.minX + 1, "the tray sits left of the pane menu")
         shot("tray")
         sync("tray")

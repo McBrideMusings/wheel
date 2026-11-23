@@ -31,7 +31,7 @@ final class PinUITests: XCTestCase {
         sync("pinned")
 
         // 3, 4. A drag on the header moves it through full, high, low and header; full covers everything under the bar.
-        let title = app.buttons["title"].frame
+        let title = app.buttons["space switcher"].frame
         drag(toY: title.maxY + 4)
         XCTAssertTrue(at("full"))
         // At full the sheet fills the area under the bar, so its frame is the area the other positions divide.

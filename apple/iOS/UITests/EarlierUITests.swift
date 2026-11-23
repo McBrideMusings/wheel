@@ -20,7 +20,7 @@ final class EarlierUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
 
         // The three earlier conversations, oldest first, above the current one's empty transcript.
         let first = any("earlier \(c0)"), one = any("earlier \(c1)"), two = any("earlier \(c2)")

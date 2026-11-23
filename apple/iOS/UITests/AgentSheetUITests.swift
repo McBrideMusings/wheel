@@ -25,7 +25,7 @@ final class AgentSheetUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40), "the title shows once paired")
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")
 
         // Case 1: no badge while nobody waits. The eye has no text or number.
         let eye = app.buttons["agents"]
@@ -104,7 +104,7 @@ final class AgentSheetUITests: XCTestCase {
         eye.tap()
         XCTAssertTrue(app.scrollViews["agents list"].waitForExistence(timeout: 5))
         tile(alpha).buttons["agentrow \(alpha)"].tap()
-        XCTAssertTrue(waitUntil { self.app.buttons["title"].label.hasPrefix("alpha") }, "the title shows alpha, have '\(app.buttons["title"].label)'")
+        XCTAssertTrue(waitUntil { self.app.buttons["space switcher"].label.hasPrefix("alpha") }, "the title shows alpha, have '\(app.buttons["space switcher"].label)'")
         sync("open-alpha")
 
         // The script stopped the working turn: every tile idle, no spinner.

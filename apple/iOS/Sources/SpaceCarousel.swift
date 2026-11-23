@@ -87,7 +87,7 @@ struct SpaceCarousel: View {
             .onChange(of: model.orchestratorPane, initial: true) { _, chat in
                 if let chat { page = model.orchestratorPage.flatMap { pages.pageIDs.contains($0) ? $0 : nil } ?? chat }
             }
-            .onChange(of: titleText) { _, title in if let title { Log.info("title: \(title)") } }
+            .onChange(of: shownPageName(pages: pages), initial: true) { _, name in Log.info("page name: \(name ?? "none")") }
         }
         // Orchestrator mode's pages are the phone's own: no other client's focus moves them.
         .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in if !orchestratorMode { follow(focus) } }
@@ -245,17 +245,14 @@ struct SpaceCarousel: View {
 
     private var trayIDs: [String] { pages.tray.map(\.id) }
 
-    /// Orchestrator mode's title: "Orchestrator" on the chat, the shown page's name elsewhere; nil in another mode.
-    private var titleText: String? {
-        guard orchestratorMode else { return nil }
+    /// The shown page's name: the context line's pane in Spaces mode, and in Orchestrator mode the line under the topic
+    /// on every page but the chat. Nil on the chat, on the backgrounded panes' list, and with no page.
+    private func shownPageName(pages: Pages) -> String? {
         let ids = pages.pageIDs
-        guard let space = model.activeSpace, let shown = ids.contains(page ?? "") ? page : ids.first, shown != model.orchestratorPane else {
-            return Self.orchestratorTitle
-        }
+        guard let space = model.activeSpace, let shown = ids.contains(page ?? "") ? page : ids.first, shown != model.orchestratorPane else { return nil }
+        if shown == Pages.trayID { return openTray.map { model.pageName($0, in: space) } }
         return model.pageName(shown, in: space)
     }
-
-    static let orchestratorTitle = "Orchestrator"
 
     /// The shown space's pinned panes, drawn in the sheet and left out of the pages.
     /// Orchestrator mode draws no pin sheet, so a pane pinned in Spaces mode is one of its pages.
@@ -293,8 +290,8 @@ struct SpaceCarousel: View {
         let panes = pages.panes
         let spacesMode = showsPages
         return HStack(alignment: .titleRow) {
-            TitleButton(model: model, open: $titleOpen, orchestratorTitle: titleText, detail: orchestratorDetail(pages: pages))
-                // A sheet, not a popover: a popover is as tall as its content and clips it, so a
+            TitleButton(model: model, open: $titleOpen, pageName: shownPageName(pages: pages), detail: orchestratorDetail(pages: pages))
+                // The space switcher is a sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
                     TitleMenu(model: model, tab: $sheetTab, scope: $sheetScope) { request in
@@ -307,12 +304,10 @@ struct SpaceCarousel: View {
                 // Leaves the bar's buttons on the right uncovered.
                 .frame(maxWidth: 240, alignment: .leading)
             Spacer()
-            // Left of the mode button, so the dots going in another mode move no control.
+            // Left of the right-hand group, so the dots going in another mode move no control.
             if landscape && spacesMode && !orchestratorMode && dots.kinds.count > 1 {
                 dots
             }
-            // Leftmost of the right-hand group, so every control that was there keeps its place.
-            ModeButton(mode: model.mode) { model.setMode($0) }
             // Orchestrator mode is the one orchestrator: no agents sheet; its queue tray takes the eye's slot, and with no
             // Queue pane in the orchestrator's space the slot is gone.
             if orchestratorMode {
@@ -366,7 +361,8 @@ struct SpaceCarousel: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        .frame(minHeight: 50)
+        // From the top, so the lines under the title in each mode never move the title row or its buttons.
+        .frame(minHeight: 50, alignment: .top)
     }
 
     /// The bar under the composer: the page dots on the swipe tint, full width and flush with the
@@ -416,7 +412,7 @@ struct SpaceCarousel: View {
     private func go(_ id: String) { withAnimation { page = id } }
 
     /// Under Orchestrator mode's title: the current topic's line on every page, which opens its notes, then the
-    /// orchestrator's model menu while its chat is the shown page.
+    /// orchestrator's model menu while its chat is the shown page, else the shown page's name.
     private func orchestratorDetail(pages: Pages) -> AnyView? {
         guard orchestratorMode else { return nil }
         let topic = model.orchestratorTopic
@@ -425,10 +421,16 @@ struct SpaceCarousel: View {
            case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind {
             chat = model.chats[agent]
         }
-        guard topic != nil || chat != nil else { return nil }
+        let name = chat == nil ? shownPageName(pages: pages) : nil
+        guard topic != nil || chat != nil || name != nil else { return nil }
         return AnyView(VStack(alignment: .leading, spacing: 0) {
             if let topic { TopicLine(topic: topic) }
             if let chat { ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) } }
+            if let name {
+                Text(name).font(.footnote).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .frame(minHeight: 22)
+                    .accessibilityIdentifier("page name")
+            }
         })
     }
 
@@ -606,35 +608,6 @@ private struct AgentsButton: View {
         .accessibilityLabel("Agents")
         .accessibilityValue(needsYou ? "needs you" : "")
         .accessibilityIdentifier("agents")
-    }
-}
-
-/// The mode menu's button, at the left of the bar's right-hand group: the shown mode's symbol in a
-/// 28 pt square. A tap opens the Mac's mode menu, a check on the shown mode.
-private struct ModeButton: View {
-    let mode: String
-    let pick: (String) -> Void
-
-    var body: some View {
-        let shown = WindowMode.entry(mode)
-        Menu {
-            Picker("Mode", selection: Binding(get: { mode }, set: { new in
-                Log.info("mode menu: picked \(new)")
-                pick(new)
-            })) {
-                ForEach(WindowMode.menu, id: \.id) { entry in
-                    Label(entry.title, systemImage: entry.symbol).tag(entry.id)
-                }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            Image(systemName: shown.symbol)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Mode")
-        .accessibilityValue(shown.title)
-        .accessibilityIdentifier("mode")
     }
 }
 

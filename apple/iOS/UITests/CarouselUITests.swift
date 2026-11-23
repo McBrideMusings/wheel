@@ -22,7 +22,7 @@ final class CarouselUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40), "the title shows once paired")
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")
 
         // Grid panes in reading order, then the popped window's: two grid pages, two popped pages with rings, then the tray page.
         expectDots("[grid] grid popped popped tray")

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iOS mode menu (wheel-0but.2): the top bar's mode button, driven with real taps by the WheelPhoneUITests
+# iOS mode menu (wheel-0but.2, wheel-zxts.5.5): the top bar's title is the mode menu, with the space switcher under it, driven with real taps by the WheelPhoneUITests
 # target (apple/iOS/UITests/ModeUITests.swift) against this script's own wheeld. The test writes
 # `$SYNC/step-<name>` after each step and waits for `$SYNC/ack-<name>`; this script checks phone.log, then
 # acknowledges. Shots and the bar's control rects go to
@@ -43,6 +43,10 @@ fi
 if step spaces; then
   check "phone.log records Spaces" plog "mode orchestrator -> spaces"
   ack spaces
+fi
+if step keyboard; then
+  check "a tap on the transcript hid the keyboard" plog "transcript tap: keyboard hidden"
+  ack keyboard
 fi
 if step opened; then
   check "opening a pane from the eye's sheet in Agents showed Spaces" plog "mode agents -> spaces"

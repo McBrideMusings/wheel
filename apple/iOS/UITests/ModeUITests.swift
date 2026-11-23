@@ -8,8 +8,8 @@ import XCTest
 final class ModeUITests: XCTestCase {
     private let env = ProcessInfo.processInfo.environment
     private var app: XCUIApplication!
-    /// The bar's controls whose rects must hold still: the title, the eye, search and the ⋯.
-    private let controls = ["title", "agents", "search", "Pane menu"]
+    /// The bar's controls whose rects must hold still: the title (the mode menu), the eye, search and the ⋯.
+    private let controls = ["mode", "agents", "search", "Pane menu"]
 
     override func setUp() { continueAfterFailure = false }
 
@@ -19,26 +19,33 @@ final class ModeUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
-        XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 20))
+        // The ⋯, not the mode menu, so a base build from before the mode menu passes this too.
+        XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))
         let launch = rects("launch")
         shot("spaces")
         if env["WHEEL_MODE_BASE"] != nil { return }
         let mode = app.buttons["mode"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 5), "the top bar has the mode button")
+        XCTAssertTrue(mode.waitForExistence(timeout: 5), "the top bar has the mode menu")
 
-        // 1. The button is 28 pt square, the leftmost of the right-hand group, and shows Spaces.
-        XCTAssertEqual(mode.frame.width, 28, accuracy: 0.5, "the mode button is 28 pt wide: \(mode.frame)")
+        // 1. The title is the mode menu at the bar's left, showing Spaces, with the space switcher under it.
         XCTAssertEqual(mode.value as? String, "Spaces")
-        XCTAssertLessThan(mode.frame.maxX, app.buttons["agents"].frame.minX, "the mode button sits left of the eye")
+        XCTAssertLessThan(mode.frame.minX, 40, "the mode menu is the bar's title, at its left: \(mode.frame)")
+        let switcher = app.buttons["space switcher"]
+        XCTAssertTrue(switcher.exists, "the space switcher is under the title")
+        XCTAssertGreaterThan(switcher.frame.minY, mode.frame.maxY - 1, "the switcher sits under the title")
+        XCTAssertTrue(switcher.label.hasPrefix("wheel, session "), "the switcher names the space: \(switcher.label)")
         XCTAssertFalse(app.otherElements["mode body"].exists)
 
-        // 2. The menu lists the Mac's three modes; each pick shows its body and moves no control.
+        // 2. The menu lists exactly the three modes and nothing else; each pick shows its body and moves no control.
         for (title, id) in [("Agents", "agents"), ("Orchestrator", "orchestrator"), ("Spaces", "spaces")] {
             mode.tap()
             let row = menuRow(title)
             XCTAssertTrue(row.waitForExistence(timeout: 5), "the menu has \(title)")
             XCTAssertTrue(menuRow("Spaces").exists && menuRow("Agents").exists && menuRow("Orchestrator").exists, "the menu lists all three modes")
+            let rows = app.buttons.matching(NSPredicate(format: "label IN %@ AND identifier != 'agents' AND identifier != 'mode'", ["Spaces", "Agents", "Orchestrator"])).count
+            XCTAssertEqual(rows, 3, "the menu has exactly three mode rows")
+            XCTAssertFalse(app.buttons["new space"].exists || app.textFields["space search"].exists || app.buttons["new session"].exists,
+                           "the mode menu offers no space, search or session")
             if id == "agents" { shot("menu") }
             row.tap()
             XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch.waitForExistence(timeout: 5), "the button shows \(title)")
@@ -55,13 +62,34 @@ final class ModeUITests: XCTestCase {
             // Orchestrator mode has no eye and no search.
             if id == "orchestrator" {
                 XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
-                // Its title carries the model under it, so only the ⋯ must hold still.
-                XCTAssertEqual(placed(rects(id), without: ["agents", "search", "title"]), placed(launch, without: ["agents", "search", "title"]), "the ⋯ held its place in \(title)")
+                XCTAssertFalse(switcher.exists, "Orchestrator mode has no space switcher")
+                XCTAssertEqual(placed(rects(id), without: ["agents", "search"]), placed(launch, without: ["agents", "search"]), "the title and the ⋯ held their places in \(title)")
             } else {
+                if id == "agents" { XCTAssertTrue(switcher.label.hasPrefix("Session "), "Agents mode's line names the session: \(switcher.label)") }
                 XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
             }
             sync(id)
         }
+
+        // 2b. With the keyboard up, a drag on the transcript hides it, and so does a tap.
+        // The pager keeps the neighbour page in the tree, so the composer and the pane are the ones on screen. The
+        // transcript has no element of its own: the drag runs down the pane's middle, and the tap lands on its message.
+        let shown = { (q: XCUIElementQuery) in q.allElementsBoundByIndex.first { $0.isHittable } ?? q.firstMatch }
+        let pane = { shown(self.app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'agent pane '"))) }
+        let drag = {
+            let p = pane()
+            p.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+                .press(forDuration: 0.05, thenDragTo: p.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
+        }
+        let tap = { shown(self.app.staticTexts.matching(identifier: "Give this agent a task.")).tap() }
+        for (how, act) in [("drag", drag), ("tap", tap)] {
+            shown(app.textViews).tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard before the \(how)")
+            if how == "drag" { shot("keyboard") }
+            act()
+            XCTAssertTrue(waitGone(app.keyboards.firstMatch), "a \(how) on the transcript hid the keyboard")
+        }
+        sync("keyboard")
 
         // 3. Opening a pane from the eye's sheet in Agents shows Spaces again, with the pane.
         mode.tap()
@@ -93,11 +121,17 @@ final class ModeUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
     }
 
-    /// The rect lines with the title's width left out: the title is the shown space's name, and holds its place.
+    private func waitGone(_ element: XCUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while element.exists && Date() < deadline { Thread.sleep(forTimeInterval: 0.2) }
+        return !element.exists
+    }
+
+    /// The rect lines with the title's width left out: the title is the shown mode's name, and holds its place.
     private func placed(_ lines: String, without left: [String] = []) -> String {
         lines.split(separator: "\n").filter { line in !left.contains { line.hasPrefix("\($0) ") } }.map { line -> String in
             var f = line.split(separator: " ").map(String.init)
-            if f.first == "title", f.count == 5 { f[3] = "-" }
+            if f.first == "mode", f.count == 5 { f[3] = "-" }
             return f.joined(separator: " ")
         }.joined(separator: "\n")
     }
@@ -105,9 +139,8 @@ final class ModeUITests: XCTestCase {
     /// Each control's frame, one `<id> x y w h` line per control, written to the shots folder.
     private func rects(_ state: String) -> String {
         let lines = controls.map { id -> String in
-            // The title is a label, not a button, in Orchestrator mode.
             // A control the mode drops (Orchestrator mode's eye) has no frame to read.
-            let element = (id == "title" ? app.descendants(matching: .any)[id] : app.buttons[id]).firstMatch
+            let element = app.buttons[id].firstMatch
             let f = element.exists ? element.frame : .zero
             return "\(id) \(Int(f.minX)) \(Int(f.minY)) \(Int(f.width)) \(Int(f.height))"
         }.joined(separator: "\n")

@@ -16,7 +16,7 @@ final class CommandPaletteUITests: XCTestCase {
         app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
         app.launch()
         allowNotifications()
-        XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
         expectTitle("wheel", session: "wheel")
 
         // 1. The search button opens the palette, listing every kind of row.
@@ -102,8 +102,8 @@ final class CommandPaletteUITests: XCTestCase {
 
     private func expectTitle(_ space: String, session: String, timeout: TimeInterval = 10) {
         let label = "\(space), session \(session)"
-        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'title' AND label == %@", label)).firstMatch
-        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "title reads '\(label)', has '\(app.buttons["title"].label)'")
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'space switcher' AND label == %@", label)).firstMatch
+        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "title reads '\(label)', has '\(app.buttons["space switcher"].label)'")
     }
 
     private func shot(_ name: String) {
