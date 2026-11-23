@@ -188,6 +188,10 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
 /// fork's remote; that PR's head ref is fetched only from the remote whose URL points at `repo`, and no such remote is an error.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
+    worktree_at(dir, repo, branch, fork_pr, std::env::var("HOME").ok().as_deref())
+}
+
+fn worktree_at(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>, home: Option<&str>) -> Result<String, String> {
     let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
@@ -206,7 +210,7 @@ pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Re
         }
         return Ok(p);
     }
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
+    let home = home.ok_or("HOME is not set")?;
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
     let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
     if let Some(number) = fork_pr {
@@ -393,20 +397,20 @@ mod tests {
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
         sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
         let home = root.join("home");
-        std::env::set_var("HOME", &home);
         let dir = work.to_str().unwrap();
-        let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
+        let on_branch = |branch| worktree_at(dir, "owner/repo", branch, None, home.to_str());
+        let a = on_branch("feat/x").unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
         sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
-        let again = worktree(dir, "owner/repo", "feat/x", None).unwrap();
+        let again = on_branch("feat/x").unwrap();
         assert_eq!(std::fs::canonicalize(&again).unwrap(), std::fs::canonicalize(&a).unwrap(), "the second call finds the first");
         assert_eq!(sh(std::path::Path::new(&again),&["log", "-1", "--format=%s"]).trim(), "two", "the second call fast-forwards to the remote's branch");
         sh(&work, &["branch", "local-only"]);
-        let l = worktree(dir, "owner/repo", "local-only", None).unwrap();
+        let l = on_branch("local-only").unwrap();
         assert_eq!(crate::core::git::current_branch(&l).as_deref(), Some("local-only"), "a branch with no PR and no remote branch gets a worktree on the local branch");
-        assert!(worktree(dir, "owner/repo", "nowhere", None).is_err(), "a branch neither local nor on the remote has none to make");
+        assert!(on_branch("nowhere").is_err(), "a branch neither local nor on the remote has none to make");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
