@@ -1633,6 +1633,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             // That conversation's read-aloud turned off: its speech stops at once, nobody else's.
             ReadAloud.shared.stop(for: value["owner"] as? String ?? "")
             return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
+        case "dictation":
+            // The composer's microphone: WheelUI's one recorder, the iPhone's composer's too.
+            watchDictation()
+            let owner = value["owner"] as? String ?? ""
+            switch value["action"] as? String {
+            case "toggle": Dictation.shared.toggle(for: owner)
+            case "download": Dictation.shared.download()
+            case "cancel": Dictation.shared.cancel()
+            case "prepare": Dictation.shared.prepare()
+            default: break
+            }
+            return dictationFrame()
         case "terminal_look": restyle(value)
         case "term_drop":
             // What a drop of these files does, for the check: the drag itself needs a real pointer.
@@ -2269,6 +2281,44 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             observeReadAloud()
         }
     }
+}
+@MainActor private var watchingDictation = false
+/// Tell every window what dictation is doing whenever that changes, and the text it heard.
+@MainActor func watchDictation() {
+    guard !watchingDictation else { return }
+    watchingDictation = true
+    observeDictation()
+}
+@MainActor private func observeDictation() {
+    withObservationTracking {
+        let d = Dictation.shared
+        _ = (d.phase, d.owner, d.problem, d.heard)
+    } onChange: {
+        Task { @MainActor in
+            let frame = dictationFrame()
+            for native in natives.values { native.emit(frame) }
+            observeDictation()
+        }
+    }
+}
+/// The `dictation` event: the phase, whose it is, a failure and the last text heard, and what the
+/// model download fetches.
+@MainActor func dictationFrame() -> [String: Any] {
+    let d = Dictation.shared
+    var phase: String
+    var progress = 0.0
+    switch d.phase {
+    case .idle: phase = "idle"
+    case .asking: phase = "asking"
+    case .downloading(let done): phase = "downloading"; progress = done
+    case .recording: phase = "recording"
+    case .transcribing: phase = "transcribing"
+    }
+    let heard: Any = d.heard.map { ["owner": $0.owner, "text": $0.text, "id": $0.id] as [String: Any] } ?? NSNull()
+    return ["event": "dictation", "phase": phase, "progress": progress, "owner": d.owner as Any? ?? NSNull(),
+            "problem": d.problem as Any? ?? NSNull(), "problem_owner": d.problemOwner as Any? ?? NSNull(), "heard": heard,
+            "model": ["name": Dictation.modelName, "size": Dictation.modelSize, "source": Dictation.modelSource,
+                      "folder": Dictation.modelFolder.path, "on_disk": d.modelOnDisk]]
 }
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor

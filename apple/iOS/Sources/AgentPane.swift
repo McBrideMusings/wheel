@@ -82,7 +82,8 @@ struct AgentPane: View {
                 stop: { model.cancel(chat) },
                 takeBack: { chat.takeBack() },
                 readAloud: $chat.readsAloud,
-                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
+                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) }),
+                dictation: chat.name
             )
             .padding(10)
         }

@@ -317,6 +317,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, attachments_report) = attachments(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, dictation_report) = dictation(run, agent_name.clone(), cx).await?;
     let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams, earlier_report) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, fork_row, fork_text, fork_rows, reply_buttons, fork_report) = fork_and_reply_buttons(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
@@ -427,6 +428,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["composer"] = composer_report;
     report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
     report["composer"]["attachments"] = attachments_report;
+    report["composer"]["dictation"] = dictation_report;
     report["conversations"] = conversations_report;
     report["conversations"]["fork_rows"] = json!(fork_rows);
     report["conversations"]["fork"] = fork_report;
@@ -2371,6 +2373,108 @@ async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cl
         erase(&native, typed.len(), cx).await;
     }
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped))
+}
+
+/// Dictation (wheel-e1xk.2): with no model on the device the microphone shows what the download
+/// fetches, with Download and Cancel, and Cancel closes it. With the model, a press records, a second
+/// press transcribes, and the text goes into the draft. A spoken clip (`say`) stands in for the
+/// microphone through `WHEEL_DICTATION_FILE`; the presses are real mouse events on the button.
+async fn dictation(run: Run, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let state = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["dictation"].clone())?) };
+    let drawn = |name: &str, cx: &mut AsyncApp| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, name))?.is_some()) };
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-dictation-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("no-models"))?;
+    /// Removes the clip and the empty model folder, and the stand-ins, whether the step passes or fails.
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+            // SAFETY: only the bridge reads these, on this thread, when a press asks it to.
+            unsafe {
+                std::env::remove_var("WHEEL_DICTATION_MODELS");
+                std::env::remove_var("WHEEL_DICTATION_FILE");
+            }
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("dictate", cx)?, "the composer drew no microphone");
+
+    // No model: the press asks, naming what the download fetches.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("WHEEL_DICTATION_MODELS", dir.join("no-models")) };
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let mut asked = Value::Null;
+    for _ in 0..50 {
+        draw(window, None, cx)?;
+        asked = state(cx)?;
+        if asked["phase"] == "asking" && drawn("dictation download", cx)? {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    ensure!(asked["phase"] == "asking" && asked["owner"] == agent_name.as_str() && drawn("dictation cancel", cx)?, "with no model the microphone asked nothing: {asked}");
+    let prompt = window.update(cx, |c, _, _| c.dictation_prompt_text())?;
+    for named in ["Parakeet TDT 0.6b v3", "469 MB", "huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml", "no-models"] {
+        ensure!(prompt.contains(named), "the prompt does not name {named:?}: {prompt:?}");
+    }
+    draw(window, Some(output.join("dictation-prompt.png")), cx)?;
+    press_named(&native, window, &agent_name, "dictation cancel", cx).await?;
+    for _ in 0..50 {
+        if state(cx)?["phase"] == "idle" {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    draw(window, None, cx)?;
+    ensure!(state(cx)?["phase"] == "idle" && !drawn("dictation download", cx)?, "Cancel left the prompt: {}", state(cx)?);
+
+    // The model in FluidAudio's cache: record, stop, and the words land in the draft.
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("WHEEL_DICTATION_MODELS") };
+    let clip = dir.join("clip.wav");
+    let said = std::process::Command::new("/usr/bin/say").arg("-o").arg(&clip).args(["--data-format=LEI16@16000", "Run cargo test in the daemon."]).status()?;
+    ensure!(said.success() && clip.exists(), "say wrote no clip");
+    // SAFETY: as above.
+    unsafe { std::env::set_var("WHEEL_DICTATION_FILE", &clip) };
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, "Then".into()))?;
+    draw(window, None, cx)?;
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let mut recording = Value::Null;
+    for _ in 0..50 {
+        recording = state(cx)?;
+        if recording["phase"] == "recording" {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    ensure!(recording["phase"] == "recording" && recording["model_on_disk"] == true, "the press started no recording (is the model in FluidAudio's cache?): {recording}");
+    draw(window, None, cx)?;
+    let listening = window.update(cx, |c, _, _| c.dictation_note(&agent_name))?;
+    ensure!(listening.as_deref() == Some("Listening…"), "while recording the composer said {listening:?}");
+    draw(window, Some(output.join("dictation-recording.png")), cx)?;
+    tick(cx, 400).await;
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let started = std::time::Instant::now();
+    let mut heard = Value::Null;
+    // The first load compiles the model for the Neural Engine: up to a minute or more.
+    while started.elapsed() < Duration::from_secs(300) {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        heard = state(cx)?;
+        if heard["phase"] == "idle" {
+            break;
+        }
+    }
+    let draft = window.update(cx, |c, _, _| c.draft(&agent_name))?;
+    ensure!(heard["heard"]["owner"] == agent_name.as_str() && draft.starts_with("Then ") && draft.to_lowercase().contains("cargo test"), "dictation left the draft {draft:?}; state {heard}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("dictation-done.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    let report = json!({"asked": asked["phase"], "prompt": prompt, "listening_note": listening, "draft": draft, "transcribed_ms": started.elapsed().as_millis() as u64});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 
 /// Attachments: a dropped file and a pasted image become chips and go out as paths.
