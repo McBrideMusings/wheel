@@ -4,7 +4,7 @@
 //!
 //! One process serves every project: a feed's params name the project (`{dir}`). The `beads`, `beads_graph` (the Focus or Graph scene of the beads, params `{dir, view, sel, depth, width, more, list}`, read again exactly when `beads` is), `project`,
 //! `work`, `swarm`, `repo`, `diff`, `prs`, `pr_detail` and `issues` feeds send the whole value on every subscribe and a JSON Patch on each
-//! later change, found by watching the files that can change it: `beads` the project's `.beads`, `project`
+//! later change, found by watching the files that can change it: `beads` and `queue` (a folder's open `needs-you` beads, grouped) the project's `.beads`, `project`
 //! the project directory, its `.beads` and its `docs` directory (a `docs` directory created later is an
 //! event in the project directory, and the next read watches it), `work` no file but the agents
 //! `wheel agent watch` lists (followed while a `work` subscription exists, and every change of the list
@@ -41,6 +41,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::beads::feed as beads_feed;
 use crate::beads::graph_feed as beads_graph_feed;
+use crate::beads::queue as beads_queue;
 use crate::core::agents::Agents;
 use crate::core::project::Origin;
 use crate::diff::feed as diff_feed;
@@ -56,7 +57,7 @@ type ReadLock = Arc<tokio::sync::Mutex<()>>;
 
 /// The feeds that hold what `bd` and the bead panes' records say: a press and a change of `bead-panes.json` refresh each.
 const BEAD_FEEDS: [&str; 2] = ["beads", "beads_graph"];
-const FEEDS: [&str; 10] = ["beads", "beads_graph", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
+const FEEDS: [&str; 11] = ["beads", "beads_graph", "queue", "project", "work", "swarm", "repo", "diff", "prs", "pr_detail", "issues"];
 const ACTIONS: [&str; 16] = ["press", "run_list", "issue_create", "issue_close", "branch_delete", "branch_cleanup", "branch_button", "pr_merge", "pr_close", "pr_draft", "pr_checkout", "pr_worktree", "pr_button", "pr_refresh", "vision_save", "agent_start"];
 
 /// How often a `repo`, `prs`, `pr_detail` or `issues` subscription is read again whatever the files do: GitHub has no event.
@@ -468,6 +469,7 @@ impl Core {
             "issues" => issues_feed::value(&d),
             "pr_detail" => prs_feed::detail_value(&d, crate::core::number_of(&params["number"]).unwrap_or(0)),
             "beads_graph" => beads_graph_feed::value(&d, &params),
+            "queue" => beads_queue::value(&d),
             _ => beads_feed::value(&d),
         })
         .await;

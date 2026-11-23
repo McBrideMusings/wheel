@@ -14,6 +14,7 @@ pub mod cli;
 pub mod feed;
 pub mod graph;
 pub mod graph_feed;
+pub mod queue;
 
 // ───────────────────────────── data ─────────────────────────────
 

@@ -70,6 +70,31 @@ final class PhoneModel {
         guard mode == WindowMode.orchestrator else { return nil }
         return orchestratorSpace?.allPanes.first { if case .agent = $0.kind { true } else { false } }?.id
     }
+    /// The orchestrator space's Queue plugin pane (`wheelhouse`'s `queue`), whose script reads the queue; nil in another
+    /// mode or while that space holds none.
+    var orchestratorQueuePane: String? {
+        guard mode == WindowMode.orchestrator else { return nil }
+        return orchestratorSpace?.allPanes.first { $0.kind.plugin.map(Self.isQueue) ?? false }?.id
+    }
+    /// The queue Orchestrator mode's tray shows, nil until the Queue pane's feed arrives.
+    var orchestratorQueue: OrchestratorQueue? { orchestratorQueuePane.flatMap { queues[$0] } }
+    /// Each Queue pane's queue, as its script's `wheelhouse.queue` subscription last held it.
+    private(set) var queues: [String: OrchestratorQueue] = [:]
+    private static func isQueue(_ ids: (plugin: String, pane: String)) -> Bool { ids.plugin == "wheelhouse" && ids.pane == "queue" }
+
+    /// Tapping a queue item: its message goes to the orchestrator's chat, as if typed there.
+    func ask(about item: OrchestratorQueue.Item) {
+        guard let pane = orchestratorPane,
+              case let .agent(agent, _, _)? = orchestratorSpace?.allPanes.first(where: { $0.id == pane })?.kind else { return }
+        guard case .connected = connection, let client else {
+            chats[agent]?.error = "Not connected to the Mac."
+            return
+        }
+        let req = client.req()
+        agentReqs[req] = agent
+        Log.info("queue: asked about \(item.id) (\(item.kind)) in \(agent)")
+        client.send(.agentSend(req: req, agent: agent, text: OrchestratorQueue.message(for: item)))
+    }
     /// A folder with no trailing slash, so two spellings of one folder compare equal.
     private static func folder(_ path: String) -> String {
         path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
@@ -885,6 +910,7 @@ final class PhoneModel {
                 link.close()
                 pluginPanes[pane] = nil
                 pluginLogged[pane] = nil
+                queues[pane] = nil
                 Log.info("plugin pane \(pane) left the layout")
                 continue
             }
@@ -900,11 +926,22 @@ final class PhoneModel {
             link.plugin.onUpdate = { [weak self, weak link] in
                 guard let self, let link else { return }
                 self.logPlugin(link)
+                if Self.isQueue((want.plugin, want.pane)) { self.readQueue(link) }
             }
             pluginPanes[pane] = link
             Log.info("plugin pane \(pane): \(want.plugin)/\(want.pane) in \(want.space.id)")
             if connection == .connected { link.start() }
         }
+    }
+
+    /// Keeps the queue a Queue pane's script holds, logging each change of its badge.
+    private func readQueue(_ link: PluginPaneLink) {
+        let queue = OrchestratorQueue(link.plugin.value(of: "wheelhouse.queue"))
+        guard queues[link.pane] != queue else { return }
+        if queues[link.pane]?.count != queue?.count || queues[link.pane]?.tone != queue?.tone {
+            Log.info("queue \(link.pane): \(queue.map { "\($0.count) \($0.tone)" } ?? "none")")
+        }
+        queues[link.pane] = queue
     }
 
     /// One `phone.log` line per change of what a plugin pane shows: which script, how many reloads, the error, the state.

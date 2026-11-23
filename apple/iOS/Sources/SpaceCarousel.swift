@@ -17,6 +17,8 @@ struct SpaceCarousel: View {
     @State private var paletteOpen = false
     /// The eye button's sheet: every agent of the shown session.
     @State private var agentsOpen = false
+    /// The queue tray's sheet, in Orchestrator mode.
+    @State private var queueOpen = false
     /// What the title menu asked for, presented once its sheet has closed.
     @State private var queued: TitleMenuRequest?
     @State private var renaming: (space: String, name: String)?
@@ -311,8 +313,25 @@ struct SpaceCarousel: View {
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
             ModeButton(mode: model.mode) { model.setMode($0) }
-            // Orchestrator mode is the one orchestrator: no agents sheet, and no empty slot for the eye.
-            if !orchestratorMode {
+            // Orchestrator mode is the one orchestrator: no agents sheet; its queue tray takes the eye's slot, and with no
+            // Queue pane in the orchestrator's space the slot is gone.
+            if orchestratorMode {
+                if let queue = model.orchestratorQueue {
+                    QueueButton(queue: queue) {
+                        Log.info("queue sheet: tray tapped, \(queue.count) waiting")
+                        queueOpen = true
+                    }
+                    .frame(width: 28)
+                    .sheet(isPresented: $queueOpen) {
+                        QueueSheet(queue: model.orchestratorQueue ?? queue) { item in
+                            queueOpen = false
+                            model.ask(about: item)
+                        }
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                    }
+                }
+            } else {
                 AgentsButton(needsYou: model.sessionNeedsYou > 0) {
                     Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
                     agentsOpen = true

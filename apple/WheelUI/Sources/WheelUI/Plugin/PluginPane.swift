@@ -228,6 +228,12 @@ public final class PluginPane {
         subscribed.map { ($0.key.name, $0.value) }.sorted { $0.0 < $1.0 }
     }
 
+    /// The value held for the pane's subscription to `feed` (the first by params when it reads several), nil until wheeld
+    /// sends one: for a host that draws what the pane reads beside the pane, with no second subscription. Read it in `onUpdate`.
+    public func value(of feed: String) -> JSONValue? {
+        subscribed.keys.filter { $0.name == feed }.min { $0.params < $1.params }.flatMap { feedValues[$0] }
+    }
+
     /// The held value of each subscribed feed as JSON text, keyed `feed params`, for a check.
     public var feedJSON: [String: String] {
         var out: [String: String] = [:]
