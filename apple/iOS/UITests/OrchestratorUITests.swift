@@ -31,13 +31,13 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertFalse(any("pin sheet").exists, "no pin sheet in Orchestrator mode")
         XCTAssertFalse(any("page dots").exists, "no page dots in Orchestrator mode")
         XCTAssertFalse(chat.buttons["agent-header"].exists, "the chat has no agent header row")
-        XCTAssertEqual(title.label, "Global orchestrator", "the title names the orchestrator")
+        XCTAssertEqual(title.label, "Orchestrator", "the title names the orchestrator")
         XCTAssertTrue(chat.staticTexts["Message"].exists, "the composer says Message")
         shot("chat")
         sync("chat")
 
-        // One global orchestrator: the title is a label with no menu, there is no eye, and the handle's swipe up opens
-        // nothing. Search and the ⋯ hold the places they have in Spaces mode.
+        // One global orchestrator: the title is a label with no menu, there is no eye, no search and no page handle. The
+        // ⋯ holds its place; the mode button and Tasks close up beside it, with no empty slot between Tasks and the ⋯.
         XCTAssertFalse(app.buttons["title"].exists, "the title is no button in Orchestrator mode")
         XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
         XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
@@ -45,10 +45,13 @@ final class OrchestratorUITests: XCTestCase {
         title.tap()
         Thread.sleep(forTimeInterval: 1)
         XCTAssertFalse(app.buttons["space wheel"].exists, "a tap on the title opens no menu")
-        let handle = app.otherElements["page handle"]
-        handle.press(forDuration: 0.05, thenDragTo: app.buttons["mode"])
-        Thread.sleep(forTimeInterval: 1)
-        XCTAssertFalse(app.buttons["space wheel"].exists, "a swipe up on the handle opens no sheet")
+        XCTAssertFalse(app.otherElements["page handle"].exists, "Orchestrator mode has no page handle")
+        let modeToTasks = app.buttons["tasks"].frame.minX - app.buttons["mode"].frame.maxX
+        let tasksToMenu = app.buttons["Pane menu"].frame.minX - app.buttons["tasks"].frame.maxX
+        XCTAssertLessThan(tasksToMenu, modeToTasks + 12, "no empty slot between Tasks and the ⋯: \(tasksToMenu) pt against \(modeToTasks) pt")
+        // The model is the title's one detail, on the chat.
+        XCTAssertTrue(app.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is under the title")
+        XCTAssertGreaterThan(app.buttons["model menu"].frame.minY, title.frame.maxY - 1, "the model sits under the title")
         sync("chrome")
 
         // The eye's slot holds Tasks (wheel-eg4e.20.3): its sheet lists the task file the check wrote, and Done
@@ -72,6 +75,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(chat.buttons["dictate"].exists, "the composer has the dictation button")
         XCTAssertTrue(chat.buttons["voice mode"].exists, "an empty field shows voice mode")
         XCTAssertFalse(chat.buttons["Send"].exists, "an empty field shows no Send")
+        measure("keyboard-down")
         let chatDown = chat.frame.height
         chat.textViews.firstMatch.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
@@ -81,6 +85,7 @@ final class OrchestratorUITests: XCTestCase {
         // suggestion bar, so the script compares the chat's bottom with the top the app's keyboard notification gave.
         Thread.sleep(forTimeInterval: 1)
         XCTAssertFalse(app.otherElements["page handle"].exists, "no page handle while the keyboard is up")
+        measure("keyboard-up")
         try? "\(Int(chat.frame.maxY.rounded()))".write(toFile: "\(env["WHEEL_SYNC_DIR"] ?? "")/chat-bottom", atomically: true, encoding: .utf8)
         sync("keyboard")
         shot("keyboard")
@@ -92,6 +97,7 @@ final class OrchestratorUITests: XCTestCase {
         // took; Clear chat asks first (wheel-eg4e.19.38), cancelling keeps the transcript, and confirming empties it.
         chat.textViews.firstMatch.tap()
         chat.textViews.firstMatch.typeText("hello")
+        shot("typed")
         chat.buttons["Send"].tap()
         XCTAssertTrue(waitFor { !self.chat.staticTexts["Message the global orchestrator."].exists }, "the message is in the transcript")
         // With the keyboard up, the + menu draws above it, and the composer lets go of it, so a pick never raises it
@@ -100,13 +106,17 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the keyboard is up before the + menu opens")
         let keyboardTop = app.keyboards.firstMatch.frame.minY
         chat.buttons["Attach"].tap()
-        let modelMenu = app.buttons["model menu"]
-        XCTAssertTrue(modelMenu.waitForExistence(timeout: 5), "the + menu has Model")
+        XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens")
+        XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "the + menu holds no Model; only the title's")
         XCTAssertTrue(app.buttons["Clear chat"].isHittable, "Clear chat is on top, not behind the keyboard")
         XCTAssertLessThanOrEqual(app.buttons["Clear chat"].frame.maxY, keyboardTop, "the menu ends above the keyboard")
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "the composer let go of the keyboard")
         XCTAssertTrue(app.buttons["Clear chat"].exists, "the + menu has Clear chat")
         shot("plus-menu")
+        let outsideMenu = app.otherElements["PopoverDismissRegion"]
+        if outsideMenu.exists { outsideMenu.tap() } else { title.tap() }
+        XCTAssertTrue(waitFor { !self.app.buttons["Clear chat"].exists }, "the + menu closed")
+        let modelMenu = app.buttons["model menu"]
         modelMenu.tap()
         // The fake agent's models, by the names its `initialize` gives them.
         let choices = app.buttons.matching(NSPredicate(format: "label IN %@", ["Default", "Sonnet", "Haiku"]))
@@ -140,11 +150,11 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(chat.staticTexts["Message the global orchestrator."].waitForExistence(timeout: 10), "Clear chat emptied the transcript")
         sync("model")
 
-        // 1. Full screen under the top bar, no modal: the chat starts under the title and the handle reaches the
-        // bottom edge.
+        // 1. Full screen under the top bar, no modal: the chat starts under the title and its composer sits on the home
+        // indicator, with no bar under it.
         let window = app.windows.firstMatch.frame
         XCTAssertLessThan(title.frame.maxY, chat.frame.minY + 1, "the chat lies under the top bar")
-        XCTAssertGreaterThan(handle.frame.maxY, window.maxY - 60, "the handle reaches the bottom edge: \(handle.frame) in \(window)")
+        XCTAssertGreaterThan(chat.buttons["Attach"].frame.maxY, window.maxY - 60, "the composer sits on the home indicator: \(chat.buttons["Attach"].frame) in \(window)")
         XCTAssertFalse(app.otherElements["PopoverDismissRegion"].exists, "no modal is presented")
         sync("fullscreen")
 
@@ -153,7 +163,7 @@ final class OrchestratorUITests: XCTestCase {
         sync("spawn")
         var swipes = 0
         while title.label != "notes" && swipes < 4 {
-            handle.swipeLeft()
+            swipePage()
             Thread.sleep(forTimeInterval: 1)
             swipes += 1
         }
@@ -166,7 +176,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(["idle", "working", "needs you"].contains(float.value as? String ?? ""), "the button carries the state: \(String(describing: float.value))")
         let win = app.windows.firstMatch
         XCTAssertGreaterThan(float.frame.midX, win.frame.midX, "the button starts at the right")
-        XCTAssertLessThan(float.frame.maxY, handle.frame.minY, "the button sits above the bottom bar: \(float.frame) over \(handle.frame)")
+        XCTAssertLessThan(float.frame.maxY, win.frame.maxY - 34, "the button sits above the home indicator: \(float.frame)")
         shot("page")
         float.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.2, thenDragTo: win.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.45)))
@@ -174,7 +184,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertGreaterThan(float.frame.minX, 0, "the button stays on screen: \(float.frame)")
         shot("float-left")
         float.tap()
-        XCTAssertTrue(waitFor { self.title.label == "Global orchestrator" }, "a tap on the button shows the chat: \(title.label)")
+        XCTAssertTrue(waitFor { self.title.label == "Orchestrator" }, "a tap on the button shows the chat: \(title.label)")
         XCTAssertFalse(float.exists, "no button over the chat")
         sync("page")
 
@@ -195,7 +205,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(waitFor { self.title.label == "notes" }, "the link slid to the notes page: \(title.label)")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.exists, "still in Orchestrator mode")
         float.tap()
-        XCTAssertTrue(waitFor { self.title.label == "Global orchestrator" }, "back on the chat: \(title.label)")
+        XCTAssertTrue(waitFor { self.title.label == "Orchestrator" }, "back on the chat: \(title.label)")
         sync("link")
 
         // The scroll-to-bottom arrow (wheel-eg4e.19.32): it shows once the transcript leaves its end, and a tap goes back.
@@ -217,7 +227,7 @@ final class OrchestratorUITests: XCTestCase {
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
-        XCTAssertEqual(app.buttons["mode"].frame, here.0, "the mode button holds its place across the modes")
+        XCTAssertLessThan(app.buttons["mode"].frame.minX, here.0.minX, "Spaces mode's search sits where Orchestrator mode's mode button was")
         XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
         app.buttons["title"].tap()
         XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the Spaces mode space")
@@ -243,7 +253,7 @@ final class OrchestratorUITests: XCTestCase {
         // The phone reopens to the mode and page it showed last (wheel-eg4e.19.36): leave it on the notes page.
         var out = 0
         while title.label != "notes" && out < 4 {
-            handle.swipeLeft()
+            swipePage()
             Thread.sleep(forTimeInterval: 1)
             out += 1
         }
@@ -285,6 +295,13 @@ final class OrchestratorUITests: XCTestCase {
         }
     }
 
+    /// One page to the right, by a drag across the middle of the pager.
+    private func swipePage() {
+        let win = app.windows.firstMatch
+        win.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: win.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)))
+    }
+
     private func waitFor(_ condition: @escaping () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
@@ -303,6 +320,21 @@ final class OrchestratorUITests: XCTestCase {
             try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/orchestrator-\(name)-\(theme).png"))
         }
         XCUIDevice.shared.appearance = was
+    }
+
+    /// The frames the layout checks compare, one `<id> minX minY maxX maxY` line each, written to `<shots>/measure-<label>.txt`.
+    private func measure(_ label: String) {
+        guard let dir = env["WHEEL_SHOTS"] else { return }
+        let items: [(String, XCUIElement)] = [
+            ("window", app.windows.firstMatch), ("chat", chat), ("field", chat.textViews.firstMatch),
+            ("attach", chat.buttons["Attach"]), ("mode", app.buttons["mode"]), ("tasks", app.buttons["tasks"]),
+            ("menu", app.buttons["Pane menu"]), ("keyboard", app.keyboards.firstMatch),
+        ]
+        let lines = items.map { id, e -> String in
+            let f = e.exists ? e.frame : .zero
+            return "\(id) \(Int(f.minX)) \(Int(f.minY)) \(Int(f.maxX)) \(Int(f.maxY))"
+        }
+        try? lines.joined(separator: "\n").write(toFile: "\(dir)/measure-\(label).txt", atomically: true, encoding: .utf8)
     }
 
     private func sync(_ step: String) {

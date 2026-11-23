@@ -10,8 +10,6 @@ struct SpaceCarousel: View {
     @State private var openTray: String?
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
-    /// The page handle's laid-out height, which the floating button keeps clear of.
-    @State private var handleHeight: CGFloat = 40
     /// While the keyboard is up the page handle goes, so the composer sits on the keyboard (wheel-eg4e.19.41).
     @State private var keyboardUp = false
     @State private var sheetTab = ThumbTab.spaces
@@ -61,7 +59,8 @@ struct SpaceCarousel: View {
                             }
                             .tabViewStyle(.page(indexDisplayMode: .never))
                         }
-                        if !landscape && !keyboardUp {
+                        // Orchestrator mode has no page handle, so the composer sits on the home indicator.
+                        if !landscape && !keyboardUp && !orchestratorMode {
                             pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
                         }
                     }
@@ -244,7 +243,7 @@ struct SpaceCarousel: View {
 
     private var trayIDs: [String] { pages.tray.map(\.id) }
 
-    /// Orchestrator mode's title: "Global orchestrator" on the chat, the shown page's name elsewhere; nil in another mode.
+    /// Orchestrator mode's title: "Orchestrator" on the chat, the shown page's name elsewhere; nil in another mode.
     private var titleText: String? {
         guard orchestratorMode else { return nil }
         let ids = pages.pageIDs
@@ -254,7 +253,7 @@ struct SpaceCarousel: View {
         return model.pageName(shown, in: space)
     }
 
-    static let orchestratorTitle = "Global orchestrator"
+    static let orchestratorTitle = "Orchestrator"
 
     /// The shown space's pinned panes, drawn in the sheet and left out of the pages.
     private var pinnedIDs: [String] { model.activeSpace.map { model.pins.pinned(in: $0.id) } ?? [] }
@@ -291,7 +290,7 @@ struct SpaceCarousel: View {
         let panes = pages.panes
         let spacesMode = showsPages
         return HStack {
-            TitleButton(model: model, open: $titleOpen, orchestratorTitle: titleText)
+            TitleButton(model: model, open: $titleOpen, orchestratorTitle: titleText, detail: orchestratorDetail(pages: pages))
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
@@ -311,8 +310,7 @@ struct SpaceCarousel: View {
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
             ModeButton(mode: model.mode) { model.setMode($0) }
-            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot holds Tasks, so search
-            // and the ⋯ keep their places.
+            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot holds Tasks.
             Group {
                 if orchestratorMode {
                     let tasks = Button { model.openTasks(at: nil) } label: { Image(systemName: "checklist") }
@@ -326,7 +324,7 @@ struct SpaceCarousel: View {
                     }
                 }
             }
-            // One width for the eye and Tasks, so the mode button keeps its place across the modes.
+            // One width for the eye and Tasks.
             .frame(width: 28)
             .sheet(isPresented: $agentsOpen) {
                 AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
@@ -338,13 +336,11 @@ struct SpaceCarousel: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            // Orchestrator mode takes the whole screen for the orchestrator: no palette. Its slot stays, so the mode
-            // button and the ⋯ keep their places.
-            Group {
-                let search = Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
+            // Orchestrator mode takes the whole screen for the orchestrator: no palette, and no empty slot for it.
+            if !orchestratorMode {
+                Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
                     .accessibilityLabel("Search")
                     .accessibilityIdentifier("search")
-                if orchestratorMode { search.hidden() } else { search }
             }
             // One ⋯ holds the pane's actions and Settings. The pane's logo and status dot are in the
             // agent header below, once. With no pane to act on (none in the space, or another mode
@@ -371,23 +367,22 @@ struct SpaceCarousel: View {
     /// its drag: a drag across it changes page, and a swipe up opens the sheet on the tab last
     /// used, a long one on Agents. The composer above wears the same tint, since a swipe there
     /// changes page too.
-    /// In Agents mode the bar keeps its place and its swipe up, with no dots and no page to change; in Orchestrator mode
-    /// a swipe across it changes page, and it shows no dots and opens no sheet.
+    /// In Agents mode the bar keeps its place and its swipe up, with no dots and no page to change. Orchestrator mode has
+    /// no bar.
     private func pageHandle(pages: Pages, dots: Dots, spacesMode: Bool) -> some View {
         let ids = spacesMode ? pages.pageIDs : []
         let index = spacesMode ? pages.index(of: page) : 0
         let prev = index > 0 ? index - 1 : nil
         let next = index + 1 < ids.count ? index + 1 : nil
         return Group {
-            if ids.count > 1 && !orchestratorMode { dots } else { Color.clear.frame(height: 7) }
+            if ids.count > 1 { dots } else { Color.clear.frame(height: 7) }
         }
         .frame(maxWidth: .infinity, minHeight: 40)
         .background(SwipeArea.tint.ignoresSafeArea(edges: .bottom))
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page handle")
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { handleHeight = $0 }
-        .accessibilityAction(named: "Open spaces and agents") { if !orchestratorMode { titleOpen = true } }
+        .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: if let next { go(ids[next]) }
@@ -404,8 +399,7 @@ struct SpaceCarousel: View {
                 if let target { go(ids[target]) }
                 return
             }
-            // Orchestrator mode has no spaces or agents sheet to open.
-            guard up > 0, !orchestratorMode else { return }
+            guard up > 0 else { return }
             if up > Self.longSwipe { sheetTab = .agents }
             Log.info("page handle: swipe up \(Int(up)) pt, sheet on \(sheetTab)")
             titleOpen = true
@@ -414,11 +408,19 @@ struct SpaceCarousel: View {
 
     private func go(_ id: String) { withAnimation { page = id } }
 
+    /// The orchestrator's model menu, under the title while its chat is the shown page.
+    private func orchestratorDetail(pages: Pages) -> AnyView? {
+        guard orchestratorMode, let chatPane = model.orchestratorPane, (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == chatPane,
+              case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent]
+        else { return nil }
+        return AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
+    }
+
     /// Orchestrator mode's way back to the chat, over every page but the chat, clear of the bottom bar.
     @ViewBuilder private func floatButton(pages: Pages, landscape: Bool) -> some View {
         if let chatPane = model.orchestratorPane, let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first, shown != chatPane,
            case let .agent(agent, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent] {
-            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count, bottomClear: landscape || keyboardUp ? 8 : handleHeight) {
+            OrchestratorFloat(chat: chat, waiting: model.perms.filter { $0.agent == chat.name }.count) {
                 Log.info("float: back to the chat")
                 go(chatPane)
             }

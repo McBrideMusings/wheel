@@ -298,7 +298,7 @@ impl Transcript {
         match event {
             AgentEvent::User { turn, text } => {
                 self.touch(self.rows.len());
-                self.rows.push(Row { id: self.next_id, kind: Kind::User { text: text.clone(), queued: true }, turn: Some(*turn), open: false });
+                self.rows.push(Row { id: self.next_id, kind: Kind::User { text: without_inbox(text), queued: true }, turn: Some(*turn), open: false });
                 self.next_id += 1;
                 self.queued_turns.push(*turn);
             }
@@ -632,8 +632,23 @@ pub fn line_counts(old: Option<&str>, new: &str) -> (usize, usize) {
     (y.len() - common, x.len() - common)
 }
 
+/// The person's words with the `<wheel-inbox>` block wheeld attaches for an orchestrator taken out
+/// (`daemon/src/inbox.rs`): its events show in Tasks, never in the chat.
+fn without_inbox(text: &str) -> String {
+    let Some(open) = text.find("<wheel-inbox") else { return text.to_string() };
+    let Some(close) = text[open..].find("</wheel-inbox>").map(|at| open + at + "</wheel-inbox>".len()) else { return text.to_string() };
+    format!("{}{}", &text[..open], &text[close..]).trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_inbox_block_stays_out_of_the_person_s_words() {
+        let sent = "what happened?\n\n<wheel-inbox automated=\"true\">\nwheeld attached these.\n2026-11-22T23:39:18.515Z finished: w11206 finished its turn\n</wheel-inbox>";
+        assert_eq!(super::without_inbox(sent), "what happened?");
+        assert_eq!(super::without_inbox("just <wheel-inbox this"), "just <wheel-inbox this");
+    }
+
     use super::*;
     use serde_json::json;
 

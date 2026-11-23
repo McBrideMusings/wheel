@@ -349,7 +349,7 @@ public final class AgentChat: ObservableObject {
         let target = unansweredTurn ?? (isBusy ? nil : queued.last?.turn)
         guard queue.takeBackAvailable, let turn = target, editing[turn] == nil,
               let row = transcript.rows.last(where: { $0.turn == turn }), !row.reload,
-              case let .user(text, _) = row.kind else { return false }
+              case let .user(text, _) = row.kind.displayed else { return false }
         edit(turn: turn, text: text)
         return true
     }

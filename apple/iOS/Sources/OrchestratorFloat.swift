@@ -5,13 +5,11 @@ import WheelUI
 /// Orchestrator mode's floating button: a 52 pt circle holding the mode's glyph, ringed by the orchestrator's state, a
 /// badge with the count when requests wait on the person, a turning arc while it works, a plain ring when idle. A tap
 /// returns to the chat. A drag moves it, and on release it snaps to the nearer side at the height it was let go, clear
-/// of the top and bottom bars; the side and height are saved.
+/// of the area's edges; the side and height are saved.
 struct OrchestratorFloat: View {
     @ObservedObject var chat: AgentChat
     /// The requests the orchestrator waits on the person for.
     let waiting: Int
-    /// How far above the area's bottom edge the button stays: the bottom bar's height.
-    let bottomClear: CGFloat
     let back: () -> Void
     @AppStorage("orchestratorFloat.leading") private var leading = false
     /// The button's centre as a share of the area's height, nil until the person moves it.
@@ -86,14 +84,14 @@ struct OrchestratorFloat: View {
 
     private func centre(in size: CGSize) -> CGPoint {
         let x = leading ? Self.margin + Self.size / 2 : size.width - Self.margin - Self.size / 2
-        let y = height < 0 ? size.height - bottomClear - Self.margin - Self.size / 2 : CGFloat(height) * size.height
+        let y = height < 0 ? size.height - Self.margin - Self.size / 2 : CGFloat(height) * size.height
         return CGPoint(x: x, y: clamp(y, in: size))
     }
 
-    /// Kept clear of the top edge (the top bar is above the area) and of the bottom bar.
+    /// Kept clear of the area's top edge (the top bar is above the area) and its bottom edge.
     private func clamp(_ y: CGFloat, in size: CGSize) -> CGFloat {
         let low = Self.margin + Self.size / 2
-        let high = size.height - bottomClear - Self.margin - Self.size / 2
+        let high = size.height - Self.margin - Self.size / 2
         return min(max(y, low), max(high, low))
     }
 }

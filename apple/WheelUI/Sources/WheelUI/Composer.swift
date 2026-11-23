@@ -117,6 +117,13 @@ public struct Composer: View {
         return SkillSearch.rank(query, in: skills)
     }
 
+    #if os(iOS)
+    /// One line with UITextView's 8 pt insets above and below it, so a single line never scrolls under the placeholder.
+    private static let fieldHeight: CGFloat = 38
+    #else
+    private static let fieldHeight: CGFloat = 20
+    #endif
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             let matches = matches
@@ -132,13 +139,17 @@ public struct Composer: View {
                         .font(ChatFont.body)
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 5)
+                        #if os(iOS)
+                        // UITextView sets typed text 8 pt down (its default textContainerInset); NSTextView sets none.
+                        .padding(.top, 8)
+                        #endif
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: $draft)
                     .font(ChatFont.body)
                     .scrollContentBackground(.hidden)
                     .scrollIndicators(.never)
-                    .frame(minHeight: 20, maxHeight: 120)
+                    .frame(minHeight: Self.fieldHeight, maxHeight: 120)
                     .fixedSize(horizontal: false, vertical: true)
                     .focused($focused)
                     .modifier(TextTakesNoDrops(off: attach != nil, focused: focused))

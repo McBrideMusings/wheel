@@ -52,11 +52,11 @@ struct AgentPane: View {
                 send: { model.send(chat, attachments: tray) },
                 // A phone's files are not on the Mac the agent runs on, so a pick is uploaded
                 // there first and its Mac path goes into the message; a server too old to take
-                // uploads gets no paperclip.
+                // uploads gets no attach control.
                 pickFiles: nil,
                 attachMenu: tray.map {
-                    AnyView(AttachMenu(tray: $0, canAttach: model.canAttach, chat: chat,
-                                       setModel: { model.setConfig(chat, $0, to: $1) }, clear: AgentPanes.canClear(harness: harness) ? { model.clearChat(chat) } : nil))
+                    AnyView(AttachMenu(tray: $0, canAttach: model.canAttach,
+                                       clear: AgentPanes.canClear(harness: harness) ? { model.clearChat(chat) } : nil))
                 },
                 attachments: tray?.chips ?? [],
                 removeAttachment: { tray?.remove($0) },

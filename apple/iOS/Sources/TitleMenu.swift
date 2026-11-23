@@ -19,6 +19,8 @@ struct TitleButton: View {
     @Binding var open: Bool
     /// Orchestrator mode's title for the shown page; nil in another mode.
     var orchestratorTitle: String?
+    /// The line under Orchestrator mode's title: the orchestrator's model menu on its chat.
+    var detail: AnyView?
 
     /// The shown space's name.
     private var name: String { model.activeSpace?.name ?? "No space" }
@@ -26,15 +28,19 @@ struct TitleButton: View {
     var body: some View {
         let waiting = model.needsYouCount
         if let orchestratorTitle {
-            // As tall as Spaces mode's label; the HStack, not the Text, is the element, so it reports that height.
-            HStack { Text(orchestratorTitle).font(.headline).lineLimit(1).truncationMode(.middle) }
-                .frame(height: Self.rowHeight)
-                .foregroundStyle(.primary)
-                .contentShape(Rectangle())
-                .accessibilityElement(children: .ignore)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("title")
-                .accessibilityLabel(orchestratorTitle)
+            // The title over its one detail, as Messages heads a conversation.
+            VStack(alignment: .leading, spacing: 0) {
+                // As tall as Spaces mode's label; the HStack, not the Text, is the element, so it reports that height.
+                HStack { Text(orchestratorTitle).font(.headline).lineLimit(1).truncationMode(.middle) }
+                    .frame(height: Self.rowHeight)
+                    .foregroundStyle(.primary)
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("title")
+                    .accessibilityLabel(orchestratorTitle)
+                detail
+            }
         } else {
             Button { open = true } label: { label(waiting: waiting) }
                 .buttonStyle(.plain)

@@ -5,16 +5,14 @@ import UniformTypeIdentifiers
 import WheelKit
 import WheelUI
 
-/// The composer's paperclip on the phone: Photo Library (several at once), Take Photo where the
-/// device has a camera, and Choose File, when wheeld takes uploads; then the agent's Model, a check on
-/// the current one, when the agent offers one, and Clear chat, which asks first, where the harness resets on `/clear`.
+/// The composer's + on the phone: Photo Library (several at once), Take Photo where the device has a camera, and Choose
+/// File, when wheeld takes uploads; then Clear chat, which asks first, where the harness resets on `/clear`. The model
+/// is picked under the chat's title (`ModelMenu`).
 /// Every pick lands in the pane's `AttachmentTray`.
 struct AttachMenu: View {
     let tray: AttachmentTray
-    /// Whether wheeld takes uploads: without, the menu holds Model and Clear chat alone.
+    /// Whether wheeld takes uploads: without, the menu holds Clear chat alone.
     let canAttach: Bool
-    @ObservedObject var chat: AgentChat
-    let setModel: (ConfigOption, String) -> Void
     /// Starts the conversation over; nil for a harness that does not reset on `/clear`, which gets no Clear chat.
     let clear: (() -> Void)?
     @State private var photosOpen = false
@@ -30,7 +28,7 @@ struct AttachMenu: View {
                 // A menu draws under the keyboard's window, so opening it drops the keyboard (wheel-eg4e.19.40).
                 .onAppear { blurComposer() }
         } label: {
-            Label("Attach", systemImage: "paperclip").labelStyle(.iconOnly)
+            Label("Attach", systemImage: "plus").labelStyle(.iconOnly)
         }
         .confirmationDialog("Clear this chat?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear chat", role: .destructive) { clear?() }
@@ -66,20 +64,6 @@ struct AttachMenu: View {
             }
             Button("Choose File", systemImage: "folder") { filesOpen = true }
             Divider()
-        }
-        if let option = chat.config.first(where: { $0.category == "model" }), case let .select(current, choices) = option.kind {
-            Menu {
-                ForEach(choices) { choice in
-                    Button { setModel(option, choice.value) } label: {
-                        if choice.value == current { Label(choice.name, systemImage: "checkmark") } else { Text(choice.name) }
-                    }
-                    .accessibilityIdentifier("model \(choice.value)")
-                }
-            } label: {
-                Label("Model", systemImage: "cpu")
-            }
-            .accessibilityIdentifier("model menu")
-            .accessibilityValue(choices.first { $0.value == current }?.name ?? current)
         }
         if clear != nil {
             Button("Clear chat", systemImage: "trash") { confirmClear = true }

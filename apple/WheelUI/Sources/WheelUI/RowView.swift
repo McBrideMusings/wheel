@@ -89,6 +89,8 @@ extension TranscriptRow.Kind {
         switch self {
         case let .agent(text): .agent(Self.trimmed(text))
         case let .thought(text): .thought(Self.trimmed(text))
+        // The person's words alone: the inbox block wheeld attached is for the orchestrator, and its events show in Tasks.
+        case let .user(text, queued): .user(InboxBlock.words(text), queued: queued)
         default: self
         }
     }

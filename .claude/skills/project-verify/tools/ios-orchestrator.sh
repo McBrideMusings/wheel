@@ -41,7 +41,7 @@ if step chat; then
   check "opening the mode started it, with no tap" plog "none runs"
   check "phone.log records the reply" plog "orchestrator started in $G"
   check "the chat is the first page" plog "orchestrator pages: $G"
-  check "the title names the orchestrator" plog "title: Global orchestrator"
+  check "the title names the orchestrator" plog "title: Orchestrator"
   check "nothing pinned the orchestrator" noplog "pinned $G"
   ack chat
 fi

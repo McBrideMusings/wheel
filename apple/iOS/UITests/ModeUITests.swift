@@ -52,11 +52,11 @@ final class ModeUITests: XCTestCase {
                 XCTAssertTrue(shown.waitForExistence(timeout: 5), "\(title) shows its body")
                 shot(id)
             }
-            // Orchestrator mode's title names another space, so only its width may follow that name; that mode has
-            // no eye, and its slot stays empty.
+            // Orchestrator mode has no eye and no search.
             if id == "orchestrator" {
                 XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
-                XCTAssertEqual(placed(rects(id), without: ["agents", "search"]), placed(launch, without: ["agents", "search"]), "no control moved in \(title)")
+                // Its title carries the model under it, so only the ⋯ must hold still.
+                XCTAssertEqual(placed(rects(id), without: ["agents", "search", "title"]), placed(launch, without: ["agents", "search", "title"]), "the ⋯ held its place in \(title)")
             } else {
                 XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
             }
