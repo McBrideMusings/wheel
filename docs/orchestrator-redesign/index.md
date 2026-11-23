@@ -43,6 +43,9 @@ tools/on-event            deterministic reducer: inbox event -> queue item, watc
 tools/ask "<q>"           child agent: create a needs-you item, then end its turn
 tools/done "<summary>"    child agent: mark the work ready for review or done, link PR or bead
 tools/switch <topic>      save, wait for the turn to end, swap session and mirrors
+tools/decide              the machine's decide hook: allow, deny or ask from policy.toml
+policy.toml               permission rules, first match wins; never allows what cannot be undone
+log/decide.jsonl          audit log: one line per request decided, with its rule and why
 threads/current           id of the active topic
 threads/<id>.md           topic notes
 threads/archive/          closed topics
