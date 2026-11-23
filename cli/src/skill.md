@@ -54,7 +54,9 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - The orchestrator is an ordinary agent pane in a space whose directory is the orchestrator folder: the machine's `orchestrator.dir` setting, or `orchestrator` beside the machine's wheel.toml when it is empty. Orchestrator mode on the Mac and the phone shows that space; open it with `wheel space new <folder>` and `wheel pane start <pane> agent`. Agent events reach it only through `[[hook]]` commands.
 - `wheel perm list | wait | answer`: permission requests agents are waiting on.
   `wheel perm answer <request-id-or-agent-pane> allow|deny|<option-id>` answers one. **Only answer a
-  request when the person has told you to.** Never answer your own.
+  request when the person has told you to.** Never answer your own. wheeld starts every Claude Code
+  agent with `wheel perm answer` denied, except in a folder whose own `.claude/settings.json` or
+  `settings.local.json` allows `Bash(wheel perm answer…)` by name.
 - `wheel artifact new | add | remove | ls | refresh | show`: web-pane artifacts. A refresh
   command in `artifact.toml` runs without asking.
   `wheel artifact state <pane> [<key>] [--wait]` prints what the page stored with `wheel.set(key, value)`

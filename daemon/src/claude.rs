@@ -169,11 +169,32 @@ pub(crate) fn words(command: &str) -> Vec<String> {
     words
 }
 
+/// Whether the folder's own Claude Code settings (`.claude/settings.json` or
+/// `settings.local.json`) allow `wheel perm answer` by name (ADR-0054): a CLI deny beats every
+/// settings allow, so wheeld leaves its deny off only there. A broader rule such as
+/// `Bash(wheel:*)` grants nothing.
+fn folder_grants_perm_answer(cwd: &Path) -> bool {
+    ["settings.json", "settings.local.json"].iter().any(|name| {
+        let Ok(text) = std::fs::read_to_string(cwd.join(".claude").join(name)) else { return false };
+        let Ok(settings) = serde_json::from_str::<Value>(&text) else { return false };
+        settings["permissions"]["allow"].as_array().is_some_and(|rules| {
+            rules.iter().filter_map(Value::as_str).any(|rule| {
+                rule.strip_prefix("Bash(")
+                    .and_then(|r| r.strip_suffix(')'))
+                    .is_some_and(|command| command.trim_start().starts_with("wheel perm answer"))
+            })
+        })
+    })
+}
+
 /// The arguments the driver adds after the command's own.
 fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if launch.brief.is_some() {
-        args.extend(["--allowedTools".into(), ALLOWED.into(), "--disallowedTools".into(), DISALLOWED.into()]);
+        args.extend(["--allowedTools".into(), ALLOWED.into()]);
+        if !folder_grants_perm_answer(&launch.cwd) {
+            args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
+        }
     }
     args.extend(
         [
@@ -1915,6 +1936,35 @@ mod tests {
         assert_eq!(args[at + 1], super::ALLOWED);
         let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
         assert_eq!(args[at + 1], super::DISALLOWED);
+    }
+
+    #[test]
+    fn a_folder_that_allows_perm_answer_by_name_drops_the_deny() {
+        use crate::driver::{Conversation, Launch};
+        let dir = std::env::temp_dir().join(format!("wheel-perm-grant-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        let launch = Launch {
+            agent: crate::resume::Harness::Claude,
+            command: "claude".into(),
+            cwd: dir.clone(),
+            config_dir: None,
+            brief: Some("brief".into()),
+            env: Vec::new(),
+            conversation: Conversation::New("c".into()),
+            model: None,
+            permissions: Default::default(),
+        };
+        let denies = |rules: &str| {
+            std::fs::write(dir.join(".claude/settings.json"), format!(r#"{{"permissions":{{"allow":{rules}}}}}"#)).unwrap();
+            super::arguments(&launch, None).iter().any(|a| a == "--disallowedTools")
+        };
+        assert!(denies(r#"["Bash(wheel:*)"]"#), "a broad wheel rule grants nothing");
+        assert!(!denies(r#"["Bash(wheel:*)", "Bash(wheel perm answer:*)"]"#));
+        assert!(!denies(r#"["Bash(wheel perm answer *)"]"#));
+        std::fs::remove_file(dir.join(".claude/settings.json")).unwrap();
+        std::fs::write(dir.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Bash(wheel perm answer:*)"]}}"#).unwrap();
+        assert!(!super::arguments(&launch, None).iter().any(|a| a == "--disallowedTools"), "settings.local.json counts");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
