@@ -9,6 +9,7 @@ pub mod conversations;
 pub mod crash_guard;
 pub mod daemon;
 pub mod debug;
+pub mod earlier;
 pub mod edit_menu;
 pub mod focus;
 pub mod footer;

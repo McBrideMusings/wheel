@@ -317,13 +317,13 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, attachments_report) = attachments(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
-    let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams, earlier_report) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, fork_row, fork_text, fork_rows, reply_buttons, fork_report) = fork_and_reply_buttons(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
     let (run, running_report) = running_strip(run, agent_pane.clone(), agent_name.clone(), cx).await?;
     let (run, running_full_report) = running_full_view(run, agent_pane.clone(), agent_name.clone(), cx).await?;
     let (run, read_aloud_report) = read_aloud_toggle(run, agent_pane.clone(), agent_name.clone(), cx).await?;
-    let conversations_report = json!({"read_aloud_toggle": read_aloud_report, "reply_buttons": reply_buttons, "recent": recent_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let conversations_report = json!({"read_aloud_toggle": read_aloud_report, "reply_buttons": reply_buttons, "recent": recent_report, "earlier": earlier_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
@@ -2435,7 +2435,7 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
 }
 
 /// The Conversations popover, the Recent shortcut, and a Codex pane streaming a reply.
-async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, &'static str, usize, String, String, bool, Value, usize, bool)> {
+async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, &'static str, usize, String, String, bool, Value, usize, bool, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
@@ -2569,6 +2569,53 @@ async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_pat
         }
     }
     ensure!(resumed_rows > 0, "resuming {old_id}: popover {}, rows {:?}", convs_now(cx)?, rows(cx)?.1.iter().take(4).map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>());
+    // Earlier conversations (wheel-zxts.6.3): back in the old conversation, the new one is drawn
+    // above it, read from the store and titled with its message; its Resume goes back to it, and
+    // the old one's Resume returns.
+    let earlier_report = {
+        let earlier_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(pane_now(cx)?["earlier"].clone()) };
+        let mut earlier = Value::Null;
+        for _ in 0..100 {
+            pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            earlier = earlier_now(cx)?;
+            if earlier[0]["read"] == true {
+                break;
+            }
+        }
+        let listed_new = earlier.as_array().is_some_and(|e| e.len() == 1) && earlier[0]["id"] == new_id.as_str();
+        ensure!(listed_new && earlier[0]["title"] == "in the new one" && earlier[0]["rows"].as_u64().unwrap_or(0) >= 2 && earlier[0]["resume"] == true,
+            "the pane in {old_id} should draw {new_id} above it, read and titled `in the new one`: {earlier}");
+        window.update(cx, |c, _, _| c.reveal_top(&agent_name))?;
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, Some(output.join("client-earlier-conversations.png")), cx)?;
+        let mut switched = vec![];
+        for (id, text) in [(new_id.clone(), "in the new one"), (old_id.clone(), "show tools")] {
+            let mut at = None;
+            for _ in 0..50 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                window.update(cx, |c, _, _| c.reveal_top(&agent_name))?;
+                draw(window, None, cx)?;
+                at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("resume:{id}")))?;
+                if at.is_some() {
+                    break;
+                }
+            }
+            press(&native, at.ok_or_else(|| anyhow::anyhow!("no Resume drawn for {id}: {}", earlier_now(cx).unwrap_or_default()))?);
+            let mut done = false;
+            for _ in 0..200 {
+                pump(&mut connection, 100, &mut layouts, window, cx).await?;
+                let (state, held) = rows(cx)?;
+                if state == "ready" && held.iter().any(|r| matches!(&r.kind, Kind::User { text: t, .. } if t == text)) && earlier_now(cx)?.as_array().is_some_and(|e| e.iter().all(|p| p["id"] != id.as_str())) {
+                    done = true;
+                    break;
+                }
+            }
+            ensure!(done, "Resume on {id} did not put the pane back in it: rows {:?}, earlier {}", rows(cx)?.1.iter().take(4).map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>(), earlier_now(cx)?);
+            switched.push(id);
+        }
+        json!({"listed": earlier, "resumed": switched})
+    };
     // A Codex pane (wheel-fake-agent app-server) streams a reply to a message typed into it.
     let wheel = |args: &[&str]| -> Result<String> {
         let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
@@ -2619,7 +2666,7 @@ async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_pat
             break;
         }
     }
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams))
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams, earlier_report))
 }
 
 /// Fork from a reply, and the reply's copy and play buttons.

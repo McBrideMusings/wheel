@@ -180,7 +180,7 @@ impl Client {
             .child(recorded(agent, &format!("fork:{ix}"), &self.controls))
     }
     /// Why the rows cannot be picked now, or None.
-    fn conversation_block(&self, agent: &str) -> Option<&'static str> {
+    pub(super) fn conversation_block(&self, agent: &str) -> Option<&'static str> {
         let t = self.transcripts.get(agent);
         conv::block(self.conversations.switching.contains_key(agent), t.is_some_and(Transcript::busy), t.is_some_and(|t| !t.queued_turns().is_empty()))
     }

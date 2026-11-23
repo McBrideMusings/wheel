@@ -14,6 +14,7 @@ mod charts;
 mod conversations;
 mod debug;
 mod diagrams;
+mod earlier;
 pub mod float;
 mod images;
 mod links;
@@ -373,6 +374,10 @@ pub struct Client {
     pub queue: crate::queue::Tray,
     /// Orchestrator mode's topic line: the current topic, its reads, and the notes card.
     pub topic: crate::topic::Line,
+    /// Each agent's earlier conversations, drawn dimmed above its transcript (`view/earlier.rs`).
+    pub earlier: HashMap<String, crate::earlier::Earlier>,
+    /// The agent and conversation each `agent_conversation_history` sent reads.
+    pub history_reqs: HashMap<u64, (String, String)>,
     /// What the connected wheeld offers (its ops and levels), from its last `status`; None before
     /// it answered. A feature that sends an op asks `server_has` first (ADR-0050).
     pub server_offer: Option<wheel_proto::Offer>,
@@ -535,7 +540,7 @@ impl Client {
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
-            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(),
+            quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(), earlier: HashMap::new(), history_reqs: HashMap::new(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
@@ -574,7 +579,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_queue_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_earlier_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_queue_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -811,6 +816,7 @@ impl Client {
             Event::Down(reason) => {
                 self.link = Link::Down(reason);
                 server::link(false);
+                self.drop_earlier();
                 false
             }
             Event::Refused { op } => {
@@ -880,6 +886,7 @@ impl Client {
         }
         self.ask_space_settings();
         self.sync_queue();
+        self.sync_earlier();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
         let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| (l.id.clone(), l.kind.clone())).collect();
@@ -1505,7 +1512,14 @@ impl Client {
             // Revealing a row moves the column away from its end, as a scroll up does, and a
             // scroll up is what stops the list following the stream.
             column.state.scroll_by(px(-1.));
-            column.state.scroll_to_reveal_item(row);
+            column.state.scroll_to_reveal_item(row + self.earlier_len(agent));
+        }
+    }
+    /// Scroll `agent`'s column to its first item, the oldest earlier conversation when it has one.
+    pub fn reveal_top(&self, agent: &str) {
+        if let Some(column) = self.columns.get(agent) {
+            column.state.scroll_by(px(-1.));
+            column.state.scroll_to_reveal_item(0);
         }
     }
     /// Take `agent`'s column back to its end and follow the stream from there, wherever the
@@ -1520,7 +1534,7 @@ impl Client {
     pub fn column_scroll(&self, agent: &str) -> Option<(usize, f32, bool)> {
         let column = self.columns.get(agent)?;
         let top = column.state.logical_scroll_top();
-        Some((top.item_ix, f32::from(top.offset_in_item), column.state.is_following_tail()))
+        Some((top.item_ix.saturating_sub(self.earlier_len(agent)), f32::from(top.offset_in_item), column.state.is_following_tail()))
     }
     /// Tell each agent's column which of its rows changed since the last frame, so the list lays
     /// out those rows again and keeps the measured heights of the rest. A transcript replaced from
@@ -1532,15 +1546,24 @@ impl Client {
         let agents: Vec<String> = self.transcripts.keys().cloned().collect();
         for agent in agents {
             let queue = self.queue_view(&agent);
+            // The earlier conversations' items come first; every row index below is the live
+            // transcript's, `e` items further down the list.
+            let earlier = self.earlier_shape(&agent);
+            let e = earlier.0;
             let Some(t) = self.transcripts.get_mut(&agent) else { continue };
             let changed = t.take_changed();
             let replaced = t.take_replaced();
-            let count = t.rows.len() + usize::from(t.busy());
+            // Under earlier conversations an empty transcript draws its prompt as one more item.
+            let count = t.rows.len() + usize::from(t.busy()) + usize::from(e > 0 && t.rows.is_empty() && !t.busy());
             let column = self.columns.entry(agent.clone()).or_insert_with(|| {
                 let state = ListState::new(0, ListAlignment::Bottom, px(OVERDRAW));
                 state.set_follow_mode(FollowMode::Tail);
-                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![], links: 0 }
+                Column { state, count: 0, queue: composer::QueueView::default(), reply_ends: vec![], links: 0, earlier: (0, 0) }
             });
+            if column.earlier != earlier && !replaced {
+                column.state.splice(0..column.earlier.0, e);
+                column.earlier = earlier;
+            }
             let mut from = changed.unwrap_or(usize::MAX);
             // A link that resolved changes what its row shows and how tall it is: every row is
             // measured again and its texts, which a copy reads, are made again.
@@ -1573,18 +1596,19 @@ impl Client {
                 continue;
             }
             if replaced {
-                column.state.splice(0..column.count, count);
+                column.state.splice(0..column.earlier.0 + column.count, e + count);
                 column.state.set_follow_mode(FollowMode::Tail);
+                column.earlier = earlier;
                 from = 0;
             } else {
                 // Rows that are still there are measured again where they stand, so a reader
                 // scrolled into one keeps their place; only the tail is added or taken away.
                 from = from.min(kept);
                 if from < kept {
-                    column.state.remeasure_items(from..kept);
+                    column.state.remeasure_items(e + from..e + kept);
                 }
                 if column.count != count {
-                    column.state.splice(kept..column.count, count - kept);
+                    column.state.splice(e + kept..e + column.count, count - kept);
                 }
             }
             column.count = count;
@@ -2192,7 +2216,9 @@ impl Client {
                 // An empty transcript shows the prompt and the Recent shortcut in place of the
                 // column; rows arriving drop the shortcut's list, so the next empty one asks again.
                 let empty = match agent {
-                    Some(a) if self.transcripts.get(a).is_some_and(|t| t.rows.is_empty()) => Some(self.empty_conversation(&p.leaf.id, a, cx)),
+                    Some(a) if self.transcripts.get(a).is_some_and(|t| t.rows.is_empty()) && self.earlier_len(a) == 0 => Some(self.empty_conversation(&p.leaf.id, a, cx)),
+                    // Under earlier conversations the column draws the prompt and keeps the list.
+                    Some(a) if self.transcripts.get(a).is_some_and(|t| t.rows.is_empty()) => None,
                     Some(a) => {
                         self.conversations.recent.remove(a);
                         None
@@ -2204,7 +2230,7 @@ impl Client {
                 let input = agent.map(|a| self.composer_input(a, window, cx));
                 let t = agent.and_then(|a| self.transcripts.get(a));
                 let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
-                    list(state, cx.processor(move |this, ix, _, cx| this.row_el(&a, ix, cx).into_any_element())).size_full()
+                    list(state, cx.processor(move |this, ix, _, cx| this.column_item(&a, ix, cx))).size_full()
                 });
                 let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
                 let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents, self.raw_context.contains(&p.leaf.id));
@@ -2798,6 +2824,8 @@ struct Column {
     reply_ends: Vec<usize>,
     /// The links generation the rows were measured at (`LinkState::generation`).
     links: u64,
+    /// The earlier conversations' items as last laid out (`Client::earlier_shape`).
+    earlier: (usize, u64),
 }
 /// How far past the visible rows the column lays out, in points, so a scroll finds them ready.
 const OVERDRAW: f32 = 600.;
@@ -2874,14 +2902,22 @@ impl Client {
     /// can read them.
     fn row_el(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Div {
         let Some(t) = self.transcripts.get(agent) else { return div() };
+        self.row_of(agent, None, t, ix, cx)
+    }
+    /// Row `ix` of transcript `t`: `agent`'s live one, or, with `past`, the earlier conversation
+    /// of that id, drawn with no buttons, queue lines, selection or message menu.
+    fn row_of(&self, agent: &str, past: Option<&str>, t: &Transcript, ix: usize, cx: &mut Context<Self>) -> gpui::Div {
+        let live = past.is_none();
         let Some(row) = t.rows.get(ix) else {
-            return if t.busy() { div().pb_1().text_color(rgb(0xe0b070)).child("working…") } else { div() };
+            return if live && t.busy() { div().pb_1().text_color(rgb(0xe0b070)).child("working…") } else { div() };
         };
-        let queue = self.columns.get(agent).map(|c| &c.queue);
-        let selection = self.selection.as_ref().filter(|s| s.agent == agent);
-        let kept = (!self.texts_kept(agent, ix)).then(Vec::new);
+        // An earlier conversation's rows key their texts and caches apart from the live ones.
+        let key = past.map_or_else(|| agent.to_owned(), |id| format!("{agent}~{id}"));
+        let queue = self.columns.get(agent).map(|c| &c.queue).filter(|_| live);
+        let selection = self.selection.as_ref().filter(|s| live && s.agent == agent);
+        let kept = (live && !self.texts_kept(agent, ix)).then(Vec::new);
         let dir = self.agent_place(agent).map(|p| p.2).unwrap_or_default();
-        let mut texts = Texts { agent: agent.to_owned(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, diagrams: &self.diagrams, diagram: 0, charts: &self.charts, chart: 0, dir };
+        let mut texts = Texts { agent: key.clone(), row: ix, next: 0, selection, drawn: &self.drawn, kept, images: &self.images, diagrams: &self.diagrams, diagram: 0, charts: &self.charts, chart: 0, dir };
         let el = match &row.kind {
             Kind::User { text, queued } => div().flex().flex_col()
                 .child(div().flex().gap_2().text_color(rgb(0xe0b070))
@@ -2907,6 +2943,9 @@ impl Client {
                 let mut col = div().flex().flex_col().gap_1().text_color(rgb(0xd9e8e1));
                 for block in blocks.iter() {
                     col = col.child(block_el(block, &mut texts, &self.highlights, cx));
+                }
+                if !live {
+                    return col.w_full().pb_1();
                 }
                 // Copy, play and, when the turn can fork, fork (RowView.swift's `actions`): on a
                 // line of their own under the last reply of a finished turn, over the top right
@@ -2953,7 +2992,7 @@ impl Client {
                 plan
             }
             Kind::Mode(m) => div().text_xs().text_color(rgb(0x8fa89b)).child(format!("Mode: {m}")),
-            Kind::Card(card) => self.card_row(agent, ix, card),
+            Kind::Card(card) => self.card_row(&key, ix, card),
             Kind::Notice(x) => div().text_xs().text_color(rgb(0x8fa89b)).child(texts.inline("notice", &self.linked_text(agent, x), 0x8fa89b)),
             Kind::Error(x) => div().text_color(rgb(0xe07070)).child(texts.inline("error", &self.linked_text(agent, x), 0xe07070)),
         };
@@ -2961,7 +3000,7 @@ impl Client {
             self.row_texts.borrow_mut().entry(agent.to_owned()).or_default().insert(ix, kept);
         }
         // A message's right-click opens the message menu; its bounds are recorded for the check.
-        let el = if matches!(row.kind, Kind::User { .. } | Kind::Reply(_)) {
+        let el = if live && matches!(row.kind, Kind::User { .. } | Kind::Reply(_)) {
             messages::message_presses(el.relative(), agent, ix, cx).child(recorded(agent, &format!("message:{ix}"), &self.controls))
         } else {
             el

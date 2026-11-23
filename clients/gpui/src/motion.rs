@@ -164,7 +164,7 @@ mod tests {
         Rect { x, y, w, h }
     }
     fn leaf(id: &str) -> Tree {
-        Tree::Pane(Leaf { id: id.into(), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, mirror: None })
+        Tree::Pane(Leaf { id: id.into(), kind: "terminal".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None })
     }
 
     #[test]

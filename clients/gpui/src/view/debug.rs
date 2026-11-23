@@ -655,7 +655,7 @@ impl Client {
                 let level = placed.map_or(0, |p| self.header_level_for(leaf, p.rect.w));
                 let mut entry = json!({
                     "space": space.id, "kind": leaf.kind, "label": leaf.label, "term": leaf.term, "url": leaf.url, "agent": leaf.agent,
-                    "harness": leaf.harness, "status": leaf.status, "visible": placed.is_some(), "site": space.site_of(&leaf.id).map(|s| s.name()),
+                    "harness": leaf.harness, "earlier": leaf.agent.as_deref().map(|a| self.earlier_json(a)), "status": leaf.status, "visible": placed.is_some(), "site": space.site_of(&leaf.id).map(|s| s.name()),
                     "menu": self.header_menu(&leaf.id, 0).iter().map(|i| json!({"id": i.id, "title": i.title, "enabled": i.enabled})).collect::<Vec<_>>(),
                     "header_buttons": self.header_button_frames(&leaf.id),
                     "header_order": self.header_buttons_at(&leaf.id, level).iter().map(|b| b.id).collect::<Vec<_>>(),
