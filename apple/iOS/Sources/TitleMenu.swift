@@ -2,6 +2,14 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
+extension VerticalAlignment {
+    private enum TitleRow: AlignmentID {
+        static func defaultValue(in d: ViewDimensions) -> CGFloat { d[VerticalAlignment.center] }
+    }
+    /// The title row's middle: the bar's buttons line up with it, so the lines under the title never move them.
+    static let titleRow = VerticalAlignment(TitleRow.self)
+}
+
 /// What a title-menu action asks the carousel to present once the popover is gone: an alert or a
 /// confirmation shown from inside the popover would close with it.
 enum TitleMenuRequest: Equatable {
@@ -39,10 +47,12 @@ struct TitleButton: View {
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("title")
                     .accessibilityLabel(orchestratorTitle)
+                    .alignmentGuide(.titleRow) { $0[VerticalAlignment.center] }
                 detail
             }
         } else {
             Button { open = true } label: { label(waiting: waiting) }
+                .alignmentGuide(.titleRow) { $0[VerticalAlignment.center] }
                 .buttonStyle(.plain)
                 .tint(.primary)
                 .accessibilityIdentifier("title")

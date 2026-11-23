@@ -68,6 +68,8 @@ targets:
       - package: WheelUI
       - package: libghostty-spm
         product: GhosttyTerminal
+      - package: textual
+        product: Textual
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.piercemakes.wheel.phone

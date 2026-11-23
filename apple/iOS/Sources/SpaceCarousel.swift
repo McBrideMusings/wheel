@@ -292,7 +292,7 @@ struct SpaceCarousel: View {
     private func topBar(pages: Pages, dots: Dots, landscape: Bool) -> some View {
         let panes = pages.panes
         let spacesMode = showsPages
-        return HStack {
+        return HStack(alignment: .titleRow) {
             TitleButton(model: model, open: $titleOpen, orchestratorTitle: titleText, detail: orchestratorDetail(pages: pages))
                 // A sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
@@ -415,12 +415,21 @@ struct SpaceCarousel: View {
 
     private func go(_ id: String) { withAnimation { page = id } }
 
-    /// The orchestrator's model menu, under the title while its chat is the shown page.
+    /// Under Orchestrator mode's title: the current topic's line on every page, which opens its notes, then the
+    /// orchestrator's model menu while its chat is the shown page.
     private func orchestratorDetail(pages: Pages) -> AnyView? {
-        guard orchestratorMode, let chatPane = model.orchestratorPane, (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == chatPane,
-              case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind, let chat = model.chats[agent]
-        else { return nil }
-        return AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
+        guard orchestratorMode else { return nil }
+        let topic = model.orchestratorTopic
+        var chat: AgentChat?
+        if let chatPane = model.orchestratorPane, (pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first) == chatPane,
+           case let .agent(agent, _, _)? = model.activeSpace?.allPanes.first(where: { $0.id == chatPane })?.kind {
+            chat = model.chats[agent]
+        }
+        guard topic != nil || chat != nil else { return nil }
+        return AnyView(VStack(alignment: .leading, spacing: 0) {
+            if let topic { TopicLine(topic: topic) }
+            if let chat { ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) } }
+        })
     }
 
     /// Orchestrator mode's way back to the chat, over every page but the chat, clear of the bottom bar.

@@ -54,6 +54,7 @@ final class PhoneModel {
         saveView()
         reportView()
         showTerm()
+        readTopic()
     }
 
     /// The orchestrator's folder (ADR-0054), from the machine's `orchestrator.dir` setting; nil until wheeld lists it.
@@ -82,10 +83,50 @@ final class PhoneModel {
     private(set) var queues: [String: OrchestratorQueue] = [:]
     private static func isQueue(_ ids: (plugin: String, pane: String)) -> Bool { ids.plugin == "wheelhouse" && ids.pane == "queue" }
 
+    /// The agent in the orchestrator's chat pane; nil in another mode or with no such pane.
+    private var orchestratorAgent: String? {
+        guard let pane = orchestratorPane,
+              case let .agent(agent, _, _)? = orchestratorSpace?.allPanes.first(where: { $0.id == pane })?.kind else { return nil }
+        return agent
+    }
+
+    /// The orchestrator's current topic, read from its folder; nil with no `threads/current`, in another mode, or
+    /// before the first read.
+    private(set) var orchestratorTopic: OrchestratorTopic?
+    private enum TopicRead { case current, notes(String) }
+    private var topicReqs: [UInt64: TopicRead] = [:]
+
+    /// Reads `threads/current`, then that topic's notes: on entering Orchestrator mode, when the folder is listed,
+    /// and each time the orchestrator's turn ends, since `tools/note` and `tools/switch` run inside its turns.
+    private func readTopic() {
+        guard mode == WindowMode.orchestrator, let dir = orchestratorDir, case .connected = connection, let client else { return }
+        let req = client.req()
+        topicReqs[req] = .current
+        client.send(.filePeek(req: req, path: "threads/current", cwd: dir, line: nil, context: 1))
+    }
+
+    private func topicRead(_ read: TopicRead, _ peek: FilePeek) {
+        switch read {
+        case .current:
+            guard peek.found, let id = OrchestratorTopic.currentID(peek.lines), let dir = orchestratorDir,
+                  case .connected = connection, let client else {
+                if orchestratorTopic != nil { Log.info("topic: none current") }
+                orchestratorTopic = nil
+                return
+            }
+            let req = client.req()
+            topicReqs[req] = .notes(id)
+            client.send(.filePeek(req: req, path: "threads/\(id).md", cwd: dir, line: nil, context: 200))
+        case let .notes(id):
+            let topic = OrchestratorTopic(id: id, lines: peek.found ? peek.lines : [])
+            if topic != orchestratorTopic { Log.info("topic \(id): \(topic.title), \(peek.found ? "\(peek.lines.count) lines" : "no notes file")") }
+            orchestratorTopic = topic
+        }
+    }
+
     /// Tapping a queue item: its message goes to the orchestrator's chat, as if typed there.
     func ask(about item: OrchestratorQueue.Item) {
-        guard let pane = orchestratorPane,
-              case let .agent(agent, _, _)? = orchestratorSpace?.allPanes.first(where: { $0.id == pane })?.kind else { return }
+        guard let agent = orchestratorAgent else { return }
         guard case .connected = connection, let client else {
             chats[agent]?.error = "Not connected to the Mac."
             return
@@ -577,6 +618,7 @@ final class PhoneModel {
             Log.info("status \(space)/\(pane ?? "-"): pane=\(status.map(\.label) ?? "none") space=\(spaceStatus.map(\.label) ?? "none")")
         case let .agentStateChanged(agent, state):
             chats[agent]?.state = state
+            if agent == orchestratorAgent, state == .ready { readTopic() }
         case let .agentAttached(req, agent, state, events, config, context, now):
             if let req { agentReqs[req] = nil }
             guard let chat = chats[agent] else { return }
@@ -588,6 +630,7 @@ final class PhoneModel {
             chat.notice = nil
             chat.title = nil
             Log.info("agent \(agent) attached, \(events.count) events")
+            if agent == orchestratorAgent { readTopic() }
         case let .agentConfig(agent, options):
             chats[agent]?.setConfig(options)
         case let .agentContext(agent, context):
@@ -769,6 +812,8 @@ final class PhoneModel {
             folderRoots = roots
             Log.info("new space: roots \(roots)")
             for root in roots { askDirList(root) }
+        case let .filePeek(req, peek):
+            if let read = topicReqs.removeValue(forKey: req) { topicRead(read, peek) }
         case let .dirList(req, path, dirs, error):
             guard let parent = dirReqs.removeValue(forKey: req) else { break }
             folderListings[CommandPalette.listingKey(parent)] = .init(dirs: dirs, error: error)
@@ -1858,6 +1903,7 @@ final class PhoneModel {
         if let setting = list.first(where: { $0.key == "orchestrator.dir" }), setting.orchestratorDir != orchestratorDir {
             orchestratorDir = setting.orchestratorDir
             Log.info("orchestrator folder \(setting.orchestratorDir)")
+            readTopic()
         }
         if let dots = list.first(where: { $0.key == "status.dots" }) {
             let ranks = StatusRank.listed(dots.value)
