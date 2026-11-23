@@ -1012,6 +1012,34 @@ impl Agent {
         self.saved_id.lock().unwrap().clone()
     }
 
+    /// Conversation `id` as the events a transcript holds, read from the agent's store without
+    /// loading it: None when the store does not hold it. Its turns are numbered from 1, apart
+    /// from the live transcript's. Only Claude Code's store is read this way.
+    pub async fn conversation_history(&self, id: &str) -> Result<Option<Vec<StampedEvent>>, String> {
+        if self.harness != Harness::Claude {
+            return Err(format!("{} conversations cannot be read without loading them", self.harness.title()));
+        }
+        let home = self
+            .home
+            .clone()
+            .or_else(|| self.harness.daemon_home())
+            .ok_or("no home directory to find the agent's conversations in")?;
+        let (cwd, id) = (self.cwd.clone(), id.to_string());
+        let history = tokio::task::spawn_blocking(move || claude::history(&home, &cwd, &id))
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut turn = 0;
+        Ok(history.map(|history| {
+            history_events(history, || {
+                turn += 1;
+                turn
+            })
+            .into_iter()
+            .map(StampedEvent::unstamped)
+            .collect()
+        }))
+    }
+
     /// One page of the conversations the agent's store holds for this agent's directory, newest
     /// first, with the one the agent is in flagged, and whether older ones remain: at most `limit`
     /// of those last worked in before `before`. The store belongs to the directory rather than to
@@ -1626,19 +1654,8 @@ impl Agent {
     fn commit_history(&self, history: History) -> usize {
         let mut inner = self.inner.lock().unwrap();
         // The history is read with no times the transcript keeps, so its events carry none.
-        let mut record = |event| Self::record(&mut inner, StampedEvent::unstamped(event));
-        for event in history.before {
-            record(event);
-        }
-        for (text, output) in history.turns {
-            let turn = self.next_turn.fetch_add(1, Ordering::SeqCst);
-            record(AgentEvent::User { turn, text });
-            record(AgentEvent::TurnStart { turn });
-            for event in output {
-                record(event);
-            }
-            let stop_reason = "end_turn".into();
-            record(AgentEvent::TurnEnd { turn, stop_reason });
+        for event in history_events(history, || self.next_turn.fetch_add(1, Ordering::SeqCst)) {
+            Self::record(&mut inner, StampedEvent::unstamped(event));
         }
         if inner.title.is_none() {
             let first = inner.events.iter().find_map(|e| match &e.event {
@@ -2332,6 +2349,21 @@ impl Agent {
 
 /// How long a conversation's title may be.
 const TITLE_CHARS: usize = 120;
+
+/// A conversation's history as transcript events: what came before its first prompt, then each
+/// turn as the prompt, its start, what the agent did and its end, numbered by `next_turn`.
+fn history_events(history: History, mut next_turn: impl FnMut() -> u64) -> Vec<AgentEvent> {
+    let mut events = history.before;
+    for (text, output) in history.turns {
+        let turn = next_turn();
+        events.push(AgentEvent::User { turn, text });
+        events.push(AgentEvent::TurnStart { turn });
+        events.extend(output);
+        let stop_reason = "end_turn".into();
+        events.push(AgentEvent::TurnEnd { turn, stop_reason });
+    }
+    events
+}
 
 /// A message as a title: its first non-empty line with runs of whitespace made single spaces, cut
 /// to `TITLE_CHARS` with an ellipsis. None for a message with no text.

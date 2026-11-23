@@ -2184,6 +2184,73 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
     assert!(listed[0].current, "{listed:?}");
 }
 
+/// The conversations the first space's agent pane has shown, as the state file holds them.
+fn saved_visited(state_file: &std::path::Path) -> Vec<String> {
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state_file).unwrap()).unwrap();
+    saved["spaces"][0]["root"]["visited"]
+        .as_array()
+        .map(|ids| ids.iter().filter_map(|id| id.as_str().map(ToString::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// Read past conversation `id` of `agent`'s store: its events, or None when it is not there.
+async fn history_of(ws: &mut Ws, agent: &str, req: u64, id: &str) -> Option<Vec<AgentEvent>> {
+    send(
+        ws,
+        ClientMsg::AgentConversationHistory {
+            req: Some(req),
+            agent: agent.into(),
+            id: id.into(),
+        },
+    )
+    .await;
+    loop {
+        match recv(ws).await {
+            ServerMsg::ConversationHistory { req: r, found, events, .. } if r == req => {
+                return found.then(|| events.into_iter().map(|e| e.event).collect());
+            }
+            ServerMsg::Error {
+                req: Some(r),
+                message,
+                ..
+            } if r == req => panic!("conversation history: {message}"),
+            _ => {}
+        }
+    }
+}
+
+/// A pane keeps the conversations it has shown in the order it last showed each, saved with it,
+/// and any of them can be read back without loading it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_keeps_its_visited_conversations_in_order_and_reads_a_past_one() {
+    let dir = Scratch::new("agent-visited");
+    let (url, state_file, agent) = agent_with_store(&dir.0).await;
+    let mut ws = connect(&url).await;
+    attach(&mut ws, &agent, 900).await;
+    agent_reply(&mut ws, &agent, "hello").await;
+    let first = saved_conversation(&state_file).expect("the pane saved its conversation");
+    assert_eq!(saved_visited(&state_file), [first.clone()]);
+
+    let second = switch_of(&mut ws, &agent, 901, None).await.expect("a new conversation");
+    agent_reply(&mut ws, &agent, "second").await;
+    assert_eq!(saved_visited(&state_file), [first.clone(), second.clone()]);
+
+    // Going back to the first moves it to the end; it is never listed twice.
+    switch_of(&mut ws, &agent, 902, Some(&first)).await.expect("the first again");
+    agent_reply(&mut ws, &agent, "again").await;
+    assert_eq!(saved_visited(&state_file), [second.clone(), first.clone()]);
+
+    // The second is read whole while the agent stays in the first, its turns numbered from 1.
+    let events = history_of(&mut ws, &agent, 903, &second).await.expect("the store holds it");
+    assert!(events.contains(&AgentEvent::User { turn: 1, text: "second".into() }), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::User { text, .. } if text == "hello")), "{events:?}");
+    assert_eq!(history_of(&mut ws, &agent, 904, "not-a-conversation").await, None);
+    // An id is a file name in the agent's project folder, never a path out of it.
+    let elsewhere = format!("../{}/{second}", "other-project");
+    assert_eq!(history_of(&mut ws, &agent, 905, &elsewhere).await, None);
+}
+
 /// `agent new` and `agents` take an agent pane's id as well as an agent name, as every
 /// other agent verb does.
 #[tokio::test(flavor = "multi_thread")]
@@ -3442,9 +3509,11 @@ async fn a_pane_shows_a_claude_conversation_as_a_terminal_or_a_chat_one_program_
         pane_view(&mut ws, 412, &pane, Some(PaneView::Agent)).await,
         Ok((Some(PaneView::Agent), Some(ID.into())))
     );
-    let PaneKind::Agent { agent: again, .. } = pane_kind(&mut ws, &pane).await else {
+    let PaneKind::Agent { agent: again, visited, .. } = pane_kind(&mut ws, &pane).await else {
         panic!("the pane is an agent pane")
     };
+    // The pane's visited list is carried through the terminal and back.
+    assert_eq!(visited, [ID.to_string()]);
     let mut options = config_of(&mut ws, &again, 413).await;
     for _ in 0..50 {
         if !options.is_empty()

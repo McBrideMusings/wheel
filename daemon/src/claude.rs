@@ -1449,8 +1449,13 @@ fn store_cwd(cwd: &Path) -> String {
         .to_string()
 }
 
-fn transcript(home: &Path, cwd: &Path, id: &str) -> PathBuf {
-    claude_project_dir(home, &store_cwd(cwd)).join(format!("{id}.jsonl"))
+/// Where the store keeps conversation `id`'s transcript. An id that is not one plain file name
+/// (a client sent it) names no transcript, so it cannot reach outside the project's folder.
+fn transcript(home: &Path, cwd: &Path, id: &str) -> std::io::Result<PathBuf> {
+    if id.is_empty() || id.starts_with('.') || id.contains(['/', '\\']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{id:?} is not a conversation id")));
+    }
+    Ok(claude_project_dir(home, &store_cwd(cwd)).join(format!("{id}.jsonl")))
 }
 
 /// A fresh conversation id: a random version 4 UUID, as Claude Code's own are.
@@ -1531,7 +1536,8 @@ pub fn fork_point(home: &Path, cwd: &Path, id: &str, turns: usize) -> Result<Opt
     if turns == 0 {
         return Err("a fork holds at least one turn".into());
     }
-    let text = std::fs::read_to_string(transcript(home, cwd, id))
+    let text = transcript(home, cwd, id)
+        .and_then(std::fs::read_to_string)
         .map_err(|e| format!("the agent keeps no conversation {id} for {}: {e}", cwd.display()))?;
     let (mut seen, mut last) = (0usize, None::<String>);
     for line in text.lines() {
@@ -1564,14 +1570,14 @@ pub fn fork_point(home: &Path, cwd: &Path, id: &str, turns: usize) -> Result<Opt
 /// that is there but cannot be read is not missing — that may pass.
 pub fn missing(home: &Path, cwd: &Path, id: &str) -> bool {
     matches!(
-        std::fs::metadata(transcript(home, cwd, id)),
+        transcript(home, cwd, id).and_then(std::fs::metadata),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     )
 }
 
 /// Read conversation `id`'s history, or None when the store does not hold it.
 pub fn history(home: &Path, cwd: &Path, id: &str) -> Option<History> {
-    let text = std::fs::read_to_string(transcript(home, cwd, id)).ok()?;
+    let text = transcript(home, cwd, id).and_then(std::fs::read_to_string).ok()?;
     let mut history = History::default();
     let mut calls = Calls::default();
     for line in text.lines() {

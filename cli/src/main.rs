@@ -1457,6 +1457,14 @@ enum AgentCommand {
         #[arg(long)]
         before_id: Option<String>,
     },
+    /// Print past conversation `id` of an agent's store as JSON, one transcript event per line,
+    /// without loading it. Exits 1 when the store does not hold it. Only Claude Code's
+    /// conversations can be read.
+    History {
+        /// An agent pane's id or its agent name.
+        agent: String,
+        id: String,
+    },
     /// Put an agent's pane in a fresh conversation and print the agent's id for it. Every
     /// client's transcript empties with it.
     New {
@@ -3106,6 +3114,23 @@ async fn agent_conversations(conn: &mut Conn, agent: String, json: bool, limit: 
     }
     if more {
         eprintln!("[older conversations remain: pass --before <the last updated_at above> --before-id <its id>]");
+    }
+    Ok(())
+}
+
+/// Print past conversation `id` of an agent's store, one event per JSON line.
+async fn agent_history(conn: &mut Conn, agent: String, id: String) -> Result<(), Fail> {
+    let req = conn.req();
+    let msg = ClientMsg::AgentConversationHistory { req: Some(req), agent, id: id.clone() };
+    let reply = conn.call_within(msg, req, Duration::from_secs(60)).await?;
+    let ServerMsg::ConversationHistory { found, events, .. } = reply else {
+        return Err(Fail::Other(format!("unexpected reply {reply:?}")));
+    };
+    if !found {
+        return Err(Fail::Other(format!("the agent's store holds no conversation {id}")));
+    }
+    for event in events {
+        println!("{}", serde_json::to_string(&event).map_err(other)?);
     }
     Ok(())
 }
@@ -6481,6 +6506,9 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Conversations { agent, json, limit, before, before_id }) => {
                 agent_conversations(&mut conn, agent, json, limit, before, before_id).await
+            }
+            Command::Agent(AgentCommand::History { agent, id }) => {
+                agent_history(&mut conn, agent, id).await
             }
             Command::Agent(AgentCommand::New { agent }) => {
                 agent_switch(&mut conn, agent, None).await
