@@ -18,17 +18,22 @@ pub(crate) fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// Write `event` into the inbox in `dir`; returns its path in `inbox/new`. The name leads with
-/// the write time and a counter, so names sort in the order they were written.
+/// Write `event` into the inbox in `dir`; returns its path in `inbox/new`.
 pub(crate) fn write(dir: &Path, event: &InboxEvent) -> std::io::Result<PathBuf> {
-    let inbox = dir.join("inbox");
+    maildir_write(&dir.join("inbox"), &serde_json::to_vec_pretty(event).map_err(std::io::Error::other)?)
+}
+
+/// Write `bytes` as one file in the Maildir `maildir`, made when missing: into `tmp/`, then
+/// renamed into `new/`, so a reader never sees a partial file. Returns its path in `new/`. The
+/// name leads with the write time and a counter, so names sort in the order they were written.
+pub(crate) fn maildir_write(maildir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     for sub in ["tmp", "new", "cur"] {
-        std::fs::create_dir_all(inbox.join(sub))?;
+        std::fs::create_dir_all(maildir.join(sub))?;
     }
     let name = format!("{:013}.{:010}.{}.json", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed), std::process::id());
-    let tmp = inbox.join("tmp").join(&name);
-    let new = inbox.join("new").join(&name);
-    std::fs::write(&tmp, serde_json::to_vec_pretty(event).map_err(std::io::Error::other)?)?;
+    let tmp = maildir.join("tmp").join(&name);
+    let new = maildir.join("new").join(&name);
+    std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, &new)?;
     Ok(new)
 }

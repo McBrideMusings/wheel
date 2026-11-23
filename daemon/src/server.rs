@@ -169,6 +169,8 @@ pub struct AppState {
     pub(crate) orchestrators: Mutex<Vec<crate::orchestrator::Orchestrator>>,
     /// Each orchestrator folder's queue of inbox files for its `tools/on-event`.
     pub(crate) orchestrator_runs: Mutex<HashMap<PathBuf, tokio::sync::mpsc::UnboundedSender<(PathBuf, String)>>>,
+    /// One queue per event hook, so each runs its events in order (`crate::hooks`).
+    pub(crate) hook_runs: crate::hooks::Runs,
     /// The orchestrator folders that got their `start` event since wheeld started.
     pub(crate) orchestrator_folders_started: Mutex<HashSet<PathBuf>>,
     /// Set while `restore_spaces` runs: orchestrators restored then get their `start` event after.
@@ -402,6 +404,7 @@ impl AppState {
             orchestrator_starting: tokio::sync::Mutex::new(()),
             orchestrators: Mutex::new(Vec::new()),
             orchestrator_runs: Mutex::new(HashMap::new()),
+            hook_runs: Default::default(),
             orchestrator_folders_started: Mutex::new(HashSet::new()),
             restoring: std::sync::atomic::AtomicBool::new(false),
             build_failures: broadcast::channel(64).0,
@@ -1110,6 +1113,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     crate::status::follow(state.clone());
     state.follow_agent_titles();
     crate::push::follow(state.clone());
+    crate::hooks::follow(state.clone());
     state.sync_settings_watch();
     state.sync_plugin_watch();
     state.builtins_catch_up();

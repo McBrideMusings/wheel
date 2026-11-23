@@ -1117,7 +1117,7 @@ fn put(
 
 impl AppState {
     /// The machine-wide file: `~/.wheel/wheel.toml` unless wheeld was started with `--machine-file`.
-    pub(crate) fn machine_file(&self) -> PathBuf {
+    pub fn machine_file(&self) -> PathBuf {
         self.machine_file.clone()
     }
 

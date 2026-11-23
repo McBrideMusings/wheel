@@ -53,6 +53,7 @@ mod submit;
 mod title_buttons;
 pub mod usage;
 mod views;
+mod hooks;
 mod inbox;
 mod orchestrator;
 mod orchestrator_events;
