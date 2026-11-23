@@ -2231,9 +2231,9 @@ impl Client {
                     None => None,
                 };
                 let raw = self.raw_context.contains(&p.leaf.id);
-                // The model control and the context ring sit in the composer row (design §8.1), so the draft wraps short of them.
+                // The model control and the context ring sit in the button row under the draft (design §8.1).
                 let extras = composer_extras_for(window, agent.and_then(|a| self.transcripts.get(a)), raw, r.w);
-                let fit = self.composer_fit_for(window, agent, r.w - extras.w);
+                let fit = self.composer_fit_for(window, agent, r.w);
                 composer_h = fit.height;
                 let input = agent.map(|a| self.composer_input(a, window, cx));
                 let t = agent.and_then(|a| self.transcripts.get(a));
@@ -2267,7 +2267,7 @@ impl Client {
                 });
                 let busy = t.is_some_and(Transcript::busy);
                 let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
-                // As tall as the row's buttons, so a draft growing the box leaves it on the first line.
+                // As tall as the row's buttons.
                 let model = agent.zip(model_option(t)).filter(|_| extras.model).map(|(a, o)| config_control(&p.leaf.id, a, o, footer.menu.as_deref(), self.menu_at, &self.controls, cx).h(px(composer::ROW_BUTTON)));
                 let ring = agent.map(|a| context_ring(&p.leaf.id, a, t, raw, extras.figure, harness, &self.controls, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
@@ -2821,7 +2821,7 @@ fn palette_overlay(pane: &str, palette: &Palette, width: f32, height: f32, cx: &
 
 /// The composer's height while its draft fits on one line; a longer draft grows it
 /// (`composer::composer_fit`).
-const COMPOSER: f32 = 44.;
+const COMPOSER: f32 = 52.;
 /// The status line under the composer: the footer's items at the left, the config controls at
 /// the right.
 const FOOTER: f32 = 22.;
@@ -2897,16 +2897,21 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
             .child(div().relative().flex_none().h(px(composer.fit.height)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
                 .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))
                 .text_color(rgb(0xd9e8e1)).overflow_hidden()
-                .flex().gap_2()
-                .children(attach.clip)
-                .children(composer.speaker)
-                // As wide as `composer_fit` wrapped it, so the box is as tall as its lines.
-                .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
-                    .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h)))))
-                .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
-                .children(composer.model)
-                .children(composer.ring)
-                .children(composer.stop)
+                .flex().flex_col().gap(px(composer::BUTTON_ROW_GAP))
+                // The draft on the first row (design §8.1), as wide as `composer_fit` wrapped it, so the box is as tall as its lines.
+                .child(div().flex_none().flex().gap_2()
+                    .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).relative().flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
+                        .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h))))
+                        .children(agent.map(|a| recorded(a, "draft", controls))))
+                    .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned()))))
+                // The buttons under it: the paperclip and read-aloud at the start, the model, the ring and stop at the end.
+                .child(div().flex_none().h(px(composer::ROW_BUTTON)).flex().items_center().gap_2()
+                    .children(attach.clip)
+                    .children(composer.speaker)
+                    .child(div().flex_1())
+                    .children(composer.model)
+                    .children(composer.ring)
+                    .children(composer.stop))
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))
 }
@@ -3160,9 +3165,6 @@ fn context_text(t: Option<&Transcript>, raw: bool) -> String {
     t.and_then(|t| t.context.as_ref()).map(|c| if raw { footer::raw_text(c) } else { footer::short_text(c) }).unwrap_or_else(|| "0%".into())
 }
 
-/// The narrowest the draft gets before the composer row gives up its extras.
-const MIN_DRAFT: f32 = 80.;
-
 /// Which of the composer row's extras show and the room they take, each with its gap.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Extras {
@@ -3171,16 +3173,16 @@ struct Extras {
     w: f32,
 }
 
-/// The extras for a row with `room` left beside its buttons: the ring always, its figure
+/// The extras for a button row with `room` left beside its buttons: the ring always, its figure
 /// (`figure_w` wide) and the model control (`model_w`, none when the agent offers no model) while
-/// the draft keeps `MIN_DRAFT`; the figure goes first, then the model, so the stop button stays in the box.
+/// they fit; the figure goes first, then the model, so the stop button stays in the box.
 fn composer_extras(room: f32, model_w: Option<f32>, figure_w: f32) -> Extras {
     let ring = RING + ROW_GAP;
     let figure = METER_GAP + figure_w;
     let model = model_w.map_or(0., |w| w + CONTROL_PAD + ROW_GAP);
     for (model_on, figure_on) in [(true, true), (true, false), (false, false)] {
         let w = ring + if figure_on { figure } else { 0. } + if model_on { model } else { 0. };
-        if room - w >= MIN_DRAFT || !model_on {
+        if room >= w || !model_on {
             return Extras { model: model_on && model_w.is_some(), figure: figure_on, w };
         }
     }
@@ -3190,7 +3192,7 @@ fn composer_extras(room: f32, model_w: Option<f32>, figure_w: f32) -> Extras {
 /// `composer_extras` for transcript `t` in a pane `pane_w` wide.
 fn composer_extras_for(window: &Window, t: Option<&Transcript>, raw: bool, pane_w: f32) -> Extras {
     let measure = |text: &str| title::text_width(window, text, FOOTER_TEXT).ceil();
-    composer_extras(pane_w - composer::COMPOSER_CHROME, model_option(t).map(|o| measure(&footer::control_text(o))), measure(&context_text(t, raw)))
+    composer_extras(pane_w - composer::BUTTON_ROW_CHROME, model_option(t).map(|o| measure(&footer::control_text(o))), measure(&context_text(t, raw)))
 }
 
 /// The context ring in the composer row: the share of the window in use as an arc from the top,
@@ -3456,13 +3458,13 @@ mod orchestrator_dir_tests {
     use super::*;
 
     #[test]
-    fn the_composer_row_drops_the_ring_figure_then_the_model_before_squeezing_the_draft() {
+    fn the_button_row_drops_the_ring_figure_then_the_model_before_the_stop_button() {
         let all = composer_extras(400., Some(60.), 30.);
         assert_eq!((all.model, all.figure), (true, true));
         assert_eq!(all.w, RING + ROW_GAP + METER_GAP + 30. + 60. + CONTROL_PAD + ROW_GAP);
-        let tight = composer_extras(all.w + MIN_DRAFT - 1., Some(60.), 30.);
+        let tight = composer_extras(all.w - 1., Some(60.), 30.);
         assert_eq!((tight.model, tight.figure), (true, false));
-        let narrow = composer_extras(120., Some(60.), 30.);
+        let narrow = composer_extras(60., Some(60.), 30.);
         assert_eq!((narrow.model, narrow.figure, narrow.w), (false, false, RING + ROW_GAP));
         let no_model = composer_extras(400., None, 30.);
         assert_eq!((no_model.model, no_model.figure, no_model.w), (false, true, RING + ROW_GAP + METER_GAP + 30.));

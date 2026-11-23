@@ -20,12 +20,17 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
-/// The paperclip and the read-aloud toggle at the start of the composer row and the stop button
-/// at its end, each this wide.
+/// The paperclip and the read-aloud toggle at the start of the button row and the stop button
+/// at its end, each this wide and tall.
 pub(super) const ROW_BUTTON: f32 = 18.;
-/// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
-/// border and `px_2`, the paperclip, the read-aloud toggle and the stop button, each with its gap.
-pub(super) const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
+/// The room across the composer box that is neither draft nor button: the pane's 1 px border and
+/// `p_2`, the box's border and `px_2`.
+const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16.;
+/// The button row's room that its extras cannot take: the chrome, then the paperclip, the
+/// read-aloud toggle and the stop button, each with its gap.
+pub(super) const BUTTON_ROW_CHROME: f32 = COMPOSER_CHROME + 3. * (ROW_BUTTON + 8.);
+/// The gap between the draft's last line and the button row under it.
+pub(super) const BUTTON_ROW_GAP: f32 = 4.;
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.
@@ -33,7 +38,8 @@ const ERROR_W: f32 = 260.;
 const ERROR_GAP: f32 = 8.;
 
 /// How the composer of an agent pane is laid out for its draft: the text's width (it wraps there),
-/// the refusal's width beside it, the visible lines' height, and the box's height.
+/// the refusal's width beside it, the visible lines' height, and the box's height, the button row
+/// under the lines included.
 #[derive(Clone, Copy)]
 pub(super) struct ComposerFit {
     pub text_w: f32,
@@ -42,9 +48,9 @@ pub(super) struct ComposerFit {
     pub height: f32,
 }
 
-/// Lay out `draft` in a composer `pane_w` wide: the text wraps at the room the paperclip and a
-/// refusal leave, and the box grows a line at a time from its one-line `COMPOSER` height up to
-/// `COMPOSER_LINES`, past which the text scrolls.
+/// Lay out `draft` in a composer `pane_w` wide: the draft has the box's first row to itself (design
+/// §8.1) and wraps at the room a refusal leaves, and the box grows a line at a time from its
+/// one-line `COMPOSER` height up to `COMPOSER_LINES`, past which the text scrolls.
 pub(super) fn composer_fit(window: &Window, draft: &str, error: Option<&str>, pane_w: f32) -> ComposerFit {
     let error_w = error.map_or(0., |e| (title::text_width(window, e, 12.).ceil()).min(ERROR_W));
     let text_w = (pane_w - COMPOSER_CHROME - if error.is_some() { error_w + ERROR_GAP } else { 0. }).max(20.);
@@ -57,7 +63,7 @@ pub(super) fn composer_fit(window: &Window, draft: &str, error: Option<&str>, pa
     let lines = window.text_system().shape_text(draft.to_owned().into(), size, &[run], Some(px(text_w)), None)
         .map_or(1, |shaped| shaped.iter().map(|l| l.wrap_boundaries().len() + 1).sum::<usize>());
     let lines_h = lines.clamp(1, COMPOSER_LINES) as f32 * line_h;
-    ComposerFit { text_w, error_w, lines_h, height: (lines_h + COMPOSER_INSET).max(super::COMPOSER) }
+    ComposerFit { text_w, error_w, lines_h, height: (lines_h + COMPOSER_INSET + BUTTON_ROW_GAP + ROW_BUTTON).max(super::COMPOSER) }
 }
 
 /// One row of the command list, and how many rows it shows at most before the rest wait for

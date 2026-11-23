@@ -1019,7 +1019,9 @@ async fn running_full_view(run: Run, agent_pane: String, agent_name: String, cx:
 }
 
 /// A Markdown reply drawn as blocks, its first line selected with the pointer and copied.
-async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+async fn markdown_reply(mut run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    // Zoomed, so the reply's first line shows above the composer's two rows.
+    set_zoom(&mut run, &agent_pane, true, cx).await?;
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let rows = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| (t.state.clone(), t.rows.clone())).unwrap_or_default());
@@ -1093,7 +1095,9 @@ async fn markdown_reply(run: Run, agent_pane: String, agent_name: String, cli_pa
     ensure!(clipboard.as_deref() == Some(expected_line.as_str()), "clipboard after Command-C: {clipboard:?}");
     let markdown_report = json!({"code_blocks": code_blocks.len(), "highlighted": code_blocks[0].highlighted, "language": code_blocks[0].language.clone(), "selected_text": selected, "clipboard": clipboard,
         "reply_row": md_row, "wraps": wraps, "pane_right": pane_right, "blocks": drawn.iter().filter(|d| d.row == md_row).map(|d| json!({"kind": d.kind, "text": d.text.clone()})).collect::<Vec<Value>>()});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, markdown_report))
+    let mut run = Run { bridge, connection, layouts, window, native, markers, output };
+    set_zoom(&mut run, &agent_pane, false, cx).await?;
+    Ok((run, markdown_report))
 }
 
 /// Inline images (wheel-eg4e.19.5): an echoed reply holding a Markdown image of a PNG on disk
@@ -1638,6 +1642,9 @@ async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: Stri
     let composer_b = composer_b.ok_or_else(|| anyhow::anyhow!("the composer was not drawn"))?;
     ensure!(inside(model_b, composer_b) && inside(ring_b, composer_b), "the model {model_b:?} and the ring {ring_b:?} are not in the composer row {composer_b:?}");
     ensure!(model_b.zip(ring_b).is_some_and(|(m, r)| m.0 + m.2 <= r.0), "the model {model_b:?} is not left of the ring {ring_b:?}");
+    // The draft has the first row to itself; the buttons sit on the row under it.
+    let draft_b = bounds(cx, "draft")?.ok_or_else(|| anyhow::anyhow!("the draft was not drawn"))?;
+    ensure!([model_b, ring_b].iter().all(|b| b.is_some_and(|b| b.1 >= draft_b.1 + draft_b.3)), "the model {model_b:?} or the ring {ring_b:?} is not under the draft {draft_b:?}");
     ensure!(mode_b.is_some_and(|m| m.1 >= composer_b.1 + composer_b.3), "the mode control {mode_b:?} is not in the footer under the composer {composer_b:?}");
     ensure!(item(&footer_before, "directory").is_some_and(|d| d.starts_with('~') || d.starts_with('/')), "no directory in the footer: {footer_before:?}");
     ensure!(item(&footer_before, "home").is_some(), "no home in the footer: {footer_before:?}");
