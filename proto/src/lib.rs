@@ -865,6 +865,20 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Take the lease named `key` (`voice`: the one client talking to an agent): this connection holds it
+    /// until it releases it or closes, and another connection's claim takes it over. Replies `lease_claimed`
+    /// naming this connection, and every connection gets `lease`.
+    LeaseClaim {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        key: String,
+    },
+    /// Give up the lease named `key`. Fails when this connection does not hold it.
+    LeaseRelease {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        key: String,
+    },
     /// Close the orchestrator pane `pane`, which ends its agent as any pane close does. Fails
     /// when `pane` holds no orchestrator.
     OrchestratorStop {
@@ -2296,6 +2310,10 @@ pub enum ServerMsg {
         /// The op of every `ClientMsg` the server handles (`ops()`); a client sends no other.
         #[serde(default)]
         ops: Vec<String>,
+        /// Each held lease (`lease_claim`) and its holder's connection id, so a client that missed a
+        /// `lease` event, or connected after it, reads who holds what.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        leases: std::collections::BTreeMap<String, String>,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2499,6 +2517,18 @@ pub enum ServerMsg {
     /// Sent to every connection when the orchestrator lease changes hands: the owner's connection id, or
     /// none once it is released or its connection closed.
     OrchestratorLease {
+        owner: Option<String>,
+    },
+    /// The reply to `lease_claim`: the id of this connection, as `lease` names the holder.
+    LeaseClaimed {
+        req: u64,
+        key: String,
+        owner: String,
+    },
+    /// Sent to every connection when the lease `key` changes hands: the holder's connection id, or none once
+    /// it is released or its connection closed. A client that held it and reads another owner has lost it.
+    Lease {
+        key: String,
         owner: Option<String>,
     },
     /// The reply to `orchestrator_tasks`: the global orchestrator's tasks, newest first.
@@ -3161,6 +3191,7 @@ impl ServerMsg {
             | ServerMsg::OrchestratorStarted { req, .. }
             | ServerMsg::OrchestratorTasks { req, .. }
             | ServerMsg::OrchestratorClaimed { req, .. }
+            | ServerMsg::LeaseClaimed { req, .. }
             | ServerMsg::PaneRecorded { req, .. }
             | ServerMsg::Inspected { req, .. }
             | ServerMsg::Ok { req } => Some(*req),
@@ -3186,6 +3217,7 @@ impl ServerMsg {
             | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::OrchestratorLease { .. }
+            | ServerMsg::Lease { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }

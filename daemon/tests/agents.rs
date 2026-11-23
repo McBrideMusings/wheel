@@ -6320,7 +6320,7 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     send(&mut b, ClientMsg::OrchestratorRelease { req: Some(91) }).await;
     loop {
         if let ServerMsg::Error { req: Some(91), message, .. } = recv(&mut b).await {
-            assert!(message.contains("does not own orchestrator"), "{message:?}");
+            assert!(message.contains("does not hold orchestrator"), "{message:?}");
             break;
         }
     }
@@ -6361,6 +6361,108 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     send(&mut a, ClientMsg::OrchestratorRelease { req: Some(94) }).await;
     loop {
         if let ServerMsg::Ok { req: 94 } = recv(&mut a).await {
+            break;
+        }
+    }
+}
+
+/// The first `lease` event for `key` that `ws` hears, skipping other keys and other messages.
+async fn next_lease(ws: &mut Ws, key: &str) -> Option<String> {
+    loop {
+        if let ServerMsg::Lease { key: k, owner } = recv(ws).await {
+            if k == key {
+                return owner;
+            }
+        }
+    }
+}
+
+/// The voice lease, as the phone and the Mac use it: one holder; the other client claiming takes it and
+/// the first hears that it lost it, within a second; leases on other keys are untouched; a non-holder
+/// cannot release; closing the holder's connection frees it; `status` lists both ops.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_client_holds_voice_and_a_claim_elsewhere_takes_it() {
+    let url = start_daemon().await;
+    let mut phone = connect(&url).await;
+    let mut mac = connect(&url).await;
+
+    send(&mut phone, ClientMsg::Status { req: Some(100) }).await;
+    let ops = loop {
+        if let ServerMsg::Status { req: Some(100), ops, .. } = recv(&mut phone).await {
+            break ops;
+        }
+    };
+    assert!(ops.iter().any(|o| o == "lease_claim") && ops.iter().any(|o| o == "lease_release"), "{ops:?}");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(101), key: "voice".into() }).await;
+    let phone_id = loop {
+        if let ServerMsg::LeaseClaimed { req: 101, key, owner } = recv(&mut phone).await {
+            assert_eq!(key, "voice");
+            break owner;
+        }
+    };
+    assert_eq!(next_lease(&mut mac, "voice").await, Some(phone_id.clone()));
+
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(102), key: "other".into() }).await;
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(103), key: "voice".into() }).await;
+    let mac_id = loop {
+        if let ServerMsg::LeaseClaimed { req: 103, owner, .. } = recv(&mut mac).await {
+            break owner;
+        }
+    };
+    assert_ne!(phone_id, mac_id);
+    let lost = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let owner = next_lease(&mut phone, "voice").await;
+            if owner != Some(phone_id.clone()) {
+                break owner;
+            }
+        }
+    })
+    .await
+    .expect("the phone hears within a second that the Mac took voice");
+    assert_eq!(lost, Some(mac_id.clone()));
+
+    // A client that missed that event reads the holder from `status`.
+    send(&mut phone, ClientMsg::Status { req: Some(107) }).await;
+    let leases = loop {
+        if let ServerMsg::Status { req: Some(107), leases, .. } = recv(&mut phone).await {
+            break leases;
+        }
+    };
+    assert_eq!(leases.get("voice"), Some(&mac_id), "{leases:?}");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(108), key: "Voice Mode!".into() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(108), message, .. } = recv(&mut phone).await {
+            assert!(message.contains("lease key"), "{message:?}");
+            break;
+        }
+    }
+
+    send(&mut phone, ClientMsg::LeaseRelease { req: Some(104), key: "voice".into() }).await;
+    loop {
+        if let ServerMsg::Error { req: Some(104), message, .. } = recv(&mut phone).await {
+            assert!(message.contains("does not hold voice"), "{message:?}");
+            break;
+        }
+    }
+
+    drop(mac);
+    let mut freed = std::collections::HashMap::new();
+    while freed.len() < 2 {
+        if let ServerMsg::Lease { key, owner } = recv(&mut phone).await {
+            if owner.is_none() {
+                freed.insert(key, ());
+            }
+        }
+    }
+    assert!(freed.contains_key("voice") && freed.contains_key("other"), "closing frees every key it held");
+
+    send(&mut phone, ClientMsg::LeaseClaim { req: Some(105), key: "voice".into() }).await;
+    send(&mut phone, ClientMsg::LeaseRelease { req: Some(106), key: "voice".into() }).await;
+    loop {
+        if let ServerMsg::Ok { req: 106 } = recv(&mut phone).await {
             break;
         }
     }
@@ -7236,4 +7338,118 @@ async fn a_mirror_of_a_browser_pane_resolves_to_its_page() {
     let spaces = spaces_now(&mut ws).await;
     assert!(spaces.iter().all(|s| !s.site_of(&mirror).is_some()));
     assert!(spaces.iter().any(|s| s.site_of(&first).is_some()), "the space's other pane stays");
+}
+
+/// The JSON events the machine hook of `hooks_reach_their_commands` logged, one per line.
+fn hook_log(path: &std::path::Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+/// Wait until `path`'s log holds an event `event` about `agent`, and return it.
+async fn hook_logged(path: &std::path::Path, event: &str, agent: &str) -> serde_json::Value {
+    for _ in 0..200 {
+        if let Some(found) = hook_log(path).into_iter().find(|e| e["event"] == event && e["agent"] == agent) {
+            return found;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no {event} event for {agent} in {}: {:?}", path.display(), hook_log(path));
+}
+
+/// `[[hook]]` (wheel-zxts.2): a machine hook's command gets every agent's turn_end, permission and
+/// fail events as JSON on stdin, each first written into its inbox through tmp/ into new/; a
+/// machine decide hook's `allow` answers the request, and `ask` leaves it waiting for the person,
+/// whatever a project's decide hook prints.
+#[tokio::test(flavor = "multi_thread")]
+async fn hooks_reach_their_commands_and_a_decide_hook_answers() {
+    let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let machine = daemon.state().machine_file();
+    let machine_dir = machine.parent().unwrap().to_path_buf();
+    let inbox = machine_dir.join("hook-inbox");
+    let log = machine_dir.join("machine.log");
+    let _ = std::fs::remove_dir_all(&inbox);
+    let _ = std::fs::remove_file(&log);
+    let project = std::env::temp_dir().join(format!("wheel-hook-project-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&project);
+    std::fs::create_dir_all(&project).unwrap();
+    let mut toml = std::fs::read_to_string(&machine).unwrap_or_default();
+    toml.push_str(&format!(
+        "\n[[hook]]\non = [\"turn_end\", \"permission\", \"fail\"]\nrun = '{{ tr -d \"\\n\"; echo; }} >> machine.log'\ninbox = \"{}\"\n\n[[hook]]\non = \"permission\"\nrun = 'cat > asked.json; cat decision'\ndecide = true\n",
+        inbox.display()
+    ));
+    std::fs::write(&machine, toml).unwrap();
+    std::fs::write(machine_dir.join("decision"), "allow\n").unwrap();
+    // The agents in a space can write its project's file, so its decide hook never decides.
+    std::fs::write(project.join("wheel.toml"), "[[hook]]\non = \"permission\"\nrun = 'cat > asked.json; echo allow'\ndecide = true\n").unwrap();
+
+    // 1. Each agent's turn end reaches the machine hook, through its inbox.
+    let (_, pane) = space(&url, project.to_str().unwrap()).await;
+    let (_, other_pane) = space(&url, "/tmp").await;
+    let agent = start_agent(&url, &pane, Some("hello")).await;
+    let other = start_agent(&url, &other_pane, Some("hello")).await;
+    let ended = hook_logged(&log, "turn_end", &agent).await;
+    assert_eq!((ended["pane"].as_str(), ended["text"].as_str()), (Some(pane.as_str()), Some(format!("{agent} finished its turn").as_str())), "{ended}");
+    hook_logged(&log, "turn_end", &other).await;
+    let new: Vec<_> = std::fs::read_dir(inbox.join("new")).unwrap().flatten().collect();
+    assert!(new.len() >= 2, "one Maildir file per event: {new:?}");
+    assert!(std::fs::read_dir(inbox.join("tmp")).unwrap().next().is_none(), "nothing stays in tmp");
+
+    // 2. The machine's decide hook allows the request; the logging hook hears it too.
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &agent, "needs permission").await;
+    let perm = loop {
+        if let ServerMsg::PermRequested { perm } = recv(&mut ws).await {
+            break perm;
+        }
+    };
+    let answered = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let ServerMsg::PermResolved { id, choice } = recv(&mut ws).await {
+                return (id, choice);
+            }
+        }
+    })
+    .await
+    .expect("the decide hook answered within 10 s");
+    assert_eq!(answered, (perm.id.clone(), perm.options.iter().find(|o| o.kind == "allow_once").unwrap().id.clone()), "the hook's allow answered it");
+    let asked: serde_json::Value = serde_json::from_slice(&std::fs::read(machine_dir.join("asked.json")).unwrap()).unwrap();
+    assert_eq!((asked["event"].as_str(), asked["perm"].as_str(), asked["request"]["title"].as_str()), (Some("permission"), Some(perm.id.as_str()), Some(perm.title.as_str())), "{asked}");
+    assert_eq!(hook_logged(&log, "permission", &agent).await["perm"].as_str(), Some(perm.id.as_str()));
+
+    // 3. `ask` leaves the request to the person, though the project's hook printed allow.
+    std::fs::write(machine_dir.join("decision"), "ask\n").unwrap();
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &agent, "needs permission").await;
+    let waiting = loop {
+        if let ServerMsg::PermRequested { perm } = recv(&mut ws).await {
+            break perm;
+        }
+    };
+    hook_logged(&log, "permission", &agent).await;
+    for _ in 0..40 {
+        let both = [machine_dir.join("asked.json"), project.join("asked.json")];
+        if both.iter().all(|f| std::fs::read(f).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).is_some_and(|a| a["perm"] == waiting.id.as_str())) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let quiet = tokio::time::timeout(Duration::from_millis(800), async {
+        loop {
+            if let ServerMsg::PermResolved { id, .. } = recv(&mut ws).await {
+                if id == waiting.id {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "ask leaves the request waiting");
+    client_op(&mut ws, 2001, ClientMsg::PermAnswer { req: Some(2001), id: waiting.id.clone(), choice: "allow".into() }).await;
+
+    // 4. An agent that dies is a fail event.
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &other, "die now").await;
+    let failed = hook_logged(&log, "fail", &other).await;
+    assert!(failed["text"].as_str().unwrap().starts_with(&format!("{other} ")), "{failed}");
+    let _ = std::fs::remove_dir_all(&project);
 }

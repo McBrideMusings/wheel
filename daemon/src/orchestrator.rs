@@ -394,26 +394,13 @@ impl AppState {
 
     /// Give orchestrator to the connection from `peer`; returns its id as `orchestrator_lease` names it.
     pub(crate) fn orchestrator_claim(&self, peer: std::net::SocketAddr) -> String {
-        *self.orchestrator_lease.lock().unwrap() = Some(peer);
-        let owner = peer.to_string();
-        let _ = self.global.send(wheel_proto::ServerMsg::OrchestratorLease { owner: Some(owner.clone()) });
-        owner
+        self.lease_claim(crate::leases::ORCHESTRATOR, peer)
+            .expect("orchestrator is a valid lease key")
     }
 
     /// `peer` gives orchestrator up; refused when it does not hold it.
     pub(crate) fn orchestrator_release(&self, peer: std::net::SocketAddr) -> Result<(), String> {
-        let mut lease = self.orchestrator_lease.lock().unwrap();
-        if *lease != Some(peer) {
-            return Err("this connection does not own orchestrator".into());
-        }
-        *lease = None;
-        let _ = self.global.send(wheel_proto::ServerMsg::OrchestratorLease { owner: None });
-        Ok(())
-    }
-
-    /// `peer` disconnected: it no longer owns orchestrator.
-    pub(crate) fn orchestrator_gone(&self, peer: std::net::SocketAddr) {
-        let _ = self.orchestrator_release(peer);
+        self.lease_release(crate::leases::ORCHESTRATOR, peer)
     }
 
     /// The id of the first open task in a running orchestrator's folder that names agent `agent`:

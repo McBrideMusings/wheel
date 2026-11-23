@@ -161,14 +161,16 @@ pub struct AppState {
     /// Sent each time a pane's agent joins `agents`, so an attach waiting on it streams at once.
     pub(crate) agent_added: watch::Sender<()>,
     pub(crate) agent_timing: Mutex<AgentTiming>,
-    /// The connection that owns orchestrator, if any (`crate::orchestrator`).
-    pub(crate) orchestrator_lease: Mutex<Option<SocketAddr>>,
+    /// The connection holding each named lease: `voice`, `orchestrator` (`crate::leases`).
+    pub(crate) leases: crate::leases::Leases,
     /// Held across a global `orchestrator_start` with `if_none`, from the check to the started pane.
     pub(crate) orchestrator_starting: tokio::sync::Mutex<()>,
     /// The running orchestrators in the order they started (`crate::orchestrator`).
     pub(crate) orchestrators: Mutex<Vec<crate::orchestrator::Orchestrator>>,
     /// Each orchestrator folder's queue of inbox files for its `tools/on-event`.
     pub(crate) orchestrator_runs: Mutex<HashMap<PathBuf, tokio::sync::mpsc::UnboundedSender<(PathBuf, String)>>>,
+    /// One queue per event hook, so each runs its events in order (`crate::hooks`).
+    pub(crate) hook_runs: crate::hooks::Runs,
     /// The orchestrator folders that got their `start` event since wheeld started.
     pub(crate) orchestrator_folders_started: Mutex<HashSet<PathBuf>>,
     /// Set while `restore_spaces` runs: orchestrators restored then get their `start` event after.
@@ -398,10 +400,11 @@ impl AppState {
             agents: Mutex::new(HashMap::new()),
             agent_added: watch::channel(()).0,
             agent_timing: Mutex::new(AgentTiming::default()),
-            orchestrator_lease: Mutex::new(None),
+            leases: Default::default(),
             orchestrator_starting: tokio::sync::Mutex::new(()),
             orchestrators: Mutex::new(Vec::new()),
             orchestrator_runs: Mutex::new(HashMap::new()),
+            hook_runs: Default::default(),
             orchestrator_folders_started: Mutex::new(HashSet::new()),
             restoring: std::sync::atomic::AtomicBool::new(false),
             build_failures: broadcast::channel(64).0,
@@ -1061,6 +1064,7 @@ impl AppState {
             protocol: wheel_proto::PROTOCOL_VERSION,
             compat: wheel_proto::COMPAT,
             ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
+            leases: self.leases.holders(),
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
@@ -1110,6 +1114,7 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
     crate::status::follow(state.clone());
     state.follow_agent_titles();
     crate::push::follow(state.clone());
+    crate::hooks::follow(state.clone());
     state.sync_settings_watch();
     state.sync_plugin_watch();
     state.builtins_catch_up();
@@ -1391,7 +1396,7 @@ async fn connection(
     let left = state.views.gone(peer);
     state.panes_shown(&left);
     state.release_sizes(peer, None);
-    state.orchestrator_gone(peer);
+    state.leases_gone(peer);
     global_task.abort();
     if stopped {
         // Every sender of `out` must be gone for the writer to see the channel close, so that it
@@ -1770,6 +1775,20 @@ async fn handle(
         ClientMsg::OrchestratorRelease { req } => match state.orchestrator_release(peer) {
             Ok(()) => {
                 tracing::info!(%peer, "orchestrator release");
+                req.map(|req| ServerMsg::Ok { req })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::LeaseClaim { req, key } => match state.lease_claim(&key, peer) {
+            Ok(owner) => {
+                tracing::info!(%peer, key, "lease claim");
+                req.map(|req| ServerMsg::LeaseClaimed { req, key, owner })
+            }
+            Err(message) => Some(failed(req, message)),
+        },
+        ClientMsg::LeaseRelease { req, key } => match state.lease_release(&key, peer) {
+            Ok(()) => {
+                tracing::info!(%peer, key, "lease release");
                 req.map(|req| ServerMsg::Ok { req })
             }
             Err(message) => Some(failed(req, message)),

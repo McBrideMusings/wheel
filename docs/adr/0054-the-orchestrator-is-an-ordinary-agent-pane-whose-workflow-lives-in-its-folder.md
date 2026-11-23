@@ -1,0 +1,15 @@
+# ADR-0054: The orchestrator is an ordinary agent pane whose workflow lives in its folder
+
+This supersedes ADR-0036. The design, with every screen, is `docs/orchestrator-redesign/index.md`.
+
+The orchestrator is an agent pane in an ordinary space whose folder is the machine's `orchestrator.dir` setting (`~/.wheel/orchestrator` when empty); a client's Orchestrator mode shows the agent pane running there. wheeld holds no orchestrator concept: no scope or routing, no Orchestrator session or space, no compiled brief, no `--confirmed`, no refusal of its edits or shell, no push muted per task, no `orchestrator_*` ops.
+
+Nothing enters an agent's chat unless the person puts it there: wheeld never starts a turn and attaches nothing to the person's message. The orchestrator takes a turn only when the person messages it or when a command it started at their request, such as a background `wheel agent wait`, exits.
+
+wheeld's part is generic. A `[[hook]]` in the machine's or a project's `wheel.toml` names agent events (`on`) and a command (`run`) that gets each event's JSON on stdin; a machine hook takes every agent's events, a project hook those of its spaces, and with `inbox = "<dir>"` wheeld first writes the event as one Maildir file there. A hook on `permission` with `decide = true` prints `allow`, `deny` or `ask`, and anything but allow or deny leaves the request to the person. A mirror in any space may show a pane of any space or session. A pane can be set to send no push of its own. A client draws a chat pane's past conversations one after another in the order the pane visited them, older ones dimmed, the person's message going to the newest; `wheel agent new` and `wheel agent resume` move the pane between them.
+
+The workflow is files in the orchestrator's folder, changed without building wheeld. `CLAUDE.md` holds its role and one-topic rule. `.claude/settings.json` denies `Edit` and `Write`, allows Bash only for `wheel *` and `tools/*`, and holds the `UserPromptSubmit`, `PreCompact` and `SessionStart` hooks that keep the current topic's notes in context. A topic is one conversation in the pane with notes in `threads/<id>.md`, and `tools/switch` moves between topics. The queue is a beads database in the folder, issues labeled `needs-you`, written by rule by `tools/on-event` (the folder's event hook), `tools/ask` and `tools/done`; the model reads it only when the person says "next", and a child agent never messages the orchestrator.
+
+ADR-0002's "no agent answers a permission request" keeps one exception: an agent may answer one with `wheel perm answer` when what the person said approves or refuses it. Which agents may run it is the person's Claude Code permission rules, granted only in the orchestrator's folder, where `CLAUDE.md` and a `PreToolUse` hook make a request that cannot be undone wait for a clear yes.
+
+Voice is a full-screen mode any agent view can switch to; what the person says reaches the agent that view shows, in the same chat as typed text.

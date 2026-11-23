@@ -86,6 +86,14 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   The `runner` built-in shows them as buttons (`wheel artifact builtin install runner`, then
   `wheel pane kind <pane> web --artifact runner --scope machine`), and the command palette lists
   each as `Run <name>`.
+- `[[hook]]` in wheel.toml runs a shell command on agent events: `on` names any of `turn_end`, `fail`,
+  `permission`, `answered`, `over_time` (a turn past 30 minutes) and `build_failed`; `run` is the command,
+  run in the folder of the wheel.toml naming it, with the event's JSON (`event`, `agent`, `pane`, `space`,
+  `text`, `at_ms`, `perm`, and `request` for a permission) on stdin. The machine's hooks take every
+  agent's events, a project's those of its spaces. `inbox = "<dir>"` first writes each event as one
+  Maildir file there (`tmp/`, then `new/`) and passes its path as `$1`. With `decide = true` (taken only from the
+  machine's wheel.toml), a `permission` hook's first printed word `allow` or `deny` answers the request; anything else leaves it
+  to the person. wheeld reads the files at each event and logs each run.
 - `wheel work set [--item <bead|issue|pr>:<id>]... [--stage plan|edit|build|verify|review|gate] [--note T] [--pane P]` declares what the agent in a pane is working on (`--pane` defaults to `$WHEEL_PANE`); each call replaces the last. `wheel work clear` drops it. `wheel status --json` reports it as `work` on the pane, and it goes when the pane closes or changes kind.
 - `wheel usage`: Claude account usage.
 - `wheel notify "text" [--level notice|warning|error] [--id <id>] [--pane <pane>]`: show a toast (green, orange or red) on every Mac client attached now (the phone shows none), and print its id. The text can be selected and copied; `--pane` adds Focus pane and Close pane buttons. The same `--id` replaces the toast; `wheel notify --clear <id>` takes it down. The daemon keeps nothing, so a client that attaches later does not see it. Use it for what the person should read now, not for progress.
