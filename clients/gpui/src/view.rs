@@ -403,6 +403,10 @@ pub struct Client {
     /// The reply the app's one synthesizer reads now, as `agent#row id` (`ReadAloud.playing`),
     /// told by the bridge to every window.
     read_aloud: Option<String>,
+    /// What the app's recorder is doing (`dictation` events), and the conversation this window last
+    /// pressed the microphone for: only that window puts the text it heard in a draft.
+    dictation: crate::native::Dictation,
+    dictation_here: Option<String>,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -533,7 +537,7 @@ impl Client {
             session_show_req: None, orchestrator_start_req: None, orchestrator_refused: None, orchestrator_tasks: vec![], tasks_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_offer: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, dictation: Default::default(), dictation_here: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -1405,6 +1409,7 @@ impl Client {
             // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
             Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
+            Frame::Event(BrowserEvent::Dictation(d)) => self.on_dictation(d),
             Frame::Event(BrowserEvent::ReduceMotion { on }) => {
                 if self.reduce_motion != on {
                     self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
@@ -2197,9 +2202,18 @@ impl Client {
                 let card_h = self.card_height(agent, body, fit.height);
                 let card = agent.and_then(|a| crate::perms::waiting(&self.perms, a)).map(|(position, perm)| perms::perm_card(perm, self.perm_tool(perm).as_ref(), position, self.perms.len(), focused, card_h, &self.controls, cx));
                 let (rows, at, prefix) = agent.map(|a| self.command_matches(a, harness)).unwrap_or_default();
-                let list_h = composer::command_list_height(rows.len());
+                let prompt_h = composer::dictation_prompt_height(&self.dictation, agent);
+                let list_h = composer::command_list_height(rows.len()) + prompt_h;
                 let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
-                let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
+                let prompt = agent.filter(|_| prompt_h > 0.).map(|a| composer::dictation_prompt(a, &self.dictation, &self.controls, cx));
+                let list = match (list, prompt) {
+                    (Some(list), Some(prompt)) => Some(div().flex_none().flex().flex_col().child(list).child(prompt)),
+                    (list, prompt) => list.or(prompt),
+                };
+                let refusal = agent.and_then(|a| self.composer_errors.get(a)).cloned();
+                let note = agent.filter(|_| refusal.is_none()).and_then(|a| crate::composer::dictation_note(&self.dictation, a));
+                let (error, muted) = (refusal.or(note.clone()), note.is_some());
+                let error = error.as_deref();
                 let tasks = self.task_parts(&p.leaf.id, agent, cx);
                 let footer = FooterRow { items, more, harness: harness.to_owned(), menu, menu_at: self.menu_at };
                 let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
@@ -2207,8 +2221,12 @@ impl Client {
                 let clip = agent.map(|a| composer::paperclip(a, title::symbol(&self.native, &self.symbols, "paperclip", 13., 0x8fa89b), &self.controls, cx));
                 let busy = t.is_some_and(Transcript::busy);
                 let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
+                let mic = agent.map(|a| {
+                    let (symbol, color) = composer::mic_symbol(&self.dictation, a);
+                    composer::mic_button(a, &self.dictation, title::symbol(&self.native, &self.symbols, symbol, 13., color), &self.controls, cx)
+                });
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, stop }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, clip, over }, Composer { fit, input, error, muted, mic, stop }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2249,6 +2267,7 @@ impl Client {
                 let agent = p.leaf.agent.clone().filter(|_| p.leaf.kind == "agent");
                 let listed = agent.as_deref().map_or(0, |a| self.command_matches(a, p.leaf.harness.as_deref().unwrap_or("")).0.len());
                 let card_h = self.card_height(agent.as_deref(), r.h - TITLE - 2. * PAD, composer_h) + composer::command_list_height(listed)
+                    + composer::dictation_prompt_height(&self.dictation, agent.as_deref())
                     + composer::chips_height(agent.as_deref().and_then(|a| self.attachments.get(a)));
                 let band = (r.y + TITLE + PAD + LABEL)..(r.y + r.h - PAD - composer_h - FOOTER - 8. - card_h);
                 move |this, e: &MouseDownEvent, _, cx| {
@@ -2790,6 +2809,10 @@ struct Composer<'a> {
     fit: composer::ComposerFit,
     input: Option<gpui::Entity<InputState>>,
     error: Option<&'a str>,
+    /// `error` is dictation's note, not a refusal: drawn grey, not red.
+    muted: bool,
+    /// The microphone before the stop button (`composer::mic_button`).
+    mic: Option<gpui::Stateful<gpui::Div>>,
     /// The stop button at the row's end (`composer::stop_button`).
     stop: Option<gpui::Stateful<gpui::Div>>,
 }
@@ -2826,7 +2849,8 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                 // As wide as `composer_fit` wrapped it, so the box is as tall as its lines.
                 .child(div().id(gpui::ElementId::Name(format!("composer-text-{pane}").into())).flex_none().w(px(composer.fit.text_w)).h(px(composer.fit.lines_h))
                     .children(composer.input.map(|input| Input::new(&input).appearance(false).p_0().text_size(gpui::rems(composer::COMPOSER_TEXT_REMS)).h(px(composer.fit.lines_h)))))
-                .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(0xe07070)).child(e.to_owned())))
+                .children(composer.error.map(|e| div().flex_none().w(px(composer.fit.error_w)).text_xs().text_color(rgb(if composer.muted { 0x8fa89b } else { 0xe07070 })).child(e.to_owned())))
+                .children(composer.mic)
                 .children(composer.stop)
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls, cx))

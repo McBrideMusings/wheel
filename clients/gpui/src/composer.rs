@@ -156,6 +156,32 @@ pub fn restored(draft: &str, text: &str) -> String {
     if draft.is_empty() { text.to_owned() } else { format!("{draft}\n{text}") }
 }
 
+/// The draft after dictation hands it `text`: after what is there, with a space between unless
+/// the draft is empty or already ends in whitespace (`Composer.insert`).
+pub fn dictated(draft: &str, text: &str) -> String {
+    let gap = if draft.is_empty() || draft.ends_with(char::is_whitespace) { "" } else { " " };
+    format!("{draft}{gap}{text}")
+}
+
+/// The prompt above the composer the first time the microphone is pressed with no model here:
+/// what the download fetches, from where, and where it is kept (ADR-0013).
+pub fn dictation_prompt(m: &crate::native::DictationModel) -> String {
+    format!("Dictation turns your voice into text on this Mac with {}, a {} model downloaded once from {} into {}. Your voice never leaves the Mac.", m.name, m.size, m.source, m.folder)
+}
+
+/// The line under the composer's text while dictation works for `agent`, or its failure there.
+pub fn dictation_note(d: &crate::native::Dictation, agent: &str) -> Option<String> {
+    if d.owner.as_deref() == Some(agent) {
+        return match d.phase.as_str() {
+            "downloading" => Some(format!("Downloading {}, {}%", d.model.name, (d.progress * 100.).floor() as u32)),
+            "recording" => Some("Listening…".into()),
+            "transcribing" => Some("Transcribing…".into()),
+            _ => None,
+        };
+    }
+    d.problem.clone().filter(|_| d.problem_owner.as_deref() == Some(agent))
+}
+
 /// The message a draft and its attachments' paths make (`composerMessage`): the text, then each
 /// path in backticks on its own line, since a path may hold a space and the backticks keep it one
 /// path. Empty when both are.
@@ -438,6 +464,23 @@ mod tests {
         tray.sent();
         assert!(tray.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn dictated_text_follows_the_draft_and_the_note_is_for_its_own_conversation() {
+        assert_eq!(dictated("", "run the tests"), "run the tests");
+        assert_eq!(dictated("then", "run the tests"), "then run the tests");
+        assert_eq!(dictated("then\n", "run the tests"), "then\nrun the tests");
+        let mut d = crate::native::Dictation { phase: "recording".into(), owner: Some("w1".into()), ..Default::default() };
+        assert_eq!(dictation_note(&d, "w1").as_deref(), Some("Listening…"));
+        assert_eq!(dictation_note(&d, "w2"), None, "another conversation shows nothing");
+        d.phase = "downloading".into();
+        d.progress = 0.426;
+        d.model.name = "Parakeet TDT 0.6b v3".into();
+        assert_eq!(dictation_note(&d, "w1").as_deref(), Some("Downloading Parakeet TDT 0.6b v3, 42%"));
+        d = crate::native::Dictation { phase: "idle".into(), problem: Some("Heard nothing.".into()), problem_owner: Some("w2".into()), ..Default::default() };
+        assert_eq!(dictation_note(&d, "w2").as_deref(), Some("Heard nothing."));
+        assert_eq!(dictation_note(&d, "w1"), None);
     }
 
     #[test]

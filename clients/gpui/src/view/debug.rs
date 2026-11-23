@@ -768,6 +768,8 @@ impl Client {
         out["message_menu"] = self.message_menu_json();
         out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
         out["read_aloud"] = json!(self.read_aloud);
+        let d = &self.dictation;
+        out["dictation"] = json!({"phase": d.phase, "owner": d.owner, "problem": d.problem, "heard": d.heard.as_ref().map(|h| json!({"owner": h.owner, "text": h.text, "id": h.id})), "model_on_disk": d.model.on_disk, "here": self.dictation_here});
         out
     }
 }

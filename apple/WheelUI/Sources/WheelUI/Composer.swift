@@ -52,6 +52,8 @@ public struct Composer: View {
     /// Whether this conversation's replies are read aloud; nil draws no speaker control.
     @Binding var readAloud: Bool
     let showsReadAloud: Bool
+    /// The conversation dictation writes into, on the phone; nil draws no microphone.
+    var dictation: String?
 
     public init(
         placeholder: String,
@@ -74,8 +76,10 @@ public struct Composer: View {
         sendNow: @escaping () -> Void = {},
         takeBack: @escaping () -> Bool = { false },
         permissionKey: ((PermissionKey) -> Bool)? = nil,
-        readAloud: Binding<Bool>? = nil
+        readAloud: Binding<Bool>? = nil,
+        dictation: String? = nil
     ) {
+        self.dictation = dictation
         self._readAloud = readAloud ?? .constant(false)
         self.showsReadAloud = readAloud != nil
         self.takeBack = takeBack
@@ -259,14 +263,12 @@ public struct Composer: View {
                 #endif
                 if let error {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
+                } else if let note = dictationNote {
+                    Text(note).font(ChatFont.meta).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
                 #if os(iOS)
-                // hack: placeholders, in place and sized, that do nothing until wheel-eg4e.19.31 builds dictation and voice mode.
-                Button("Dictate", systemImage: "mic") { UILog.info("composer: dictate tapped, not built") }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.chat("composer", "Dictate"))
-                    .accessibilityIdentifier("dictate")
+                if let dictation { DictateButton(owner: dictation) }
                 #endif
                 if showsStop {
                     #if os(macOS)
@@ -279,6 +281,7 @@ public struct Composer: View {
                         .help("Stop the current turn (Esc)")
                         .disabled(!enabled)
                 } else if showsVoice {
+                    // hack: a placeholder, in place and sized, that does nothing until wheel-e1xk.11 builds voice mode.
                     Button("Voice mode", systemImage: "waveform.circle.fill") { UILog.info("composer: voice mode tapped, not built") }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.chat("composer", "Voice mode"))
@@ -304,6 +307,40 @@ public struct Composer: View {
         .contentShape(Rectangle())
         .onTapGesture { focused = true }
         .modifier(AttachDrops(attach: attach))
+        #if os(iOS)
+        .onChange(of: Dictation.shared.heard) { _, heard in
+            guard let heard, heard.owner == dictation else { return }
+            insert(heard.text)
+        }
+        .alert("Download the speech model?", isPresented: asking) {
+            Button("Download") { Dictation.shared.download() }
+            Button("Cancel", role: .cancel) { Dictation.shared.cancel() }
+        } message: {
+            Text("Dictation turns your voice into text on this iPhone with \(Dictation.modelName), a \(Dictation.modelSize) model Wheel downloads once from \(Dictation.modelSource). Your voice never leaves the phone; only the text you send does.")
+        }
+        .task { if dictation != nil { Dictation.shared.prepare() } }
+        #endif
+    }
+
+    /// The prompt naming the model, shown while this conversation's tap waits on it.
+    private var asking: Binding<Bool> {
+        Binding(get: { dictation != nil && Dictation.shared.phase == .asking && Dictation.shared.owner == dictation },
+                set: { if !$0, Dictation.shared.phase == .asking { Dictation.shared.cancel() } })
+    }
+
+    /// What dictation is doing for this conversation, under the text.
+    private var dictationNote: String? {
+        let d = Dictation.shared
+        guard let dictation else { return nil }
+        if d.owner == dictation {
+            switch d.phase {
+            case .downloading(let done): return "Downloading \(Dictation.modelName), \(Int(done * 100))%"
+            case .recording: return "Listening…"
+            case .transcribing: return "Transcribing…"
+            default: return nil
+            }
+        }
+        return d.problemOwner == dictation ? d.problem : nil
     }
 
     private var draftIsEmpty: Bool {
@@ -582,3 +619,27 @@ extension EnvironmentValues {
         set { self[ComposerBlurKey.self] = newValue }
     }
 }
+
+#if os(iOS)
+/// The composer's microphone: tap to start dictating into `owner`'s draft, tap again to stop and
+/// transcribe. The same size in every state, so nothing beside it moves.
+private struct DictateButton: View {
+    let owner: String
+
+    var body: some View {
+        let d = Dictation.shared
+        let mine = d.owner == owner
+        let recording = mine && d.phase == .recording
+        let busy = mine && (d.phase == .transcribing || { if case .downloading = d.phase { true } else { false } }())
+        Button(recording ? "Stop dictating" : "Dictate", systemImage: recording ? "stop.circle.fill" : "mic") {
+            d.toggle(for: owner)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.chat("composer", recording ? "Stop dictating" : "Dictate"))
+        .foregroundStyle(recording ? Color.red : Color.secondary)
+        .opacity(busy ? 0.4 : 1)
+        .disabled(busy)
+        .accessibilityIdentifier("dictate")
+    }
+}
+#endif

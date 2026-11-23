@@ -20,11 +20,14 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
-/// The paperclip at the start of the composer row and the stop button at its end, each this wide.
+/// The paperclip at the start of the composer row, and the microphone and the stop button at its
+/// end, each this wide.
 const ROW_BUTTON: f32 = 18.;
 /// The room in a composer row that is not the draft: the pane's 1 px border and `p_2`, the box's
-/// border and `px_2`, the paperclip and the stop button with the gap after and before them.
-const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 2. * (ROW_BUTTON + 8.);
+/// border and `px_2`, the paperclip, the microphone and the stop button with the gaps between.
+const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16. + 3. * (ROW_BUTTON + 8.);
+/// The prompt above the composer that names the model before dictation downloads it.
+const DICTATION_PROMPT: f32 = 58.;
 /// The draft's text size, `text_sm`'s 0.875 rem.
 pub(super) const COMPOSER_TEXT_REMS: f32 = 0.875;
 /// The widest a refusal under the composer's text gets, and the gap before it.
@@ -129,7 +132,7 @@ impl Client {
     /// The client changes `agent`'s draft (a picked command, a restored message, a send, a debug
     /// request): `drafts` takes it now and the input takes it, caret at the end, when its
     /// composer is next drawn (`composer_input`).
-    pub(super) fn set_draft(&mut self, agent: &str, text: String) {
+    pub fn set_draft(&mut self, agent: &str, text: String) {
         self.drafts.insert(agent.to_owned(), text);
         self.stale_inputs.insert(agent.to_owned());
         self.draft_edited(agent);
@@ -157,6 +160,9 @@ impl Client {
                 .detach();
                 self.inputs.insert(agent.to_owned(), input.clone());
                 self.stale_inputs.insert(agent.to_owned());
+                // Load the speech model while the person reads, not after the first press; this
+                // also starts the bridge's dictation events.
+                self.native.call(json!({"op": "dictation", "action": "prepare"}));
                 input
             }
         };
@@ -209,8 +215,9 @@ impl Client {
     /// `composer_fit` for the composer of `agent` in `pane`, `pane_w` wide.
     pub(super) fn composer_fit_for(&self, window: &Window, agent: Option<&str>, pane_w: f32) -> ComposerFit {
         let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
-        let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-        composer_fit(window, draft, error, pane_w)
+        // The refusal, else dictation's note: whichever the row draws beside the text.
+        let error = agent.and_then(|a| self.composer_errors.get(a).cloned().or_else(|| composer::dictation_note(&self.dictation, a)));
+        composer_fit(window, draft, error.as_deref(), pane_w)
     }
 
     /// A key while the focused composer's list is open: Up and Down move the highlight, Tab takes
@@ -488,6 +495,49 @@ impl Client {
         }
     }
 
+    pub fn draft(&self, agent: &str) -> String {
+        self.drafts.get(agent).cloned().unwrap_or_default()
+    }
+
+    /// The download prompt's text, and the line under `agent`'s composer, as drawn.
+    pub fn dictation_prompt_text(&self) -> String {
+        composer::dictation_prompt(&self.dictation.model)
+    }
+    pub fn dictation_note(&self, agent: &str) -> Option<String> {
+        composer::dictation_note(&self.dictation, agent)
+    }
+
+    /// The microphone in `agent`'s composer. Only the window that pressed it takes the text.
+    pub(super) fn toggle_dictation(&mut self, agent: &str) {
+        self.press(format!("dictate {agent}"));
+        self.dictation_here = Some(agent.to_owned());
+        self.native.call(json!({"op": "dictation", "action": "toggle", "owner": agent}));
+    }
+
+    pub(super) fn download_dictation_model(&mut self) {
+        self.press("dictation download".into());
+        self.native.call(json!({"op": "dictation", "action": "download"}));
+    }
+
+    pub(super) fn cancel_dictation(&mut self) {
+        self.press("dictation cancel".into());
+        self.native.call(json!({"op": "dictation", "action": "cancel"}));
+    }
+
+    /// Dictation changed: text it heard for the conversation this window pressed the microphone
+    /// in goes into that draft, once.
+    pub(super) fn on_dictation(&mut self, d: crate::native::Dictation) {
+        if let Some(heard) = &d.heard
+            && self.dictation.heard.as_ref().map(|h| h.id) != Some(heard.id)
+            && self.dictation_here.as_deref() == Some(heard.owner.as_str())
+        {
+            let draft = self.drafts.get(&heard.owner).cloned().unwrap_or_default();
+            self.log(format!("dictation: {} chars into {}", heard.text.chars().count(), heard.owner));
+            self.set_draft(&heard.owner, composer::dictated(&draft, &heard.text));
+        }
+        self.dictation = d;
+    }
+
     /// The paperclip: the Mac's file picker, directories and several files allowed; what it
     /// returns attaches to `agent`'s next message.
     fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
@@ -558,6 +608,58 @@ pub(super) fn paperclip(agent: &str, icon: Option<gpui::AnyElement>, controls: &
         }))
         .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
         .child(recorded(agent, "attach", controls))
+}
+
+/// The microphone before the stop button (`DictateButton`): it starts dictating into `agent`'s
+/// draft and, while that records, stops and transcribes. Dimmed while the model downloads or the
+/// recording is transcribed. `icon` is the SF Symbol the bridge drew for the state.
+pub(super) fn mic_button(agent: &str, d: &crate::native::Dictation, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let mine = d.owner.as_deref() == Some(agent);
+    let recording = mine && d.phase == "recording";
+    let busy = mine && matches!(d.phase.as_str(), "downloading" | "transcribing");
+    let a = agent.to_owned();
+    let tip = if recording { "Stop dictating and put the text in the message" } else { "Dictate: speak, then press again" };
+    div().id(gpui::ElementId::Name(format!("dictate-{agent}").into())).tooltip(crate::tooltip::tip(tip))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().rounded_sm()
+        .when(!busy, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.toggle_dictation(&a);
+            cx.stop_propagation();
+            cx.notify();
+        })))
+        .when(busy, |d| d.opacity(0.4))
+        .child(icon.unwrap_or_else(|| div().text_xs().child(if recording { "■" } else { "mic" }).into_any_element()))
+        .child(recorded(agent, "dictate", controls))
+}
+
+/// The symbol and colour the microphone draws for `agent`: a red stop while it records.
+pub(super) fn mic_symbol(d: &crate::native::Dictation, agent: &str) -> (&'static str, u32) {
+    if d.owner.as_deref() == Some(agent) && d.phase == "recording" { ("stop.circle.fill", 0xe07070) } else { ("mic", 0x8fa89b) }
+}
+
+/// The prompt's height above `agent`'s composer: there while its tap waits on the model.
+pub(super) fn dictation_prompt_height(d: &crate::native::Dictation, agent: Option<&str>) -> f32 {
+    if agent.is_some() && d.phase == "asking" && d.owner.as_deref() == agent { DICTATION_PROMPT } else { 0. }
+}
+
+/// What the model download fetches, where from and where it is kept, with Download and Cancel
+/// (ADR-0013): shown above the composer the first time the microphone is pressed.
+pub(super) fn dictation_prompt(agent: &str, d: &crate::native::Dictation, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+    let button = |label: &'static str, id: &'static str, run: fn(&mut Client), cx: &mut Context<Client>| {
+        div().id(gpui::ElementId::Name(format!("dictation-{id}-{agent}").into())).relative().px_2().rounded_sm().cursor_pointer().bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                run(this);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(label)
+            .child(recorded(agent, &format!("dictation {id}"), controls))
+    };
+    let m = &d.model;
+    div().flex_none().h(px(DICTATION_PROMPT)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x1f2b26)).border_1().border_color(rgb(0x2c3d34))
+        .flex().gap_2().text_xs().text_color(rgb(0xd9e8e1)).overflow_hidden()
+        // The text wraps beside the buttons, so however long the cache path is it never pushes them out of the box.
+        .child(div().flex_1().min_w_0().h_full().overflow_hidden().child(composer::dictation_prompt(m)))
+        .child(div().flex_none().flex().flex_col().gap_1().child(button("Download", "download", Client::download_dictation_model, cx)).child(button("Cancel", "cancel", Client::cancel_dictation, cx)))
 }
 
 /// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"

@@ -261,12 +261,43 @@ pub enum BrowserEvent {
     /// The reply the app's synthesizer reads now (`read_aloud`), or None once it stops; sent to
     /// every window on every change.
     ReadAloud { playing: Option<String> },
+    /// What the composer's dictation is doing (`dictation`), sent to every window on every change.
+    Dictation(Dictation),
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
     /// The system's Reduce Motion, sent once the window attaches and on every change (or the
     /// check's override, `reduce_motion` with `set`).
     ReduceMotion { on: bool },
+}
+/// The app's one recorder (WheelUI's `Dictation`): its phase (`idle`, `asking`, `downloading`,
+/// `recording`, `transcribing`), the conversation it is for, the last failure and whose it was,
+/// the last text heard, and the model a download fetches.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Dictation {
+    pub phase: String,
+    #[serde(default)]
+    pub progress: f64,
+    pub owner: Option<String>,
+    pub problem: Option<String>,
+    pub problem_owner: Option<String>,
+    pub heard: Option<Heard>,
+    pub model: DictationModel,
+}
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Heard {
+    pub owner: String,
+    pub text: String,
+    pub id: u64,
+}
+/// What the model download fetches, named before it starts (ADR-0013).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct DictationModel {
+    pub name: String,
+    pub size: String,
+    pub source: String,
+    pub folder: String,
+    pub on_disk: bool,
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]
@@ -300,6 +331,8 @@ mod tests {
         assert!(matches!(reduced, Frame::Event(BrowserEvent::ReduceMotion { on: true })));
         let stopped: Frame = serde_json::from_str(r#"{"event":"read_aloud","playing":null}"#).unwrap();
         assert!(matches!(stopped, Frame::Event(BrowserEvent::ReadAloud { playing: None })));
+        let heard: Frame = serde_json::from_str(r#"{"event":"dictation","phase":"idle","progress":0,"owner":null,"problem":null,"problem_owner":null,"heard":{"owner":"w3","text":"run cargo test","id":2},"model":{"name":"Parakeet TDT 0.6b v3","size":"469 MB","source":"huggingface.co/x","folder":"/m","on_disk":true}}"#).unwrap();
+        assert!(matches!(heard, Frame::Event(BrowserEvent::Dictation(Dictation { heard: Some(Heard { ref text, id: 2, .. }), .. })) if text == "run cargo test"));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

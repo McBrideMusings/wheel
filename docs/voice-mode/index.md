@@ -1,6 +1,6 @@
 # Voice mode
 
-Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Nothing here is built yet.
+Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Of it, only composer dictation is built (below); voice mode itself is not.
 
 ## 1. What it is
 
@@ -75,6 +75,10 @@ A Spaces agent pane (W11482 in llama-broker) in voice mode. The layout is the sa
 | Speaking | Bright, moving with the output level |
 | Muted | Dimmed; the mute button is lit |
 
+## 5.8 Composer dictation (built)
+
+The microphone in an agent's composer, on the Mac (GPUI, before the stop button) and the iPhone (left of send). Press it, speak, press again: the recording becomes text added to the draft, and the person sends it as typed text with `agent_send`. Parakeet TDT 0.6b v3 runs through FluidAudio on the device (`docs/voice-mode/stt-engines.md`); the code is WheelUI's `Dictation`, which the iPhone's composer and the Mac's bridge (`dictation` op and event) share. The first press with no model on the device shows what the download fetches (469 MB from `huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml`, into FluidAudio's cache) with Download and Cancel. Nothing in it talks to wheeld, so it works with wheeld out of reach until the send.
+
 ## 6. Where things run
 
 | Part | Where |
@@ -94,7 +98,7 @@ These sit under Settings in the orchestrator doc:
 
 ## 8. Open items
 
-1. Pick the transcription model and library (WhisperKit or whisper.cpp); measure delay and battery on the phone.
+1. Measure battery on the phone over a 10-minute voice session.
 2. Wheeld lock for one active voice client.
 3. A voice-mode brief line or hook so spoken replies stay short.
 4. Live Activity and audio session background on iOS.

@@ -80,12 +80,20 @@ subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-librar
     # Xcode wrote their module maps beside the objects.
     *[arg for name in ['CLuau', 'LuauCore'] for arg in ['-Xcc', f'-fmodule-map-file={products.parents[1] / "Intermediates.noindex/GeneratedModuleMaps" / (name + ".modulemap")}']],
     '-Xcc', '-I' + str(repo / 'apple/WheelLuau/luau/VM/include'),
+    # WheelUI's Dictation uses FluidAudio, whose C modules the compiler loads the same way; SwiftPM keeps their module maps in the package sources.
+    *[arg for path in [
+        'checkouts/FluidAudio/Sources/FastClusterWrapper/include/module.modulemap',
+        'checkouts/FluidAudio/Sources/MachTaskSelfWrapper/include/module.modulemap',
+        'artifacts/fluidaudio/NemoTextProcessing/NemoTextProcessing.xcframework/macos-arm64_x86_64/Headers/CNemoTextProcessing/module.modulemap',
+    ] for arg in ['-Xcc', f'-fmodule-map-file={products.parents[2] / "SourcePackages" / path}']],
     str(client / 'native/Bridge.swift'),
     # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
     str(repo / 'apple/Shared/TerminalStyle.swift'),
     # The Swift app's menu bar image: the mark with the badge of spaces no window shows.
     str(repo / 'apple/Mac/Sources/MenuBarIcon.swift'),
     *[str(o) for o in sorted(products.glob('*.o'))],
+    # FluidAudio's text normalisation (NemoTextProcessing), a prebuilt static library Xcode copies beside the objects.
+    str(products / 'libtext_processing_rs.a'),
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
 sign(contents / 'MacOS/libWheelGpuiBridge.dylib')
@@ -113,6 +121,7 @@ with tempfile.TemporaryDirectory() as tmp:
     CFBundleInfoDictionaryVersion='6.0', CFBundleIconFile='AppIcon', CFBundleSupportedPlatforms=['MacOSX'],
     LSApplicationCategoryType='public.app-category.developer-tools', LSMinimumSystemVersion='15.0',
     NSHighResolutionCapable=True,
+    NSMicrophoneUsageDescription='Wheel turns what you say into the text of a message, on this Mac. Your voice never leaves it.',
     # A browser pane opens whatever address it is given, plain http on a Tailscale or LAN host included.
     NSAppTransportSecurity=dict(NSAllowsArbitraryLoadsInWebContent=True))))
 subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, env=dict(os.environ,
