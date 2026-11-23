@@ -14,6 +14,7 @@ pub const BREAKS: &[(u32, &str)] = &[
     (1, "wheeld lists the operations it handles"),
     (2, "an orchestrator is an agent pane: orchestrator_start makes one (a global one in the Orchestrator space) and names its pane, and orchestrator_stop and the inbox ops take that pane"),
     (3, "an orchestrator's inbox is files in its folder: inbox_list, inbox_ack and inbox_reply are removed"),
+    (4, "wheeld holds no orchestrator: the orchestrator_* ops, the Orchestrator space, agent_send's and pane_start's from, and push_send's task are removed"),
 ];
 
 /// This build's compatibility level: the last entry of [`BREAKS`].

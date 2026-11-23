@@ -205,7 +205,6 @@ impl AppState {
             }),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
-            orchestrator: None,
             extra: Extra::default(),
         };
         self.install(pane, new, None)?;
@@ -222,10 +221,6 @@ impl AppState {
         let (kind, space_cwd) = self.kind_and_space(pane)?;
         let (name, kind, cwd, picked) = match kind {
             PaneKind::Terminal { .. } => return Ok(()),
-            // The terminal's agent would run without the orchestrator brief and inbox.
-            PaneKind::Agent { orchestrator: Some(_), .. } => {
-                return Err(format!("{pane} is an orchestrator, which runs only as a chat"))
-            }
             PaneKind::Agent {
                 agent,
                 harness,

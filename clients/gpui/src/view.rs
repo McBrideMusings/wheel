@@ -346,14 +346,9 @@ pub struct Client {
     usage_refreshing: bool,
     /// A `session_new` this window sent from its session menu, and the session to show once listed.
     session_show_req: Option<u64>,
-    /// The `orchestrator_start` Orchestrator mode's Start sent and wheeld has not answered, and
-    /// why wheeld refused the last one.
-    orchestrator_start_req: Option<u64>,
-    orchestrator_refused: Option<String>,
-    /// The global orchestrator's tasks the Tasks menu shows, and the `orchestrator_tasks` read
-    /// wheeld has not answered.
-    orchestrator_tasks: Vec<wheel_proto::OrchestratorTask>,
-    tasks_req: Option<u64>,
+    /// The orchestrator's folder: the machine's `orchestrator.dir` setting, else `orchestrator`
+    /// beside the machine's `wheel.toml` (ADR-0054). None until wheeld lists its settings.
+    orchestrator_dir: Option<String>,
     session_to_show: Option<String>,
     /// SF Symbols the bridge drew, by name, size and colour; None for a name the system lacks.
     symbols: Symbols,
@@ -530,7 +525,7 @@ impl Client {
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
             posted: vec![], toast_sources, title_buttons: HashMap::new(), title_asked: HashSet::new(), title_menu: None, mode: "spaces".into(), spaces_mode_space: None, surface, pinned: false, usage_open: false, usage_refreshing: false,
-            session_show_req: None, orchestrator_start_req: None, orchestrator_refused: None, orchestrator_tasks: vec![], tasks_req: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
+            session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
@@ -661,6 +656,13 @@ impl Client {
                             let mut home_changed = false;
                             for s in settings {
                                 match s.key.as_str() {
+                                    "orchestrator.dir" => {
+                                        let dir = orchestrator_dir(s);
+                                        if self.orchestrator_dir.as_ref() != Some(&dir) {
+                                            self.orchestrator_dir = Some(dir);
+                                            self.show_orchestrator_space();
+                                        }
+                                    }
                                     // Machine-wide, whichever space the list was resolved for.
                                     "status.dots" => self.status_dots = status::listed(&s.value),
                                     "chat.footer.items" => {
@@ -782,8 +784,6 @@ impl Client {
             }
             Event::Down(reason) => {
                 self.link = Link::Down(reason);
-                // No answer comes over a dropped link, so Start is offered again.
-                self.orchestrator_start_req = None;
                 server::link(false);
                 false
             }
@@ -844,10 +844,7 @@ impl Client {
         if self.pane_menu.as_ref().is_some_and(|(pane, _, _, level)| self.header_menu(pane, *level).is_empty()) {
             self.close_pane_menu();
         }
-        // Orchestrator mode shows the Orchestrator space as soon as wheeld makes it.
-        if self.orchestrator_space().is_some() {
-            self.orchestrator_refused = None;
-        }
+        // Orchestrator mode shows the orchestrator's space as soon as one is open on its folder.
         if !self.little && self.mode == "orchestrator" && let Some(orchestrator) = self.orchestrator_space().map(str::to_owned) {
             if self.space_id.as_deref() != Some(orchestrator.as_str()) {
                 self.spaces_mode_space = self.space_id.replace(orchestrator);
@@ -855,8 +852,6 @@ impl Client {
         } else if !self.little && !self.session_spaces().iter().any(|s| Some(&s.id) == self.space_id.as_ref()) {
             self.space_id = self.session_spaces().first().map(|s| s.id.clone());
         }
-        // A window that opens in Orchestrator mode, or whose orchestrator stopped, starts one.
-        self.start_orchestrator_if_none();
         self.ask_space_settings();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
@@ -919,19 +914,16 @@ impl Client {
     pub fn session_spaces(&self) -> Vec<&Space> {
         match self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()) {
             Some(session) => session.spaces.iter().filter_map(|id| self.spaces.iter().find(|s| &s.id == id)).collect(),
-            None => self.spaces.iter().filter(|s| !s.orchestrator).collect(),
+            None => self.spaces.iter().collect(),
         }
     }
-    /// Whether a global orchestrator runs: the Orchestrator space stays after its last one stops.
-    pub fn orchestrator_space_running(&self) -> bool {
-        self.spaces.iter().any(|s| s.orchestrator && !s.global_orchestrators.is_empty())
-    }
-    /// The Orchestrator space's id, once wheeld has made it.
+    /// The space open on the orchestrator's folder, the first when several are (ADR-0054).
     pub fn orchestrator_space(&self) -> Option<&str> {
-        self.spaces.iter().find(|s| s.orchestrator).map(|s| s.id.as_str())
+        let dir = self.orchestrator_dir.as_deref()?;
+        self.spaces.iter().find(|s| same_dir(&s.cwd, dir)).map(|s| s.id.as_str())
     }
     /// Whether the body draws something of its own in place of the shown space's grid: the Agents
-    /// surface, or Orchestrator mode's empty state while there is no Orchestrator space.
+    /// surface, or Orchestrator mode's empty state while no space is open on the orchestrator's folder.
     pub fn grid_off(&self) -> bool {
         self.mode == "agents" || self.mode == "orchestrator" && self.orchestrator_space().is_none()
     }
@@ -965,11 +957,6 @@ impl Client {
     }
     /// Show `space` of the session shown.
     pub fn select_space(&mut self, space: &str) {
-        // The Orchestrator space is in no session: Orchestrator mode is what shows it.
-        if self.orchestrator_space() == Some(space) {
-            self.set_mode("orchestrator");
-            return;
-        }
         // A space picked from the sidebar or the tabs is a Spaces mode space.
         if self.mode == "orchestrator" && self.session_spaces().iter().any(|s| s.id == space) {
             self.set_mode("spaces");
@@ -3257,4 +3244,35 @@ fn code_el(language: Option<&str>, code: &str, texts: &mut Texts, highlights: &H
                     cx.stop_propagation();
                 }))))
         .child(div().p_2().font_family("Menlo").text_xs().child(body))
+}
+
+/// The orchestrator's folder `setting` (`orchestrator.dir`) names: its value, else `orchestrator`
+/// beside the machine's `wheel.toml` (ADR-0054).
+pub fn orchestrator_dir(setting: &wheel_proto::SettingInfo) -> String {
+    match setting.value.trim() {
+        "" => std::path::Path::new(&setting.machine_file).with_file_name("orchestrator").to_string_lossy().into_owned(),
+        dir => dir.to_owned(),
+    }
+}
+
+/// Whether two absolute folders are one, a trailing slash aside.
+fn same_dir(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+#[cfg(test)]
+mod orchestrator_dir_tests {
+    use super::*;
+
+    #[test]
+    fn the_orchestrator_folder_is_the_setting_else_beside_the_machine_file() {
+        let setting = |value: &str| wheel_proto::SettingInfo {
+            key: "orchestrator.dir".into(), value: value.into(), origin: Default::default(), default: String::new(), help: String::new(),
+            machine: None, project: None, machine_only: true, problem: None, kind: Default::default(), choices: vec![], min: None, max: None,
+            machine_file: "/Users/p/.wheel/wheel.toml".into(), project_file: None,
+        };
+        assert_eq!(orchestrator_dir(&setting("")), "/Users/p/.wheel/orchestrator");
+        assert_eq!(orchestrator_dir(&setting("/o/dir")), "/o/dir");
+        assert!(same_dir("/o/dir/", "/o/dir") && !same_dir("/o/dir2", "/o/dir"));
+    }
 }

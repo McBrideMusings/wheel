@@ -97,7 +97,7 @@ impl Client {
                 match path {
                     "/agent" => {
                         self.set_draft(&agent, String::new());
-                        self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text: request.body.clone(), from: None });
+                        self.send(&ClientMsg::AgentSend { req: None, agent: agent.clone(), text: request.body.clone() });
                     }
                     "/agent/draft" => {
                         self.set_draft(&agent, request.body.clone());
@@ -225,7 +225,7 @@ impl Client {
                     "terminal" => self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind: NewPaneKind::Terminal, artifact: None, scope: None, url: None, plugin: None }),
                     "agent" => {
                         let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
-                        self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None, from: None });
+                        self.send(&ClientMsg::PaneStart { req: None, pane, kind: wheel_proto::StartKind::Agent, message: q("message"), agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None });
                     }
                     _ => return refuse(BAD, "kind must be terminal or agent"),
                 }
@@ -521,7 +521,7 @@ impl Client {
             "/titlemenu" => {
                 match q("action").as_deref() {
                     Some("open") => {
-                        let menu = match q("menu").as_deref() { Some("session") => TitleMenu::Session, Some("mode") => TitleMenu::Mode, Some("tasks") => TitleMenu::Tasks, _ => return refuse(BAD, "menu is session, mode or tasks") };
+                        let menu = match q("menu").as_deref() { Some("session") => TitleMenu::Session, Some("mode") => TitleMenu::Mode, _ => return refuse(BAD, "menu is session or mode") };
                         if self.title_menu != Some(menu) {
                             self.toggle_title_menu(menu);
                         }

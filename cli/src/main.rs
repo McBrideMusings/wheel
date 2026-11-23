@@ -102,9 +102,6 @@ enum Command {
     /// Agents, by the name their agent pane carries (e.g. `w5`).
     #[command(subcommand)]
     Agent(AgentCommand),
-    /// Orchestrators: agent panes that watch the other agents, each with a scope and an inbox.
-    #[command(subcommand)]
-    Orchestrator(OrchestratorCommand),
     /// Permission requests waiting on a person.
     #[command(subcommand)]
     Perm(PermCommand),
@@ -263,17 +260,12 @@ enum PushCommand {
     /// key unset, Apple refusing).
     Test { event: String },
     /// Send every phone that registered a push token a notification with these words, whatever
-    /// `push.events` lists; an orchestrator folder's `tools/on-event` sends one when a task needs
-    /// the person. With `--task`, pushes about one task replace each other on the phone and a tap
-    /// opens the Tasks view at it. Exits non-zero with the reason when nothing was sent.
+    /// `push.events` lists. Exits non-zero with the reason when nothing was sent.
     Send {
         #[arg(long)]
         title: String,
         #[arg(long)]
         body: String,
-        /// The orchestrator task it is about (`tasks/<id>.json`).
-        #[arg(long)]
-        task: Option<String>,
         /// The pane a tap opens.
         #[arg(long)]
         pane: Option<String>,
@@ -1033,8 +1025,7 @@ enum PaneCommand {
     /// typing and answering act on the source. It holds only the source's id and closes when the
     /// source does. Prints the mirror's id.
     Mirror {
-        /// The pane to show, in any space of the same session, or of any session when the mirror
-        /// goes in the Orchestrator space.
+        /// The pane to show, in any space of the same session.
         source: String,
         /// The space the mirror goes in (an id or a name).
         #[arg(long)]
@@ -1544,44 +1535,6 @@ fn parse_work_item(text: &str) -> Result<wheel_proto::WorkItem, String> {
 }
 
 #[derive(Subcommand)]
-enum OrchestratorCommand {
-    /// Start an orchestrator as a new agent pane and print the pane's id. A space orchestrator
-    /// gets the events of its space's agents; a global one (`--global`) the events of every
-    /// agent in a space with no orchestrator, and of each space orchestrator. Several may share
-    /// a space; an event goes to the one started first. A space orchestrator runs in the
-    /// space's `orchestrator.dir` setting, else the space's folder. A global one goes in the
-    /// Orchestrator space, made on first use in a session of its own, in the
-    /// `orchestrator.global.dir` setting (~/.wheel/orchestrator when empty).
-    Start {
-        /// The space a space orchestrator's pane goes in: this pane's space when not given. A
-        /// global orchestrator takes none.
-        #[arg(long, conflicts_with = "global")]
-        space: Option<String>,
-        /// A global orchestrator rather than one for the space.
-        #[arg(long)]
-        global: bool,
-        /// Seconds one agent turn runs before the inbox reports it over time (1800 when not
-        /// given).
-        #[arg(long)]
-        turn_limit: Option<u64>,
-    },
-    /// Close an orchestrator's pane, which ends its agent. Fails when the pane holds no
-    /// orchestrator.
-    Stop {
-        /// The orchestrator's pane.
-        pane: String,
-    },
-    /// Print the global orchestrator's tasks as JSON, newest first: each `tasks/<id>.json` in the
-    /// Orchestrator space's folder with the inbox events naming its agents.
-    Tasks,
-    /// Mark a global orchestrator task done: writes `"done": true` into its `tasks/<id>.json`.
-    Done {
-        /// The task's id.
-        task: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum PermCommand {
     /// Print waiting permission requests as JSON.
     List,
@@ -1590,11 +1543,6 @@ enum PermCommand {
     Answer {
         id: String,
         choice: String,
-        /// For the orchestrator, which refuses to allow a request that cannot be undone (a
-        /// push, a delete, a restart) until the person has confirmed it out loud: pass this once
-        /// they have.
-        #[arg(long)]
-        confirmed: bool,
     },
     /// Wait for a permission request and print it as JSON (an already-waiting one counts).
     Wait {
@@ -2233,15 +2181,6 @@ async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fai
     Ok(())
 }
 
-async fn orchestrator_tasks(conn: &mut Conn) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::OrchestratorTasks { tasks, .. } = conn.call(ClientMsg::OrchestratorTasks { req: Some(req) }, req).await? else {
-        return Err(Fail::Other("unexpected reply to orchestrator_tasks".into()));
-    };
-    println!("{}", serde_json::to_string_pretty(&tasks).map_err(other)?);
-    Ok(())
-}
-
 async fn remote_devices(conn: &mut Conn, json: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Devices { devices, .. } = conn
@@ -2675,12 +2614,6 @@ fn print_perm_hint(perm: &wheel_proto::PermInfo) {
     );
 }
 
-/// The pane this command runs in (`WHEEL_PANE`), which wheeld names as a message's sender: a
-/// message from an orchestrator's pane lands in its inbox as a dispatch.
-fn caller_pane() -> Option<String> {
-    std::env::var("WHEEL_PANE").ok().filter(|p| !p.is_empty())
-}
-
 async fn agent_send(
     conn: &mut Conn,
     agent: String,
@@ -2708,7 +2641,6 @@ async fn agent_send(
                 req: Some(req),
                 agent: agent.clone(),
                 text,
-                from: caller_pane(),
             },
             req,
         )
@@ -3265,36 +3197,6 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
     Ok(())
 }
 
-/// Start an orchestrator of `scope` as a new agent pane in `space` (this pane's when not given)
-/// and print the pane's id.
-async fn orchestrator_start(
-    conn: &mut Conn,
-    space: Option<String>,
-    scope: wheel_proto::OrchestratorScope,
-    turn_limit_secs: Option<u64>,
-) -> Result<(), Fail> {
-    let space = match scope {
-        wheel_proto::OrchestratorScope::Global => None,
-        wheel_proto::OrchestratorScope::Space => match default_space(conn, space).await? {
-            Some(space) => Some(space),
-            None => return Err(Fail::Other("no space: give --space, or run this in a Wheel pane".into())),
-        },
-    };
-    let req = conn.req();
-    let start = ClientMsg::OrchestratorStart { req: Some(req), space, scope, turn_limit_secs, if_none: false };
-    match conn.call(start, req).await? {
-        ServerMsg::OrchestratorStarted { pane, .. } => {
-            println!("{pane}");
-            Ok(())
-        }
-        other => Err(Fail::Other(format!("unexpected reply {other:?}"))),
-    }
-}
-
-async fn orchestrator_stop(conn: &mut Conn, pane: String) -> Result<(), Fail> {
-    simple(conn, |req| ClientMsg::OrchestratorStop { req: Some(req), pane }).await
-}
-
 async fn agent_cancel(conn: &mut Conn, agent: String) -> Result<(), Fail> {
     simple(conn, |req| ClientMsg::AgentCancel {
         req: Some(req),
@@ -3398,22 +3300,6 @@ async fn perm_id(conn: &mut Conn, target: String) -> Result<String, Fail> {
         (Some(_), Some(_)) => Err(Fail::Daemon(format!(
             "{target} has several permission requests waiting; name one by its id (wheel perm list)"
         ))),
-    }
-}
-
-/// The orchestrator's gate: a request that cannot be undone is not allowed until the person
-/// has confirmed it out loud, which the orchestrator says by passing `--confirmed`.
-async fn perm_gate(conn: &mut Conn, id: &str) -> Result<(), Fail> {
-    let req = conn.req();
-    let ServerMsg::Status { perms, .. } = conn.call(ClientMsg::Status { req: Some(req) }, req).await? else {
-        return Err(Fail::Other("unexpected reply to status".into()));
-    };
-    match perms.iter().find(|p| p.id == id) {
-        Some(p) if wheel_proto::is_irreversible(&p.title) => Err(Fail::Daemon(format!(
-            "{} cannot be undone ({}): ask the person out loud, then run this again with --confirmed",
-            p.id, p.title
-        ))),
-        _ => Ok(()),
     }
 }
 
@@ -5423,7 +5309,7 @@ async fn window(conn: &mut Conn, command: WindowCommands) -> Result<(), Fail> {
 /// Every pane in tab order.
 async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     use wheel_proto::PaneSite;
-    type Row = (String, String, Option<String>, Option<String>, Option<String>, Option<&'static str>);
+    type Row = (String, String, Option<String>, Option<String>, Option<String>);
     fn walk(node: &wheel_proto::Node, out: &mut Vec<Row>) {
         match node {
             wheel_proto::Node::Pane { id, kind, name, title, .. } => {
@@ -5431,18 +5317,11 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
                     .ok()
                     .and_then(|v| v["kind"].as_str().map(str::to_owned))
                     .unwrap_or_default();
-                let (source, orchestrator) = match node {
-                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Mirror { source, .. }, .. } => (Some(source.clone()), None),
-                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Agent { orchestrator: Some(scope), .. }, .. } => (
-                        None,
-                        Some(match scope {
-                            wheel_proto::OrchestratorScope::Space => "space",
-                            wheel_proto::OrchestratorScope::Global => "global",
-                        }),
-                    ),
-                    _ => (None, None),
+                let source = match node {
+                    wheel_proto::Node::Pane { kind: wheel_proto::PaneKind::Mirror { source, .. }, .. } => Some(source.clone()),
+                    _ => None,
                 };
-                out.push((id.clone(), kind, name.clone(), title.clone(), source, orchestrator));
+                out.push((id.clone(), kind, name.clone(), title.clone(), source));
             }
             wheel_proto::Node::Split { a, b, .. } => {
                 walk(a, out);
@@ -5462,16 +5341,13 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
         for tree in space.trees() {
             walk(tree, &mut panes);
         }
-        for (pane, kind, name, title, source, orchestrator) in panes {
+        for (pane, kind, name, title, source) in panes {
             let site = space.site_of(&pane).map_or("", wheel_proto::PaneSite::name);
             let mut row = serde_json::json!({
                 "space": space.id, "pane": pane, "kind": kind, "site": site, "name": name, "title": title,
             });
             if let Some(source) = source {
                 row["source"] = source.into();
-            }
-            if let Some(scope) = orchestrator {
-                row["orchestrator"] = scope.into();
             }
             if let (Some(PaneSite::Popped), Some(frame)) = (space.site_of(&pane), space.frames.get(&pane)) {
                 row["frame"] = serde_json::to_value(frame).map_err(other)?;
@@ -5486,12 +5362,11 @@ async fn pane_ls(conn: &mut Conn, as_json: bool) -> Result<(), Fail> {
     for row in &rows {
         let named = row["name"].as_str().or(row["title"].as_str());
         let kind = row["kind"].as_str().unwrap_or_default();
-        // A mirror names its source, and an orchestrator its scope, in the kind column, so the
-        // columns stay where scripts read them.
-        let kind = match (row["source"].as_str(), row["orchestrator"].as_str()) {
-            (Some(source), _) => format!("{kind}:{source}"),
-            (None, Some(scope)) => format!("{kind}:orchestrator-{scope}"),
-            (None, None) => kind.to_owned(),
+        // A mirror names its source in the kind column, so the columns stay where scripts read
+        // them.
+        let kind = match row["source"].as_str() {
+            Some(source) => format!("{kind}:{source}"),
+            None => kind.to_owned(),
         };
         println!(
             "{} {} {} {}{}",
@@ -6019,7 +5894,6 @@ async fn pane(conn: &mut Conn, command: PaneCommand) -> Result<(), Fail> {
                 permission_mode,
                 sandbox,
                 dir,
-                from: caller_pane(),
             };
             let ServerMsg::Started {
                 pane,
@@ -6529,8 +6403,8 @@ async fn main() -> ExitCode {
             Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,
             Command::Remote(RemoteCommand::Revoke { id }) => remote_revoke(&mut conn, id).await,
             Command::Push(PushCommand::Test { event }) => push_test(&mut conn, event).await,
-            Command::Push(PushCommand::Send { title, body, task, pane }) => {
-                simple(&mut conn, |req| ClientMsg::PushSend { req: Some(req), title, body, task, pane }).await
+            Command::Push(PushCommand::Send { title, body, pane }) => {
+                simple(&mut conn, |req| ClientMsg::PushSend { req: Some(req), title, body, pane }).await
             }
             Command::Term(TermCommand::Open { cwd, cols, rows }) => {
                 term_open(&mut conn, cwd, cols, rows).await
@@ -6591,15 +6465,6 @@ async fn main() -> ExitCode {
             Command::Agent(AgentCommand::Commands { agent, json }) => {
                 agent_commands(&mut conn, agent, json).await
             }
-            Command::Orchestrator(OrchestratorCommand::Start { space, global, turn_limit }) => {
-                let scope = if global { wheel_proto::OrchestratorScope::Global } else { wheel_proto::OrchestratorScope::Space };
-                orchestrator_start(&mut conn, space, scope, turn_limit).await
-            }
-            Command::Orchestrator(OrchestratorCommand::Stop { pane }) => orchestrator_stop(&mut conn, pane).await,
-            Command::Orchestrator(OrchestratorCommand::Tasks) => orchestrator_tasks(&mut conn).await,
-            Command::Orchestrator(OrchestratorCommand::Done { task }) => {
-                simple(&mut conn, |req| ClientMsg::OrchestratorTaskDone { req: Some(req), task }).await
-            }
             Command::Agent(AgentCommand::Cancel { agent }) => {
                 agent_cancel(&mut conn, agent).await
             }
@@ -6623,11 +6488,8 @@ async fn main() -> ExitCode {
             }
             Command::Agent(AgentCommand::Watch) => agent_watch(&mut conn).await,
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
-            Command::Perm(PermCommand::Answer { id, choice, confirmed }) => {
+            Command::Perm(PermCommand::Answer { id, choice }) => {
                 let id = perm_id(&mut conn, id).await?;
-                if std::env::var_os("WHEEL_ORCHESTRATOR").is_some() && !confirmed && choice != "deny" {
-                    perm_gate(&mut conn, &id).await?;
-                }
                 simple(&mut conn, |req| ClientMsg::PermAnswer {
                     req: Some(req),
                     id,

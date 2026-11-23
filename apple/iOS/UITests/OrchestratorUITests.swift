@@ -2,7 +2,7 @@ import XCTest
 
 /// Drives the phone's Orchestrator mode with real taps against a wheeld that
 /// `.claude/skills/project-verify/tools/ios-orchestrator.sh` set up: one space holding one agent pane, and no
-/// Orchestrator space until the mode opens. The test writes `<sync>/step-<name>` after each step and waits for
+/// space on the orchestrator folder until the script opens one at the `before` step. The test writes `<sync>/step-<name>` after each step and waits for
 /// `<sync>/ack-<name>`; shots go to `<shots>/orchestrator-<state>-<theme>.png`.
 final class OrchestratorUITests: XCTestCase {
     private let env = ProcessInfo.processInfo.environment
@@ -19,25 +19,31 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.buttons["title"].waitForExistence(timeout: 40))
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 20))
 
-        // Opening the mode with no global orchestrator starts one with no tap (wheel-eg4e.19.23); there is no Start.
-        sync("before")
+        // With no space on the orchestrator folder the mode names the folder and starts nothing (ADR-0054).
         pick("Orchestrator")
+        XCTAssertTrue(any("no orchestrator").waitForExistence(timeout: 20), "the mode says no space is open on the folder")
+        XCTAssertTrue(any("orchestrator empty").label.contains("Open a space with an agent pane on"), "the text says what to open: \(any("orchestrator empty").label)")
+        XCTAssertTrue(any("orchestrator empty").label.contains("/orchestrator"), "the text names the folder: \(any("orchestrator empty").label)")
         XCTAssertFalse(app.buttons["orchestrator start"].exists, "no Start button")
+        XCTAssertFalse(chat.exists, "no chat without a space")
+        shot("empty")
+        sync("before")
 
-        // 2. The start makes the Orchestrator space; the global orchestrator's chat is its first page, with no pin
-        // sheet, no page dots and no agent header row (wheel-eg4e.19.33).
+        // The script opened a space on the folder with an agent pane; its chat is the first page, with no pin
+        // sheet, no page dots and no agent header row.
         XCTAssertTrue(chat.waitForExistence(timeout: 30), "the orchestrator's chat is the first page")
-        XCTAssertFalse(any("no orchestrator").exists)
+        XCTAssertTrue(waitFor { !self.any("no orchestrator").exists }, "the empty state gives way to the chat")
         XCTAssertFalse(any("pin sheet").exists, "no pin sheet in Orchestrator mode")
         XCTAssertFalse(any("page dots").exists, "no page dots in Orchestrator mode")
         XCTAssertFalse(chat.buttons["agent-header"].exists, "the chat has no agent header row")
         XCTAssertEqual(title.label, "Orchestrator", "the title names the orchestrator")
         XCTAssertTrue(chat.staticTexts["Message"].exists, "the composer says Message")
+        XCTAssertTrue(chat.staticTexts["Message the orchestrator."].exists, "the empty transcript says Message the orchestrator.")
         shot("chat")
         sync("chat")
 
         // One global orchestrator: the title is a label with no menu, there is no eye, no search and no page handle. The
-        // ⋯ holds its place; the mode button and Tasks close up beside it, with no empty slot between Tasks and the ⋯.
+        // ⋯ holds its place; the mode button closes up beside it, with no empty slot between them.
         XCTAssertFalse(app.buttons["title"].exists, "the title is no button in Orchestrator mode")
         XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
         XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
@@ -46,28 +52,11 @@ final class OrchestratorUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 1)
         XCTAssertFalse(app.buttons["space wheel"].exists, "a tap on the title opens no menu")
         XCTAssertFalse(app.otherElements["page handle"].exists, "Orchestrator mode has no page handle")
-        let modeToTasks = app.buttons["tasks"].frame.minX - app.buttons["mode"].frame.maxX
-        let tasksToMenu = app.buttons["Pane menu"].frame.minX - app.buttons["tasks"].frame.maxX
-        XCTAssertLessThan(tasksToMenu, modeToTasks + 12, "no empty slot between Tasks and the ⋯: \(tasksToMenu) pt against \(modeToTasks) pt")
+        let modeToMenu = app.buttons["Pane menu"].frame.minX - app.buttons["mode"].frame.maxX
         // The model is the title's one detail, on the chat.
         XCTAssertTrue(app.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is under the title")
         XCTAssertGreaterThan(app.buttons["model menu"].frame.minY, title.frame.maxY - 1, "the model sits under the title")
         sync("chrome")
-
-        // The eye's slot holds Tasks (wheel-eg4e.20.3): its sheet lists the task file the check wrote, and Done
-        // writes the person's done.
-        let tasks = app.buttons["tasks"]
-        XCTAssertTrue(tasks.waitForExistence(timeout: 10), "Orchestrator mode has a Tasks button")
-        tasks.tap()
-        XCTAssertTrue(any("task tc1").waitForExistence(timeout: 10), "the Tasks sheet lists the task file")
-        XCTAssertTrue(app.staticTexts["Check the Tasks sheet"].exists, "the task names what was asked")
-        XCTAssertEqual(any("task status tc1").label, "Ready for review")
-        shot("tasks")
-        app.buttons["task done tc1"].tap()
-        XCTAssertTrue(waitFor { !self.app.buttons["task done tc1"].exists }, "Done goes once the task is done")
-        sync("tasks")
-        app.swipeDown(velocity: .fast)
-        XCTAssertTrue(waitFor { !self.any("tasks list").exists }, "the sheet closes")
 
         // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
         XCTAssertFalse(app.buttons["hide keyboard"].exists, "no keyboard button while the keyboard is down")
@@ -99,7 +88,7 @@ final class OrchestratorUITests: XCTestCase {
         chat.textViews.firstMatch.typeText("hello")
         shot("typed")
         chat.buttons["Send"].tap()
-        XCTAssertTrue(waitFor { !self.chat.staticTexts["Message the global orchestrator."].exists }, "the message is in the transcript")
+        XCTAssertTrue(waitFor { !self.chat.staticTexts["Message the orchestrator."].exists }, "the message is in the transcript")
         // With the keyboard up, the + menu draws above it, and the composer lets go of it, so a pick never raises it
         // again (wheel-eg4e.19.40).
         if !app.keyboards.firstMatch.exists { chat.textViews.firstMatch.tap() }
@@ -141,13 +130,13 @@ final class OrchestratorUITests: XCTestCase {
         if outside.exists { outside.tap() } else { app.buttons["Cancel"].tap() }
         XCTAssertTrue(waitFor { !confirm.exists }, "a tap outside closes the question")
         Thread.sleep(forTimeInterval: 1)
-        XCTAssertFalse(chat.staticTexts["Message the global orchestrator."].exists, "cancelling kept the transcript")
+        XCTAssertFalse(chat.staticTexts["Message the orchestrator."].exists, "cancelling kept the transcript")
         chat.buttons["Attach"].tap()
         XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens a third time")
         app.buttons["Clear chat"].tap()
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "Clear chat asks again")
         confirm.tap()
-        XCTAssertTrue(chat.staticTexts["Message the global orchestrator."].waitForExistence(timeout: 10), "Clear chat emptied the transcript")
+        XCTAssertTrue(chat.staticTexts["Message the orchestrator."].waitForExistence(timeout: 10), "Clear chat emptied the transcript")
         sync("model")
 
         // 1. Full screen under the top bar, no modal: the chat starts under the title and its composer sits on the home
@@ -223,16 +212,18 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(waitFor { !arrow.exists }, "the arrow goes once the newest message is in view")
         sync("scroll")
 
-        // 4. The Orchestrator space is in no Spaces mode list: the title menu lists the other space and session only.
+        // The orchestrator's space is an ordinary space: Spaces mode lists it in the title menu.
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
+        // A normal inter-button gap is what Spaces mode puts between the mode button and the next control.
+        let spacesGap = app.buttons["agents"].frame.minX - app.buttons["mode"].frame.maxX
+        XCTAssertLessThanOrEqual(modeToMenu, spacesGap + 2, "no empty slot between the mode button and the ⋯: \(modeToMenu) pt against Spaces mode's \(spacesGap) pt")
         XCTAssertLessThan(app.buttons["mode"].frame.minX, here.0.minX, "Spaces mode's search sits where Orchestrator mode's mode button was")
         XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
         app.buttons["title"].tap()
-        XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the Spaces mode space")
-        XCTAssertFalse(app.buttons["space Orchestrator"].exists, "the title menu lists no Orchestrator space")
-        XCTAssertFalse(app.buttons["session Orchestrator"].exists, "the session bar lists no Orchestrator session")
+        XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the first space")
+        XCTAssertTrue(app.buttons["space orchestrator"].exists, "the title menu lists the orchestrator's space")
         shot("lists")
         app.swipeDown(velocity: .fast)
         XCTAssertTrue(waitFor { !self.app.buttons["space wheel"].isHittable })
@@ -327,7 +318,7 @@ final class OrchestratorUITests: XCTestCase {
         guard let dir = env["WHEEL_SHOTS"] else { return }
         let items: [(String, XCUIElement)] = [
             ("window", app.windows.firstMatch), ("chat", chat), ("field", chat.textViews.firstMatch),
-            ("attach", chat.buttons["Attach"]), ("mode", app.buttons["mode"]), ("tasks", app.buttons["tasks"]),
+            ("attach", chat.buttons["Attach"]), ("mode", app.buttons["mode"]),
             ("menu", app.buttons["Pane menu"]), ("keyboard", app.keyboards.firstMatch),
         ]
         let lines = items.map { id, e -> String in

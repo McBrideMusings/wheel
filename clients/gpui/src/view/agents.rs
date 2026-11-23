@@ -291,7 +291,7 @@ impl Client {
     }
     /// Start `agent` in `pane`; wheeld's refusal shows as the layout-error notice.
     fn send_start(&mut self, pane: &str, agent: &str) {
-        let req = self.send_layout_req(|req| ClientMsg::PaneStart { req: Some(req), pane: pane.to_owned(), kind: wheel_proto::StartKind::Agent, message: None, agent: Some(agent.to_owned()), model: None, permission_mode: None, sandbox: None, dir: None, from: None });
+        let req = self.send_layout_req(|req| ClientMsg::PaneStart { req: Some(req), pane: pane.to_owned(), kind: wheel_proto::StartKind::Agent, message: None, agent: Some(agent.to_owned()), model: None, permission_mode: None, sandbox: None, dir: None });
         self.surface.started.insert(req);
     }
     pub fn run_surface_row(&mut self, id: &str) {

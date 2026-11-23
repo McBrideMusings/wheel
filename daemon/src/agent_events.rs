@@ -1,18 +1,48 @@
-//! What the orchestrator's inbox is told about: wheeld's global broadcast reduced to agent
-//! lifecycle events, each one short line (`crate::inbox` writes them). Raw transcripts never come
-//! through here.
+//! What an event hook is told about (`crate::hooks`): wheeld's global broadcast reduced to agent
+//! lifecycle events, each one short line. Raw transcripts never come through here.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use wheel_proto::{AgentState, InboxKind, ServerMsg};
+use wheel_proto::{AgentState, ServerMsg};
+
+/// What an agent event is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A turn ended.
+    Finished,
+    /// The agent failed, or gave up restarting.
+    Failed,
+    /// The agent asks for permission.
+    Permission,
+    /// A permission request was answered.
+    Answered,
+    /// One turn has run past the turn limit.
+    OverTime,
+    /// A build or test command the agent ran failed.
+    BuildFailed,
+}
+
+impl Kind {
+    /// The name a hook's `on` gives the events of this kind.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Kind::Finished => "turn_end",
+            Kind::Failed => "fail",
+            Kind::Permission => "permission",
+            Kind::Answered => "answered",
+            Kind::OverTime => "over_time",
+            Kind::BuildFailed => "build_failed",
+        }
+    }
+}
 
 /// One agent event.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Event {
     /// The agent the event is about.
     pub agent: String,
-    pub kind: InboxKind,
+    pub kind: Kind,
     pub text: String,
     /// The permission request a `permission` or `answered` event is about.
     pub perm: Option<String>,
@@ -40,22 +70,18 @@ impl Filter {
             ServerMsg::PermRequested { perm } => {
                 self.perms.insert(perm.id.clone(), perm.agent.clone());
                 Some(Event {
-                agent: perm.agent.clone(),
-                kind: InboxKind::Permission,
-                text: if wheel_proto::is_irreversible(&perm.title) {
-                    format!("{} needs permission: {} (this cannot be undone: ask the person out loud, then answer with --confirmed)", perm.agent, perm.title)
-                } else {
-                    format!("{} needs permission: {}", perm.agent, perm.title)
-                },
-                perm: Some(perm.id.clone()),
-            })
+                    agent: perm.agent.clone(),
+                    kind: Kind::Permission,
+                    text: format!("{} needs permission: {}", perm.agent, perm.title),
+                    perm: Some(perm.id.clone()),
+                })
             }
             ServerMsg::PermResolved { id, choice } => {
                 let agent = self.perms.remove(id)?;
                 Some(Event {
                     text: format!("{agent}'s permission request was answered: {choice}"),
                     agent,
-                    kind: InboxKind::Answered,
+                    kind: Kind::Answered,
                     perm: Some(id.clone()),
                 })
             }
@@ -66,10 +92,10 @@ impl Filter {
                         self.busy.entry(agent.clone()).or_insert(now);
                         None
                     }
-                    AgentState::Ready if was_busy => add(agent, InboxKind::Finished, format!("{agent} finished its turn")),
-                    AgentState::Failed { message } => add(agent, InboxKind::Failed, format!("{agent} failed: {message}")),
+                    AgentState::Ready if was_busy => add(agent, Kind::Finished, format!("{agent} finished its turn")),
+                    AgentState::Failed { message } => add(agent, Kind::Failed, format!("{agent} failed: {message}")),
                     AgentState::GaveUp { message, .. } => {
-                        add(agent, InboxKind::Failed, format!("{agent} gave up and will not restart: {message}"))
+                        add(agent, Kind::Failed, format!("{agent} gave up and will not restart: {message}"))
                     }
                     _ => None,
                 }
@@ -87,7 +113,7 @@ impl Filter {
             if ran >= limit && self.overdue.insert(agent.clone()) {
                 events.push(Event {
                     agent: agent.clone(),
-                    kind: InboxKind::OverTime,
+                    kind: Kind::OverTime,
                     text: format!("{agent} has worked on one turn for {}", minutes(ran)),
                     perm: None,
                 });
@@ -124,7 +150,7 @@ impl Filter {
 pub(crate) fn build_failed(agent: &str, command: &str) -> Event {
     Event {
         agent: agent.to_string(),
-        kind: InboxKind::BuildFailed,
+        kind: Kind::BuildFailed,
         text: format!("{agent} ran a build or test that failed: {command}"),
         perm: None,
     }
@@ -161,7 +187,7 @@ mod tests {
         }
     }
 
-    fn text(event: Option<Event>) -> (InboxKind, String) {
+    fn text(event: Option<Event>) -> (Kind, String) {
         match event {
             Some(Event { kind, text, .. }) => (kind, text),
             other => panic!("not an added event: {other:?}"),
@@ -175,17 +201,11 @@ mod tests {
             event,
             Some(Event {
                 agent: "w5".into(),
-                kind: InboxKind::Permission,
+                kind: Kind::Permission,
                 text: "w5 needs permission: Bash: cargo test".into(),
                 perm: Some("q1".into()),
             })
         );
-    }
-
-    #[test]
-    fn an_irreversible_request_says_to_confirm_out_loud() {
-        let (_, line) = text(Filter::default().event(&perm("q2", "Bash: git push origin main"), Instant::now()));
-        assert!(line.contains("cannot be undone: ask the person out loud"), "{line}");
     }
 
     #[test]
@@ -198,7 +218,7 @@ mod tests {
             filter.event(&msg, Instant::now()),
             Some(Event {
                 agent: "w5".into(),
-                kind: InboxKind::Answered,
+                kind: Kind::Answered,
                 text: "w5's permission request was answered: allow".into(),
                 perm: Some("q1".into()),
             })
@@ -214,7 +234,7 @@ mod tests {
         assert_eq!(filter.event(&state("w5", AgentState::Busy { queued: 0 }), now), None);
         assert_eq!(
             text(filter.event(&state("w5", AgentState::Ready), now)),
-            (InboxKind::Finished, "w5 finished its turn".into())
+            (Kind::Finished, "w5 finished its turn".into())
         );
         assert_eq!(filter.event(&state("w5", AgentState::Ready), now), None);
     }
@@ -225,11 +245,11 @@ mod tests {
         let now = Instant::now();
         assert_eq!(
             text(filter.event(&state("w5", AgentState::Failed { message: "exit 1".into() }), now)),
-            (InboxKind::Failed, "w5 failed: exit 1".into())
+            (Kind::Failed, "w5 failed: exit 1".into())
         );
         assert_eq!(
             text(filter.event(&state("w5", AgentState::GaveUp { tries: 3, message: "no login".into() }), now)),
-            (InboxKind::Failed, "w5 gave up and will not restart: no login".into())
+            (Kind::Failed, "w5 gave up and will not restart: no login".into())
         );
     }
 
@@ -248,7 +268,7 @@ mod tests {
             events,
             vec![Event {
                 agent: "w5".into(),
-                kind: InboxKind::OverTime,
+                kind: Kind::OverTime,
                 text: "w5 has worked on one turn for 31 minutes".into(),
                 perm: None,
             }]

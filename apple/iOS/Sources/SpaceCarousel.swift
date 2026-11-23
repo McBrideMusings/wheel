@@ -65,8 +65,8 @@ struct SpaceCarousel: View {
                         }
                     }
                     .overlay { floatButton(pages: pages, landscape: landscape) }
-                    .padding(.bottom, spacesMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
-                    if spacesMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
+                    .padding(.bottom, spacesMode && !orchestratorMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
+                    if spacesMode, !orchestratorMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
                        let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
                         PinSheetView(model: model, space: space, sheet: sheet, pane: pane) { kindView($0) }
                     }
@@ -215,7 +215,7 @@ struct SpaceCarousel: View {
                 .overlay(SwipeArea.tint.allowsHitTesting(false))
         } else if case let .agent(agent, harness) = pane.kind, let chat = model.chats[agent] {
             AgentPane(model: model, pane: pane.id, agent: agent, harness: harness, chat: chat,
-                      globalOrchestrator: pane.id == model.orchestratorPane)
+                      orchestrator: pane.id == model.orchestratorPane)
                 // Behind the page, so what scrolls sideways on its own fill (a code block) stays untinted.
                 .background(SwipeArea.tint)
         } else if let link = model.pluginPanes[pane.id] {
@@ -238,7 +238,7 @@ struct SpaceCarousel: View {
         }
     }
 
-    /// The shown space's pages; in Orchestrator mode the global orchestrator's chat leads them.
+    /// The shown space's pages; in Orchestrator mode the orchestrator's chat leads them.
     private var pages: Pages { Pages(model.activeSpace, pinned: pinnedIDs, chat: model.orchestratorPane) }
 
     private var trayIDs: [String] { pages.tray.map(\.id) }
@@ -256,7 +256,8 @@ struct SpaceCarousel: View {
     static let orchestratorTitle = "Orchestrator"
 
     /// The shown space's pinned panes, drawn in the sheet and left out of the pages.
-    private var pinnedIDs: [String] { model.activeSpace.map { model.pins.pinned(in: $0.id) } ?? [] }
+    /// Orchestrator mode draws no pin sheet, so a pane pinned in Spaces mode is one of its pages.
+    private var pinnedIDs: [String] { orchestratorMode ? [] : model.activeSpace.map { model.pins.pinned(in: $0.id) } ?? [] }
 
     /// The page on screen was pinned: its neighbour takes its place, the next page else the one before, the backgrounded
     /// panes' page included. With no page on screen (every pane was pinned), the first page there is now.
@@ -279,7 +280,7 @@ struct SpaceCarousel: View {
 
     private var orchestratorMode: Bool { model.mode == WindowMode.orchestrator }
 
-    /// Whether the body shows a space's pages: Spaces mode's space, or the Orchestrator space in Orchestrator mode.
+    /// Whether the body shows a space's pages: Spaces mode's space, or the orchestrator's space in Orchestrator mode.
     private var showsPages: Bool { model.mode != WindowMode.agents && model.activeSpace != nil }
 
     private func trayNeedsYou(_ tray: [(id: String, kind: PaneKind)]) -> Bool {
@@ -310,31 +311,18 @@ struct SpaceCarousel: View {
             }
             // Leftmost of the right-hand group, so every control that was there keeps its place.
             ModeButton(mode: model.mode) { model.setMode($0) }
-            // Orchestrator mode is the one global orchestrator: no agents sheet. The eye's slot holds Tasks.
-            Group {
-                if orchestratorMode {
-                    let tasks = Button { model.openTasks(at: nil) } label: { Image(systemName: "checklist") }
-                        .accessibilityLabel("Tasks")
-                        .accessibilityIdentifier("tasks")
-                    if model.canReadTasks { tasks } else { tasks.hidden() }
-                } else {
-                    AgentsButton(needsYou: model.sessionNeedsYou > 0) {
-                        Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
-                        agentsOpen = true
-                    }
+            // Orchestrator mode is the one orchestrator: no agents sheet, and no empty slot for the eye.
+            if !orchestratorMode {
+                AgentsButton(needsYou: model.sessionNeedsYou > 0) {
+                    Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
+                    agentsOpen = true
                 }
-            }
-            // One width for the eye and Tasks.
-            .frame(width: 28)
-            .sheet(isPresented: $agentsOpen) {
-                AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
-            .sheet(isPresented: Bindable(model).tasksOpen) {
-                TasksSheet(model: model)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+                .frame(width: 28)
+                .sheet(isPresented: $agentsOpen) {
+                    AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                }
             }
             // Orchestrator mode takes the whole screen for the orchestrator: no palette, and no empty slot for it.
             if !orchestratorMode {
@@ -435,8 +423,8 @@ struct SpaceCarousel: View {
 
     private func openSettings(_ tab: SettingsTab) {
         settingsTab = tab
-        if settingsProject == nil || !model.listedSpaces.contains(where: { $0.id == settingsProject }) {
-            settingsProject = model.listedSpaces.first { $0.id == model.view.space }?.id ?? model.listedSpaces.first?.id
+        if settingsProject == nil || !model.spaces.contains(where: { $0.id == settingsProject }) {
+            settingsProject = model.spaces.first { $0.id == model.view.space }?.id ?? model.spaces.first?.id
         }
         settingsOpen = true
     }
@@ -641,8 +629,7 @@ private struct ModeBody: View {
     }
 }
 
-/// Orchestrator mode's body while wheeld has no Orchestrator space: the start the phone sent on its own, wheeld's
-/// refusal of it, or that the running wheeld cannot start one.
+/// Orchestrator mode's body while no space is open on the orchestrator's folder (ADR-0054): where to open one.
 private struct NoOrchestrator: View {
     let model: PhoneModel
 
@@ -651,19 +638,12 @@ private struct NoOrchestrator: View {
         VStack(spacing: 6) {
             Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
             Text(entry.title).font(.headline)
-            if let refused = model.orchestratorRefused {
-                Text(refused)
-                    .font(.subheadline)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 24)
-                    .accessibilityIdentifier("orchestrator refused")
-            } else {
-                Text(model.canStartOrchestrator ? "Starting the orchestrator…" : "This wheeld cannot start an orchestrator")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("orchestrator starting")
-            }
+            Text(model.orchestratorDir.map { "Open a space with an agent pane on \($0)" } ?? "Waiting for wheeld's settings")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .accessibilityIdentifier("orchestrator empty")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .contain)

@@ -63,8 +63,6 @@ pub struct Launch {
     pub config_dir: Option<PathBuf>,
     /// Added to the agent's instructions: how to use Wheel (`crate::brief`).
     pub brief: Option<String>,
-    /// The agent may run `wheel perm answer` unasked (`AgentConfig::answers_permissions`).
-    pub answers_permissions: bool,
     /// Added to the process's environment: where `wheel` reaches the daemon, and the pane.
     pub env: Vec<(String, String)>,
     pub conversation: Conversation,
@@ -120,15 +118,13 @@ pub enum DriverEvent {
     /// a plan.
     Transcript(AgentEvent),
     /// The agent asks to run a tool. `request` is the agent's id for the question, which
-    /// [`DriverInput::answer`] takes back. `tool` is the tool's name and input, when the agent
-    /// says them, for a rule wheeld answers by (`AgentConfig::own_tools`).
+    /// [`DriverInput::answer`] takes back.
     Permission {
         request: String,
         title: String,
         tool_call: Option<String>,
         options: Vec<PermOption>,
         why: wheel_proto::PermWhy,
-        tool: Option<(String, serde_json::Value)>,
     },
     /// How full the conversation's context window is; `None` when the agent has no figure, as pi
     /// has none right after compaction, which clears what was shown.
@@ -183,7 +179,6 @@ pub(crate) enum Input {
     Answer {
         request: String,
         choice: Option<String>,
-        message: Option<String>,
     },
     SetOption {
         id: String,
@@ -237,12 +232,7 @@ impl DriverInput {
 
     /// Answer permission request `request` with the option the person picked, or withdraw it.
     pub fn answer(&self, request: String, choice: Option<String>) -> Result<(), String> {
-        self.put(Input::Answer { request, choice, message: None })
-    }
-
-    /// Refuse permission request `request` by a rule of wheeld's, telling the agent `message`.
-    pub fn refuse(&self, request: String, message: String) -> Result<(), String> {
-        self.put(Input::Answer { request, choice: Some("deny".into()), message: Some(message) })
+        self.put(Input::Answer { request, choice })
     }
 
     /// Change one option. The answer is the agent's whole list as it stands after the change.

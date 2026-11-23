@@ -287,6 +287,15 @@ pub(crate) fn agent_names() -> Vec<&'static str> {
 
 /// An absolute path, or empty. Whether it exists is not checked: an agent creates its own home on
 /// first start, so a directory that is not there yet is a fresh login, not a refused write.
+/// `path` with its folder resolved through symlinks; the file itself need not exist. Unchanged when the
+/// folder does not exist either.
+fn resolved_path(path: &Path) -> PathBuf {
+    match (path.parent().and_then(|d| std::fs::canonicalize(d).ok()), path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 fn directory(value: &str) -> Result<String, String> {
     let value = value.trim();
     match value.is_empty() || Path::new(value).is_absolute() {
@@ -459,14 +468,14 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("push.")
         || id.starts_with("spaces.")
         || id.starts_with("sessions.")
-        || id.starts_with("orchestrator.global.")
+        || id.starts_with("orchestrator.")
 }
 
 /// Every setting wheel has. A key absent here does not exist: a `get` or a `set` naming one is
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 70] = [
+const KEYS: [Key; 69] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -522,16 +531,10 @@ const KEYS: [Key; 70] = [
         help: "The program an agent pane running pi starts, with any arguments of its own (a --model, say); found on PATH when it has no directory. Read from this machine's file only.",
     },
     Key {
-        id: crate::orchestrator::DIR,
+        id: "orchestrator.dir",
         accepts: Accepts::Directory,
         default: "",
-        help: "The directory a space orchestrator runs in (wheel orchestrator start); empty means the space's folder.",
-    },
-    Key {
-        id: crate::orchestrator::GLOBAL_DIR,
-        accepts: Accepts::Directory,
-        default: "",
-        help: "The folder of the Orchestrator space, where global orchestrators run and keep their own notes, tools and code (wheel orchestrator start --global); wheeld makes it when missing, and a change moves the space for panes started afterwards. Empty means ~/.wheel/orchestrator. Read from this machine's file only.",
+        help: "The folder of the orchestrator: a client's Orchestrator mode shows the agent pane of the space open on it. Empty means the orchestrator folder beside this machine's wheel.toml, ~/.wheel/orchestrator. Read from this machine's file only.",
     },
     Key {
         id: "agent.claude.home",
@@ -1193,6 +1196,9 @@ impl AppState {
         let project_path = resolved
             .as_ref()
             .map(|(_, cwd)| Path::new(cwd).join(FILE).display().to_string());
+        // Resolved through symlinks, as `wheel space new` resolves a space's folder, so a client finds the
+        // space open on a folder beside this file (`orchestrator.dir`'s default) by comparing paths.
+        let machine_shown = resolved_path(&machine_path).display().to_string();
         let settings = KEYS
             .iter()
             .map(|k| {
@@ -1231,7 +1237,7 @@ impl AppState {
                     choices: k.accepts.choices(),
                     min: k.accepts.bounds().map(|b| b.0),
                     max: k.accepts.bounds().map(|b| b.1),
-                    machine_file: machine_path.display().to_string(),
+                    machine_file: machine_shown.clone(),
                     project_file: project_path.clone(),
                 }
             })
@@ -1629,6 +1635,20 @@ fn real_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_reported_file_path_has_its_folder_resolved() {
+        let dir = std::env::temp_dir().join(format!("wheel-resolved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let real = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(dir.file_name().unwrap()).join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(super::resolved_path(&link.join("wheel.toml")), real.join("wheel.toml"));
+        let missing = std::path::Path::new("/no/such/folder/wheel.toml");
+        assert_eq!(super::resolved_path(missing), missing);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn ordered_keeps_the_order_and_refuses_unknown_and_repeated_words() {
         let words = ["context", "directory", "branch"];

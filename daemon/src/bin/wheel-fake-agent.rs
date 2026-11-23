@@ -473,8 +473,6 @@ struct Args {
     disallowed: Option<String>,
     model: Option<String>,
     permission_mode: Option<String>,
-    tools: Option<String>,
-    setting_sources: Option<String>,
     /// The `--settings` JSON, whose `permissions.ask` names the tools a "guarded" call asks for.
     settings: Option<String>,
 }
@@ -511,18 +509,6 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         turn.say(&format!(
             "model: {}\n",
             args.model.as_deref().unwrap_or("-")
-        ));
-    }
-    if text.contains("show orchestrator") {
-        turn.say(&format!(
-            "orchestrator: tools={} setting-sources={} mode={} model={} allowed={} denied={}\nbrief: {}\n",
-            args.tools.as_deref().unwrap_or("-"),
-            args.setting_sources.as_deref().map(|s| format!("[{s}]")).unwrap_or_else(|| "-".into()),
-            args.permission_mode.as_deref().unwrap_or("-"),
-            args.model.as_deref().unwrap_or("-"),
-            args.allowed.as_deref().unwrap_or("-"),
-            args.disallowed.as_deref().unwrap_or("-"),
-            args.brief.as_deref().unwrap_or("-").replace('\n', " "),
         ));
     }
     if text.contains("show setup") {
@@ -944,8 +930,6 @@ async fn main() {
         disallowed: None,
         model: None,
         permission_mode: None,
-        tools: None,
-        setting_sources: None,
         settings: None,
     };
     let mut words = all.into_iter().skip(1);
@@ -974,8 +958,6 @@ async fn main() {
             ("--disallowedTools", Some(tools)) => args.disallowed = Some(tools),
             ("--model", Some(model)) => args.model = Some(model),
             ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
-            ("--tools", Some(tools)) => args.tools = Some(tools),
-            ("--setting-sources", Some(sources)) => args.setting_sources = Some(sources),
             ("--settings", Some(settings)) => args.settings = Some(settings),
             _ => {}
         }

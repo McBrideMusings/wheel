@@ -97,22 +97,6 @@ impl Spaces {
             .position(|s| s.spaces.iter().any(|x| x == id))
     }
 
-    /// The index of the session holding the Orchestrator space, which holds nothing else.
-    pub(crate) fn orchestrator_session(&self) -> Option<usize> {
-        self.spaces.iter().find(|s| s.orchestrator).and_then(|s| self.session_holding(&s.id))
-    }
-
-    /// Refuse to move or close the Orchestrator space or its session: it is permanent (ADR-0054).
-    fn refuse_orchestrator(&self, space: Option<&str>, session: Option<usize>) -> Result<(), String> {
-        if space.is_some_and(|id| self.spaces.iter().any(|s| s.id == id && s.orchestrator)) {
-            return Err(format!("{} is the Orchestrator space, which stays in its own session", space.unwrap_or_default()));
-        }
-        if session.is_some() && session == self.orchestrator_session() {
-            return Err("the Orchestrator session holds only the Orchestrator space".into());
-        }
-        Ok(())
-    }
-
     /// Take space `id` out of whichever session holds it.
     fn detach(&mut self, id: &str) {
         for session in &mut self.sessions {
@@ -672,8 +656,6 @@ pub struct StartOptions {
     pub permissions: AgentPermissions,
     /// For an agent pane: the directory it runs in, instead of its space's.
     pub dir: Option<String>,
-    /// For an agent pane: start it as an orchestrator of this scope (`crate::orchestrator`).
-    pub orchestrator: Option<wheel_proto::OrchestratorScope>,
 }
 
 /// The conversation a forked agent copies, and where and under which account it was kept.
@@ -909,8 +891,7 @@ impl AppState {
     }
 
     /// Close every mirror whose source is no longer a pane of the mirror's own session, or is itself
-    /// a mirror: a mirror never shows a dead pane. A mirror in the Orchestrator space may show a
-    /// pane of any session. Runs on every layout change ([`AppState::changed`]), so a source that
+    /// a mirror: a mirror never shows a dead pane. Runs on every layout change ([`AppState::changed`]), so a source that
     /// closes, leaves with its space, or moves to another session takes its mirrors.
     fn close_lost_mirrors(&self, spaces: &mut Spaces) {
         loop {
@@ -919,7 +900,7 @@ impl AppState {
                 space_panes(space).into_iter().find_map(|(pane, kind)| {
                     let PaneKind::Mirror { source, .. } = kind else { return None };
                     let alive = spaces.spaces.iter().any(|other| {
-                        (space.orchestrator || spaces.session_holding(&other.id) == session)
+                        spaces.session_holding(&other.id) == session
                             && space_find(other, source).is_some_and(|k| !matches!(k, PaneKind::Mirror { .. }))
                     });
                     (!alive).then(|| (space.id.clone(), pane.to_string(), source.clone()))
@@ -960,7 +941,6 @@ impl AppState {
             PaneKind::Browser { .. } => self.console.lock().unwrap().forget(pane),
             PaneKind::Agent { agent, .. } => {
                 self.end_agent(agent);
-                self.orchestrator_gone_from(pane);
                 // The caller holds the spaces lock, so the sweep that deletes this agent's
                 // artifacts waits for the layout without the pane.
                 if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -1013,7 +993,6 @@ impl AppState {
             popped: Vec::new(),
             frames: Default::default(),
             backgrounded: Vec::new(),
-            orchestrator: false,
         };
         let mut spaces = self.spaces.lock().unwrap();
         let joined = self.session_to_join(&mut spaces, from_pane, session)?;
@@ -1025,54 +1004,17 @@ impl AppState {
         Ok(space)
     }
 
-    /// The Orchestrator space's id, in `cwd`: made on first use in a new session of its own named
-    /// Orchestrator, and moved to `cwd` when the folder setting has changed since, for panes
-    /// started afterwards. One lock covers the lookup and the making, so two starts make one.
-    pub(crate) fn orchestrator_space_in(&self, cwd: String) -> String {
-        let mut spaces = self.spaces.lock().unwrap();
-        if let Some(space) = spaces.spaces.iter_mut().find(|s| s.orchestrator) {
-            let id = space.id.clone();
-            if space.cwd != cwd {
-                tracing::info!(space = %id, from = %space.cwd, to = %cwd, "orchestrator space moved");
-                space.cwd = cwd;
-                self.changed(&mut spaces);
-            }
-            return id;
-        }
-        let (session, id, pane) = (self.new_id('n'), self.new_id('s'), self.new_id('p'));
-        spaces.spaces.push(SpaceInfo {
-            id: id.clone(),
-            name: "Orchestrator".into(),
-            cwd: cwd.clone(),
-            root: Node::Pane { id: pane, status: None, work: None, name: None, title: None, kind: PaneKind::empty() },
-            status: None,
-            background: false,
-            popped: Vec::new(),
-            frames: Default::default(),
-            backgrounded: Vec::new(),
-            orchestrator: true,
-        });
-        spaces.sessions.push(SessionInfo { id: session.clone(), name: "Orchestrator".into(), spaces: vec![id.clone()] });
-        tracing::info!(space = %id, %session, %cwd, "orchestrator space created");
-        self.changed(&mut spaces);
-        id
-    }
-
     /// The index of the session a new space joins: the one named, else the pane's, else the
-    /// first. The Orchestrator session is never joined: named, it is refused, and a pane in it
-    /// falls through to the first other session. With no other session, "Main" is made.
+    /// first. With no session, "Main" is made.
     fn session_to_join(
         &self,
         spaces: &mut Spaces,
         pane: Option<&str>,
         session: Option<&str>,
     ) -> Result<usize, String> {
-        let orchestrator = spaces.orchestrator_session();
         // A session named outright wins over the pane the caller happens to run in.
         if let Some(session) = session {
-            let index = spaces.session_index(session)?;
-            spaces.refuse_orchestrator(None, Some(index))?;
-            return Ok(index);
+            return spaces.session_index(session);
         }
         if let Some(pane) = pane {
             // A pane that has since closed (a stale `$WHEEL_PANE`) falls through to the first
@@ -1080,15 +1022,15 @@ impl AppState {
             match spaces.holding(pane) {
                 Ok(at) => {
                     let space = spaces.spaces[at].id.clone();
-                    if let Some(i) = spaces.session_holding(&space).filter(|i| Some(*i) != orchestrator) {
+                    if let Some(i) = spaces.session_holding(&space) {
                         return Ok(i);
                     }
                 }
                 Err(_) => tracing::warn!(%pane, "the pane a new space asked to join no longer exists"),
             }
         }
-        if let Some(first) = (0..spaces.sessions.len()).find(|i| Some(*i) != orchestrator) {
-            return Ok(first);
+        if !spaces.sessions.is_empty() {
+            return Ok(0);
         }
         let id = self.new_id('n');
         spaces.sessions.push(SessionInfo {
@@ -1135,7 +1077,6 @@ impl AppState {
     pub fn session_close(&self, session: &str) -> Result<(), String> {
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.session_index(session)?;
-        spaces.refuse_orchestrator(None, Some(index))?;
         let id = spaces.sessions[index].id.clone();
         for space in spaces.sessions[index].spaces.clone() {
             if let Ok(at) = spaces.index(&space) {
@@ -1172,7 +1113,6 @@ impl AppState {
         let mut spaces = self.spaces.lock().unwrap();
         let space = spaces.spaces[spaces.index(space)?].id.clone();
         let to = spaces.session_index(session)?;
-        spaces.refuse_orchestrator(Some(&space), Some(to))?;
         let from = spaces.session_holding(&space);
         spaces.detach(&space);
         let held = &mut spaces.sessions[to].spaces;
@@ -1273,7 +1213,6 @@ impl AppState {
         let close_empty = self.closes_empty_sessions();
         let mut spaces = self.spaces.lock().unwrap();
         let index = spaces.index(id)?;
-        spaces.refuse_orchestrator(Some(id), None)?;
         let held = &spaces.spaces[index];
         if if_empty
             && (!held.popped.is_empty()
@@ -1587,16 +1526,14 @@ impl AppState {
                         popped: Vec::new(),
                         frames: Default::default(),
                         backgrounded: Vec::new(),
-                        orchestrator: false,
                     },
                 );
-                match spaces.session_holding(&from_id).filter(|s| Some(*s) != spaces.orchestrator_session()) {
+                match spaces.session_holding(&from_id) {
                     Some(session) => {
                         let held = &mut spaces.sessions[session].spaces;
                         let at = held.iter().position(|x| *x == from_id).map_or(held.len(), |i| i + 1);
                         held.insert(at, id.clone());
                     }
-                    // A pane moved out of the Orchestrator space starts a space in an ordinary session.
                     None => {
                         let joined = self.session_to_join(&mut spaces, None, None)?;
                         spaces.sessions[joined].spaces.push(id.clone());
@@ -1646,17 +1583,13 @@ impl AppState {
 
     /// Make a mirror of `source` in space `space` (`pane_mirror`): it takes the space's lone empty
     /// pane, else goes where `panes.placement` splits the space's last grid pane. Refused for a
-    /// source that is a mirror, or that sits in another session unless `space` is the Orchestrator
-    /// space. Returns the mirror's id.
+    /// source that is a mirror, or that sits in another session. Returns the mirror's id.
     pub fn pane_mirror(&self, source: &str, space: &str) -> Result<String, String> {
         let (lone_empty, last) = {
             let spaces = self.spaces.lock().unwrap();
             let target = spaces.index(space)?;
             let from = spaces.holding(source)?;
-            // The Orchestrator space sees every session (`close_lost_mirrors`).
-            if !spaces.spaces[target].orchestrator
-                && spaces.session_holding(&spaces.spaces[from].id) != spaces.session_holding(&spaces.spaces[target].id)
-            {
+            if spaces.session_holding(&spaces.spaces[from].id) != spaces.session_holding(&spaces.spaces[target].id) {
                 return Err(format!("{source} is in another session than space {space}; a mirror shows a pane of its own session"));
             }
             if matches!(space_find(&spaces.spaces[from], source), Some(PaneKind::Mirror { .. })) {
@@ -1920,7 +1853,6 @@ impl AppState {
             model,
             permissions,
             dir,
-            orchestrator,
         } = options;
         if kind == StartKind::Terminal && dir.is_some() {
             return Err("a directory is only for an agent pane".into());
@@ -1982,7 +1914,7 @@ impl AppState {
                 .map(|_| None)
                 .map_err(|e| (e, false)),
             StartKind::Agent => self
-                .start_agent(space, &pane, &agent, message, model, permissions, (dir, orchestrator), None)
+                .start_agent(space, &pane, &agent, message, model, permissions, dir, None)
                 .await
                 .map(Some),
         };
@@ -2070,7 +2002,7 @@ impl AppState {
             home: source_home,
         };
         match self
-            .start_agent(&space, &new, &harness, None, model, permissions, (None, None), Some(source))
+            .start_agent(&space, &new, &harness, None, model, permissions, None, Some(source))
             .await
         {
             Ok((started, state)) => Ok(Started {
@@ -2224,11 +2156,9 @@ impl AppState {
         // A conversation switched over from a terminal runs where Claude Code ran it.
         let place = saved_place(root, &saved.pane);
         let cwd = place.cwd;
-        let (permissions, orchestrator) = match space_find(root, &saved.pane) {
-            Some(PaneKind::Agent { permissions, orchestrator, .. }) => {
-                (permissions.as_deref().cloned().unwrap_or_default(), *orchestrator)
-            }
-            _ => (AgentPermissions::default(), None),
+        let permissions = match space_find(root, &saved.pane) {
+            Some(PaneKind::Agent { permissions, .. }) => permissions.as_deref().cloned().unwrap_or_default(),
+            _ => AgentPermissions::default(),
         };
         // A hand-edited layout can name a mode the agent does not have; say so here rather than
         // let the agent fail at spawn.
@@ -2251,7 +2181,6 @@ impl AppState {
                 model: saved.model,
                 permissions,
                 env: picked_besides_home(place.env, harness),
-                orchestrator,
             },
         )?;
         if self.turn_ended.lock().unwrap().contains_key(&saved.pane) {
@@ -2346,7 +2275,7 @@ impl AppState {
         message: Option<String>,
         model: Option<String>,
         permissions: AgentPermissions,
-        (dir, orchestrator): (Option<String>, Option<wheel_proto::OrchestratorScope>),
+        dir: Option<String>,
         fork: Option<ForkSource>,
     ) -> Result<(String, AgentState), (String, bool)> {
         // A second start on a pane whose first has not heard back from its agent would `install`
@@ -2380,7 +2309,6 @@ impl AppState {
                 home: home.clone(),
                 model: model.clone(),
                 permissions: permissions.clone(),
-                orchestrator,
                 ..Default::default()
             },
         )
@@ -2401,7 +2329,6 @@ impl AppState {
             place: wheel_proto::AgentPlace::boxed(pane_cwd, picked),
             permissions: AgentPermissions::boxed(permissions.permission_mode, permissions.sandbox, permissions.approvals_reviewer, permissions.permission_profile),
             login: None,
-            orchestrator,
             extra: Extra::default(),
         };
         // A pane that closed while the agent spawned ends the agent it was given.
@@ -2748,13 +2675,8 @@ impl AppState {
     /// pane whose home only the login shell can say is kept as saved and started by a start of
     /// kept agents ([`Self::start_kept_agents`]) once the restore returns; a start of kept agents
     /// waits until then.
-    /// Each orchestrator folder gets its `start` event once the restore returns
-    /// (`AppState::orchestrators_restored`).
     pub async fn restore_spaces(&self, path: PathBuf) -> anyhow::Result<()> {
-        self.restoring.store(true, std::sync::atomic::Ordering::SeqCst);
-        let restored = self.restore_layout(path).await;
-        self.orchestrators_restored();
-        restored
+        self.restore_layout(path).await
     }
 
     async fn restore_layout(&self, path: PathBuf) -> anyhow::Result<()> {

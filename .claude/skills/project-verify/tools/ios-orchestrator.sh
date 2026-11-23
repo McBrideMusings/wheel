@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# iOS Orchestrator mode (wheel-eg4e.11, wheel-eg4e.19.33): the Orchestrator space's carousel with the global
-# orchestrator's chat as its first page, driven with real taps by the WheelPhoneUITests target (apple/iOS/UITests/OrchestratorUITests.swift) against this
-# script's own wheeld, which holds one space with one agent pane and no Orchestrator space until the phone opens the mode.
+# iOS Orchestrator mode (wheel-eg4e.11, ADR-0054): Orchestrator mode shows the space whose directory is the
+# orchestrator folder (`orchestrator.dir`), with that space's first agent pane's chat as its first page, driven with
+# real taps by the WheelPhoneUITests target (apple/iOS/UITests/OrchestratorUITests.swift) against this script's own
+# wheeld, which holds one space with one agent pane and no space on the orchestrator folder until the `before` step,
+# where this script opens one (`wheel space new`, `wheel pane start`). The mode never starts anything.
 # The test writes `$SYNC/step-<name>` after each step and waits for `$SYNC/ack-<name>`; this script checks wheeld
 # and phone.log, then acknowledges. Shots go to $WHEEL_SHOTS (default $SCR/shots).
 #
@@ -12,49 +14,41 @@ source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
-printf '[remote]\nlisten = "127.0.0.1:%s"\n' "$RPORT" >>"$INST/wheel.toml"
+ODIR="$SCR/orchestrator"; mkdir -p "$ODIR"
+printf '[remote]\nlisten = "127.0.0.1:%s"\n[orchestrator]\ndir = "%s"\n' "$RPORT" "$ODIR" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 
 mkdir -p "$SCR/wheel"
 W="$(w space new "$SCR/wheel")"
 P1="$(w space ls | jq -r --arg s "$W" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
 w pane start "$P1" agent >/dev/null
-# wheel-eg4e.20.3: a task file in the global orchestrator's folder, for the Tasks sheet.
-mkdir -p "$INST/orchestrator/tasks"
-printf '{"id":"tc1","asked":"Check the Tasks sheet","agents":["w0"],"status":"needs-review","created_ms":1,"done":false}\n' >"$INST/orchestrator/tasks/tc1.json"
 
 ios_ui_start OrchestratorUITests/testOrchestratorMode
 
 noplog() { ! plog "$1"; }
-orchestrator_space() { w space ls | jq -r '.spaces[] | select(.orchestrator == true) | .id'; }
-global_pane() { w space ls | jq -r '.spaces[] | select(.orchestrator == true) | [.root, (.popped // [])[], (.backgrounded // [])[] | .. | select(.node? == "pane" and .orchestrator? == "global")][0].id'; }
+orchestrator_space() { w space ls | jq -r --arg d "$ODIR" '.spaces[] | select(.cwd == $d) | .id'; }
 
 if step before; then
-  check "no Orchestrator space before the mode opens" test -z "$(orchestrator_space)"
+  check "the phone read the orchestrator folder" plog "orchestrator folder $ODIR"
+  check "no space sits on the orchestrator folder before the space opens" test -z "$(orchestrator_space)"
+  check "the mode started nothing" test "$(w space ls | jq '.spaces | length')" = 1
+  # Open the orchestrator's space with an agent pane, as the person would.
+  O="$(w space new "$ODIR")"
+  G="$(w space ls | jq -r --arg s "$O" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
+  w pane start "$G" agent >/dev/null
+  check "the orchestrator space sits on the folder" test "$(orchestrator_space)" = "$O"
   ack before
 fi
 if step chat; then
-  O="$(orchestrator_space)"; G="$(global_pane)"
-  check "opening the mode made the Orchestrator space" test -n "$O"
-  check "the Orchestrator space holds a global orchestrator pane" test -n "$G" -a "$G" != null
   check "phone.log records the mode" plog "mode spaces -> orchestrator"
-  check "opening the mode started it, with no tap" plog "none runs"
-  check "phone.log records the reply" plog "orchestrator started in $G"
   check "the chat is the first page" plog "orchestrator pages: $G"
   check "the title names the orchestrator" plog "title: Orchestrator"
   check "nothing pinned the orchestrator" noplog "pinned $G"
   ack chat
 fi
 if step chrome; then
-  check "the handle's swipe up in Orchestrator mode opened no sheet" noplog "page handle: swipe up"
   check "no agents sheet opened" noplog "agents sheet: eye tapped"
   ack chrome
-fi
-if step tasks; then
-  check "phone.log records the Tasks sheet" plog "tasks sheet: opened"
-  check "the phone read the task file" plog "tasks: tc1 needs-review"
-  check "Done wrote the person's done into the file" bash -c "jq -e '.done == true and .asked == \"Check the Tasks sheet\"' '$INST/orchestrator/tasks/tc1.json'"
-  ack tasks
 fi
 if step keyboard; then
   # wheel-eg4e.19.41: with the keyboard up the chat, composer included, ends at the keyboard's top.

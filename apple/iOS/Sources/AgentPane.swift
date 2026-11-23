@@ -3,7 +3,7 @@ import WheelKit
 import WheelUI
 
 /// An agent pane on the phone: the agent's conversation, the request it waits on, and a composer,
-/// all from WheelUI and bound to the agent the daemon holds. The global orchestrator's chat in Orchestrator mode has
+/// all from WheelUI and bound to the agent the daemon holds. The orchestrator's chat in Orchestrator mode has
 /// no header row and talks to it by name: the top bar already names it.
 struct AgentPane: View {
     let model: PhoneModel
@@ -11,18 +11,18 @@ struct AgentPane: View {
     let agent: String
     let harness: String
     @ObservedObject var chat: AgentChat
-    var globalOrchestrator = false
+    var orchestrator = false
 
     var body: some View {
         let mine = model.perms.filter { $0.agent == chat.name }
         let tray = model.trays[pane]
         VStack(spacing: 0) {
-            if !globalOrchestrator {
+            if !orchestrator {
                 AgentHeader(model: model, pane: pane, agent: agent, harness: harness, chat: chat)
             }
             TranscriptView(
                 chat: chat,
-                empty: globalOrchestrator ? "Message the global orchestrator." : "Give this agent a task.",
+                empty: orchestrator ? "Message the orchestrator." : "Give this agent a task.",
                 permissions: PermissionQueue(
                     waiting: Set(mine.compactMap(\.toolCall)),
                     places: Dictionary(model.perms.enumerated().compactMap { index, perm in
@@ -45,7 +45,7 @@ struct AgentPane: View {
                     .padding([.horizontal, .top], 10)
             }
             Composer(
-                placeholder: globalOrchestrator ? "Message" : "Message \(AgentInfo.title(of: agent))",
+                placeholder: orchestrator ? "Message" : "Message \(AgentInfo.title(of: agent))",
                 draft: $chat.draft,
                 error: chat.error,
                 enabled: model.isConnected,
@@ -72,7 +72,7 @@ struct AgentPane: View {
             .padding(10)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(globalOrchestrator ? "orchestrator chat" : "agent pane \(pane)")
+        .accessibilityIdentifier(orchestrator ? "orchestrator chat" : "agent pane \(pane)")
     }
 }
 

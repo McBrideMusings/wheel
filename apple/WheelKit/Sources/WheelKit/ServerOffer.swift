@@ -5,7 +5,7 @@
 public struct ServerOffer: Equatable, Sendable {
     /// This app's compatibility level: `COMPAT` in `proto/src/ops.rs`, which a proto test holds
     /// this line to.
-    public static let clientCompat: UInt32 = 3
+    public static let clientCompat: UInt32 = 4
 
     /// 0 from a server that predates levels.
     public var compat: UInt32

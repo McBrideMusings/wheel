@@ -315,7 +315,7 @@ impl Client {
         // and what comes back, wherever they had scrolled.
         self.follow_end(agent);
         let req = self.agent_req(agent, now, None);
-        self.send(&ClientMsg::AgentSend { req: Some(req), agent: agent.to_owned(), text, from: None });
+        self.send(&ClientMsg::AgentSend { req: Some(req), agent: agent.to_owned(), text });
     }
 
     /// A request id for an op on `agent`'s messages, kept until wheeld answers it.

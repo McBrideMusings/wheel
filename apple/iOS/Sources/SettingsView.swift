@@ -40,12 +40,12 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var projectTab: some View {
-        if model.listedSpaces.isEmpty {
+        if model.spaces.isEmpty {
             ContentUnavailableView("No projects yet", systemImage: "folder",
                                    description: Text("A project's settings live in the wheel.toml at its folder's root."))
         } else {
             Picker("Project", selection: $project) {
-                ForEach(model.listedSpaces) { Text($0.name).tag(Optional($0.id)) }
+                ForEach(model.spaces) { Text($0.name).tag(Optional($0.id)) }
             }
             .padding(.horizontal, 16)
             SettingsList(model: model, layer: .project)

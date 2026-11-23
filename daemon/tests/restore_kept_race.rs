@@ -153,7 +153,6 @@ async fn a_kept_agent_survives_a_start_during_the_restore() {
             permission_mode: None,
             sandbox: None,
             dir: None,
-            from: None,
         },
         3,
     )

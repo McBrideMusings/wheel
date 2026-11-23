@@ -18,9 +18,6 @@ const CARD_BG: u32 = 0x17201c;
 const ORANGE: u32 = 0xff9f0a;
 const BADGE_RED: u32 = 0xff453a;
 const MENU_W: f32 = 240.0;
-const TASKS_W: f32 = 380.0;
-/// The inbox events the Tasks menu lists under each task: the newest.
-const TASK_EVENTS: usize = 3;
 const MENU_ROW_H: f32 = 24.0;
 const USAGE_W: f32 = 540.0;
 const USAGE_H: f32 = 520.0;
@@ -32,8 +29,6 @@ pub enum TitleMenu {
     Mode,
     /// The title's own menu: Rename Space… and Rename Window….
     Title,
-    /// Orchestrator mode's Tasks: each global orchestrator task with its status and latest events.
-    Tasks,
 }
 
 /// One row of a title menu.
@@ -45,40 +40,6 @@ pub struct MenuRow {
     pub checked: bool,
     /// A separator above this row.
     pub divided: bool,
-}
-
-/// The Tasks menu's rows: per task, what was asked with its status, its newest inbox events, and
-/// Mark Done while it is open and the running wheeld takes the person's done.
-pub fn tasks_rows(tasks: &[wheel_proto::OrchestratorTask], can_mark: bool) -> Vec<MenuRow> {
-    if tasks.is_empty() {
-        return vec![MenuRow { id: "tasks:none".into(), title: "No tasks yet".into(), enabled: false, checked: false, divided: false }];
-    }
-    let mut rows = vec![];
-    for (i, task) in tasks.iter().enumerate() {
-        let status = match task.status.as_str() {
-            "needs-decision" => "needs a decision",
-            "needs-review" => "ready for review",
-            "working" => "working",
-            "done" => "done",
-            _ => "waiting for its first status",
-        };
-        let closed = task.done || task.status == "done";
-        rows.push(MenuRow { id: format!("task:{}", task.id), title: format!("{} · {status}", clip(&task.asked, 48)), enabled: false, checked: closed, divided: i > 0 });
-        let skip = task.events.len().saturating_sub(TASK_EVENTS);
-        for (n, event) in task.events[skip..].iter().enumerate() {
-            rows.push(MenuRow { id: format!("event:{}:{n}", task.id), title: format!("    {}", clip(&event.text, 56)), enabled: false, checked: false, divided: false });
-        }
-        if !closed && can_mark {
-            rows.push(MenuRow { id: format!("done:{}", task.id), title: "Mark Done".into(), enabled: true, checked: false, divided: false });
-        }
-    }
-    rows
-}
-
-/// `text` cut to `chars` characters with an ellipsis, so a row holds one line.
-fn clip(text: &str, chars: usize) -> String {
-    let line = text.lines().next().unwrap_or("");
-    if line.chars().count() <= chars { line.to_owned() } else { format!("{}…", line.chars().take(chars - 1).collect::<String>()) }
 }
 
 /// The named colours a `state` command's `tint` may print; anything else draws in the primary colour.
@@ -139,13 +100,7 @@ impl Client {
             None => "waiting for wheeld".into(),
         };
         // The title shows while the sidebar is open, and while its name field is up.
-        let mut row = header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode);
-        // A wheeld that serves no tasks leaves the button in its place, disabled.
-        let serves = self.server_has("orchestrator_tasks");
-        for chip in row.chips.iter_mut().filter(|c| c.hit == Hit::Tasks) {
-            chip.enabled = serves;
-        }
-        row
+        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode)
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -184,32 +139,6 @@ impl Client {
                 self.take_usage_board(board);
                 true
             }
-            ServerMsg::OrchestratorStarted { req, pane, .. } if self.orchestrator_start_req == Some(*req) => {
-                self.orchestrator_start_req = None;
-                self.log(format!("orchestrator started in {pane}"));
-                true
-            }
-            ServerMsg::Error { req: Some(req), message, .. } if self.orchestrator_start_req == Some(*req) => {
-                self.orchestrator_start_req = None;
-                self.log(format!("orchestrator start refused: {message}"));
-                self.orchestrator_refused = Some(message.clone());
-                true
-            }
-            ServerMsg::OrchestratorTasks { req, tasks } if self.tasks_req == Some(*req) => {
-                self.tasks_req = None;
-                self.log(format!("orchestrator tasks: {}", if tasks.is_empty() { "none".to_owned() } else { tasks.iter().map(|t| format!("{} {}", t.id, t.status)).collect::<Vec<_>>().join(", ") }));
-                self.orchestrator_tasks = tasks.clone();
-                if self.title_menu == Some(TitleMenu::Tasks) {
-                    self.sync_overlay();
-                }
-                true
-            }
-            ServerMsg::OrchestratorTasksChanged {} => {
-                if self.title_menu == Some(TitleMenu::Tasks) {
-                    self.ask_tasks();
-                }
-                true
-            }
             ServerMsg::Created { req, id, .. } if self.session_show_req == Some(*req) => {
                 self.session_show_req = None;
                 self.session_to_show = Some(id.clone());
@@ -224,14 +153,13 @@ impl Client {
     pub fn press_title(&mut self, hit: &Hit) {
         self.press(format!("title {}", header::frame_id(hit).unwrap_or_else(|| match hit { Hit::Space(id) => format!("tab {id}"), _ => "title".into() })));
         // A press on any other control dismisses an open menu, as a press outside a menu does.
-        if !matches!(hit, Hit::SessionMenu | Hit::Mode | Hit::Tasks) {
+        if !matches!(hit, Hit::SessionMenu | Hit::Mode) {
             self.close_title_menu();
         }
         match hit {
             Hit::Sidebar => self.toggle_sidebar(),
             Hit::SessionMenu => self.toggle_title_menu(TitleMenu::Session),
             Hit::Mode => self.toggle_title_menu(TitleMenu::Mode),
-            Hit::Tasks => self.toggle_title_menu(TitleMenu::Tasks),
             Hit::Plugin(id) => self.press_plugin(&id.clone()),
             Hit::Space(id) => self.select_space(&id.clone()),
             Hit::Title => {}
@@ -240,16 +168,6 @@ impl Client {
             Hit::Pin => self.set_pinned(!self.pinned),
             Hit::NewSpace => self.open_new_space_palette(),
         }
-    }
-    /// Read the global orchestrator's tasks again, when the running wheeld serves them.
-    pub fn ask_tasks(&mut self) {
-        if !self.server_has("orchestrator_tasks") {
-            self.log("orchestrator tasks: this wheeld does not serve them".to_owned());
-            return;
-        }
-        let req = self.req();
-        self.tasks_req = Some(req);
-        self.send(&ClientMsg::OrchestratorTasks { req: Some(req) });
     }
     /// A press on a `[[title.button]]` entry: wheeld runs its command in the space's directory.
     /// An indicator, or a button its state disabled, takes no press.
@@ -282,8 +200,8 @@ impl Client {
         }
         let was = std::mem::replace(&mut self.mode, mode.to_owned());
         self.log(format!("window {}: mode {mode}", &self.window_id[..self.window_id.len().min(12)]));
-        // Orchestrator mode shows the Orchestrator space in the window's body like any space; the
-        // space Spaces mode showed comes back when the mode ends.
+        // Orchestrator mode shows the space open on the orchestrator's folder in the window's body
+        // like any space; the space Spaces mode showed comes back when the mode ends.
         let orchestrator = self.orchestrator_space().map(str::to_owned);
         let swapped = if mode == "orchestrator" && !self.little && let Some(o) = orchestrator {
             self.spaces_mode_space = self.space_id.replace(o);
@@ -301,10 +219,20 @@ impl Client {
             self.ask_space_settings();
             self.sync_view();
         }
-        if mode == "orchestrator" {
-            // Each entry tries again after a refusal.
-            self.orchestrator_refused = None;
-            self.start_orchestrator_if_none();
+    }
+    /// In Orchestrator mode, show the space open on the orchestrator's folder: its folder setting
+    /// changed, or the layout did.
+    pub fn show_orchestrator_space(&mut self) {
+        if self.little || self.mode != "orchestrator" {
+            return;
+        }
+        let Some(space) = self.orchestrator_space().map(str::to_owned) else { return };
+        if self.space_id.as_deref() != Some(space.as_str()) {
+            self.spaces_mode_space = self.space_id.replace(space);
+            self.overrides.clear();
+            self.menu = None;
+            self.ask_space_settings();
+            self.sync_view();
         }
     }
     /// The pin: the window floats over every other while it is on.
@@ -327,9 +255,6 @@ impl Client {
             self.title_menu = Some(menu);
             self.menu = None;
             self.close_space_menu();
-            if menu == TitleMenu::Tasks {
-                self.ask_tasks();
-            }
             self.sync_overlay();
         }
     }
@@ -355,7 +280,6 @@ impl Client {
                 MenuRow { id: "rename-window".into(), title: "Rename Window…".into(), enabled: true, checked: false, divided: false },
             ],
             TitleMenu::Mode => header::MODES.iter().map(|(id, title, _)| MenuRow { id: format!("mode:{id}"), title: (*title).to_owned(), enabled: true, checked: self.mode == *id, divided: false }).collect(),
-            TitleMenu::Tasks => tasks_rows(&self.orchestrator_tasks, self.server_has("orchestrator_task_done")),
         }
     }
     /// Run a row of the open menu, which closes.
@@ -375,8 +299,6 @@ impl Client {
             self.select_session(session);
         } else if let Some(mode) = id.strip_prefix("mode:") {
             self.set_mode(mode);
-        } else if let Some(task) = id.strip_prefix("done:") {
-            self.send(&ClientMsg::OrchestratorTaskDone { req: None, task: task.to_owned() });
         } else if id == "new-session" {
             // The Swift app shows the new session in the focused window once it exists.
             let taken: Vec<&str> = self.sessions.iter().map(|s| s.name.as_str()).collect();
@@ -574,8 +496,8 @@ impl Client {
     /// the element draws and a check presses.
     pub fn title_menu_placed(&self) -> Option<(Rect, Vec<(MenuRow, Rect)>)> {
         let menu = self.title_menu?;
-        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode, TitleMenu::Title => Hit::Title, TitleMenu::Tasks => Hit::Tasks })?.rect;
-        let width = if menu == TitleMenu::Tasks { TASKS_W } else { MENU_W };
+        let anchor = self.header_chips().into_iter().find(|c| c.hit == match menu { TitleMenu::Session => Hit::SessionMenu, TitleMenu::Mode => Hit::Mode, TitleMenu::Title => Hit::Title })?.rect;
+        let width = MENU_W;
         // A menu under a button near the right edge opens leftward to stay inside the window.
         let left = anchor.x.min(self.viewport.0 - width - 8.).max(0.);
         let top = anchor.y + anchor.h + 2.;
@@ -615,44 +537,27 @@ impl Client {
         Some(card)
     }
 
-    /// Orchestrator mode's body while no global orchestrator runs: the start this window sent on its own, wheeld's
-    /// refusal of it, or that the running wheeld cannot start one (wheel-eg4e.19.23).
+    /// Orchestrator mode's body while no space is open on the orchestrator's folder: which folder
+    /// to open a space on.
     pub(super) fn mode_element(&self, _cx: &mut Context<Self>) -> gpui::Div {
         let r = self.grid_area();
         let (_, title, icon) = header::MODES.iter().find(|m| m.0 == self.mode).copied().unwrap_or(header::MODES[0]);
-        let line = match &self.orchestrator_refused {
-            Some(message) => message.clone(),
-            None if !self.server_has("orchestrator_start") => ORCHESTRATOR_UNOFFERED.into(),
-            None => ORCHESTRATOR_STARTING.into(),
+        let line = match &self.orchestrator_dir {
+            Some(dir) => format!("{ORCHESTRATOR_NONE} {dir}"),
+            None => ORCHESTRATOR_READING.into(),
         };
-        let colour = if self.orchestrator_refused.is_some() { 0xd98a7a } else { DIM };
         div().absolute().left(px(r.x)).top(px(r.y)).w(px(r.w)).h(px(r.h)).flex().flex_col().items_center().justify_center().gap(px(6.))
             .children(self.symbol(icon, 28., 0x5a7266))
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(TEXT)).child(title))
-            .child(div().text_color(rgb(colour)).child(line))
+            .child(div().text_color(rgb(DIM)).child(line))
     }
-    /// Start the global orchestrator when Orchestrator mode shows and none runs: no tap, and `if_none`, so two
-    /// clients opening the mode at once start one. A refusal stays until the mode is entered again.
-    pub fn start_orchestrator_if_none(&mut self) {
-        if self.little || self.mode != "orchestrator" || self.orchestrator_space_running() || self.orchestrator_start_req.is_some()
-            || self.orchestrator_refused.is_some() || !self.server_has("orchestrator_start")
-        {
-            return;
-        }
-        let req = self.next_req;
-        self.next_req += 1;
-        self.orchestrator_start_req = Some(req);
-        self.log("orchestrator start: none runs, starting the global one".into());
-        self.send(&ClientMsg::OrchestratorStart { req: Some(req), space: None, scope: wheel_proto::OrchestratorScope::Global, turn_limit_secs: None, if_none: true });
-    }
-    /// Orchestrator mode as `/state` `orchestrator` carries it: the Orchestrator space, the Start
-    /// button's frame while the empty state draws, and a start in flight or refused.
+    /// Orchestrator mode as `/state` `orchestrator` carries it: the orchestrator's folder, the
+    /// space open on it, and whether the empty state draws.
     pub fn orchestrator_json(&self) -> Value {
         json!({
+            "dir": self.orchestrator_dir,
             "space": self.orchestrator_space(),
             "empty": self.mode == "orchestrator" && self.grid_off(),
-            "starting": self.orchestrator_start_req.is_some(),
-            "refused": self.orchestrator_refused,
         })
     }
 
@@ -980,7 +885,7 @@ impl Client {
             "buttons": self.title_buttons.iter().map(|(space, list)| (space.clone(), json!(list))).collect::<serde_json::Map<_, _>>(),
             "row": row.chips.iter().map(|c| json!({"id": header::frame_id(&c.hit).unwrap_or_else(|| match &c.hit { Hit::Space(id) => format!("tab:{id}"), _ => "title".into() }), "label": c.label, "icon": c.icon, "badge": c.badge, "tint": c.tint, "enabled": c.enabled, "pressable": c.pressable, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})).collect::<Vec<_>>(),
             "tabs": row.track.map(|t| json!({"track": [t.x, t.y, t.w, t.h], "tab_width": row.tab_width, "scrolls": row.scrolls})),
-            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title", TitleMenu::Tasks => "tasks" },
+            "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title" },
                 "rows": self.title_menu_placed().map(|(_, rows)| rows.iter().map(|(r, rect)| json!({"id": r.id, "title": r.title, "enabled": r.enabled, "checked": r.checked, "frame": [rect.x, rect.y, rect.w, rect.h]})).collect::<Vec<_>>()).unwrap_or_default()})),
             "mode": self.mode,
             "pinned": self.pinned,
@@ -993,9 +898,10 @@ impl Client {
     }
 }
 
-/// What Orchestrator mode says while there is no Orchestrator space.
-pub const ORCHESTRATOR_STARTING: &str = "Starting the orchestrator…";
-pub const ORCHESTRATOR_UNOFFERED: &str = "This wheeld cannot start an orchestrator";
+/// What Orchestrator mode says while no space is open on the orchestrator's folder, before the
+/// folder, and while wheeld has not yet said which folder it is.
+pub const ORCHESTRATOR_NONE: &str = "Open a space with an agent pane on";
+pub const ORCHESTRATOR_READING: &str = "Reading the orchestrator folder…";
 
 /// The width of `text` at `size` in the window's font.
 pub(super) fn text_width(window: &Window, text: &str, size: f32) -> f32 {
@@ -1043,19 +949,4 @@ mod tests {
         assert_eq!(tint(None), None);
     }
 
-    #[test]
-    fn the_tasks_menu_lists_each_task_its_newest_events_and_mark_done() {
-        assert_eq!(tasks_rows(&[], true).iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["tasks:none"]);
-        let event = |text: &str| serde_json::from_value::<wheel_proto::InboxEvent>(serde_json::json!({"kind":"finished","orchestrator":"p1","agent":"w1","text":text,"at_ms":1})).unwrap();
-        let task = |id: &str, status: &str, done: bool| wheel_proto::OrchestratorTask {
-            id: id.into(), asked: format!("Fix {id}"), status: status.into(), agents: vec!["w1".into()], beads: vec![], pr: None, done, created_ms: 1, push_error: None,
-            events: ["a", "b", "c", "d"].iter().map(|t| event(t)).collect(),
-        };
-        let rows = tasks_rows(&[task("t1", "needs-decision", false), task("t2", "working", true)], true);
-        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, ["task:t1", "event:t1:0", "event:t1:1", "event:t1:2", "done:t1", "task:t2", "event:t2:0", "event:t2:1", "event:t2:2"], "a done task offers no Mark Done");
-        assert_eq!((rows[0].title.as_str(), rows[1].title.as_str()), ("Fix t1 · needs a decision", "    b"), "the newest three events");
-        assert!(rows[5].checked && rows[5].divided && !rows[0].divided);
-        assert!(!tasks_rows(&[task("t1", "needs-review", false)], false).iter().any(|r| r.id.starts_with("done:")), "no Mark Done on a wheeld without the op");
-    }
 }

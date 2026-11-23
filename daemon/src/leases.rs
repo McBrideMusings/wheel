@@ -1,12 +1,9 @@
 //! Named leases a connection holds until it releases them or closes: one holder per key, and a claim from
-//! another connection takes the key over. Voice mode holds `voice`; orchestrator holds `orchestrator`.
+//! another connection takes the key over. Voice mode holds `voice`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Mutex;
-
-/// The key orchestrator's lease is held under.
-pub(crate) const ORCHESTRATOR: &str = "orchestrator";
 
 /// Each change is announced while the table is locked, so announcements arrive in the order the changes
 /// happened and the last one every connection hears names the real holder.
@@ -103,11 +100,6 @@ impl crate::server::AppState {
     }
 
     fn lease_changed(&self, key: &str, owner: Option<String>) {
-        if key == ORCHESTRATOR {
-            let _ = self.global.send(wheel_proto::ServerMsg::OrchestratorLease {
-                owner: owner.clone(),
-            });
-        }
         let _ = self.global.send(wheel_proto::ServerMsg::Lease {
             key: key.to_owned(),
             owner,

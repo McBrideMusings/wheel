@@ -76,7 +76,7 @@ struct OrchestratorFloat: View {
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Global orchestrator")
+        .accessibilityLabel("Orchestrator")
         .accessibilityValue(state)
         .accessibilityIdentifier("orchestrator float")
         .onChange(of: state, initial: true) { _, state in Log.info("float: \(state)") }

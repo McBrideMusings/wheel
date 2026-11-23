@@ -18,11 +18,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use wheel_proto::{InboxKind, PermInfo, ServerMsg};
+use wheel_proto::{PermInfo, ServerMsg};
 
-use crate::orchestrator_events::{Event, Filter};
+use crate::agent_events::{Event, Filter};
 use crate::server::AppState;
 
 /// How long one agent turn runs before its `over_time` event.
@@ -34,18 +35,6 @@ const RUN_LIMIT: Duration = Duration::from_secs(120);
 /// The events a hook's `on` can name.
 pub(crate) const EVENTS: &[&str] = &["turn_end", "fail", "permission", "answered", "over_time", "build_failed"];
 
-/// The name `on` gives the events of `kind`; none for the kinds only an orchestrator's inbox has.
-fn event_name(kind: InboxKind) -> Option<&'static str> {
-    Some(match kind {
-        InboxKind::Finished => "turn_end",
-        InboxKind::Failed => "fail",
-        InboxKind::Permission => "permission",
-        InboxKind::Answered => "answered",
-        InboxKind::OverTime => "over_time",
-        InboxKind::BuildFailed => "build_failed",
-        _ => return None,
-    })
-}
 
 /// One `[[hook]]` entry as a file names it.
 #[derive(Debug, Clone, PartialEq)]
@@ -194,7 +183,7 @@ pub(crate) fn follow(state: Arc<AppState>) {
                     Err(RecvError::Closed) => break,
                 },
                 failed = builds.recv() => match failed {
-                    Ok((agent, command)) => vec![(crate::orchestrator_events::build_failed(&agent, &command), None)],
+                    Ok((agent, command)) => vec![(crate::agent_events::build_failed(&agent, &command), None)],
                     Err(RecvError::Lagged(n)) => {
                         tracing::warn!(missed = n, "hooks lagged the failed builds");
                         continue;
@@ -212,6 +201,28 @@ pub(crate) fn follow(state: Arc<AppState>) {
         }
         tracing::info!("hooks stop: the broadcast closed");
     });
+}
+
+/// Orders the Maildir files written in one millisecond.
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Write `bytes` as one file in the Maildir `maildir`, made when missing: into `tmp/`, then
+/// renamed into `new/`, so a reader never sees a partial file. Returns its path in `new/`. The
+/// name leads with the write time and a counter, so names sort in the order they were written.
+fn maildir_write(maildir: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    for sub in ["tmp", "new", "cur"] {
+        std::fs::create_dir_all(maildir.join(sub))?;
+    }
+    let name = format!("{:013}.{:010}.{}.json", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed), std::process::id());
+    let tmp = maildir.join("tmp").join(&name);
+    let new = maildir.join("new").join(&name);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, &new)?;
+    Ok(new)
 }
 
 impl AppState {
@@ -248,7 +259,7 @@ impl AppState {
     /// Hand `event` to every hook that names it: write it into the hook's inbox, when it has one,
     /// then queue its command on it.
     fn hook_event(&self, event: Event, request: Option<&PermInfo>) {
-        let Some(name) = event_name(event.kind) else { return };
+        let name = event.kind.name();
         let place = self.agent_place(&event.agent);
         let hooks: Vec<Hook> = self.hooks_for(place.as_ref().map(|p| p.2.as_str())).into_iter().filter(|h| h.on.iter().any(|e| e == name)).collect();
         if hooks.is_empty() {
@@ -260,7 +271,7 @@ impl AppState {
             pane: place.as_ref().map(|p| p.1.as_str()),
             space: place.as_ref().map(|p| p.0.as_str()),
             text: &event.text,
-            at_ms: crate::inbox::now_ms(),
+            at_ms: now_ms(),
             perm: event.perm.as_deref(),
             request,
         };
@@ -270,7 +281,7 @@ impl AppState {
         };
         for hook in hooks {
             let file = match &hook.inbox {
-                Some(inbox) => match crate::inbox::maildir_write(inbox, &json) {
+                Some(inbox) => match maildir_write(inbox, &json) {
                     Ok(path) => Some(path),
                     Err(error) => {
                         tracing::warn!(hook = %hook.run, inbox = %inbox.display(), event = name, %error, "hook event not written; its command does not run");
@@ -394,6 +405,7 @@ pub(crate) type Runs = std::sync::Mutex<HashMap<String, tokio::sync::mpsc::Unbou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_events::Kind;
 
     #[test]
     fn a_file_names_its_hooks_and_skips_what_it_cannot_run() {
@@ -452,8 +464,8 @@ inbox = "/abs/box"
 
     #[test]
     fn every_event_on_names_has_a_kind() {
-        let kinds = [InboxKind::Finished, InboxKind::Failed, InboxKind::Permission, InboxKind::Answered, InboxKind::OverTime, InboxKind::BuildFailed];
-        let names: Vec<&str> = kinds.into_iter().filter_map(event_name).collect();
+        let kinds = [Kind::Finished, Kind::Failed, Kind::Permission, Kind::Answered, Kind::OverTime, Kind::BuildFailed];
+        let names: Vec<&str> = kinds.into_iter().map(Kind::name).collect();
         assert_eq!(names, EVENTS);
     }
 }

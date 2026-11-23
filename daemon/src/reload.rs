@@ -61,7 +61,6 @@ struct ReadyReload<'a> {
     home: Option<String>,
     conversation: Option<String>,
     kind: Harness,
-    orchestrator: Option<wheel_proto::OrchestratorScope>,
 }
 
 /// How a reload changes the environment values picked for a pane's process: `set` picks values,
@@ -264,7 +263,7 @@ impl AppState {
                 return Err(e);
             }
         };
-        let ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind, orchestrator } = ready;
+        let ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind } = ready;
         let old = live.name.clone();
         let options = carried_options(&live.attach().config);
         let permissions = live.permissions();
@@ -284,7 +283,6 @@ impl AppState {
                 model,
                 permissions,
                 env: picked_besides_home(picked.clone(), kind),
-                orchestrator,
             },
         );
         {
@@ -356,7 +354,7 @@ impl AppState {
     /// no home, or the carry would fail.
     async fn ready_reload(&self, pane: &str, change: &EnvChange, live: &Agent) -> Result<ReadyReload<'_>, String> {
         let _switching = Switching::begin(self, pane)?;
-        let (space_cwd, harness, model, context, place, pane_conversation, orchestrator) = {
+        let (space_cwd, harness, model, context, place, pane_conversation) = {
             let spaces = self.spaces.lock().unwrap();
             let space = &spaces.spaces[spaces.holding(pane)?];
             match space_find(space, pane) {
@@ -367,7 +365,6 @@ impl AppState {
                     context,
                     place,
                     conversation,
-                    orchestrator,
                     ..
                 }) if *agent == live.name => (
                     space.cwd.clone(),
@@ -376,7 +373,6 @@ impl AppState {
                     *context,
                     place.as_deref().cloned().unwrap_or_default(),
                     conversation.clone(),
-                    *orchestrator,
                 ),
                 _ => return Err(format!("{pane} no longer shows agent {}", live.name)),
             }
@@ -404,7 +400,7 @@ impl AppState {
                 log_carry(pane, conversation, old_home, new_home, &carried);
             }
         }
-        Ok(ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind, orchestrator })
+        Ok(ReadyReload { _switching, space_cwd, harness, model, context, place, cwd, picked, home, conversation, kind })
     }
 
     /// End terminal pane `pane`'s shell and start a new one in the directory it was last in,

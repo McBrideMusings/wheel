@@ -16,11 +16,8 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
     var onToken: ((String) -> Void)?
     /// Called with the space and pane a tapped notification names.
     var onOpen: ((String, String) -> Void)?
-    /// Called with the orchestrator task a tapped notification names (`wheel push send --task`).
-    var onTask: ((String) -> Void)?
     private var token: String?
     private var pendingOpen: (String, String)?
-    private var pendingTask: String?
 
     /// Ask to show notifications, and for a token once allowed. Safe to call on every launch.
     func start() {
@@ -46,16 +43,11 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Hands a tap that arrived before the model was listening to it once it is.
-    func listen(onOpen: @escaping (String, String) -> Void, onTask: @escaping (String) -> Void) {
+    func listen(onOpen: @escaping (String, String) -> Void) {
         self.onOpen = onOpen
-        self.onTask = onTask
         if let (space, pane) = pendingOpen {
             pendingOpen = nil
             onOpen(space, pane)
-        }
-        if let task = pendingTask {
-            pendingTask = nil
-            onTask(task)
         }
     }
 
@@ -66,14 +58,6 @@ final class PushCenter: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
-        // A push about a task opens the Tasks sheet at it, wherever its pane is.
-        if let task = info["task"] as? String {
-            await MainActor.run {
-                Log.info("notification tapped: task \(task)")
-                if let onTask { onTask(task) } else { pendingTask = task }
-            }
-            return
-        }
         guard let space = info["space"] as? String, let pane = info["pane"] as? String else { return }
         await MainActor.run {
             Log.info("notification tapped: pane \(pane) in \(space)")

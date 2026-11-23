@@ -1129,7 +1129,7 @@ const MERMAID_REPLY: &str = "The plan:\n\n```mermaid\nflowchart LR\n  A[Plan] --
 
 /// Mermaid diagrams (wheel-eg4e.19.11): an echoed reply holding a flowchart block and one that
 /// does not parse draws the flowchart as a picture and the other as its source with the error under
-/// it, in an ordinary agent pane and then in an orchestrator pane, which uses the same renderer.
+/// it.
 async fn mermaid_reply(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     let cli = |args: &[&str]| -> Result<String> {
         let out = std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy()]).args(args).output()?;
@@ -1171,34 +1171,8 @@ async fn mermaid_reply(run: Run, agent_pane: String, agent_name: String, cli_pat
         set_zoom(&mut run, pane, false, cx).await?;
         Ok((run, json!({"pane": pane, "agent": agent, "row": row, "diagrams": list, "texts": texts})))
     }
-    let (mut run, ordinary) = shown(run, &agent_pane, &agent_name, "client-mermaid.png", &cli, cx).await?;
-    // Case 2: an orchestrator pane in the same space draws the same reply the same way.
-    let space = run.window.update(cx, |c, _, _| c.state_json()["panes"][agent_pane.as_str()]["space"].as_str().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("{agent_pane} has no space"))?;
-    let orchestrator = cli(&["orchestrator", "start", "--space", &space])?;
-    let mut agent = Value::Null;
-    for _ in 0..100 {
-        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
-        draw(run.window, None, cx)?;
-        let state = pane_state(run.window, &orchestrator, cx)?;
-        if state["visible"] == true && state["agent"].is_string() {
-            agent = state["agent"].clone();
-            break;
-        }
-    }
-    let agent = agent.as_str().map(str::to_owned).ok_or_else(|| anyhow::anyhow!("the orchestrator pane {orchestrator} never showed its agent: {}", pane_state(run.window, &orchestrator, cx).unwrap_or_default()))?;
-    let (mut run, orchestrated) = shown(run, &orchestrator, &agent, "client-mermaid-orchestrator.png", &cli, cx).await?;
-    let (a, b) = (&ordinary["diagrams"], &orchestrated["diagrams"]);
-    let sizes = |l: &Value| l.as_array().map(|l| l.iter().map(|d| (d["drawn"].clone(), d["width"].clone(), d["height"].clone())).collect::<Vec<_>>()).unwrap_or_default();
-    ensure!(sizes(a) == sizes(b), "the orchestrator drew {b}, the agent pane {a}");
-    cli(&["orchestrator", "stop", &orchestrator])?;
-    for _ in 0..50 {
-        pump(&mut run.connection, 100, &mut run.layouts, run.window, cx).await?;
-        if pane_state(run.window, &orchestrator, cx)?.is_null() {
-            break;
-        }
-    }
-    draw(run.window, None, cx)?;
-    Ok((run, json!({"agent_pane": ordinary, "orchestrator_pane": orchestrated})))
+    let (run, ordinary) = shown(run, &agent_pane, &agent_name, "client-mermaid.png", &cli, cx).await?;
+    Ok((run, json!({"agent_pane": ordinary})))
 }
 
 /// The reply the chart step sends: a bar chart with two series and a block with a mark no chart has.
@@ -3373,8 +3347,8 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
         let hidden = mode != "spaces";
         wait(&native, &format!("every pane hidden={hidden} in {mode} mode"), |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == hidden), cx).await?;
         draw(window, Some(output.join(format!("client-mode-{mode}.png"))), cx)?;
-        // Every button but the one only Orchestrator mode has (Tasks); the title between the groups narrows for it.
-        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title" && !(mode == "orchestrator" && id == "tasks")).collect::<Vec<_>>();
+        // Every button; the title between the groups is not one.
+        let buttons = |row: Vec<(String, Value)>| row.into_iter().filter(|(id, _)| id != "title").collect::<Vec<_>>();
         let frames = buttons(row_frames(cx)?);
         ensure!(frames == buttons(spaces_row.clone()), "a title-row button moved in {mode} mode: {frames:?} against {spaces_row:?}");
         let icon = wheel_gpui::header::MODES.iter().find(|m| m.0 == mode).map(|m| m.2).unwrap_or_default();
@@ -6030,11 +6004,10 @@ async fn debug_server_and_processes(run: Run, terms: Vec<&String>, cx: &mut Asyn
 }
 
 /// The pane grid: a space of its own, splits, a real header drag, dock, and a popped card.
-/// Orchestrator mode (wheel-eg4e.8): opening it with no global orchestrator starts one (case 5,
-/// wheel-eg4e.19.23); then it draws that space's grid (case 1), which no
-/// session, sidebar row or tab holds (case 2); `wheel pane place` moves its popped pane (case 3)
-/// and a real header drag and corner drag move and resize it (case 4). Leaving the mode shows the
-/// Spaces mode space again.
+/// Orchestrator mode (ADR-0054): with no space open on the orchestrator's folder it says which
+/// folder to open one on (case 5); once a space with an agent pane is open there it draws that
+/// space's grid (case 1); `wheel pane place` moves its popped pane (case 3) and a real header drag
+/// and corner drag move and resize it (case 4). Leaving the mode shows the Spaces mode space again.
 async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug::Server, bearer: String, cx: &mut AsyncApp) -> Result<(Run, wheel_gpui::debug::Server, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
@@ -6061,101 +6034,41 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     }
     let four = |v: &Value| -> [f64; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(-1.)) };
     let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
-    // The global orchestrators running, by pane, from `wheel space ls`.
-    fn globals(v: &Value, out: &mut Vec<String>) {
-        match v {
-            Value::Object(o) => {
-                if o.get("orchestrator").and_then(Value::as_str) == Some("global") && let Some(id) = o.get("id").and_then(Value::as_str) {
-                    out.push(id.to_owned());
-                }
-                o.values().for_each(|x| globals(x, out));
-            }
-            Value::Array(a) => a.iter().for_each(|x| globals(x, out)),
-            _ => {}
-        }
-    }
-    let (ok, out, err) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "wheel space ls failed: {err}");
-    let mut stopped = vec![];
-    globals(&serde_json::from_str(&out).unwrap_or(Value::Null), &mut stopped);
-    // The mode menu step opened Orchestrator mode, which started one on its own; stop it, so this step opens the mode
-    // with none running.
-    for pane in &stopped {
-        let (ok, _, err) = run_pumped(&["orchestrator", "stop", pane], &mut connection, &mut layouts, window, cx).await?;
-        ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
-    }
-    let start = state!();
+    // The orchestrator's folder, as the fixture wheeld's `orchestrator.dir` setting resolves it.
+    let start = until!("the orchestrator folder read from wheeld's settings", |s: &Value| s["orchestrator"]["dir"].is_string());
     ensure!(start["active"] == grid.as_str(), "before Orchestrator mode the window shows {}", start["active"]);
-    // Case 5 (wheel-eg4e.19.23): opening the mode with no global orchestrator running starts one with no tap; the mode
-    // then draws the Orchestrator space.
+    let dir = start["orchestrator"]["dir"].as_str().unwrap_or_default().to_owned();
+    ensure!(start["orchestrator"]["space"].is_null(), "a space is open on the orchestrator folder {dir} before this step made one: {}", start["orchestrator"]);
+    // Case 5: with no space open on the folder, the mode draws its empty state naming the folder.
     pick_mode(window, "orchestrator", cx).await?;
-    let shown = until!("the Orchestrator space shown, started by opening the mode", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["space"].is_string() && s["active"] == s["orchestrator"]["space"]
-        && s["orchestrator"]["empty"] == false && s["orchestrator"]["starting"] == false);
-    ensure!(shown["orchestrator"]["refused"].is_null(), "the start was refused: {}", shown["orchestrator"]);
-    let mut running = vec![];
-    for _ in 0..50 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        let (_, out, _) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
-        running.clear();
-        globals(&serde_json::from_str(&out).unwrap_or(Value::Null), &mut running);
-        if running.iter().any(|p| !stopped.contains(p)) {
-            break;
-        }
-    }
-    ensure!(running.len() == 1 && !stopped.contains(&running[0]), "opening the mode started {running:?} after stopping {stopped:?}");
-    let button = Value::Null;
+    until!("Orchestrator mode's empty state", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["empty"] == true);
+    draw(window, Some(output.join("client-orchestrator-empty.png")), cx)?;
+    std::fs::create_dir_all(&dir)?;
+    let (ok, out, err) = run_pumped(&["space", "new", &dir, "--name", "orchestrator"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space new {dir} failed: {err}");
+    let made = out.trim().to_owned();
+    let first_pane = |s: &Value| -> Option<String> {
+        s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == made.as_str())).and_then(|x| x["panes"][0].as_str()).map(str::to_owned)
+    };
+    let listed = until!("the orchestrator's space listed", |s: &Value| first_pane(s).is_some());
+    let first = first_pane(&listed).unwrap_or_default();
+    let (ok, _, err) = run_pumped(&["pane", "start", &first, "agent"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane start {first} agent failed: {err}");
+    let shown = until!("the orchestrator's space shown by the mode", |s: &Value| s["title"]["mode"] == "orchestrator" && s["orchestrator"]["space"] == made.as_str()
+        && s["active"] == made.as_str() && s["orchestrator"]["empty"] == false);
     let space = shown["orchestrator"]["space"].as_str().unwrap_or_default().to_owned();
     let panes_of = |s: &Value| -> Vec<String> {
         s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == space.as_str())).and_then(|x| x["panes"].as_array())
             .map(|p| p.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default()
     };
-    let shown = until!("an agent pane in the Orchestrator space's grid", |s: &Value| panes_of(s).iter().any(|p| s["panes"][p.as_str()]["kind"] == "agent" && s["panes"][p.as_str()]["frame"].is_array()));
+    let shown = until!("an agent pane in the orchestrator's space's grid", |s: &Value| panes_of(s).iter().any(|p| s["panes"][p.as_str()]["kind"] == "agent" && s["panes"][p.as_str()]["frame"].is_array()));
     let pane = panes_of(&shown).into_iter().find(|p| shown["panes"][p.as_str()]["kind"] == "agent").unwrap_or_default();
     let area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
     let pane_frame = four(&shown["panes"][pane.as_str()]["frame"]);
     ensure!(pane_frame[0] >= area[0] - 0.5 && pane_frame[1] >= area[1] - 0.5 && pane_frame[2] > 100. && pane_frame[3] > 100., "the orchestrator pane draws at {pane_frame:?} in a grid at {area:?}");
     ensure!(window.update(cx, |c, _, _| c.grid_drawn_count())? == panes_of(&shown).len(), "the mode drew {} of the space's {} panes", window.update(cx, |c, _, _| c.grid_drawn_count())?, panes_of(&shown).len());
     draw(window, Some(output.join("client-orchestrator-space.png")), cx)?;
-    // wheel-eg4e.20.4: the title row's Tasks button opens the global orchestrator's tasks, read from a file this
-    // check writes into the Orchestrator space's tasks/, and Mark Done writes the person's done into it.
-    let (ok, out, err) = run_pumped(&["space", "ls"], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "wheel space ls failed: {err}");
-    let listed: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
-    let folder = listed["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == space.as_str())).and_then(|x| x["cwd"].as_str()).map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("wheel space ls names no folder for the Orchestrator space {space}"))?;
-    std::fs::create_dir_all(folder.join("tasks"))?;
-    let task_file = folder.join("tasks/tc1.json");
-    std::fs::write(&task_file, json!({"id":"tc1","asked":"Check the Tasks popover","agents":["w0"],"status":"needs-review","created_ms":1,"done":false}).to_string())?;
-    ensure!(shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == "tasks"), "Orchestrator mode's title row has no Tasks button: {}", shown["title"]["row"]);
-    click_chip(window, Hit::Tasks, cx).await?;
-    let tasks = until!("the Tasks menu listing the task file", |s: &Value| s["title"]["menu"]["kind"] == "tasks"
-        && s["title"]["menu"]["rows"].as_array().is_some_and(|r| r.iter().any(|row| row["id"] == "task:tc1" && row["title"] == "Check the Tasks popover · ready for review")));
-    draw(window, Some(output.join("client-orchestrator-tasks.png")), cx)?;
-    let done_row = tasks["title"]["menu"]["rows"].as_array().and_then(|r| r.iter().find(|row| row["id"] == "done:tc1")).map(|row| four(&row["frame"]))
-        .ok_or_else(|| anyhow::anyhow!("the Tasks menu has no Mark Done for tc1: {}", tasks["title"]["menu"]))?;
-    let native_now = window.update(cx, |c, _, _| c.native())?;
-    let at = [done_row[0] + done_row[2] / 2., done_row[1] + done_row[3] / 2.];
-    native_now.call(json!({"op":"post_mouse","kind":"down","point":at}));
-    native_now.call(json!({"op":"post_mouse","kind":"up","point":at}));
-    let mut marked = false;
-    for _ in 0..50 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        draw(window, None, cx)?;
-        let saved: Value = serde_json::from_slice(&std::fs::read(&task_file)?).unwrap_or(Value::Null);
-        if saved["done"] == true && saved["asked"] == "Check the Tasks popover" {
-            marked = true;
-            break;
-        }
-    }
-    ensure!(marked, "Mark Done never wrote done into {}", task_file.display());
-    std::fs::remove_file(&task_file)?;
-    // Case 2: no session, sidebar row or tab holds the Orchestrator space.
-    let in_sessions = shown["sessions"].as_array().into_iter().flatten().any(|s| s["spaces"].as_array().is_some_and(|l| l.iter().any(|id| id == space.as_str())));
-    let in_sidebar = shown["sidebar"]["rows"].as_array().into_iter().flatten().any(|r| r["id"] == space.as_str());
-    let in_tabs = shown["title"]["row"].as_array().into_iter().flatten().any(|c| c["id"] == format!("tab:{space}"));
-    let in_palette = window.update(cx, |c, _, _| c.session_spaces().iter().any(|s| s.id == space))?;
-    ensure!(!in_sessions && !in_sidebar && !in_tabs && !in_palette, "the Orchestrator space {space} is listed: sessions {in_sessions}, sidebar {in_sidebar}, tabs {in_tabs}, session spaces {in_palette}");
-    // No sidebar in Orchestrator mode (wheel-eg4e.19.22): the grid starts at the window's left edge, the title shows in
+        // No sidebar in Orchestrator mode (wheel-eg4e.19.22): the grid starts at the window's left edge, the title shows in
     // place of tabs, and the sidebar button holds its place, disabled. The person's own choice is kept for Spaces mode.
     let sidebar_open = shown["sidebar"]["open"] == true;
     let sidebar_chip = shown["title"]["row"].as_array().and_then(|r| r.iter().find(|c| c["id"] == "sidebar")).cloned().unwrap_or(Value::Null);
@@ -6204,27 +6117,27 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
     let listed = [f["x"].as_f64().unwrap_or(-1.), f["y"].as_f64().unwrap_or(-1.), f["w"].as_f64().unwrap_or(-1.), f["h"].as_f64().unwrap_or(-1.)];
     let in_grid = [want[0] - area[0], want[1] - area[1], want[2], want[3]];
     ensure!(ok && near(listed, in_grid), "after the drags wheel pane ls --json lists {listed:?} for {pane}, not {in_grid:?} ({err})");
-    // Leaving the mode shows the Spaces mode space again; coming back shows the Orchestrator space.
+    // Leaving the mode shows the Spaces mode space again; coming back shows the orchestrator's space.
     pick_mode(window, "spaces", cx).await?;
     until!("the Spaces mode space back, with the sidebar as the person left it", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str() && s["sidebar"]["shown"] == sidebar_open);
     pick_mode(window, "orchestrator", cx).await?;
-    until!("the Orchestrator space shown again", |s: &Value| s["active"] == space.as_str() && s["cards"].as_array().is_some_and(|c| c.len() == 1));
+    until!("the orchestrator's space shown again", |s: &Value| s["active"] == space.as_str() && s["cards"].as_array().is_some_and(|c| c.len() == 1));
     // A space picked in the sidebar is a Spaces mode space: the mode ends.
     window.update(cx, |c, _, _| c.select_space(&grid))?;
     let back = until!("Spaces mode after a sidebar pick", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
-    ensure!(back["cards"].as_array().is_none_or(Vec::is_empty), "the Orchestrator space's card stayed over the Spaces mode space: {}", back["cards"]);
-    // A focus request naming the orchestrator's pane, from Spaces mode, opens Orchestrator mode on it (wheel-eg4e.19.20).
+    ensure!(back["cards"].as_array().is_none_or(Vec::is_empty), "the orchestrator's space's card stayed over the Spaces mode space: {}", back["cards"]);
+    // The orchestrator's space is an ordinary space: a focus request naming its pane, from Spaces mode, shows it there.
     let (ok, _, err) = run_pumped(&["pane", "focus", &pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane focus {pane} failed: {err}");
-    until!("Orchestrator mode on the focused orchestrator pane", |s: &Value| s["title"]["mode"] == "orchestrator" && s["active"] == space.as_str());
+    until!("Spaces mode on the focused orchestrator pane", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == space.as_str());
     let focused = window.update(cx, |c, _, _| c.focus.current.clone())?;
     ensure!(focused.as_deref() == Some(pane.as_str()), "wheel pane focus {pane} left the focus on {focused:?}");
-    pick_mode(window, "spaces", cx).await?;
-    until!("Spaces mode again after the focus request", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
-    let (ok, _, err) = run_pumped(&["orchestrator", "stop", &pane], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "wheel orchestrator stop {pane} failed: {err}");
-    let report = json!({"space": space, "pane": pane, "start": button, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,
-        "listed_in": {"sessions": in_sessions, "sidebar": in_sidebar, "tabs": in_tabs}, "sidebar": {"open": sidebar_open, "shown_in_mode": false, "button": sidebar_chip}});
+    window.update(cx, |c, _, _| c.select_space(&grid))?;
+    until!("the grid space again after the focus request", |s: &Value| s["title"]["mode"] == "spaces" && s["active"] == grid.as_str());
+    let (ok, _, err) = run_pumped(&["space", "close", &space], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel space close {space} failed: {err}");
+    let report = json!({"dir": dir, "space": space, "pane": pane, "grid": area, "pane_frame": pane_frame, "popped": popped_at, "placed": placed_at, "dragged": want, "listed": listed,
+        "sidebar": {"open": sidebar_open, "shown_in_mode": false, "button": sidebar_chip}});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, report))
 }
 
@@ -7466,7 +7379,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(menu_state["item"]["badge"].as_u64() == Some(background as u64), "the item's badge reads {}, the windows leave {background} spaces unshown", menu_state["item"]["badge"]);
     let badge_before = menu_state["item"]["badge"].clone();
     // A permission the fixture agent raises counts in the row of the space holding it.
-    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into(), from: None }))?;
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent.to_owned(), text: "permission".into() }))?;
     let mut waiting_state = Value::Null;
     for _ in 0..300 {
         pump(connection, 100, layouts, window, cx).await?;

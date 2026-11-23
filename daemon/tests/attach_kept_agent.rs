@@ -153,7 +153,6 @@ async fn an_attach_to_a_kept_agent_streams_once_it_starts() {
             permission_mode: None,
             sandbox: None,
             dir: None,
-            from: None,
         },
         3,
     )

@@ -50,7 +50,7 @@ struct NewSpaceSheet: View {
 
     /// Without a query: recent folders, then the roots. With one: every folder it matches, best first.
     private var sections: [(title: String, rows: [PaletteItem])] {
-        let open = model.listedSpaces.map { CommandPalette.OpenSpace(id: $0.id, name: $0.name, dir: $0.cwd) }
+        let open = model.spaces.map { CommandPalette.OpenSpace(id: $0.id, name: $0.name, dir: $0.cwd) }
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         if !trimmed.isEmpty {
             let rows = CommandPalette.newSpaceRows(spaces: open, recents: model.recentDirs, roots: model.folderRoots,

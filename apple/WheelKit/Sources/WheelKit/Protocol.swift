@@ -34,13 +34,6 @@ public enum ClientMsg: Sendable, Equatable {
     case spaceRename(req: UInt64?, space: String, name: String)
     /// Make an empty session named `name` (ADR-0021); the daemon answers `created` with its id.
     case sessionNew(req: UInt64?, name: String)
-    /// Start the global orchestrator (ADR-0054) unless one runs (`if_none`), which wheeld runs in the Orchestrator
-    /// space, made at the first global start; the daemon answers `orchestratorStarted` with the new or running one.
-    case orchestratorStartGlobal(req: UInt64?)
-    /// Read the global orchestrator's tasks; the daemon answers `orchestratorTasks`.
-    case orchestratorTasks(req: UInt64?)
-    /// The person's word that a global orchestrator task is finished: wheeld writes `done` into its file.
-    case orchestratorTaskDone(req: UInt64?, task: String)
     /// Name a session, by id or current name. An empty name is refused.
     case sessionRename(req: UInt64?, session: String, name: String)
     /// Close a session, by id or name: closes every space in it and every pane in those.
@@ -485,12 +478,6 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "space_rename", "space": space, "name": name]; put(req)
         case let .sessionNew(req, name):
             o = ["op": "session_new", "name": name]; put(req)
-        case let .orchestratorStartGlobal(req):
-            o = ["op": "orchestrator_start", "scope": "global", "if_none": true]; put(req)
-        case let .orchestratorTasks(req):
-            o = ["op": "orchestrator_tasks"]; put(req)
-        case let .orchestratorTaskDone(req, task):
-            o = ["op": "orchestrator_task_done", "task": task]; put(req)
         case let .sessionRename(req, session, name):
             o = ["op": "session_rename", "session": session, "name": name]; put(req)
         case let .sessionClose(req, session):
@@ -639,72 +626,6 @@ public struct PermInfo: Codable, Sendable, Equatable, Identifiable {
         case blockedPath = "blocked_path"
         case alwaysRule = "always_rule"
     }
-}
-
-/// One file in an orchestrator's inbox (ADR-0054), as a Tasks view lists it under its task.
-public struct InboxEvent: Codable, Sendable, Equatable {
-    /// `permission`, `answered`, `finished`, `failed`, `over_time`, `build_failed`, `dispatched`, `start`, `on_event_failed`.
-    public let kind: String
-    public let orchestrator: String
-    public let agent: String?
-    public let pane: String?
-    public let text: String
-    public let atMs: UInt64
-
-    private enum CodingKeys: String, CodingKey {
-        case kind, orchestrator, agent, pane, text
-        case atMs = "at_ms"
-    }
-
-    public init(kind: String, orchestrator: String, agent: String?, pane: String?, text: String, atMs: UInt64) {
-        self.kind = kind; self.orchestrator = orchestrator; self.agent = agent; self.pane = pane; self.text = text; self.atMs = atMs
-    }
-}
-
-/// One global orchestrator task: what its folder's `tools/on-event` wrote in `tasks/<id>.json`, with the inbox
-/// events naming its agents, oldest first.
-public struct OrchestratorTask: Codable, Sendable, Equatable, Identifiable {
-    public let id: String
-    public let asked: String
-    /// `working`, `needs-decision`, `needs-review` or `done`; empty before the script's first run.
-    public let status: String
-    public let agents: [String]
-    public let done: Bool
-    public let createdMs: UInt64
-    public let pushError: String?
-    public let events: [InboxEvent]
-
-    private enum CodingKeys: String, CodingKey {
-        case id, asked, status, agents, done, events
-        case createdMs = "created_ms"
-        case pushError = "push_error"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        asked = try c.decode(String.self, forKey: .asked)
-        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
-        agents = try c.decodeIfPresent([String].self, forKey: .agents) ?? []
-        done = try c.decodeIfPresent(Bool.self, forKey: .done) ?? false
-        createdMs = try c.decodeIfPresent(UInt64.self, forKey: .createdMs) ?? 0
-        pushError = try c.decodeIfPresent(String.self, forKey: .pushError)
-        events = try c.decodeIfPresent([InboxEvent].self, forKey: .events) ?? []
-    }
-
-    /// The status as the person reads it.
-    public var statusText: String {
-        switch status {
-        case "needs-decision": "Needs a decision"
-        case "needs-review": "Ready for review"
-        case "working": "Working"
-        case "done": "Done"
-        default: "Waiting for its first status"
-        }
-    }
-
-    /// Whether the person or the world closed it.
-    public var closed: Bool { done || status == "done" }
 }
 
 public struct PlanEntry: Codable, Sendable, Equatable {
@@ -952,6 +873,14 @@ public struct SettingInfo: Sendable, Equatable, Identifiable, Decodable {
         max = try c.decodeIfPresent(Double.self, forKey: .max)
         machineFile = try c.decodeIfPresent(String.self, forKey: .machineFile) ?? ""
         projectFile = try c.decodeIfPresent(String.self, forKey: .projectFile)
+    }
+
+    /// The orchestrator's folder (ADR-0054) when this is the `orchestrator.dir` setting: its
+    /// value, else `orchestrator` beside this machine's `wheel.toml`.
+    public var orchestratorDir: String {
+        let dir = value.trimmingCharacters(in: .whitespaces)
+        if !dir.isEmpty { return dir }
+        return (machineFile as NSString).deletingLastPathComponent + "/orchestrator"
     }
 
     public init(key: String, value: String, origin: SettingOrigin, default: String, help: String,
@@ -1469,12 +1398,6 @@ public enum ServerMsg: Sendable {
     /// `builtinUpdate` with `ask` found files a person edited and changed nothing.
     case builtinEdited(req: UInt64, name: String, edited: [EditedFile])
     case created(req: UInt64, id: String)
-    /// The reply to `orchestratorStartGlobal`: the orchestrator's new pane and its agent.
-    case orchestratorStarted(req: UInt64, pane: String, agent: String)
-    /// The reply to `orchestratorTasks`: the global orchestrator's tasks, newest first.
-    case orchestratorTasks(req: UInt64, tasks: [OrchestratorTask])
-    /// The global orchestrator folder's tasks or inbox changed: read `orchestratorTasks` again.
-    case orchestratorTasksChanged
     /// The directories spaces were made for, newest first, in reply to `spaceRecent`.
     case spaceRecent(req: UInt64, dirs: [RecentDir])
     /// The subfolders of `path` (expanded, absolute), in reply to `dirList`; `error` says why there are none.
@@ -1679,12 +1602,6 @@ extension ServerMsg: Decodable {
             self = .builtinEdited(req: try c.decode(UInt64.self, forKey: .req), name: try c.decode(String.self, forKey: .name),
                                   edited: try c.decode([EditedFile].self, forKey: .edited))
         case "created": self = .created(req: try c.decode(UInt64.self, forKey: .req), id: try c.decode(String.self, forKey: .id))
-        case "orchestrator_tasks":
-            self = .orchestratorTasks(req: try c.decode(UInt64.self, forKey: .req), tasks: try c.decode([OrchestratorTask].self, forKey: .tasks))
-        case "orchestrator_tasks_changed": self = .orchestratorTasksChanged
-        case "orchestrator_started":
-            self = .orchestratorStarted(req: try c.decode(UInt64.self, forKey: .req), pane: try c.decode(String.self, forKey: .pane),
-                                        agent: try c.decode(String.self, forKey: .agent))
         case "space_recent": self = .spaceRecent(req: try c.decode(UInt64.self, forKey: .req), dirs: try c.decode([RecentDir].self, forKey: .dirs))
         case "dir_list":
             self = .dirList(req: try c.decode(UInt64.self, forKey: .req), path: try c.decode(String.self, forKey: .path),

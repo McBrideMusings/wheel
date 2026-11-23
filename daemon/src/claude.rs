@@ -30,15 +30,9 @@ use crate::driver::{
 use crate::resume::{between_turns, claude_project_dir, Harness};
 
 /// Tools the agent runs without asking, and the ones it never runs unasked: `wheel` itself is
-/// Wheel's own surface, except for answering a permission request, which is the person's unless
-/// the agent is the global orchestrator (`Launch::answers_permissions`).
+/// Wheel's own surface, except for answering a permission request, which is the person's.
 const ALLOWED: &str = "Bash(wheel:*)";
 const DISALLOWED: &str = "Bash(wheel perm answer:*)";
-
-/// Settings that make the global orchestrator ask before every edit and shell command, over any
-/// allow rule or mode the person's own settings give, so wheeld's rule answers each one
-/// (`perms::orchestrator_verdict`): an `ask` rule wins over `allow` and over `auto` mode.
-const ASK_OWN_TOOLS: &str = r#"{"permissions":{"ask":["Edit","Write","NotebookEdit","Bash"]}}"#;
 
 /// The permission modes the `mode` control offers, in order, with their names.
 const MODES: [(&str, &str); 5] = [
@@ -107,7 +101,6 @@ fn question_request(ask: &Ask, id: &str) -> Option<DriverEvent> {
             reason: question["header"].as_str().map(String::from),
             ..Default::default()
         },
-        tool: None,
     })
 }
 
@@ -180,13 +173,7 @@ pub(crate) fn words(command: &str) -> Vec<String> {
 fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     if launch.brief.is_some() {
-        args.extend(["--allowedTools".into(), ALLOWED.into()]);
-        if !launch.answers_permissions {
-            args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
-        }
-    }
-    if launch.answers_permissions {
-        args.extend(["--settings".into(), ASK_OWN_TOOLS.into()]);
+        args.extend(["--allowedTools".into(), ALLOWED.into(), "--disallowedTools".into(), DISALLOWED.into()]);
     }
     args.extend(
         [
@@ -518,7 +505,7 @@ impl Driver {
                 self.request(Pending::Interrupt, json!({"subtype": "interrupt"}))
                     .await
             }
-            Input::Answer { request, choice, message } => {
+            Input::Answer { request, choice } => {
                 if let Some(ask) = self.asks.remove(&request) {
                     return self.answer_question(ask, choice.as_deref()).await;
                 }
@@ -530,7 +517,7 @@ impl Driver {
                     Some("allow_always") => {
                         json!({"behavior": "allow", "updatedInput": input, "updatedPermissions": suggestions})
                     }
-                    Some(_) => json!({"behavior": "deny", "message": message.as_deref().unwrap_or("The person denied this.")}),
+                    Some(_) => json!({"behavior": "deny", "message": "The person denied this."}),
                     None => json!({"behavior": "deny", "message": "The request was withdrawn."}),
                 };
                 self.write(json!({"type": "control_response", "response": {"subtype": "success", "request_id": request, "response": response}}))
@@ -943,7 +930,6 @@ impl Driver {
             tool_call,
             options: perm_options(always),
             why,
-            tool: Some((tool.to_string(), input)),
         });
         Ok(())
     }
@@ -1892,7 +1878,6 @@ mod tests {
             cwd: "/work/proj".into(),
             config_dir: None,
             brief: None,
-            answers_permissions: false,
             env: Vec::new(),
             conversation: Conversation::Fork { from: "src".into(), turns, id: "new".into() },
             model: None,
@@ -1912,32 +1897,24 @@ mod tests {
     }
 
     #[test]
-    fn only_an_agent_that_answers_permissions_may_run_perm_answer() {
+    fn an_agent_never_runs_perm_answer_unasked() {
         use crate::driver::{Conversation, Launch};
-        let launch = |answers_permissions| Launch {
+        let launch = Launch {
             agent: crate::resume::Harness::Claude,
             command: "claude".into(),
             cwd: "/work/proj".into(),
             config_dir: None,
             brief: Some("brief".into()),
-            answers_permissions,
             env: Vec::new(),
             conversation: Conversation::New("c".into()),
             model: None,
             permissions: Default::default(),
         };
-        let agent = super::arguments(&launch(false), None);
-        let at = agent.iter().position(|a| a == "--disallowedTools").unwrap();
-        assert_eq!(agent[at + 1], super::DISALLOWED);
-        let orchestrator = super::arguments(&launch(true), None);
-        assert!(!orchestrator.contains(&"--disallowedTools".to_string()), "{orchestrator:?}");
-        let at = orchestrator.iter().position(|a| a == "--allowedTools").unwrap();
-        assert_eq!(orchestrator[at + 1], super::ALLOWED);
-        // Only the global orchestrator asks wheeld before every edit and shell command.
-        let at = orchestrator.iter().position(|a| a == "--settings").unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&orchestrator[at + 1]).unwrap();
-        assert_eq!(settings["permissions"]["ask"], serde_json::json!(["Edit", "Write", "NotebookEdit", "Bash"]));
-        assert!(!agent.contains(&"--settings".to_string()), "{agent:?}");
+        let args = super::arguments(&launch, None);
+        let at = args.iter().position(|a| a == "--allowedTools").unwrap();
+        assert_eq!(args[at + 1], super::ALLOWED);
+        let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
+        assert_eq!(args[at + 1], super::DISALLOWED);
     }
 
     #[test]
