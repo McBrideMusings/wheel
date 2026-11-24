@@ -222,7 +222,7 @@ fn watch_paths(
     files: &[PathBuf],
 ) -> Result<
     (
-        Vec<notify::RecommendedWatcher>,
+        Vec<crate::fswatch::Handle>,
         mpsc::UnboundedReceiver<PathBuf>,
     ),
     String,
@@ -248,7 +248,7 @@ fn watch_paths(
     for folder in folders {
         let (tx, real) = (tx.clone(), real.clone());
         let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
                 if matches!(event.kind, EventKind::Access(_)) {
                     return;

@@ -28,6 +28,7 @@ mod link_patterns;
 pub mod checkout;
 pub mod login_path;
 mod agent_homes;
+pub(crate) mod fswatch;
 pub mod logship;
 mod mac_windows;
 mod page;
