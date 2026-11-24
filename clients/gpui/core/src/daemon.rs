@@ -59,12 +59,42 @@ pub fn frame(message: &ClientMsg) -> String {
     serde_json::to_string(message).expect("a ClientMsg serializes")
 }
 
+/// The socket, connected and then made non-blocking: the connection thread sleeps in `poll` on it
+/// and on its wake pipe, and reads or writes only what is ready.
 fn socket(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let (ws, _) = tungstenite::connect(url).with_context(|| format!("connecting to wheeld at {url}"))?;
-    if let MaybeTlsStream::Plain(stream) = ws.get_ref() {
-        stream.set_read_timeout(Some(Duration::from_millis(30)))?;
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(true)?,
+        _ => anyhow::bail!("wheeld at {url} is not a plain socket"),
     }
     Ok(ws)
+}
+
+/// Where the client queues frames for wheeld. Each one also wakes the connection thread, which
+/// otherwise sleeps until wheeld sends something.
+#[derive(Clone)]
+pub struct Outbox {
+    frames: mpsc::Sender<String>,
+    /// None for an outbox no connection reads ([`Outbox::detached`]).
+    wake: Option<std::sync::Arc<std::os::unix::net::UnixStream>>,
+}
+
+impl Outbox {
+    pub fn send(&self, text: String) -> Result<(), mpsc::SendError<String>> {
+        self.frames.send(text)?;
+        // Non-blocking: a full pipe already holds a wake-up the thread has not read.
+        if let Some(wake) = &self.wake {
+            let _ = std::io::Write::write(&mut &**wake, &[1]);
+        }
+        Ok(())
+    }
+
+    /// An outbox with no connection behind it, and the frames sent to it: for a client a test
+    /// drives without wheeld.
+    pub fn detached() -> (Self, mpsc::Receiver<String>) {
+        let (frames, sent) = mpsc::channel();
+        (Self { frames, wake: None }, sent)
+    }
 }
 
 /// What the connection tells the client, in order.
@@ -90,7 +120,7 @@ pub enum Event {
 const BACKOFF: [Duration; 4] = [Duration::from_millis(250), Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2)];
 
 pub struct Connection {
-    pub send: mpsc::Sender<String>,
+    pub send: Outbox,
     pub incoming: fmpsc::UnboundedReceiver<Event>,
 }
 impl Connection {
@@ -99,17 +129,20 @@ impl Connection {
     /// retries with a growing pause until wheeld answers, then asks for the layout again.
     /// A frame sent while the link is not up is dropped, so the view sends only while it is `Up`.
     pub fn open(endpoint: Endpoint) -> Self {
-        let (send, outgoing) = mpsc::channel::<String>();
+        let (frames, outgoing) = mpsc::channel::<String>();
+        let (wake, woken) = std::os::unix::net::UnixStream::pair().expect("a socket pair for the connection's wake-ups");
+        wake.set_nonblocking(true).expect("a non-blocking wake socket");
+        woken.set_nonblocking(true).expect("a non-blocking wake socket");
         let (events, incoming) = fmpsc::unbounded();
-        std::thread::spawn(move || supervise(endpoint, &outgoing, &events));
-        Self { send, incoming }
+        std::thread::spawn(move || supervise(endpoint, &outgoing, &woken, &events));
+        Self { send: Outbox { frames, wake: Some(std::sync::Arc::new(wake)) }, incoming }
     }
 }
 
-fn supervise(first: Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmpsc::UnboundedSender<Event>) {
+fn supervise(first: Endpoint, outgoing: &mpsc::Receiver<String>, woken: &std::os::unix::net::UnixStream, events: &fmpsc::UnboundedSender<Event>) {
     let (mut endpoint, mut failures, mut announced) = (first, 0usize, None::<String>);
     loop {
-        match session(&endpoint, outgoing, events) {
+        match session(&endpoint, outgoing, woken, events) {
             Ended::ClientGone => return,
             Ended::Lost { was_up, reason } => {
                 if was_up {
@@ -157,18 +190,45 @@ enum Ended {
 /// One socket from open to close. Every frame the client queues passes the offer of the wheeld
 /// at the other end (`Offer::admit`): one whose op it did not list is answered here with an
 /// `error` and never sent.
-fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmpsc::UnboundedSender<Event>) -> Ended {
+fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, woken: &std::os::unix::net::UnixStream, events: &fmpsc::UnboundedSender<Event>) -> Ended {
     let lost = |was_up, why: String| Ended::Lost { was_up, reason: Event::Down(why) };
+    let would_block = |e: &tungstenite::Error| matches!(e, tungstenite::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock);
     let mut ws = match socket(&endpoint.ws) {
         Ok(ws) => ws,
         Err(error) => return lost(false, format!("{error:#}")),
     };
     while outgoing.try_recv().is_ok() {}
-    if ws.send(Message::text(frame(&ClientMsg::Status { req: Some(1) }))).is_err() {
-        return lost(false, "wheeld closed the socket".into());
+    // A frame the socket could not take at once waits in tungstenite's buffer until it can.
+    let mut unsent = false;
+    match ws.send(Message::text(frame(&ClientMsg::Status { req: Some(1) }))) {
+        Ok(()) => {}
+        Err(e) if would_block(&e) => unsent = true,
+        Err(_) => return lost(false, "wheeld closed the socket".into()),
     }
     let mut offer: Option<wheel_proto::Offer> = None;
+    let socket_fd = match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => std::os::fd::AsRawFd::as_raw_fd(stream),
+        _ => return lost(false, "wheeld is not a plain socket".into()),
+    };
     loop {
+        // Sleep until wheeld sends, the client queues a frame, or a held frame can go out.
+        let mut fds = [
+            libc::pollfd { fd: socket_fd, events: libc::POLLIN | if unsent { libc::POLLOUT } else { 0 }, revents: 0 },
+            libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(woken), events: libc::POLLIN, revents: 0 },
+        ];
+        // SAFETY: two pollfds owned by this frame, for descriptors this session keeps open.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return lost(offer.is_some(), format!("waiting on wheeld's socket: {}", std::io::Error::last_os_error()));
+        }
+        let mut drain = [0u8; 64];
+        while matches!(std::io::Read::read(&mut &*woken, &mut drain), Ok(n) if n > 0) {}
+        if unsent {
+            match ws.flush() {
+                Ok(()) => unsent = false,
+                Err(e) if would_block(&e) => {}
+                Err(_) => return lost(offer.is_some(), "wheeld closed the socket".into()),
+            }
+        }
         loop {
             match outgoing.try_recv() {
                 Ok(text) => {
@@ -179,48 +239,54 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<String>, events: &fmps
                         }
                         continue;
                     }
-                    if ws.send(Message::text(text)).is_err() {
-                        return lost(true, "wheeld closed the socket".into());
+                    match ws.send(Message::text(text)) {
+                        Ok(()) => {}
+                        Err(e) if would_block(&e) => unsent = true,
+                        Err(_) => return lost(true, "wheeld closed the socket".into()),
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return Ended::ClientGone,
             }
         }
-        match ws.read() {
-            Ok(Message::Text(t)) => {
-                // A frame this build's proto crate cannot read (an event a newer server added) is
-                // dropped: nothing in the client reads it.
-                let message = serde_json::from_str::<ServerMsg>(&t).ok();
-                // Every `status` names what wheeld offers; the first decides whether the link comes
-                // up. A status from another level may not read as this build's `ServerMsg`, so
-                // before the link is up its offer is read on its own.
-                let fresh = match &message {
-                    Some(message) => message.offer(),
-                    None if offer.is_none() => wheel_proto::Offer::read(&t),
-                    None => None,
-                };
-                if let Some(fresh) = fresh {
-                    if let Err(mismatch) = fresh.check() {
-                        return Ended::Lost { was_up: offer.is_some(), reason: Event::Incompatible { server: mismatch.server, client: mismatch.client } };
+        // Every frame that has arrived, those tungstenite already holds included: poll would not
+        // wake for a frame read into its buffer along with the one before it.
+        loop {
+            match ws.read() {
+                Ok(Message::Text(t)) => {
+                    // A frame this build's proto crate cannot read (an event a newer server added) is
+                    // dropped: nothing in the client reads it.
+                    let message = serde_json::from_str::<ServerMsg>(&t).ok();
+                    // Every `status` names what wheeld offers; the first decides whether the link comes
+                    // up. A status from another level may not read as this build's `ServerMsg`, so
+                    // before the link is up its offer is read on its own.
+                    let fresh = match &message {
+                        Some(message) => message.offer(),
+                        None if offer.is_none() => wheel_proto::Offer::read(&t),
+                        None => None,
+                    };
+                    if let Some(fresh) = fresh {
+                        if let Err(mismatch) = fresh.check() {
+                            return Ended::Lost { was_up: offer.is_some(), reason: Event::Incompatible { server: mismatch.server, client: mismatch.client } };
+                        }
+                        let first = offer.is_none();
+                        offer = Some(fresh);
+                        if first && events.unbounded_send(Event::Up(endpoint.clone())).is_err() {
+                            return Ended::ClientGone;
+                        }
+                    } else if offer.is_none() {
+                        continue;
                     }
-                    let first = offer.is_none();
-                    offer = Some(fresh);
-                    if first && events.unbounded_send(Event::Up(endpoint.clone())).is_err() {
+                    let Some(message) = message else { continue };
+                    if events.unbounded_send(Event::Message(Box::new(message))).is_err() {
                         return Ended::ClientGone;
                     }
-                } else if offer.is_none() {
-                    continue;
                 }
-                let Some(message) = message else { continue };
-                if events.unbounded_send(Event::Message(Box::new(message))).is_err() {
-                    return Ended::ClientGone;
-                }
+                Ok(Message::Close(_)) => return lost(offer.is_some(), "wheeld closed the socket".into()),
+                Ok(_) => {}
+                Err(e) if would_block(&e) => break,
+                Err(error) => return lost(offer.is_some(), format!("{error}")),
             }
-            Ok(Message::Close(_)) => return lost(offer.is_some(), "wheeld closed the socket".into()),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-            Err(error) => return lost(offer.is_some(), format!("{error}")),
         }
     }
 }
@@ -297,6 +363,39 @@ pub(crate) mod tests {
         let file = std::env::temp_dir().join(format!("wheel-gpui-token-{port}"));
         std::fs::write(&file, token).unwrap();
         (Endpoint::new(&format!("ws://127.0.0.1:{port}/ws"), &file).unwrap(), file)
+    }
+
+    #[test]
+    fn an_idle_link_sends_a_queued_frame_at_once_and_still_hears_a_late_one() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (heard, heard_rx) = mpsc::channel::<(String, std::time::Instant)>();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            ws.read().unwrap();
+            ws.send(Message::text(status_frame(COMPAT))).unwrap();
+            // Quiet, then a frame wheeld sends unasked.
+            std::thread::sleep(Duration::from_millis(400));
+            ws.send(Message::text(marker_frame(7))).unwrap();
+            while let Ok(Message::Text(t)) = ws.read() {
+                let _ = heard.send((t.to_string(), std::time::Instant::now()));
+            }
+        });
+        let (endpoint, _) = endpoint(port, "t");
+        let mut connection = Connection::open(endpoint);
+        assert!(matches!(next(&mut connection), Event::Up(_)));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(*m, ServerMsg::Status { .. })));
+        assert!(matches!(next(&mut connection), Event::Message(m) if matches!(&*m, ServerMsg::Spaces { sessions, .. } if sessions[0].name == "7")), "the late frame never arrived");
+
+        // Idle now: a queued frame goes out when it is queued, not at the next timer.
+        std::thread::sleep(Duration::from_millis(200));
+        let sent = std::time::Instant::now();
+        connection.send.send(frame(&ClientMsg::Status { req: Some(9) })).unwrap();
+        let (text, at) = heard_rx.recv_timeout(Duration::from_secs(5)).expect("the frame never reached wheeld");
+        assert!(text.contains("\"req\":9"), "{text}");
+        // Inside the 30 ms read timeout this replaced, with room for a loaded machine.
+        assert!(at.duration_since(sent) < Duration::from_millis(25), "the frame waited {:?}", at.duration_since(sent));
     }
 
     #[test]

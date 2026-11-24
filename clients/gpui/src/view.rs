@@ -120,7 +120,7 @@ pub struct Client {
     session_id: Option<String>,
     /// The last (session, space, pane) reported to wheeld.
     reported: Option<(Option<String>, Option<String>, Option<String>)>,
-    out: mpsc::Sender<String>,
+    out: crate::daemon::Outbox,
     endpoint: Endpoint,
     spaces: Vec<Space>,
     /// The space shown: kept across layouts by id.
@@ -538,7 +538,7 @@ impl Link {
 
 impl Client {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: mpsc::Sender<String>, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
+    pub fn new(native: Rc<Native>, bridge: Rc<Bridge>, hidden: bool, window_id: String, out: crate::daemon::Outbox, endpoint: Endpoint, prefer_session: Option<String>, prefer_space: Option<String>, handle: FocusHandle) -> Self {
         let toast_sources = crate::toasts::Sources { server_restart_available: server::with(|s| s.control.available()).unwrap_or(false), ..Default::default() };
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let surface = agents::Surface::new(hidden, &endpoint.ws);
