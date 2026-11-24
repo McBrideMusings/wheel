@@ -60,7 +60,8 @@ public final class ViewTree {
     public private(set) var root: ViewNode?
     /// The Modals with `presented` set, drawn over the pane.
     public private(set) var modals: [ViewNode] = []
-    /// Whether the view takes the pane's height itself (a frame-less Table or vertical List), so the pane has no ScrollView.
+    /// Whether the view takes the pane's height itself (a frame-less Table, vertical List or height-less VideoStream), so the
+    /// pane has no ScrollView.
     public private(set) var fillsPane = false
     /// Which nodes show hover feedback, and the pointer a check holds on one.
     @ObservationIgnored public let hover = PaneHoverProbe()
@@ -241,6 +242,7 @@ public final class ViewTree {
     /// scrolls itself.
     private static func fills(_ n: ViewNode) -> Bool {
         let scrolls = n.component == "Table" || (n.component == "List" && n.props["direction"]?.stringValue != "horizontal")
+            || (n.component == "VideoStream" && n.props["height"] == nil)
         if scrolls, !(n.props["modifiers"]?.arrayValue ?? []).contains(where: { $0.dictionaryValue?["frame"] != nil }) { return true }
         return n.parts.contains(where: fills)
     }
