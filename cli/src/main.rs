@@ -2575,7 +2575,7 @@ async fn term_read(
     let id = terminal_id(conn, id).await?;
     let req = conn.req();
     let first = conn
-        .call(ClientMsg::TermAttach { req: Some(req), id }, req)
+        .call(ClientMsg::TermAttach { req: Some(req), id, whole_lines: true }, req)
         .await?;
     // Bytes of replay still to arrive; with --new they are dropped rather than printed.
     let mut replay_left = match first {

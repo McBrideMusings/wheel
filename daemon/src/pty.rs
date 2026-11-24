@@ -96,7 +96,8 @@ enum ScreenMsg {
     Output(Vec<u8>),
     Resize(u16, u16),
     Exited(Option<u32>),
-    Attach(oneshot::Sender<Attachment>),
+    /// With whole lines or as a terminal draws it (see [`replay`]).
+    Attach(oneshot::Sender<Attachment>, bool),
 }
 
 pub struct Term {
@@ -262,9 +263,10 @@ impl Term {
     }
 
     /// The screen as it is now, then everything after. None if the screen thread is gone.
-    pub async fn attach(&self) -> Option<Attachment> {
+    /// `whole_lines` writes each soft-wrapped line whole, for a reader matching text.
+    pub async fn attach(&self, whole_lines: bool) -> Option<Attachment> {
         let (reply, rx) = oneshot::channel();
-        self.screen.send(ScreenMsg::Attach(reply)).ok()?;
+        self.screen.send(ScreenMsg::Attach(reply, whole_lines)).ok()?;
         rx.await.ok()
     }
 
@@ -279,7 +281,7 @@ impl Term {
     ) -> (Vec<u8>, ReadEnd) {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut finder = until.map(wheel_proto::TextFinder::new);
-        let Some(mut attached) = self.attach().await else {
+        let Some(mut attached) = self.attach(true).await else {
             return (Vec::new(), ReadEnd::Exited(None));
         };
         let mut read = std::mem::take(&mut attached.replay);
@@ -304,7 +306,7 @@ impl Term {
                 }
                 // Output was dropped for this reader: start over from the screen as it is now.
                 Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
-                    let Some(again) = self.attach().await else {
+                    let Some(again) = self.attach(true).await else {
                         return (read, ReadEnd::Exited(None));
                     };
                     read = again.replay.clone();
@@ -458,8 +460,8 @@ fn run_screen(
                 exited = Some(code);
                 let _ = tx.send(TermEvent::Exited(code));
             }
-            ScreenMsg::Attach(reply) => {
-                let replay = replay(&id, &screen);
+            ScreenMsg::Attach(reply, whole_lines) => {
+                let replay = replay(&id, &screen, whole_lines);
                 let _ = reply.send(Attachment {
                     replay,
                     exited,
@@ -507,18 +509,22 @@ fn new_screen(cols: u16, rows: u16) -> ghostty_vt::error::Result<Terminal> {
 /// when a full-screen app holds the alternate screen), then the escape sequence or character the
 /// last output left unfinished, so the live output that finishes it lands in the same place as on
 /// the daemon's screen.
-fn replay(id: &str, screen: &Terminal) -> Vec<u8> {
+///
+/// A terminal gets each row as wheeld's screen holds it, so the cursor lands on its row whatever
+/// size the terminal has when the replay arrives. `whole_lines` instead writes a soft-wrapped line
+/// as one line, so a reader matching text finds it across the wrap.
+fn replay(id: &str, screen: &Terminal, whole_lines: bool) -> Vec<u8> {
     let drawn = if matches!(screen.active_screen(), Ok(Screen::Alternate)) {
-        both_screens(id, screen).or_else(|e| {
+        both_screens(id, screen, whole_lines).or_else(|e| {
             tracing::warn!(
                 term = %id,
                 error = ?e,
                 "shell screen snapshot failed; attaching the alternate screen alone"
             );
-            snapshot(screen)
+            snapshot(screen, whole_lines)
         })
     } else {
-        snapshot(screen)
+        snapshot(screen, whole_lines)
     };
     let mut replay = match drawn {
         Ok(replay) => replay,
@@ -540,9 +546,9 @@ fn replay(id: &str, screen: &Terminal) -> Vec<u8> {
 /// bracketed paste), the scrolling region, the tab stops, and the cursor and pen last; the color
 /// palette only when a program changed it, and the default foreground, background and cursor
 /// colors only when they differ from the terminal's own.
-fn snapshot(screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
+fn snapshot(screen: &Terminal, whole_lines: bool) -> ghostty_vt::error::Result<Vec<u8>> {
     let palette_changed = screen.color_palette()?.0 != screen.default_color_palette()?.0;
-    let options = screen_options()
+    let options = screen_options(whole_lines)
         .with_modes(true)
         .with_scrolling_region(true)
         .with_tabstops(true)
@@ -565,10 +571,11 @@ fn snapshot(screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
 }
 
 /// What one screen carries besides its cells: the cursor, pen, hyperlink, protection, Kitty
-/// keyboard flags and character sets.
-fn screen_options<'t, 's>() -> FormatterOptions<'t, 's> {
+/// keyboard flags and character sets; with `whole_lines`, each soft-wrapped line as one line.
+fn screen_options<'t, 's>(whole_lines: bool) -> FormatterOptions<'t, 's> {
     FormatterOptions::new()
         .with_format(Format::Vt)
+        .with_unwrap(whole_lines)
         .with_cursor(true)
         .with_style(true)
         .with_hyperlink(true)
@@ -584,7 +591,7 @@ fn screen_options<'t, 's>() -> FormatterOptions<'t, 's> {
 /// The formatter reads only the active screen and writes the alternate-screen mode ahead of the
 /// cells, and every mode that switches screens moves the cursor or erases the alternate screen, so
 /// both screens are drawn from a copy of the daemon's screen.
-fn both_screens(id: &str, screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8>> {
+fn both_screens(id: &str, screen: &Terminal, whole_lines: bool) -> ghostty_vt::error::Result<Vec<u8>> {
     let encoded = ghostty_vt::snapshot::encode(screen)?;
     let mut copy = ghostty_vt::snapshot::Decoder::from_slice(&encoded).decode()?;
     let mut enter = Vec::new();
@@ -599,11 +606,11 @@ fn both_screens(id: &str, screen: &Terminal) -> ghostty_vt::error::Result<Vec<u8
             copy.set_mode(mode, false)?;
         }
     }
-    let alternate = snapshot(&copy)?;
+    let alternate = snapshot(&copy, whole_lines)?;
     // CAN ends whatever sequence the copy's parser was in; leaving 1049 restores the cursor the
     // app's entry saved, the one the client's own `ESC[?1049h` saves in turn.
     copy.vt_write(b"\x18\x1b[?1049l");
-    let mut replay = Formatter::new(&copy, screen_options())?
+    let mut replay = Formatter::new(&copy, screen_options(whole_lines))?
         .format_alloc()?
         .to_vec();
     tracing::info!(
@@ -659,7 +666,7 @@ mod tests {
     fn attach_between(first: &[u8], rest: &[u8]) -> (Terminal, Terminal) {
         let mut daemon = new_screen(20, 3).unwrap();
         daemon.vt_write(first);
-        let replay = replay("t", &daemon);
+        let replay = replay("t", &daemon, false);
         daemon.vt_write(rest);
         let mut client = Terminal::new(Options {
             cols: 20,
@@ -704,7 +711,7 @@ mod tests {
     #[test]
     fn a_default_palette_adds_no_color_sequences() {
         let screen = new_screen(20, 3).unwrap();
-        let text = String::from_utf8_lossy(&snapshot(&screen).unwrap()).into_owned();
+        let text = String::from_utf8_lossy(&snapshot(&screen, false).unwrap()).into_owned();
         assert!(
             !text.contains("\x1b]4;") && !text.contains("\x1b]10;"),
             "{text:?}"
@@ -739,5 +746,28 @@ mod tests {
         assert_eq!(plain(&client), plain(&daemon));
         let cursor = |t: &Terminal| (t.cursor_x().unwrap(), t.cursor_y().unwrap());
         assert_eq!(cursor(&client), cursor(&daemon));
+    }
+
+    /// `term read --until` finds text that crosses a soft wrap: the whole-lines replay writes the
+    /// wrapped line as one line.
+    #[test]
+    fn a_whole_lines_replay_finds_text_across_a_wrap() {
+        let mut daemon = new_screen(20, 3).unwrap();
+        // 20 columns wrap it after "re", the way a narrow pane split `claude-fake <session> ready`.
+        daemon.vt_write(b"claude-fake 12345 ready");
+        assert!(wheel_proto::TextFinder::new(" ready").feed(&replay("t", &daemon, true)));
+        assert!(!wheel_proto::TextFinder::new(" ready").feed(&replay("t", &daemon, false)));
+    }
+
+    /// A terminal wider than wheeld's screen when the replay arrives puts the cursor on the row
+    /// wheeld's screen has it on, under the wrapped line rather than one row past the text.
+    #[test]
+    fn a_wider_terminal_takes_the_cursor_on_its_row() {
+        let mut daemon = new_screen(20, 5).unwrap();
+        daemon.vt_write(b"aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\r\nxx\x1b[4;3Hz");
+        let mut client = new_screen(40, 5).unwrap();
+        client.vt_write(&replay("t", &daemon, false));
+        let row_of = |t: &Terminal, text: &str| plain(t).lines().position(|l| l.contains(text));
+        assert_eq!(row_of(&client, "xxz"), Some(client.cursor_y().unwrap() as usize));
     }
 }

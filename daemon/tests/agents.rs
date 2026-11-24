@@ -3302,6 +3302,7 @@ async fn term_attach(ws: &mut Ws, term: &str) {
         ClientMsg::TermAttach {
             req: Some(97),
             id: term.into(),
+            whole_lines: false,
         },
     )
     .await;

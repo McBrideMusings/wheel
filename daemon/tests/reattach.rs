@@ -107,6 +107,7 @@ async fn reattach_replays_output_written_before_the_disconnect() {
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -121,6 +122,7 @@ async fn reattach_replays_output_written_before_the_disconnect() {
         ClientMsg::TermAttach {
             req: Some(3),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -150,6 +152,7 @@ async fn attach_replay(ws: &mut Ws, id: &str) -> String {
         ClientMsg::TermAttach {
             req: Some(3),
             id: id.into(),
+            whole_lines: false,
         },
     )
     .await;
@@ -176,6 +179,7 @@ async fn a_long_replay_arrives_as_bounded_frames_that_add_up_to_replay_bytes() {
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -194,6 +198,7 @@ async fn a_long_replay_arrives_as_bounded_frames_that_add_up_to_replay_bytes() {
         ClientMsg::TermAttach {
             req: Some(3),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -225,6 +230,7 @@ async fn reattach_to_a_full_screen_app_redraws_its_screen_over_the_shell_screen(
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -292,6 +298,7 @@ async fn an_exited_terminal_is_dropped_once_its_exit_is_delivered() {
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -322,6 +329,7 @@ async fn an_exited_terminal_is_dropped_once_its_exit_is_delivered() {
         ClientMsg::TermAttach {
             req: Some(3),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -360,6 +368,7 @@ async fn an_exit_nobody_saw_waits_for_the_next_attach() {
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -429,6 +438,7 @@ async fn attaching_twice_streams_output_once() {
         ClientMsg::TermAttach {
             req: Some(2),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -437,6 +447,7 @@ async fn attaching_twice_streams_output_once() {
         ClientMsg::TermAttach {
             req: Some(3),
             id: id.clone(),
+            whole_lines: false,
         },
     )
     .await;

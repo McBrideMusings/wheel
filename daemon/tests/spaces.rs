@@ -449,6 +449,7 @@ async fn a_pane_keeps_its_exited_terminal_until_the_pane_goes() {
         ClientMsg::TermAttach {
             req: Some(6),
             id: term.clone(),
+            whole_lines: false,
         },
     )
     .await;
@@ -4445,6 +4446,7 @@ async fn term_text(ws: &mut Ws, term: &str, marker: &str) -> String {
         ClientMsg::TermAttach {
             req: Some(60),
             id: term.into(),
+            whole_lines: false,
         },
     )
     .await;

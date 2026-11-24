@@ -3242,10 +3242,12 @@ async fn handle(
                 req.map(|req| ServerMsg::Ok { req })
             }
         },
-        ClientMsg::TermAttach { req, id } => match state.term(&id) {
+        ClientMsg::TermAttach { req, id, whole_lines } => match state.term(&id) {
             Some(term) => {
-                if let Some(old) =
-                    forwards.insert(id, forward(state.clone(), term, req, out.clone(), peer))
+                if let Some(old) = forwards.insert(
+                    id,
+                    forward(state.clone(), term, req, whole_lines, out.clone(), peer),
+                )
                 {
                     old.abort();
                 }
@@ -3585,6 +3587,7 @@ fn forward(
     state: Arc<AppState>,
     term: Arc<Term>,
     req: Option<u64>,
+    whole_lines: bool,
     out: mpsc::Sender<ServerMsg>,
     peer: SocketAddr,
 ) -> JoinHandle<()> {
@@ -3596,7 +3599,7 @@ fn forward(
                 replay,
                 exited,
                 mut rx,
-            }) = term.attach().await
+            }) = term.attach(whole_lines).await
             else {
                 tracing::warn!(%peer, term = %term.id, "attach failed; the terminal's screen is gone");
                 let message = format!("terminal {}'s screen is gone", term.id);

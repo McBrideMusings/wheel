@@ -643,6 +643,10 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         id: String,
+        /// Replay the screen with each soft-wrapped line written whole, for a reader matching
+        /// text (`wheel term read --until`) rather than a terminal drawing the screen at its size.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        whole_lines: bool,
     },
     /// Stop streaming a terminal to this connection. The terminal keeps running.
     TermDetach { id: String },
