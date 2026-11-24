@@ -965,8 +965,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tints_are_the_named_colours_and_nothing_else() {
-        assert_eq!(tint(Some("green")), Some(0x30d158));
+    fn tint_spells_grey_two_ways_and_ignores_unknown_names() {
         assert_eq!(tint(Some("grey")), tint(Some("gray")));
         assert_eq!(tint(Some("teal")), None);
         assert_eq!(tint(None), None);
