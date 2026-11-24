@@ -41,6 +41,8 @@ pub struct Registry {
     pub littles: Vec<Little>,
     /// Where each window's content was last measured on screen, by window id (saved.rs).
     pub frames: std::collections::HashMap<String, crate::saved::Frame>,
+    /// Where the main window closed last was: the next new window opens there (saved.rs).
+    pub last_closed: Option<crate::saved::Frame>,
     /// Told after every change to the windows: the menu bar item counts what no window shows.
     pub(crate) watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
 }
@@ -98,6 +100,11 @@ impl Registry {
         self.changed();
     }
     pub fn remove(&mut self, id: &str) {
+        if self.windows.iter().any(|w| w.id == id)
+            && let Some(frame) = self.frames.get(id)
+        {
+            self.last_closed = Some(*frame);
+        }
         self.windows.retain(|w| w.id != id);
         self.littles.retain(|l| l.id != id);
         self.frames.remove(id);

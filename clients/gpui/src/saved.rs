@@ -49,6 +49,9 @@ pub struct Saved {
     pub windows: Vec<SavedWindow>,
     #[serde(default)]
     pub littles: Vec<SavedLittle>,
+    /// Where the main window closed last was, for the next new window.
+    #[serde(default)]
+    pub last_closed: Option<Frame>,
 }
 
 fn yes() -> bool {
@@ -57,7 +60,7 @@ fn yes() -> bool {
 
 impl Default for Saved {
     fn default() -> Self {
-        Self { restore: true, windows: vec![], littles: vec![] }
+        Self { restore: true, windows: vec![], littles: vec![], last_closed: None }
     }
 }
 
@@ -96,7 +99,7 @@ impl Saved {
             pinned: l.pinned,
             frame: registry.frames.get(&l.id).copied(),
         });
-        Self { restore, windows: windows.collect(), littles: littles.collect() }
+        Self { restore, windows: windows.collect(), littles: littles.collect(), last_closed: registry.last_closed }
     }
     /// What launch opens (AppModel.openLaunchWindows): every saved window and little window with
     /// the setting on; one window on the focused window's session and space with it off
@@ -226,18 +229,18 @@ mod tests {
         let a = window("n1", "s1", true, [0., 32., 1200., 720.]);
         let b = window("n2", "s2", false, [1400., 32., 1200., 720.]);
         let little = SavedLittle { space: "s3".into(), pinned: true, frame: Some([10., 40., 480., 330.]) };
-        let saved = Saved { restore: true, windows: vec![a.clone(), b.clone()], littles: vec![little.clone()] };
+        let saved = Saved { restore: true, windows: vec![a.clone(), b.clone()], littles: vec![little.clone()], ..Default::default() };
         assert_eq!(saved.launch_plan(), vec![Launch::Main(b), Launch::Main(a), Launch::Little(little)]);
     }
 
     #[test]
     fn with_restore_off_launch_opens_one_window_on_the_focused_session() {
-        let saved = Saved { restore: false, windows: vec![window("n1", "s1", false, [0., 0., 1., 1.]), window("n2", "s2", true, [0., 0., 1., 1.])], littles: vec![] };
+        let saved = Saved { restore: false, windows: vec![window("n1", "s1", false, [0., 0., 1., 1.]), window("n2", "s2", true, [0., 0., 1., 1.])], littles: vec![], ..Default::default() };
         let plan = saved.launch_plan();
         assert_eq!(plan.len(), 1);
         let Launch::Main(only) = &plan[0] else { panic!("{plan:?}") };
         assert_eq!((only.session.as_deref(), only.active.as_deref(), only.frame), (Some("n2"), Some("s2"), None));
-        let named = Saved { restore: false, windows: vec![SavedWindow { name: Some("Notes".into()), pinned: true, focused: true, ..window("n1", "s1", true, [0., 0., 1., 1.]) }], littles: vec![] };
+        let named = Saved { restore: false, windows: vec![SavedWindow { name: Some("Notes".into()), pinned: true, focused: true, ..window("n1", "s1", true, [0., 0., 1., 1.]) }], littles: vec![], ..Default::default() };
         let Launch::Main(kept) = &named.launch_plan()[0] else { panic!() };
         assert_eq!((kept.name.as_deref(), kept.pinned), (Some("Notes"), true));
         assert_eq!(Saved::default().launch_plan(), vec![Launch::Main(SavedWindow { sidebar: true, ..Default::default() })]);
@@ -261,5 +264,19 @@ mod tests {
         assert_eq!(Saved::load(Some(&file)), saved);
         let _ = std::fs::remove_file(&file);
         assert_eq!(Saved::load(None), Saved::default());
+    }
+
+    #[test]
+    fn a_closed_window_leaves_its_frame_for_the_next_one() {
+        let mut registry = Registry::default();
+        registry.put(Record { id: "w1".into(), ..Default::default() });
+        registry.put_little(Little { id: "w2".into(), space: "s".into(), owner: None, pinned: false });
+        registry.set_frame("w1", [10., 40., 900., 600.]);
+        registry.set_frame("w2", [5., 5., 300., 200.]);
+        registry.remove("w2");
+        assert_eq!(registry.last_closed, None, "a little window's frame is not a main window's");
+        registry.remove("w1");
+        assert_eq!(registry.last_closed, Some([10., 40., 900., 600.]));
+        assert_eq!(Saved::of(&registry, true).last_closed, Some([10., 40., 900., 600.]));
     }
 }
