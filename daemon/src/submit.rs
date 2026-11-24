@@ -26,7 +26,7 @@ const MAX_MESSAGE: usize = 4000;
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The gap between the text and Enter, so a TUI with bracketed paste reads them as two reads.
-const ENTER_DELAY: Duration = Duration::from_millis(100);
+pub(crate) const ENTER_DELAY: Duration = Duration::from_millis(100);
 
 /// `summary` as one line with no control characters, cut to `max` characters: the text typed into
 /// an agent ([`MAX_MESSAGE`]), or a waiting agent's reason.
@@ -128,6 +128,9 @@ impl AppState {
     /// Type `text` and Enter into agent pane `target`: a chat agent takes it as a message, a
     /// terminal as keystrokes.
     async fn type_into(&self, target: &str, text: &str) -> Result<(), String> {
+        if let Some(Ok(found)) = self.terminal_agent(target) {
+            return self.term_agent_send(&found, text).await.map(|_| ());
+        }
         let term = {
             let spaces = self.spaces.lock().unwrap();
             spaces

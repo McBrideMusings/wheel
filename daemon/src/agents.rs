@@ -66,6 +66,15 @@ impl AppState {
 
     /// The agent `target` names: an agent pane's id, a mirror of one, or an agent name.
     pub(crate) fn resolve_agent(&self, target: &str) -> Result<AgentRef, String> {
+        if let Some(found) = self.terminal_agent(target) {
+            let found = found?;
+            return Err(format!(
+                "{} runs {} in a terminal, so Wheel has no transcript, queue or controls of it: `wheel agent send` and `wheel agent wait` reach it, and `wheel term read {}` shows its screen",
+                found.pane,
+                found.harness.title(),
+                found.pane
+            ));
+        }
         let pane_agent = {
             let spaces = self.spaces.lock().unwrap();
             match wheel_proto::shown_pane(&spaces.spaces, target) {

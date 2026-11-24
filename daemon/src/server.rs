@@ -1563,7 +1563,20 @@ async fn handle(
             req.map(|req| ServerMsg::Ok { req })
         }
         ClientMsg::RemoteInfo { req } => req.map(|req| crate::remote::info(state, req)),
-        ClientMsg::AgentAttach { req, agent } => match state.resolve_agent(&agent) {
+        // A coding agent's TUI in a terminal pane has no event stream to attach to: the reply says
+        // which agent it is, and `agent send` types into it.
+        ClientMsg::AgentAttach { req, agent } => match (req, state.terminal_agent(&agent)) {
+            (Some(req), Some(found)) => match found {
+                Ok(found) => Some(ServerMsg::AgentInTerminal {
+                    req,
+                    status: state.term_agent_status(&found.term_id),
+                    pane: found.pane,
+                    agent: found.harness.name().into(),
+                    context: found.context,
+                }),
+                Err(message) => Some(failed(Some(req), message)),
+            },
+            (req, _) => match state.resolve_agent(&agent) {
             Ok(found) => {
                 let found = found.agent;
                 // Keyed apart from terminal ids, which share the map, and by the agent's name,
@@ -1588,6 +1601,7 @@ async fn handle(
                     None
                 }
                 None => Some(failed(req, message)),
+            },
             },
         },
         ClientMsg::Usage { req, due_only } => {
@@ -1673,6 +1687,28 @@ async fn handle(
                 Err(message) => Some(failed(req, message)),
             }
         }
+        ClientMsg::AgentSend { req, agent, text } if let Some(found) = state.terminal_agent(&agent) => {
+            tracing::info!(%peer, %agent, chars = text.len(), "agent send to a terminal pane");
+            // On a task of its own: the submit key waits for the TUI to read the paste.
+            let (state, out) = (state.clone(), out.clone());
+            tokio::spawn(async move {
+                let sent = match found {
+                    Ok(found) => state
+                        .term_agent_send(&found, &text)
+                        .await
+                        .map(|queued| (found.pane, found.harness.name().to_string(), queued)),
+                    Err(message) => Err(message),
+                };
+                let reply = match sent {
+                    Ok((pane, agent, queued)) => req.map(|req| ServerMsg::AgentTyped { req, pane, agent, queued }),
+                    Err(message) => Some(failed(req, message)),
+                };
+                if let Some(reply) = reply {
+                    let _ = out.send(reply).await;
+                }
+            });
+            None
+        }
         ClientMsg::AgentSend { req, agent, text } => {
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %agent, chars = text.len(), "agent send");
@@ -1706,12 +1742,28 @@ async fn handle(
             let state = state.clone();
             let out = out.clone();
             tokio::spawn(async move {
-                let result = if (0.0..=3600.0).contains(&timeout_secs) {
+                let result = if !(0.0..=3600.0).contains(&timeout_secs) {
+                    Err(format!("timeout_secs is {timeout_secs}; use 0 to 3600"))
+                } else if let Some(found) = state.terminal_agent(&agent) {
+                    match found {
+                        Ok(found) => state
+                            .term_agent_wait(&found, std::time::Duration::from_secs_f64(timeout_secs))
+                            .await
+                            .map(|(status, ready)| crate::agents::AgentWaited {
+                                agent: found.harness.name().into(),
+                                state: match status {
+                                    wheel_proto::ReportedStatus::Idle => wheel_proto::AgentState::Ready,
+                                    _ => wheel_proto::AgentState::Busy { queued: 0 },
+                                },
+                                pane: found.pane,
+                                ready,
+                            }),
+                        Err(message) => Err(message),
+                    }
+                } else {
                     state
                         .agent_wait(&agent, std::time::Duration::from_secs_f64(timeout_secs))
                         .await
-                } else {
-                    Err(format!("timeout_secs is {timeout_secs}; use 0 to 3600"))
                 };
                 let reply = match result {
                     Ok(w) => req.map(|req| ServerMsg::AgentWaited {

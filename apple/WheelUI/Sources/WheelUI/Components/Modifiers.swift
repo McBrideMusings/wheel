@@ -129,11 +129,17 @@ private func alignment(_ name: String?) -> Alignment {
 struct PaneModifiers: ViewModifier {
     let list: [JSONValue]
     let id: String
+    let node: ViewNode
+    let tree: ViewTree
 
     func body(content: Content) -> some View {
         var view = AnyView(content)
-        for entry in list {
+        for (i, entry) in list.enumerated() {
             guard let d = entry.dictionaryValue, let (name, arg) = d.first else { continue }
+            if name == "dragGesture" {
+                view = AnyView(view.modifier(PaneDragMove(node: node, tree: tree, keyPath: "modifiers.\(i).dragGesture", moved: list)))
+                continue
+            }
             view = apply(name, arg, to: view)
         }
         return view
@@ -168,6 +174,10 @@ struct PaneModifiers: ViewModifier {
             if let r = arg.dictionaryValue?["cornerRadius"]?.numberValue { return AnyView(v.clipShape(RoundedRectangle(cornerRadius: r, style: .continuous))) }
         case "disabled": if arg.boolValue == true { return AnyView(v.disabled(true)) } else { return v }
         case "opacity": if let n = arg.numberValue { return AnyView(v.opacity(n)) }
+        case "offset":
+            if let o = arg.dictionaryValue {
+                return AnyView(v.offset(x: o["x"]?.numberValue ?? 0, y: o["y"]?.numberValue ?? 0))
+            }
         case "lineLimit": if let n = arg.numberValue { return AnyView(v.lineLimit(Int(n))) }
         case "truncationMode":
             return AnyView(v.truncationMode(arg.stringValue == "head" ? .head : arg.stringValue == "middle" ? .middle : .tail))
@@ -256,8 +266,8 @@ extension EnvironmentValues {
 
 extension View {
     /// The component's `modifiers` property, applied.
-    func paneModified(_ node: ViewNode) -> some View {
-        modifier(PaneModifiers(list: node.props["modifiers"]?.arrayValue ?? [], id: node.id))
+    func paneModified(_ node: ViewNode, tree: ViewTree) -> some View {
+        modifier(PaneModifiers(list: node.props["modifiers"]?.arrayValue ?? [], id: node.id, node: node, tree: tree))
     }
 
     /// The hover feedback a control gets with no word from the script, drawn in the client with no call into it (ADR-0052). Pressed and
@@ -282,3 +292,30 @@ func paneDefaultHighlight(_ component: String, _ props: [String: JSONValue]) -> 
     return mods.contains { $0["disabled"]?.boolValue == true }
 }
 
+
+/// `{dragGesture = <table>}`: a drag on the view moves it with the pointer, and on release raises the table with `x` and `y`,
+/// the points it moved, for the script to add to the view's `offset`. The view keeps its moved place until the script's
+/// modifiers change, so it does not jump back while the script's answer is on its way.
+struct PaneDragMove: ViewModifier {
+    let node: ViewNode
+    let tree: ViewTree
+    let keyPath: String
+    /// The modifiers the drag ended under; a new list means the script answered.
+    let moved: [JSONValue]
+    @State private var translation: CGSize = .zero
+    @State private var answered: [JSONValue] = []
+
+    func body(content: Content) -> some View {
+        content
+            .offset(translation)
+            .gesture(
+                DragGesture()
+                    .onChanged { translation = $0.translation }
+                    .onEnded { drag in
+                        answered = moved
+                        tree.raise(node, keyPath, ["x": .number(drag.translation.width), "y": .number(drag.translation.height)])
+                    }
+            )
+            .onChange(of: moved) { if moved != answered { translation = .zero } }
+    }
+}

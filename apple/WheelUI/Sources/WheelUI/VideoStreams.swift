@@ -130,6 +130,10 @@ final class StreamSession {
     @ObservationIgnored private var error: String?
     @ObservationIgnored private var wait: Duration = .seconds(1)
     @ObservationIgnored var retry: (() -> Void)?
+    /// The audio's gain, 0 to 1 (`VideoStream{volume, muted}`); kept across reconnects.
+    @ObservationIgnored var gain: Float = 1 {
+        didSet { link?.gain = gain }
+    }
 
     init(pane: String, stream: String, input: Bool) {
         self.pane = pane
@@ -160,6 +164,7 @@ final class StreamSession {
         link.onFirstFrame = { [weak self] in Task { @MainActor in self?.shown() } }
         link.onEnd = { [weak self, weak link] why in Task { @MainActor in if let link { self?.ended(link, why) } } }
         view.videoSize = { [weak link] in link?.videoSize }
+        link.gain = gain
         self.link = link
         link.start()
     }
@@ -219,6 +224,12 @@ final class StreamLink: @unchecked Sendable {
     private var size: CGSize?
     /// Whether this connection has shown a frame yet; each new connection reports its first.
     private var showing = false
+    /// The audio's gain, 0 (silent) to 1, as the pane set it; read on the read thread before each chunk plays.
+    private var gainValue: Float = 1
+    var gain: Float {
+        get { lock.withLock { gainValue } }
+        set { lock.withLock { gainValue = newValue } }
+    }
     var onFirstFrame: (@Sendable () -> Void)?
     var onEnd: (@Sendable (String) -> Void)?
 
@@ -329,6 +340,7 @@ final class StreamLink: @unchecked Sendable {
                 case let .video(time, units):
                     decoder.decode(time: time, units: units)
                 case let .audio(rate, channels, pcm):
+                    audio.gain = gain
                     if audio.play(rate: Double(rate), channels: Int(channels), pcm: pcm) { stats.add("audio") }
                 case .unknown:
                     break
@@ -350,6 +362,10 @@ final class StreamAudio {
     private var running = false
     private let ring = StreamAudioRing()
     static let backlogSeconds = 0.25
+    /// The mixer's output gain, 0 to 1.
+    var gain: Float = 1 {
+        didSet { if gain != oldValue { engine.mainMixerNode.outputVolume = gain } }
+    }
 
     /// Queues one chunk; false when no audio device took the stream.
     func play(rate: Double, channels: Int, pcm: Data) -> Bool {
@@ -379,6 +395,7 @@ final class StreamAudio {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = gain
         source = node
         do {
             try engine.start()
@@ -490,13 +507,17 @@ final class StreamControllers {
     }
 }
 
-/// The view a stream draws in: the display layer, fitted to the view with the video's aspect, and the keys and pointer
-/// events on it, sent as input frames. A pointer's `x` and `y` are in the video's pixels, from its top left.
+/// The view a stream draws in: the display layer, fitted to the view with the video's aspect (or filling it, cropped,
+/// when `fills`), and the keys and pointer events on it, sent as input frames. A pointer's `x` and `y` are in the
+/// video's pixels, from its top left.
 final class StreamView: NSView {
     let display = AVSampleBufferDisplayLayer()
     var takesInput = true
     var send: ((StreamFrame.Input, [String: Any]) -> Void)?
     var videoSize: () -> CGSize? = { nil }
+    var fills = false {
+        didSet { display.videoGravity = fills ? .resizeAspectFill : .resizeAspect }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -528,11 +549,19 @@ final class StreamView: NSView {
     /// Where `event` falls in the video, in its pixels from the top left; nil before the video's size is known.
     func videoPoint(_ event: NSEvent) -> CGPoint? {
         guard let size = videoSize(), size.width > 0, size.height > 0 else { return nil }
-        let rect = AVMakeRect(aspectRatio: size, insideRect: bounds)
+        let rect = Self.videoRect(size, in: bounds, fills: fills)
         let p = convert(event.locationInWindow, from: nil)
         let x = min(max((p.x - rect.minX) / rect.width, 0), 1) * size.width
         let y = min(max((isFlipped ? p.y - rect.minY : rect.maxY - p.y) / rect.height, 0), 1) * size.height
         return CGPoint(x: x.rounded(), y: y.rounded())
+    }
+
+    /// Where a picture of `size` draws in `bounds`: fitted inside, or filling it with the overflow past its edges.
+    static func videoRect(_ size: CGSize, in bounds: CGRect, fills: Bool) -> CGRect {
+        guard fills else { return AVMakeRect(aspectRatio: size, insideRect: bounds) }
+        let scale = max(bounds.width / size.width, bounds.height / size.height)
+        let w = size.width * scale, h = size.height * scale
+        return CGRect(x: bounds.midX - w / 2, y: bounds.midY - h / 2, width: w, height: h)
     }
 
     private func pointer(_ kind: String, _ event: NSEvent, button: Int? = nil) {
@@ -593,6 +622,8 @@ final class StreamView: NSView {
 
 private struct VideoStreamHostView: View {
     let streams: VideoStreams
+    @Environment(\.paneVideoStreamFills) private var fills
+    @Environment(\.paneVideoStreamGain) private var gain
     @State private var session: StreamSession
 
     init(streams: VideoStreams, pane: String, stream: String, input: Bool) {
@@ -601,7 +632,7 @@ private struct VideoStreamHostView: View {
     }
 
     var body: some View {
-        StreamViewHost(view: session.view)
+        StreamViewHost(view: session.view, fills: fills)
             .overlay {
                 if let note = session.note {
                     Text(note)
@@ -611,14 +642,24 @@ private struct VideoStreamHostView: View {
                         .padding(8)
                 }
             }
-            .onAppear { streams.appear(session) }
+            .onAppear {
+                session.gain = gain
+                streams.appear(session)
+            }
+            .onChange(of: gain) { session.gain = gain }
             .onDisappear { streams.disappear(session) }
     }
 }
 
 private struct StreamViewHost: NSViewRepresentable {
     let view: StreamView
-    func makeNSView(context: Context) -> StreamView { view }
-    func updateNSView(_ view: StreamView, context: Context) {}
+    let fills: Bool
+    func makeNSView(context: Context) -> StreamView {
+        view.fills = fills
+        return view
+    }
+    func updateNSView(_ view: StreamView, context: Context) {
+        if view.fills != fills { view.fills = fills }
+    }
 }
 #endif

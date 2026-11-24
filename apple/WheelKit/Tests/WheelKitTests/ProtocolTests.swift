@@ -18,6 +18,20 @@ struct ProtocolTests {
         #expect(try ClientMsg.agentDetach(agent: "w5").json() == #"{"agent":"w5","op":"agent_detach"}"#)
     }
 
+    @Test func voiceLeaseOpsEncodeAndTheirAnswersDecode() throws {
+        #expect(try ClientMsg.leaseClaim(req: 1, key: "voice").json() == #"{"key":"voice","op":"lease_claim","req":1}"#)
+        #expect(try ClientMsg.leaseRelease(req: 2, key: "voice").json() == #"{"key":"voice","op":"lease_release","req":2}"#)
+        #expect(try ClientMsg.agentVoice(req: 3, agent: "w5").json() == #"{"agent":"w5","op":"agent_voice","req":3}"#)
+        #expect(try ClientMsg.agentVoice(req: 4, agent: nil).json() == #"{"op":"agent_voice","req":4}"#)
+        guard case let .leaseClaimed(req, key, owner) = try ServerMsg.decode(#"{"ev":"lease_claimed","req":1,"key":"voice","owner":"c7"}"#) else { Issue.record("not lease_claimed"); return }
+        #expect(req == 1 && key == "voice" && owner == "c7")
+        guard case let .lease(held, by) = try ServerMsg.decode(#"{"ev":"lease","key":"voice","owner":null}"#) else { Issue.record("not lease"); return }
+        #expect(held == "voice" && by == nil)
+        let card = try ServerMsg.decode(#"{"ev":"agent","agent":"w5","event":{"kind":"card","card":{"type":"artifact","id":"a1","name":"Diff","scope":"project"}}}"#)
+        guard case let .agent(_, stamped) = card else { Issue.record("not agent"); return }
+        #expect(stamped.event == .card(title: "Diff"))
+    }
+
     /// The guidance messages as wheeld's serde writes and reads them.
     @Test func guidanceMessagesMatchTheDaemonsSpelling() throws {
         #expect(try ClientMsg.guidanceLs(req: 2, agent: nil).json() == #"{"op":"guidance_ls","req":2}"#)
