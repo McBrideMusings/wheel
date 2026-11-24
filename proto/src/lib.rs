@@ -102,37 +102,6 @@ pub struct PostFile {
     pub from: String,
 }
 
-/// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
-/// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
-/// everything else is reported whether or not there are problems, so a pane on a broken artifact
-/// still says what it is.
-/// One tool an MCP server offers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct McpTool {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// The JSON Schema of the tool's arguments.
-    pub input_schema: serde_json::Value,
-    /// The tool's `_meta` as the server sent it: where `ui.resourceUri` names the tool's view.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-}
-
-/// What an MCP tool call returned.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct McpToolResult {
-    /// The content blocks as the server sent them (`{"type":"text","text":...}` and others).
-    pub content: Vec<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub structured: Option<serde_json::Value>,
-    /// The tool reported a failure of its own; `content` says what.
-    pub is_error: bool,
-    /// The result's `_meta` as the server sent it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta: Option<serde_json::Value>,
-}
-
 /// Where a plugin package lives (ADR-0041): `project` (`<project>/.wheel/plugins/<id>/`),
 /// `machine` (`~/.wheel/plugins/<id>/`) or `builtin` (compiled into wheeld).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,6 +219,10 @@ pub struct PluginPaneInfo {
     pub actions: Vec<String>,
 }
 
+/// One artifact as the daemon reads it: the `wheel.toml` entry that defines it, where its page
+/// resolved to, and what is wrong with it. `problems` is empty for an artifact with nothing wrong;
+/// everything else is reported whether or not there are problems, so a pane on a broken artifact
+/// still says what it is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArtifactInfo {
     pub scope: ArtifactScope,
@@ -1926,52 +1899,6 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
-    /// List the tools of the MCP server artifact `name` names (an entry with `mcp` or `mcp_url`),
-    /// connecting to it first when the daemon holds no session. Replies `tools`.
-    ArtifactTools {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-    },
-    /// Call `tool` of the MCP server artifact `name` names, with `arguments` (a JSON object, none
-    /// for a tool that takes nothing). Replies `tool_result`; a tool that fails is a result with
-    /// `is_error`, a call that cannot be made is an `error`.
-    ArtifactCall {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-        tool: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        arguments: Option<serde_json::Value>,
-    },
-    /// `resources/read` of `uri` on the MCP server artifact `name` names. Replies `resource`.
-    ArtifactRead {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        req: Option<u64>,
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scope: Option<ArtifactScope>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// The pane asking, so a server shared by many panes can keep each one's state.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane: Option<String>,
-        uri: String,
-    },
     /// Run the refresh command of the artifact web pane `pane` shows, now. Waits for the run and
     /// replies `refresh` with the runner and that run. Refused when the pane shows no
     /// artifact, or its entry declares no command.
@@ -2612,12 +2539,6 @@ pub enum ServerMsg {
     PaneReload {
         pane: String,
     },
-    /// Sent to every connection: the MCP server behind web pane `pane` announced that a resource
-    /// changed (`notifications/resources/updated`), so a client showing one of the server's resources
-    /// can read it again.
-    McpUpdated {
-        pane: String,
-    },
     /// Sent to every connection when an artifact's entry is deleted (`artifact_remove`, or the
     /// sweep of an artifact whose lifetime is over). `cwd` is the directory of the space whose
     /// `wheel.toml` held a `project` entry, and absent for a `machine` one: with `scope` and
@@ -2632,22 +2553,6 @@ pub enum ServerMsg {
     Artifact {
         req: u64,
         artifact: ArtifactInfo,
-    },
-    /// The tools of an MCP server, in reply to `artifact_tools`.
-    Tools {
-        req: u64,
-        tools: Vec<McpTool>,
-    },
-    /// What an MCP tool returned, in reply to `artifact_call`.
-    ToolResult {
-        req: u64,
-        result: McpToolResult,
-    },
-    /// What an MCP server returned for `resources/read`, in reply to `artifact_read`: its
-    /// `contents` as the server sent them.
-    Resource {
-        req: u64,
-        contents: Vec<serde_json::Value>,
     },
     /// Every built-in artifact as it is now, in reply to `builtin_ls`, `builtin_install`,
     /// `builtin_update` and `builtin_remove`.
@@ -3105,9 +3010,6 @@ impl ServerMsg {
             | ServerMsg::PluginAction { req, .. }
             | ServerMsg::PluginEmbed { req, .. }
             | ServerMsg::PluginStream { req, .. }
-            | ServerMsg::Tools { req, .. }
-            | ServerMsg::ToolResult { req, .. }
-            | ServerMsg::Resource { req, .. }
             | ServerMsg::Builtins { req, .. }
             | ServerMsg::BuiltinEdited { req, .. }
             | ServerMsg::Refresh { req, .. }
@@ -3165,7 +3067,6 @@ impl ServerMsg {
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }
             | ServerMsg::PaneReload { .. }
-            | ServerMsg::McpUpdated { .. }
             | ServerMsg::ArtifactGone { .. }
             | ServerMsg::WindowRequest { .. }
             | ServerMsg::InspectPane { .. }

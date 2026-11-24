@@ -1,0 +1,8 @@
+[profile.default]
+# A hung test is killed after two minutes instead of holding the run forever.
+slow-timeout = { period = "20s", terminate-after = 6 }
+
+# `make test-fast`: every crate's own unit tests, none of the integration binaries
+# (daemon/tests, cli/tests, plugins/runner/tests) that start a wheeld or real processes.
+[profile.fast]
+default-filter = "kind(lib) | kind(bin)"
