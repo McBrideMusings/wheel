@@ -120,7 +120,7 @@ final class ThumbUITests: XCTestCase {
         sync("opened")
 
         // A swipe up from the page handle opens the sheet on the tab last used, a
-        // long one on Agents, with the keyboard down and up.
+        // long one on Agents. The handle hides while the keyboard is up (wheel-eg4e.19.41).
         let handle = app.descendants(matching: .any).matching(identifier: "page handle").firstMatch
         XCTAssertTrue(handle.waitForExistence(timeout: 5))
         func swipeUp(_ points: CGFloat) {
@@ -148,9 +148,13 @@ final class ThumbUITests: XCTestCase {
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the keyboard is up")
-        swipeUp(80)
-        XCTAssertTrue(app.buttons["tab spaces"].waitForExistence(timeout: 5), "a swipe up opens the sheet with the keyboard up")
+        XCTAssertTrue(handle.waitForNonExistence(timeout: 5), "no page handle while the keyboard is up")
         shot("handle-keyboard")
+        app.buttons["hide keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "the keyboard button hid the keyboard")
+        XCTAssertTrue(handle.waitForExistence(timeout: 5), "the page handle is back with the keyboard down")
+        swipeUp(80)
+        XCTAssertTrue(app.buttons["tab spaces"].waitForExistence(timeout: 5), "a swipe up opens the sheet once the keyboard is down")
         app.buttons["tab spaces"].tap()
         app.buttons["space alpha"].tap()
         sync("handle")
