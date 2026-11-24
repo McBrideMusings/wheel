@@ -6,7 +6,7 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 WHEEL_DERIVED_DATA ?= $(ROOT)/DerivedData
 PROJECT_TOOLS := $(ROOT)/.claude/skills/project-verify/tools
 
-.PHONY: help build-server build-client dev test test-rust test-fast test-wheelkit vet fmt kill \
+.PHONY: help build-server build-client dev test test-rust test-fast test-wheelkit test-wheelui test-wheelluau test-scripts vet fmt kill \
 	deploy-client deploy-dev restart-server restart-server-dev deploy-phone ios-check \
 	grid-motion idle-chat lsregister-prune icon-render
 
@@ -24,7 +24,7 @@ build-client: ## Build the Debug Mac app into WHEEL_DERIVED_DATA (xcodegen, then
 dev: ## Run wheeld from source on its default port
 	cd $(ROOT) && cargo run --bin wheeld
 
-test: test-rust test-wheelkit ## Run every test suite
+test: test-rust test-wheelkit test-wheelui test-wheelluau test-scripts ## Run every test suite
 
 test-rust: ## Every Rust test through cargo-nextest (tools/nextest), then the doctests
 	cd $(ROOT) && tools/nextest run
@@ -38,6 +38,15 @@ lint-wheelkit: ## SwiftLint over WheelKit: no force-unwrap, try!, as!, unchecked
 
 test-wheelkit: lint-wheelkit ## swift test on WheelKit, after the lint
 	swift test --package-path $(ROOT)/apple/WheelKit
+
+test-wheelui: ## swift test on WheelUI (builds WheelLuau's C++ and Textual)
+	swift test --package-path $(ROOT)/apple/WheelUI
+
+test-wheelluau: ## swift test on WheelLuau (the pane-script VM)
+	swift test --package-path $(ROOT)/apple/WheelLuau
+
+test-scripts: ## The shell tests that need no daemon or app
+	bash $(ROOT)/artifacts/companion/sessions.test.sh
 
 vet: ## Clippy with warnings as errors, and the workspace-hack current (cargo install --locked cargo-hakari)
 	cd $(ROOT) && cargo clippy --all-targets -- -D warnings
