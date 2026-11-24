@@ -64,7 +64,11 @@ pub fn frame(message: &ClientMsg) -> String {
 fn socket(url: &str) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let (ws, _) = tungstenite::connect(url).with_context(|| format!("connecting to wheeld at {url}"))?;
     match ws.get_ref() {
-        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(true)?,
+        MaybeTlsStream::Plain(stream) => {
+            stream.set_nonblocking(true)?;
+            // Keystrokes and replies are small frames: Nagle's coalescing would only hold them back.
+            stream.set_nodelay(true)?;
+        }
         _ => anyhow::bail!("wheeld at {url} is not a plain socket"),
     }
     Ok(ws)
@@ -363,6 +367,20 @@ pub(crate) mod tests {
         let file = std::env::temp_dir().join(format!("wheel-gpui-token-{port}"));
         std::fs::write(&file, token).unwrap();
         (Endpoint::new(&format!("ws://127.0.0.1:{port}/ws"), &file).unwrap(), file)
+    }
+
+    #[test]
+    fn the_socket_sends_small_frames_at_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            while ws.read().is_ok() {}
+        });
+        let ws = socket(&format!("ws://127.0.0.1:{port}/ws")).unwrap();
+        let MaybeTlsStream::Plain(stream) = ws.get_ref() else { panic!("not a plain socket") };
+        assert!(stream.nodelay().unwrap(), "Nagle is on");
     }
 
     #[test]

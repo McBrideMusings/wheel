@@ -300,6 +300,8 @@ impl TlsListener {
                         continue;
                     }
                 };
+                // As the local listener does: small frames answered one by one go out at once.
+                let _ = tcp.set_nodelay(true);
                 let ip = peer.ip();
                 let Ok(permit) = slots.clone().try_acquire_owned() else {
                     tracing::warn!(%peer, max = MAX_CONNECTIONS, "remote connection refused: at the connection limit");

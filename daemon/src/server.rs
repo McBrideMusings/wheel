@@ -1136,6 +1136,12 @@ pub async fn serve(listener: TcpListener, state: Arc<AppState>) -> anyhow::Resul
             }
         }
     });
+    // Frames are small and answered one by one: Nagle's coalescing would only hold them back.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp| {
+        if let Err(e) = tcp.set_nodelay(true) {
+            tracing::debug!(error = %e, "cannot set TCP_NODELAY on a connection");
+        }
+    });
     axum::serve(
         listener,
         app(state, Listener::Local).into_make_service_with_connect_info::<SocketAddr>(),

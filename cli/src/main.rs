@@ -1796,10 +1796,11 @@ impl Conn {
         // the kernel completes the TCP handshake whether or not wheeld ever reads.
         let (ws, _) = tokio::time::timeout(
             LINK_WAIT,
+            // `true` disables Nagle: requests are small frames each answered before the next.
             tokio_tungstenite::connect_async_with_config(
                 format!("{url}?token={}", token.trim()),
                 Some(config),
-                false,
+                true,
             ),
         )
         .await
