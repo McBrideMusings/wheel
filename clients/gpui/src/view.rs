@@ -267,6 +267,8 @@ pub struct Client {
     /// Each working pane's arc, a view of its own (`status::Spinner`), and the panes this frame drew one for.
     spinners: HashMap<String, gpui::Entity<status::Spinner>>,
     spinners_seen: HashSet<String>,
+    /// Steps every working arc while any is drawn (`status::SPIN_STEP_MS`).
+    spin_clock: Option<gpui::Task<()>>,
     card_views: HashMap<String, card_rows::CardPlacement>,
     card_panes: HashSet<String>,
     /// The bridge's overlay is the open footer menu's rect (`sync_sidebar_overlay`).
@@ -540,7 +542,7 @@ impl Client {
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
-            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
+            status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
@@ -2305,6 +2307,21 @@ impl Client {
     /// Pane `pane`'s working arc, a view kept while the pane works.
     fn spinner(&mut self, pane: &str, cx: &mut Context<Self>) -> gpui::AnyView {
         self.spinners_seen.insert(pane.to_owned());
+        // One clock steps every arc at once, so nine working panes cost one frame a step, not nine.
+        if self.spin_clock.is_none() {
+            self.spin_clock = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(status::SPIN_STEP_MS)).await;
+                // With no arc drawn the clock wakes and notifies nothing, so no frame is drawn.
+                let open = this.update(cx, |client, cx| {
+                    for spinner in client.spinners.values() {
+                        spinner.update(cx, |_, cx| cx.notify());
+                    }
+                });
+                if open.is_err() {
+                    break;
+                }
+            }));
+        }
         self.spinners.entry(pane.to_owned()).or_insert_with(|| {
             let id = gpui::ElementId::Name(format!("pane-dot-{pane}").into());
             cx.new(|_| status::Spinner { id })
