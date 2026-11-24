@@ -29,6 +29,8 @@ pub enum Pending {
     RemoveBuiltin(String),
     /// Close a session: every space in it and every pane in those.
     CloseSession(String),
+    /// Start an agent's conversation over (the composer's + menu).
+    ClearChat(String),
 }
 
 /// The requests the open palette has out, so their answers are told apart.
@@ -479,6 +481,7 @@ impl Client {
             Pending::StartAgent(pane, agent) => self.send(&ClientMsg::PaneStart { req: None, pane, kind: StartKind::Agent, message: None, agent: Some(agent), model: None, permission_mode: None, sandbox: None, dir: None }),
             Pending::RemoveBuiltin(name) => self.remove_builtin(&name),
             Pending::CloseSession(session) => self.send_layout(|req| ClientMsg::SessionClose { req: Some(req), session }),
+            Pending::ClearChat(agent) => self.clear_chat(&agent),
         }
     }
 

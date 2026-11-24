@@ -171,6 +171,43 @@ pub fn attach_as_context(draft: &str, markdown: &str) -> String {
     format!("{quoted}\n\n{draft}")
 }
 
+/// What the composer's + menu offers (the phone's `AttachMenu`, design §8.6 K1): the file
+/// picker, starting the conversation over, and reading the agent's replies aloud.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlusAction {
+    AddFiles,
+    Clear,
+    ReadAloud,
+}
+
+impl PlusAction {
+    pub fn id(self) -> &'static str {
+        match self {
+            PlusAction::AddFiles => "add-files",
+            PlusAction::Clear => "clear",
+            PlusAction::ReadAloud => "read-aloud",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            PlusAction::AddFiles => "Add files…",
+            PlusAction::Clear => "Clear chat",
+            PlusAction::ReadAloud => "Read aloud",
+        }
+    }
+}
+
+/// The + menu's items, Clear chat only for a harness that starts over on `/clear` (`can_clear`).
+pub fn plus_items(can_clear: bool) -> Vec<PlusAction> {
+    [PlusAction::AddFiles, PlusAction::Clear, PlusAction::ReadAloud].into_iter().filter(|a| can_clear || *a != PlusAction::Clear).collect()
+}
+
+/// Whether `/clear` starts the harness's conversation over (`AgentPanes.canClear`): Claude Code
+/// resets on it; Codex and Pi take it as an ordinary message.
+pub fn can_clear(harness: Option<&str>) -> bool {
+    harness == Some("claude")
+}
+
 /// One file a composer holds for its next message: what its chip shows and the path that goes
 /// out at send.
 #[derive(Clone, Debug, PartialEq)]
@@ -317,6 +354,13 @@ mod tests {
     fn attaching_a_message_quotes_it_above_the_draft() {
         assert_eq!(attach_as_context("", "one\n\ntwo"), "> one\n>\n> two\n\n");
         assert_eq!(attach_as_context("my words", "**yes**"), "> **yes**\n\nmy words");
+    }
+
+    #[test]
+    fn the_plus_menu_offers_clear_chat_only_where_clear_starts_over() {
+        assert!(can_clear(Some("claude")) && !can_clear(Some("codex")) && !can_clear(None));
+        assert_eq!(plus_items(true), [PlusAction::AddFiles, PlusAction::Clear, PlusAction::ReadAloud]);
+        assert_eq!(plus_items(false), [PlusAction::AddFiles, PlusAction::ReadAloud]);
     }
 
     fn commands(names: &[&str]) -> Vec<Command> {

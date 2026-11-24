@@ -866,23 +866,75 @@ async fn agent_send(pane: &str, text: &str, cx: &mut AsyncApp) -> Result<()> {
     anyhow::bail!("wheel agent send {text:?} did not finish in 70 s")
 }
 
-/// The composer's read-aloud toggle (wheel-e1xk.3): a press turns it on for this conversation, and
-/// the next finished turn is handed to the app's synthesizer keyed by its last reply; a second press
-/// turns it off, stops that speech at once, and the turn after is not read.
+/// The + menu's Read aloud (wheel-e1xk.3, wheel-zxts.14): a press on the composer's + opens its
+/// menu (Add files…, then Clear chat where the harness clears, then Read aloud), and Read aloud
+/// turns reading on for this conversation; the next finished turn is handed to the app's
+/// synthesizer keyed by its last reply; a second pick turns it off, stops that speech at once,
+/// and the turn after is not read.
 async fn read_aloud_toggle(mut run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     let (window, native) = (run.window, run.native.clone());
     let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
     let spoken = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.starts_with(&format!("transcript {agent_name}: read aloud the turn's reply: "))).collect()) };
-    let toggle = |cx: &mut AsyncApp| -> Result<Value> {
-        draw(window, None, cx)?;
-        let b = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "read-aloud"))?.ok_or_else(|| anyhow::anyhow!("{agent_name}'s composer drew no read-aloud toggle"))?;
+    let click = |b: (f32, f32, f32, f32)| {
         let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
         native.call(json!({"op":"post_mouse","kind":"down","point":p}));
         native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    };
+    let mut menu_report = Value::Null;
+    let mut toggle = |cx: &mut AsyncApp| -> Result<Value> {
+        draw(window, None, cx)?;
+        let plus = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus"))?.ok_or_else(|| anyhow::anyhow!("{agent_name}'s composer drew no +"))?;
+        click(plus);
+        draw(window, None, cx)?;
+        let open = window.update(cx, |c, _, _| c.open_menu())?;
+        ensure!(open == Some((agent_name.clone(), "+".into())), "a press on the + at {plus:?} left the open menu {open:?}");
+        let rows: Vec<(String, (f32, f32, f32, f32))> = window.update(cx, |c, _, _| c.controls_drawn(&agent_name))?.into_iter().filter(|(id, _)| id.starts_with("plus:")).collect();
+        let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+        ensure!(ids == ["plus:add-files", "plus:clear", "plus:read-aloud"] || ids == ["plus:add-files", "plus:read-aloud"], "the + menu's rows: {ids:?}");
+        ensure!(rows.windows(2).all(|w| w[0].1.1 < w[1].1.1) && rows.iter().all(|(_, b)| b.1 + b.3 <= plus.1 + 0.5), "the + menu's rows {rows:?} are not one under the other above the + {plus:?}");
+        // Its bottom row sits on the +: it opens from the button, never off to one side.
+        ensure!(rows.last().is_some_and(|(_, b)| plus.1 - (b.1 + b.3) < 12. && (b.0 - plus.0).abs() < 12.), "the + menu's last row {:?} is not just above the + {plus:?}", rows.last());
+        if menu_report.is_null() {
+            draw(window, Some(run.output.join("client-plus-menu.png")), cx)?;
+            // The keys work it as a config menu: it opens on its first row; Down and Up move.
+            let opened_on = window.update(cx, |c, _, _| c.menu_row())?;
+            native.call(json!({"op":"post_key","text":"\u{f701}","code":125}));
+            draw(window, None, cx)?;
+            let after_down = window.update(cx, |c, _, _| c.menu_row())?;
+            native.call(json!({"op":"post_key","text":"\u{f700}","code":126}));
+            draw(window, None, cx)?;
+            let after_up = window.update(cx, |c, _, _| c.menu_row())?;
+            ensure!((opened_on, after_down, after_up) == (0, 1, 0), "the + menu's rows from the keys (opened, Down, Up): {:?}", (opened_on, after_down, after_up));
+            // Clear chat asks first; declined, nothing is sent and the conversation stays.
+            let mut cleared = Value::Null;
+            if let Some((_, clear)) = rows.iter().find(|(id, _)| id == "plus:clear") {
+                let rows_before = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
+                click(*clear);
+                draw(window, None, cx)?;
+                let asked = window.update(cx, |c, _, _| c.confirmation.as_ref().map(|c| (c.title.clone(), c.button.clone())))?;
+                ensure!(asked == Some(("Clear this chat?".into(), "Clear Chat".into())), "Clear chat asked {asked:?}");
+                window.update(cx, |c, _, _| c.answer_confirmation(false))?;
+                // A frame without the sheet, so the next press reaches the composer.
+                draw(window, None, cx)?;
+                let rows_after = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
+                ensure!(rows_after == rows_before && window.update(cx, |c, _, _| c.open_menu())?.is_none(), "declining Clear chat changed the transcript ({rows_before} rows, then {rows_after}) or left the menu open");
+                cleared = json!({"asked": asked, "declined_rows": [rows_before, rows_after]});
+                click(plus);
+                draw(window, None, cx)?;
+                let reopened = window.update(cx, |c, _, _| (c.open_menu(), c.state_json()["confirmation"].clone(), c.presses.clone()))?;
+                ensure!(reopened.0 == Some((agent_name.clone(), "+".into())), "a press on the + after declining Clear chat left the menu {:?} (confirmation {}, presses {:?})", reopened.0, reopened.1, reopened.2);
+            }
+            menu_report = json!({"rows": ids, "keys": [opened_on, after_down, after_up], "clear": cleared});
+        }
+        // Where this open drew it: the menu may have been closed and opened again above.
+        let read_aloud = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus:read-aloud"))?.ok_or_else(|| anyhow::anyhow!("the + menu drew no Read aloud"))?;
+        ensure!(window.update(cx, |c, _, _| c.open_menu())? == Some((agent_name.clone(), "+".into())), "the + menu is not open before Read aloud");
+        click(read_aloud);
+        ensure!(window.update(cx, |c, _, _| c.open_menu())?.is_none(), "the + menu stayed open after Read aloud");
         Ok(window.update(cx, |c, _, _| c.state_json()["reads_aloud"].clone())?)
     };
     let on = toggle(cx)?;
-    ensure!(on == json!([agent_name]), "a press on the read-aloud toggle left reads_aloud {on}");
+    ensure!(on == json!([agent_name]), "Read aloud from the + menu left reads_aloud {on}");
     draw(window, Some(run.output.join("client-read-aloud-on.png")), cx)?;
     let before = spoken(cx)?.len();
     agent_send(&agent_pane, "read this one aloud", cx).await?;
@@ -900,7 +952,7 @@ async fn read_aloud_toggle(mut run: Run, agent_pane: String, agent_name: String,
     let key = key.ok_or_else(|| anyhow::anyhow!("the turn wrote no reply to read"))?;
     ensure!(heard.ends_with(&format!(": {}", json!(key))), "the finished turn was spoken as {heard:?}, not keyed {key}");
     let off = toggle(cx)?;
-    ensure!(off == json!([]), "a second press left reads_aloud {off}");
+    ensure!(off == json!([]), "a second Read aloud left reads_aloud {off}");
     let mut stopped = Value::Null;
     for _ in 0..100 {
         stopped = window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?;
@@ -914,7 +966,7 @@ async fn read_aloud_toggle(mut run: Run, agent_pane: String, agent_name: String,
     pump(&mut run.connection, 1000, &mut run.layouts, window, cx).await?;
     let after = spoken(cx)?.len();
     ensure!(after == before + 1, "a turn that ended with read-aloud off was spoken: {} line(s) after the first", after - before - 1);
-    Ok((run, json!({"on": on, "heard": heard, "key": key, "off": off, "stopped": stopped.is_null(), "quiet_after_off": true})))
+    Ok((run, json!({"menu": menu_report, "on": on, "heard": heard, "key": key, "off": off, "stopped": stopped.is_null(), "quiet_after_off": true})))
 }
 
 /// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the
@@ -1626,9 +1678,9 @@ async fn transcript_cards(run: Run, agent_pane: String, agent_name: String, cli_
 async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
-    // The composer row carries the model control and the context ring (design §8.1): the ring
-    // reads three turns answered, 10,000 tokens each of a 200,000 window. The footer under it
-    // has the directory, the agent's home, and the other config controls. A click on the ring
+    // The composer row carries the config controls, the mode chip then the model, and the context
+    // ring (design §8.1): the ring reads three turns answered, 10,000 tokens each of a 200,000
+    // window. The status line under it shows status only: the directory and the agent's home. A click on the ring
     // reads the raw figures; a click on a control opens its menu; picking a value asks wheeld
     // and the control follows the agent's own list.
     let footer_before = window.update(cx, |c, _, _| c.footer_items_all(&agent_name))?;
@@ -1640,12 +1692,15 @@ async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: Stri
     let (composer_b, model_b, ring_b, mode_b) = (bounds(cx, "composer")?, bounds(cx, "model")?, bounds(cx, "context")?, bounds(cx, "mode")?);
     let inside = |b: Option<(f32, f32, f32, f32)>, outer: (f32, f32, f32, f32)| b.is_some_and(|b| b.0 >= outer.0 && b.1 >= outer.1 && b.0 + b.2 <= outer.0 + outer.2 + 0.5 && b.1 + b.3 <= outer.1 + outer.3 + 0.5);
     let composer_b = composer_b.ok_or_else(|| anyhow::anyhow!("the composer was not drawn"))?;
-    ensure!(inside(model_b, composer_b) && inside(ring_b, composer_b), "the model {model_b:?} and the ring {ring_b:?} are not in the composer row {composer_b:?}");
+    ensure!(inside(model_b, composer_b) && inside(ring_b, composer_b) && inside(mode_b, composer_b), "the mode {mode_b:?}, the model {model_b:?} and the ring {ring_b:?} are not in the composer row {composer_b:?}");
     ensure!(model_b.zip(ring_b).is_some_and(|(m, r)| m.0 + m.2 <= r.0), "the model {model_b:?} is not left of the ring {ring_b:?}");
+    ensure!(mode_b.zip(model_b).is_some_and(|(m, o)| m.0 + m.2 <= o.0 && (m.1 - o.1).abs() < 0.5), "the mode {mode_b:?} is not beside the model {model_b:?}, left of it");
     // The draft has the first row to itself; the buttons sit on the row under it.
     let draft_b = bounds(cx, "draft")?.ok_or_else(|| anyhow::anyhow!("the draft was not drawn"))?;
     ensure!([model_b, ring_b].iter().all(|b| b.is_some_and(|b| b.1 >= draft_b.1 + draft_b.3)), "the model {model_b:?} or the ring {ring_b:?} is not under the draft {draft_b:?}");
-    ensure!(mode_b.is_some_and(|m| m.1 >= composer_b.1 + composer_b.3), "the mode control {mode_b:?} is not in the footer under the composer {composer_b:?}");
+    // The status line holds its items alone: nothing it draws is a control.
+    let footer_ids: Vec<String> = window.update(cx, |c, _, _| c.controls_drawn(&agent_name))?.into_iter().filter(|(_, b)| b.1 >= composer_b.1 + composer_b.3).map(|(id, _)| id).collect();
+    ensure!(footer_ids.iter().all(|id| id.starts_with("footer:")), "the status line draws more than status: {footer_ids:?}");
     ensure!(item(&footer_before, "directory").is_some_and(|d| d.starts_with('~') || d.starts_with('/')), "no directory in the footer: {footer_before:?}");
     ensure!(item(&footer_before, "home").is_some(), "no home in the footer: {footer_before:?}");
     let controls = window.update(cx, |c, _, _| c.config_controls(&agent_name))?;
@@ -2352,7 +2407,7 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
     std::fs::write(&attach_file, "attached from the GPUI check\n".repeat(60))?;
     let log_tail = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(window.update(cx, |c, _, _| c.toast_log.iter().rev().take(8).cloned().collect())?) };
     let attachments_now = |cx: &mut AsyncApp| -> Result<Vec<Value>> { Ok(pane_now(cx)?["composer"]["attachments"].as_array().cloned().unwrap_or_default()) };
-    let clip_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "attach"))?.ok_or_else(|| anyhow::anyhow!("the composer drew no paperclip"))?;
+    let clip_at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus"))?.ok_or_else(|| anyhow::anyhow!("the composer drew no +"))?;
     let drop_at = gpui::point(gpui::px(clip_at.0 + 120.), gpui::px(clip_at.1 + clip_at.3 / 2.));
     // Through the untyped handle: a typed update holds the Client, which the drop then updates.
     let drop_window: gpui::AnyWindowHandle = window.into();
@@ -2367,7 +2422,7 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
     tick(cx, 150).await;
     draw(window, None, cx)?;
     let dropped = attachments_now(cx)?;
-    ensure!(dropped.len() == 1 && dropped[0]["name"] == "notes for agent.txt" && dropped[0]["detail"] == "2 KB", "a file dropped on the composer at {drop_at:?} (paperclip {clip_at:?}) gave chips {dropped:?}; log {:?}", log_tail(cx)?);
+    ensure!(dropped.len() == 1 && dropped[0]["name"] == "notes for agent.txt" && dropped[0]["detail"] == "2 KB", "a file dropped on the composer at {drop_at:?} (+ at {clip_at:?}) gave chips {dropped:?}; log {:?}", log_tail(cx)?);
     let mut png = vec![];
     image::RgbaImage::from_fn(48, 32, |x, y| image::Rgba([(x * 5) as u8, 120, (y * 7) as u8, 255])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)?;
     let paste_image = |png: &[u8], cx: &mut AsyncApp| cx.update(|app| app.write_to_clipboard(gpui::ClipboardItem { entries: vec![gpui::ClipboardEntry::Image(gpui::Image::from_bytes(gpui::ImageFormat::Png, png.to_vec()))] }));
@@ -2381,7 +2436,7 @@ async fn attachments(run: Run, agent_pane: String, agent_name: String, cli_path:
     cleanup.0.extend(first_image.parent().map(std::path::Path::to_owned));
     ensure!(pasted.len() == 2 && pasted[1]["image"] == true && pasted[1]["name"].as_str().is_some_and(|n| n.starts_with("Image-") && n.ends_with(".png")) && first_image.starts_with(&attachments_folder) && first_image.exists(),
         "Command-V with an image on the clipboard gave chips {pasted:?}");
-    let chips_drawn = ["attachment:notes for agent.txt", "attach"].iter().all(|id| window.update(cx, |c, _, _| c.control_bounds(&agent_name, id)).ok().flatten().is_some());
+    let chips_drawn = ["attachment:notes for agent.txt", "plus"].iter().all(|id| window.update(cx, |c, _, _| c.control_bounds(&agent_name, id)).ok().flatten().is_some());
     ensure!(chips_drawn, "the chips row was not drawn: {:?}", window.update(cx, |c, _, _| c.control_bounds(&agent_name, "chips"))?);
     tick(cx, 300).await;
     draw(window, None, cx)?;
