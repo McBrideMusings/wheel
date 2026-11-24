@@ -2,7 +2,7 @@
 # and Cargo.lock never pull in GPUI (ADR-0020: the server depends on no client).
 [workspace]
 members = [".", "check"]
-default-members = [".", "check"]
+default-members = ["."]
 
 [package]
 name = "wheel-gpui"
