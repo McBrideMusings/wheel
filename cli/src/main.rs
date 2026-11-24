@@ -1888,26 +1888,14 @@ impl Conn {
     /// refuses only an op the server lacks. The status reply is read as JSON, not as a
     /// `ServerMsg`, because a status from another level is one this command may not decode.
     async fn require_compatible_server(&mut self) -> Result<(), Fail> {
-        let req = self.req();
-        self.send(&ClientMsg::Status { req: Some(req) }).await?;
-        let wait = Duration::from_secs(10);
-        let offer = loop {
-            let Some(text) = self.recv_text(wait).await? else {
-                return Err(Fail::Timeout("no reply from daemon within 10s".into()));
-            };
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
-            };
-            if value["req"] == req {
-                if value["ev"] == "error" {
-                    return Err(Fail::Daemon(
-                        value["message"].as_str().unwrap_or("error").to_string(),
-                    ));
-                }
-                if let Some(offer) = wheel_proto::Offer::read(&text) {
-                    break offer;
-                }
-            }
+        // `hello` costs the daemon nothing; a wheeld older than it has only `status` to say what
+        // it offers (ADR-0050: an older server still serves what it has).
+        let offer = match self.offer_from(ClientMsg::Hello { req: None }).await? {
+            Some(offer) => offer,
+            None => self
+                .offer_from(ClientMsg::Status { req: None })
+                .await?
+                .ok_or_else(|| Fail::Daemon("wheeld answered status with no offer".into()))?,
         };
         if let Err(mismatch) = offer.check() {
             let remedy = if mismatch.server_older() {
@@ -1923,6 +1911,45 @@ impl Conn {
         }
         self.offer = Some(offer);
         Ok(())
+    }
+
+    /// Send `ask` (`hello` or `status`) under a new `req` and read the offer from its reply. None
+    /// when this wheeld has no such op.
+    async fn offer_from(&mut self, ask: ClientMsg) -> Result<Option<wheel_proto::Offer>, Fail> {
+        let req = self.req();
+        let ask = match ask {
+            ClientMsg::Hello { .. } => ClientMsg::Hello { req: Some(req) },
+            _ => ClientMsg::Status { req: Some(req) },
+        };
+        let op = serde_json::to_value(&ask).ok().and_then(|v| v["op"].as_str().map(String::from)).unwrap_or_default();
+        self.send(&ask).await?;
+        let wait = Duration::from_secs(10);
+        loop {
+            let Some(text) = self.recv_text(wait).await? else {
+                return Err(Fail::Timeout("no reply from daemon within 10s".into()));
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let message = value["message"].as_str().unwrap_or("error");
+            // A wheeld from before it named unsupported ops answers one with a "bad message" that
+            // carries no `req`; one that does carries it. Either way, `hello` failing means this
+            // wheeld has none, and `status` says what it offers.
+            let refused = value["ev"] == "error"
+                && (value["req"] == req || (value["req"].is_null() && message.contains(&format!("`{op}`"))));
+            if refused && op == "hello" {
+                return Ok(None);
+            }
+            if value["req"] != req {
+                continue;
+            }
+            if value["ev"] == "error" {
+                return Err(Fail::Daemon(message.to_string()));
+            }
+            if let Some(offer) = wheel_proto::Offer::read(&text) {
+                return Ok(Some(offer));
+            }
+        }
     }
 }
 
@@ -6737,21 +6764,77 @@ mod markdown_reference_tests {
 mod older_server_tests {
     use super::*;
 
-    /// A server that answers `status` with `reply` (its `req` filled in), then reads what it is sent.
+    /// A wheeld older than `hello`: it refuses `hello` as a real one does and answers `status` with
+    /// `reply` (its `req` filled in), then reads what it is sent.
     async fn server(reply: serde_json::Value) -> String {
+        serving(reply, Hello::Unsupported).await.0
+    }
+
+    /// How a server answers `hello`.
+    #[derive(Clone, Copy)]
+    enum Hello {
+        Knows,
+        /// Names the op unsupported, under the request's `req`, as wheeld has since 2026-10-18.
+        Unsupported,
+        /// A serde "bad message" with no `req`, as an older wheeld answers any op it lacks.
+        BadMessage,
+    }
+
+    /// A server answering `status`, or with `hello` too when it knows it, with `reply`; the
+    /// ops it was sent arrive on the receiver.
+    async fn serving(
+        reply: serde_json::Value,
+        hello: Hello,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let (seen, ops) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
-            let request = ws.next().await.unwrap().unwrap().into_text().unwrap();
-            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-            let mut reply = reply;
-            reply["req"] = request["req"].clone();
-            ws.send(Message::Text(reply.to_string().into())).await.unwrap();
-            while ws.next().await.is_some() {}
+            while let Some(Ok(frame)) = ws.next().await {
+                let Ok(text) = frame.into_text() else { continue };
+                let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let op = request["op"].as_str().unwrap_or_default().to_string();
+                let _ = seen.send(op.clone());
+                let mut answer = match (op.as_str(), hello) {
+                    ("hello", Hello::Unsupported) => serde_json::json!({
+                        "ev": "error",
+                        "message": "this wheeld doesn't support hello; it may be older than the client that sent it",
+                    }),
+                    ("hello", Hello::BadMessage) => serde_json::json!({
+                        "ev": "error",
+                        "message": "bad message: unknown variant `hello`, expected one of `status`, `log`",
+                    }),
+                    _ => reply.clone(),
+                };
+                if !matches!((op.as_str(), hello), ("hello", Hello::BadMessage)) {
+                    answer["req"] = request["req"].clone();
+                }
+                ws.send(Message::Text(answer.to_string().into())).await.unwrap();
+            }
         });
-        url
+        (url, ops)
+    }
+
+    #[tokio::test]
+    async fn a_server_that_knows_hello_is_never_asked_for_its_status() {
+        let (url, mut ops) = serving(
+            serde_json::json!({
+                "ev": "hello", "protocol": wheel_proto::PROTOCOL_VERSION,
+                "compat": wheel_proto::COMPAT, "ops": wheel_proto::ops(),
+            }),
+            Hello::Knows,
+        )
+        .await;
+        let mut conn = open(&url).await;
+        conn.require_compatible_server().await.unwrap();
+        drop(conn);
+        let mut asked = Vec::new();
+        while let Some(op) = ops.recv().await {
+            asked.push(op);
+        }
+        assert_eq!(asked, ["hello"]);
     }
 
     async fn open(url: &str) -> Conn {
@@ -6760,6 +6843,20 @@ mod older_server_tests {
         let token = dir.join("token");
         std::fs::write(&token, "t").unwrap();
         Conn::open(url, Some(token)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_wheeld_that_answers_hello_with_a_bad_message_and_no_req_is_asked_its_status() {
+        let (url, _ops) = serving(
+            serde_json::json!({ "ev": "status", "protocol": 3, "spaces": [] }),
+            Hello::BadMessage,
+        )
+        .await;
+        let mut conn = open(&url).await;
+        let started = std::time::Instant::now();
+        let err = conn.require_compatible_server().await.unwrap_err().to_string();
+        assert!(err.contains("compatibility level 0"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "waited out the timeout: {err}");
     }
 
     #[tokio::test]

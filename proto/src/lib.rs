@@ -589,6 +589,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Ask only what the daemon offers (ADR-0050): its protocol, compatibility level and ops, as
+    /// `status` carries them, without the state `status` gathers. A client checks it can talk to
+    /// the daemon with this.
+    Hello {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// An app's own log lines, for the daemon to keep beside its own and ship with them. `client`
     /// names the app (`mac`, `iphone`); the lines are what the app wrote, oldest first. `inode`
     /// names the app's log file, and each line's `end` is the byte offset just past it in that
@@ -2179,6 +2186,14 @@ pub struct ConfigChoice {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "ev", rename_all = "snake_case")]
 pub enum ServerMsg {
+    /// The reply to `hello`: what the daemon offers, the same fields `status` carries.
+    Hello {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        protocol: u32,
+        compat: u32,
+        ops: Vec<String>,
+    },
     Status {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -2981,7 +2996,8 @@ impl ServerMsg {
     /// so a new one cannot be left out.
     pub fn req(&self) -> Option<u64> {
         match self {
-            ServerMsg::Status { req, .. }
+            ServerMsg::Hello { req, .. }
+            | ServerMsg::Status { req, .. }
             | ServerMsg::TermOpened { req, .. }
             | ServerMsg::TermAttached { req, .. }
             | ServerMsg::AgentAttached { req, .. }

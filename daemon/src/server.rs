@@ -148,6 +148,10 @@ pub struct AppState {
     pub(crate) next_id: AtomicU64,
     /// The login shell's answers for agent home variables, per checkout.
     agent_homes: crate::agent_homes::AgentHomes,
+    /// The last status built and when its build began, shared by callers that asked before then.
+    status_built: tokio::sync::Mutex<Option<(std::time::Instant, ServerMsg)>>,
+    /// How many statuses were built, for the log and the tests.
+    pub(crate) status_builds: AtomicU64,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
     /// Daemon-wide events (permission requests, every agent's state, layout) every connection
     /// forwards.
@@ -384,6 +388,8 @@ impl AppState {
             token,
             next_id: AtomicU64::new(1),
             agent_homes: Default::default(),
+            status_built: Default::default(),
+            status_builds: AtomicU64::new(0),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
@@ -989,7 +995,33 @@ impl AppState {
         }
     }
 
+    /// The daemon's state under `req`. Callers asking at once share one build: one waits on the
+    /// build under way, then takes the next one when it began after they asked, so no caller gets
+    /// state from before its ask, and a burst of asks (clients lagging together, every agent's
+    /// CLI) builds once.
     async fn status(self: &Arc<Self>, req: Option<u64>) -> ServerMsg {
+        let asked = std::time::Instant::now();
+        let mut built = self.status_built.lock().await;
+        let mut msg = match &*built {
+            Some((began, msg)) if *began >= asked => msg.clone(),
+            _ => {
+                let began = std::time::Instant::now();
+                let msg = self.build_status().await;
+                let n = self.status_builds.fetch_add(1, Ordering::SeqCst) + 1;
+                tracing::debug!(builds = n, ms = began.elapsed().as_millis() as u64, "status built");
+                *built = Some((began, msg.clone()));
+                msg
+            }
+        };
+        drop(built);
+        if let ServerMsg::Status { req: under, .. } = &mut msg {
+            *under = req;
+        }
+        msg
+    }
+
+    async fn build_status(self: &Arc<Self>) -> ServerMsg {
+        let req = None;
         let mut terms: Vec<_> = self
             .terms
             .lock()
@@ -1504,6 +1536,12 @@ async fn handle(
             None
         }
         ClientMsg::Status { req } => Some(state.status(req).await),
+        ClientMsg::Hello { req } => Some(ServerMsg::Hello {
+            req,
+            protocol: wheel_proto::PROTOCOL_VERSION,
+            compat: wheel_proto::COMPAT,
+            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
+        }),
         ClientMsg::Log {
             req,
             client,
@@ -3773,6 +3811,25 @@ async fn stream_agent(
 mod tests {
     use super::*;
     use wheel_proto::{NewPaneKind, Node, PluginPaneRef};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn callers_asking_for_status_at_once_share_a_build_and_keep_their_own_req() {
+        let base = crate::test_support::scratch();
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
+        let asks = (1..=8u64).map(|i| {
+            let state = state.clone();
+            tokio::spawn(async move { (i, state.status(Some(i)).await) })
+        });
+        for ask in futures_util::future::join_all(asks).await {
+            let (i, msg) = ask.unwrap();
+            assert_eq!(msg.req(), Some(i), "a shared build kept another caller's req");
+        }
+        let builds = state.status_builds.load(Ordering::SeqCst);
+        assert!(builds <= 2, "eight callers at once built {builds} statuses");
+        // An ask after those builds finished gets a new one.
+        state.status(None).await;
+        assert_eq!(state.status_builds.load(Ordering::SeqCst), builds + 1);
+    }
 
     /// A folder reached through a symlink is held and reported as its real path, so a client
     /// comparing a space's folder with `orchestrator.dir` finds the space.
