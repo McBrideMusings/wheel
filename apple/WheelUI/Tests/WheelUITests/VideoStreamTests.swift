@@ -1,3 +1,5 @@
+// VideoStreams.swift is macOS-only.
+#if os(macOS)
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -115,3 +117,4 @@ struct VideoStreamTests {
 /// 1 s of 320x180 HEVC at 30 fps, Annex-B.
 private let hevcClip = clip.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("tools/fixtures/streams/demo.hevc")
+#endif

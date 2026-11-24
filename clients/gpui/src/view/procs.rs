@@ -4,7 +4,7 @@
 //! `crate::procs`.
 use super::*;
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT, button, click, now_ms};
-use crate::procs::{REFRESH_MS, detail};
+use crate::procs::detail;
 
 impl Client {
     /// The button: open the card for the space shown (and list), or close it.
@@ -19,18 +19,20 @@ impl Client {
         self.procs.open_for(space);
         self.log(format!("processes card opened for space {space}"));
         self.request_procs(space);
+        self.watch_procs(Some(space));
         self.sync_overlay();
     }
     pub fn close_processes(&mut self) {
         if let Some(space) = self.procs.open.clone() {
             self.log(format!("processes card closed for space {space}"));
+            self.watch_procs(None);
         }
         self.procs.close();
         self.sync_overlay();
     }
-    /// Ask wheeld for the processes under `space`; the answer lands in `procs.by_space`.
+    /// Ask wheeld for the processes under `space` once; the answer lands in `procs.by_space`.
     pub fn request_procs(&mut self, space: &str) {
-        // Asked-at moves even when the link is down, so an open card waits its 2 s before trying again.
+        // Asked-at moves even when the link is down, so a polling card waits its 2 s before trying again.
         self.procs.asked_at = now_ms();
         if self.link != Link::Up {
             return;
@@ -38,28 +40,40 @@ impl Client {
         let req = self.req();
         self.send(&ClientMsg::SpaceProcs { req: Some(req), space: space.to_owned() });
     }
-    /// Stop one of those processes, then list again so it leaves the card.
-    pub fn stop_proc(&mut self, space: &str, pid: u32, force: bool) {
-        self.log(format!("process {pid} of space {space} asked to stop"));
-        self.send(&ClientMsg::ProcStop { req: None, space: space.to_owned(), pid, force });
-        self.procs.asked_at = 0;
+    /// Have wheeld send `space`'s processes as it samples them, or stop with None. A watch lives on
+    /// one connection, so the first status on a new one watches again. A wheeld older than
+    /// `procs_watch` is asked every 2 s instead (`tick_procs`).
+    pub fn watch_procs(&mut self, space: Option<&str>) {
+        if self.link != Link::Up || !self.server_has("procs_watch") {
+            return;
+        }
+        self.send(&ClientMsg::ProcsWatch { req: None, space: space.map(str::to_owned) });
     }
-    /// A `procs` reply. Returns whether it was one.
-    pub fn on_procs_message(&mut self, message: &ServerMsg) -> bool {
-        let ServerMsg::Procs { space, procs, .. } = message else { return false };
-        self.log(format!("space {space} processes: {}", procs.iter().map(|p| format!("{}={}@{}", p.pid, p.name, p.pane.as_deref().unwrap_or("detached"))).collect::<Vec<_>>().join(" ")));
-        self.procs.listed(space, procs.clone());
-        true
-    }
-    /// An open card asks again every 2 s, and a stop asks at once.
+    /// An open card on a wheeld that cannot be watched asks again every 2 s.
     pub fn tick_procs(&mut self, cx: &mut Context<Self>) {
         let Some(space) = self.procs.open.clone() else { return };
+        if self.server_has("procs_watch") {
+            return;
+        }
         let now = now_ms();
         if self.procs.due(now) {
             self.request_procs(&space);
         }
-        let wait = (self.procs.asked_at + REFRESH_MS).saturating_sub(now).max(50);
+        let wait = (self.procs.asked_at + crate::procs::REFRESH_MS).saturating_sub(now).max(50);
         self.redraw_in(wait, cx);
+    }
+    /// Stop one of those processes, then list again so it leaves the card.
+    pub fn stop_proc(&mut self, space: &str, pid: u32, force: bool) {
+        self.log(format!("process {pid} of space {space} asked to stop"));
+        self.send(&ClientMsg::ProcStop { req: None, space: space.to_owned(), pid, force });
+        self.request_procs(space);
+    }
+    /// A `procs` reply or a watched `procs_sample`. Returns whether it was one.
+    pub fn on_procs_message(&mut self, message: &ServerMsg) -> bool {
+        let (ServerMsg::Procs { space, procs, .. } | ServerMsg::ProcsSample { space, procs }) = message else { return false };
+        self.log(format!("space {space} processes: {}", procs.iter().map(|p| format!("{}={}@{}", p.pid, p.name, p.pane.as_deref().unwrap_or("detached"))).collect::<Vec<_>>().join(" ")));
+        self.procs.listed(space, procs.clone());
+        true
     }
     /// A key while the card is open: it types into the filter; Esc closes the card. The card
     /// takes every key.

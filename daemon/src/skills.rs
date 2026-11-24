@@ -2,9 +2,73 @@
 //! whose frontmatter names it and says in a line what it does. Clients offer them when a person
 //! types the agent's skill prefix in a composer.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use notify::RecursiveMode;
 use wheel_proto::SkillInfo;
+
+/// Each home's last scan.
+static KEPT: OnceLock<Mutex<HashMap<PathBuf, Kept>>> = OnceLock::new();
+
+/// One home's last scan, kept until a file under a folder it read changes.
+struct Kept {
+    projects: Vec<PathBuf>,
+    skills: Vec<SkillInfo>,
+    fresh: Arc<AtomicBool>,
+    _watch: Option<crate::fswatch::Handle>,
+}
+
+/// [`scan`], kept per home: every status build asks for every agent's skills, and the folders
+/// rarely change between two of them. A file event under a folder the scan read, or under the
+/// nearest folder that exists above one it looked for, drops the kept scan.
+pub(crate) fn scan_kept(home: &Path, projects: &[PathBuf]) -> Vec<SkillInfo> {
+    let kept = KEPT.get_or_init(Default::default);
+    if let Some(k) = kept.lock().unwrap().get(home) {
+        if k.projects == projects && k.fresh.load(Ordering::SeqCst) {
+            return k.skills.clone();
+        }
+    }
+    // Watched before the scan, so a change made while it reads drops the result.
+    let fresh = Arc::new(AtomicBool::new(true));
+    let watch = watch_read(home, projects, fresh.clone());
+    let skills = scan(home, projects);
+    // Kept only while watched: with no watch, nothing would ever drop it.
+    if watch.is_some() {
+        kept.lock().unwrap().insert(
+            home.to_path_buf(),
+            Kept {
+                projects: projects.to_vec(),
+                skills: skills.clone(),
+                fresh,
+                _watch: watch,
+            },
+        );
+    }
+    skills
+}
+
+/// A watch on every folder [`scan`] reads for `home` and `projects`, clearing `fresh` on any change.
+fn watch_read(home: &Path, projects: &[PathBuf], fresh: Arc<AtomicBool>) -> Option<crate::fswatch::Handle> {
+    let mut dirs = vec![home.join("skills"), home.join("plugins")];
+    dirs.extend(projects.iter().map(|p| p.join(".claude").join("skills")));
+    dirs.extend(plugin_skill_dirs(home, projects).into_iter().map(|(_, d)| d));
+    let mut watch = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|e| !matches!(e.kind, notify::EventKind::Access(_))) {
+            fresh.store(false, Ordering::SeqCst);
+        }
+    })
+    .ok()?;
+    for dir in dirs {
+        if let Err(e) = crate::fswatch::watch_folder(&mut watch, &dir, RecursiveMode::Recursive) {
+            tracing::warn!(dir = %dir.display(), error = %e, "cannot watch a skills folder; its skills are read again on every status");
+            return None;
+        }
+    }
+    Some(watch)
+}
 
 /// The skills an agent offers, sorted by name: those under `<home>/skills`, each `.claude/skills`
 /// folder of the `projects` directories, and, for the plugins `<home>/plugins/installed_plugins.json`
@@ -192,6 +256,49 @@ mod tests {
         let (n, d) = frontmatter("---\nname: \"x\"\ndescription: >\n  one\n  two\nother: y\n---\n");
         assert_eq!((n.as_deref(), d.as_str()), (Some("x"), "one two"));
         assert_eq!(frontmatter("no block"), (None, String::new()));
+    }
+
+    #[test]
+    fn a_kept_scan_is_reused_until_a_skill_or_a_new_skills_folder_appears() {
+        let scratch = crate::test_support::scratch();
+        let home = scratch.canonicalize().unwrap();
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let write = |dir: PathBuf, name: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\ndescription: d\n---\n")).unwrap();
+        };
+        write(home.join("skills/a"), "a");
+        let projects = [project.clone()];
+        let names = |s: Vec<SkillInfo>| s.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(names(scan_kept(&home, &projects)), ["a"]);
+        // Folder events from the setup may still arrive; once quiet, the scan is kept.
+        let kept_now = || {
+            KEPT.get().and_then(|k| k.lock().unwrap().get(&home).map(|k| k.fresh.load(Ordering::SeqCst)))
+        };
+        let quiet = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < quiet {
+            scan_kept(&home, &projects);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if kept_now() == Some(true) {
+                break;
+            }
+        }
+        assert_eq!(kept_now(), Some(true), "the scan was never kept");
+
+        // A new home skill, then a project's first .claude/skills folder, each drop the kept scan.
+        for (dir, want) in [
+            (home.join("skills/b"), vec!["a", "b"]),
+            (project.join(".claude/skills/p"), vec!["a", "b", "p"]),
+        ] {
+            let name = dir.file_name().unwrap().to_str().unwrap().to_string();
+            write(dir, &name);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while kept_now() == Some(true) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(names(scan_kept(&home, &projects)), want);
+        }
     }
 
     #[test]

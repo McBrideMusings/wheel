@@ -18,6 +18,10 @@ struct PhoneApp: App {
                     PairView(model: model)
                 }
             }
+            // Voice mode's turns and its audio's own stops reach the session wherever the pane is.
+            .onChange(of: Voice.shared.said) { _, said in model.voice.heard(said) }
+            .onChange(of: Voice.shared.phase) { _, phase in model.voice.audioStopped(phase: phase, problem: Voice.shared.problem) }
+            .onDisappear { model.voice.end() }
             .task {
                 model.start()
                 PushCenter.shared.listen(onOpen: { space, pane in model.focus(space: space, pane: pane) })

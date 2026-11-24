@@ -156,6 +156,30 @@ pub fn restored(draft: &str, text: &str) -> String {
     if draft.is_empty() { text.to_owned() } else { format!("{draft}\n{text}") }
 }
 
+/// What the round button at the right of the composer's lower row does (wheel-eg4e.19.31).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RightButton {
+    /// The agent works: stop its turn, as Esc does.
+    Stop,
+    /// Something to send: the draft or attached files.
+    Send,
+    /// Nothing typed and the agent idle: open voice mode.
+    Voice,
+    /// Nothing typed, the agent idle and wheeld without voice mode's ops: a dimmed Send.
+    Idle,
+}
+
+/// The round button for an agent that is `busy` or not, a draft or files that make a message or
+/// not, and wheeld offering voice mode's ops or not.
+pub fn right_button(busy: bool, has_message: bool, voice_offered: bool) -> RightButton {
+    match (busy, has_message, voice_offered) {
+        (true, _, _) => RightButton::Stop,
+        (false, true, _) => RightButton::Send,
+        (false, false, true) => RightButton::Voice,
+        (false, false, false) => RightButton::Idle,
+    }
+}
+
 /// The message a draft and its attachments' paths make (`composerMessage`): the text, then each
 /// path in backticks on its own line, since a path may hold a space and the backticks keep it one
 /// path. Empty when both are.
@@ -349,6 +373,15 @@ pub fn stamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_right_button_stops_a_turn_sends_a_draft_and_otherwise_opens_voice() {
+        assert_eq!(right_button(true, true, true), RightButton::Stop);
+        assert_eq!(right_button(true, false, false), RightButton::Stop);
+        assert_eq!(right_button(false, true, true), RightButton::Send);
+        assert_eq!(right_button(false, false, true), RightButton::Voice);
+        assert_eq!(right_button(false, false, false), RightButton::Idle);
+    }
 
     #[test]
     fn attaching_a_message_quotes_it_above_the_draft() {
