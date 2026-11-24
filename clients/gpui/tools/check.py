@@ -44,7 +44,7 @@ def app_bundle():
 
 
 with fixture() as (env, info):
-    env.update(WHEEL_CLIENT_RESULTS=str(out), WHEEL_GPUI_BRIDGE=str(app / 'libWheelGpuiBridge.dylib'),
+    env.update(WHEEL_MUTE='1', WHEEL_CLIENT_RESULTS=str(out), WHEEL_GPUI_BRIDGE=str(app / 'libWheelGpuiBridge.dylib'),
                # What Restart Server runs for a wheeld the client did not install: the check reads the two files.
                WHEEL_SERVER_STOP=f'touch {out / "server.stop"}', WHEEL_SERVER_START=f'touch {out / "server.start"}')
     for name in ['server.stop', 'server.start']:

@@ -1020,20 +1020,15 @@ impl Client {
     pub fn cancel_rename(&mut self) {
         self.rename = None;
     }
-    /// Return commits, Escape cancels, the rest edits the draft; false when no rename is up.
-    pub fn rename_key(&mut self, key: &str, text: Option<&str>, command: bool) -> bool {
+    /// Return commits, Escape cancels, the field's input takes the edits; false when no rename is up.
+    pub fn rename_key(&mut self, key: &str, command: bool) -> bool {
         if self.rename.is_none() {
             return false;
         }
         match key {
             "escape" => self.cancel_rename(),
             "enter" => self.commit_rename(),
-            _ => {
-                let draft = &mut self.rename.as_mut().unwrap().draft;
-                if let Typed::Nothing = type_into(draft, key, text, command) {
-                    return !command;
-                }
-            }
+            _ => return !command,
         }
         true
     }
@@ -1329,7 +1324,7 @@ impl Client {
                 Some(rn) => {
                     el = el.child(div().flex_1().min_w(px(0.)).flex().flex_col().child(
                         div().h(px(20.)).px(px(4.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(ACCENT)).overflow_hidden().whitespace_nowrap().text_xs().flex().items_center()
-                            .child(format!("{}▏", rn.draft))));
+                            .child(self.field_element(&super::fields::FieldId::SpaceName, &rn.draft))));
                 }
                 None => {
                     el = el.child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_sm()

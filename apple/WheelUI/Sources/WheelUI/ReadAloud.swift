@@ -59,6 +59,8 @@ public final class ReadAloud {
         }
         #endif
         let utterance = AVSpeechUtterance(string: text)
+        // A hidden check (`WHEEL_MUTE=1`) speaks at volume 0: the synthesizer runs, nobody hears it.
+        if ProcessInfo.processInfo.environment["WHEEL_MUTE"] == "1" { utterance.volume = 0 }
         current = utterance
         playing = key
         synthesizer.speak(utterance)

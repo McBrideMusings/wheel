@@ -379,6 +379,8 @@ final class StreamAudio {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        // A hidden check (`WHEEL_MUTE=1`) plays through the engine at volume 0: the audio path runs, nobody hears it.
+        if ProcessInfo.processInfo.environment["WHEEL_MUTE"] == "1" { engine.mainMixerNode.outputVolume = 0 }
         source = node
         do {
             try engine.start()

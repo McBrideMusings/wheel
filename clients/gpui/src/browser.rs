@@ -105,9 +105,9 @@ pub enum Press {
     Retry,
 }
 
-/// The chrome row for `pane`, `width` points wide. `editing` is the address draft while the
-/// field is being edited. Each control records its bounds under `browser:<name>` for the check.
-pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+/// The chrome row for `pane`, `width` points wide. `editing` is the address field's input while
+/// it is being edited. Each control records its bounds under `browser:<name>` for the check.
+pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
     let narrow = width < FULL_WIDTH;
     let button = |label: &'static str, name: &'static str, enabled: bool, press: Press, cx: &mut Context<Client>| {
         let pane = pane.to_owned();
@@ -137,8 +137,9 @@ pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str
         let mut field = div().relative().flex_1().min_w(px(0.)).ml(px(6.)).px(px(6.)).h(px(22.)).rounded_md().border_1().border_color(rgb(0x3d5247)).bg(rgb(0x0e1311))
             .flex().items_center().gap_1().overflow_hidden().whitespace_nowrap().text_xs().cursor_text()
             .child(crate::view::recorded(&pane, "browser:address", controls));
+        let is_editing = editing.is_some();
         field = match editing {
-            Some(draft) => field.border_color(rgb(0x7fb89a)).child(div().text_color(rgb(0xd9e8e1)).child(format!("{draft}▏"))),
+            Some(input) => field.border_color(rgb(0x7fb89a)).child(div().flex_1().min_w(px(0.)).text_color(rgb(0xd9e8e1)).child(input)),
             None => match shown(&state.address) {
                 Shown::Blank => field.child(div().text_color(rgb(0x4d5f57)).child(PLACEHOLDER)),
                 Shown::Web { secure, host, rest } => field.children(secure.then(|| div().flex_none().text_color(rgb(0x8fa89b)).child("🔒")))
@@ -147,7 +148,7 @@ pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str
                 Shown::Other(text) => field.child(div().min_w(px(0.)).overflow_hidden().text_color(rgb(0xd9e8e1)).child(text)),
             },
         };
-        if editing.is_none() {
+        if !is_editing {
             field = field.on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                 this.browser_press(&pane, Press::Edit);
                 cx.stop_propagation();

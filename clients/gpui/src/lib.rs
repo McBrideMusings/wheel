@@ -116,22 +116,36 @@ pub fn init(cx: &mut App) {
     cx.intercept_keystrokes(composer_key).detach();
 }
 
-/// A keystroke in a window whose composer input is focused, before GPUI resolves it against
-/// the input's bindings: the client's own handling of the key (the command list, the queue,
-/// Return to send, files pasted as chips, its commands) goes first, and a key it takes goes no
-/// further. ⇧Return starts a new line, which the input leaves unbound. Every other key is the
-/// input's: caret, selection, clipboard, undo, word and line moves, IME.
+/// A keystroke in a window whose composer or field input is focused, before GPUI resolves it
+/// against the input's bindings: the client's own handling of the key (the command list, the
+/// queue, Return to send or commit, Escape, files pasted as chips, its commands) goes first, and
+/// a key it takes goes no further. ⇧Return starts a new line in a composer, which the input leaves
+/// unbound. Every other key is the input's: caret, selection, clipboard, undo, word and line
+/// moves, IME.
 fn composer_key(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
     let Some(client) = view::ClientWindow::client_of(window, cx) else { return };
     let Some(input) = client.read(cx).focused_input(window, cx) else { return };
+    let composer = !client.read(cx).is_field_input(&input);
     let k = &event.keystroke;
     // GPUI's interceptor event has no repeat flag: the same key again with no key-up between
     // (the root's `on_key_up` clears it) is the platform's auto-repeat, as `isARepeat` is.
     let is_held = client.update(cx, |client, _| client.key_down.replace(k.clone()).as_ref() == Some(k));
     let down = KeyDownEvent { keystroke: k.clone(), is_held, prefer_character_input: false };
+    if !composer {
+        client.update(cx, |client, cx| client.catch_up_field(&input, cx));
+    }
     // The keyboard is about to leave the input (the pane changed, an overlay opened; the next
     // frame moves it): the client takes the key and the input gets none.
-    let leaving = client.read(cx).composer_agent().is_none();
+    let leaving = client.read(cx).wanted_input().as_ref() != Some(&input);
+    // A field opened over the composer this frame: its input takes the key, as it would with no input focused.
+    if composer && leaving && client.read(cx).typing_in_field() {
+        client.update(cx, |client, cx| {
+            client.key_for_opening_field(&down, window, cx);
+            cx.notify();
+        });
+        cx.stop_propagation();
+        return;
+    }
     if client.update(cx, |client, cx| {
         let handled = client.key(&down, cx);
         if handled {
@@ -140,7 +154,7 @@ fn composer_key(event: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
         handled
     }) || leaving {
         cx.stop_propagation();
-    } else if k.key == "enter" && k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control {
+    } else if composer && k.key == "enter" && k.modifiers.shift && !k.modifiers.platform && !k.modifiers.control {
         input.update(cx, |input, cx| input.replace("\n", window, cx));
         cx.stop_propagation();
     }

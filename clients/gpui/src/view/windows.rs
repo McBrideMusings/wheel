@@ -4,7 +4,6 @@
 //! a space in this window for `wheel window space-move`.
 use super::*;
 use super::settings::{ACCENT, DIM, LINE, TEXT};
-use crate::focus::{Typed, type_into};
 use crate::windows::{self, Record};
 use serde_json::{Value, json};
 use wheel_proto::WindowCommand;
@@ -120,17 +119,15 @@ impl Client {
         }
         self.sync_overlay();
     }
-    /// Return commits, Escape cancels, the rest edits the draft; false when no field is up.
-    pub fn name_key(&mut self, key: &str, text: Option<&str>, command: bool) -> bool {
-        let Some(edit) = self.name_edit.as_mut() else { return false };
+    /// Return commits, Escape cancels, the field's input takes the edits; false when no field is up.
+    pub fn name_key(&mut self, key: &str, command: bool) -> bool {
+        if self.name_edit.is_none() {
+            return false;
+        }
         match key {
             "escape" => self.cancel_name_edit(),
             "enter" => self.commit_name_edit(),
-            _ => {
-                if let Typed::Nothing = type_into(&mut edit.draft, key, text, command) {
-                    return !command;
-                }
-            }
+            _ => return !command,
         }
         true
     }
@@ -202,8 +199,7 @@ impl Client {
     /// the space alone; the name field while Rename Window is up.
     pub(super) fn window_title_element(&self, label: &str) -> gpui::Div {
         if let Some(edit) = self.name_edit.as_ref().filter(|e| e.target == NameTarget::Window) {
-            let placeholder = self.space().map(|s| s.name.clone()).unwrap_or_else(|| "Window name".into());
-            let shown = if edit.draft.is_empty() { div().text_color(rgb(DIM)).child(format!("▏{placeholder}")) } else { div().child(format!("{}▏", edit.draft)) };
+            let shown = self.field_element(&super::fields::FieldId::WindowName, &edit.draft);
             return div().w(px(220.)).h(px(22.)).px(px(6.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(ACCENT)).overflow_hidden().whitespace_nowrap().text_sm().flex().items_center().child(shown);
         }
         match &self.window_name {
@@ -233,7 +229,7 @@ impl Client {
         let card = div().w(px(320f32.min(width - 32.))).flex().flex_col().gap_2().p_4().rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(LINE)).text_color(rgb(TEXT))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
             .child(div().font_weight(FontWeight::SEMIBOLD).child("Rename session"))
-            .child(div().h(px(24.)).px(px(6.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(ACCENT)).overflow_hidden().whitespace_nowrap().flex().items_center().child(format!("{}▏", edit.draft)))
+            .child(div().h(px(24.)).px(px(6.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(ACCENT)).overflow_hidden().whitespace_nowrap().flex().items_center().child(self.field_element(&super::fields::FieldId::WindowName, &edit.draft)))
             .child(div().flex().justify_end().gap_2().mt_2().child(button("Cancel", false, cx)).child(button("Rename", true, cx)));
         Some(Self::scrim(width, height, card, cx))
     }

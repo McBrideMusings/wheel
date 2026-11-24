@@ -59,6 +59,26 @@ fn draw(window: ClientWindow, path: Option<PathBuf>, cx: &mut AsyncApp) -> Resul
     })??;
     Ok(())
 }
+/// Each key through the window's own dispatch, as a typed key arrives: a frame first, so an open
+/// field's input holds the keyboard and takes the keys that edit text.
+fn press(window: ClientWindow, keys: &[gpui::Keystroke], cx: &mut AsyncApp) -> Result<()> {
+    for k in keys {
+        draw(window, None, cx)?;
+        let any: gpui::AnyWindowHandle = window.into();
+        any.update(cx, |_, window, cx| window.dispatch_keystroke(k.clone(), cx))?;
+    }
+    draw(window, None, cx)
+}
+/// The keystroke a chord such as `cmd-v`, `a` or `shift-d` names, with the character a plain or
+/// shifted letter types.
+fn chord(s: &str) -> gpui::Keystroke {
+    let mut k = gpui::Keystroke::parse(s).unwrap();
+    let m = &k.modifiers;
+    if k.key.chars().count() == 1 && !(m.platform || m.control || m.alt) {
+        k.key_char = Some(if m.shift { k.key.to_uppercase() } else { k.key.clone() });
+    }
+    k
+}
 /// Every native pane's own pixels: WKWebView snapshots and Ghostty IOSurface readbacks.
 async fn shot(native: &Native, directory: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(directory)?;
@@ -354,6 +374,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
     let (run, commands_report) = command_palette(run, cli_path.clone(), terms.clone(), cx).await?;
     let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
+    let (run, fields_report) = text_fields(run, native_panes.clone(), agent_pane.clone(), cx).await?;
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
     let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
@@ -416,6 +437,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
         "final": {"visible": final_status["visible"], "key_window": final_status["key_window"], "app_active": final_status["app_active"], "errors": final_status["errors"]},
     });
     report["inline_image"] = image_report;
+    report["text_fields"] = fields_report;
     report["mermaid"] = mermaid_report;
     report["chart"] = chart_report;
     report["cards"] = cards_report;
@@ -3210,11 +3232,8 @@ async fn sidebar(run: Run, click: [f64; 2], cx: &mut AsyncApp) -> Result<(Run, S
     let (sb2, sb3, sb4, sb5) = (made[0].clone(), made[1].clone(), made[2].clone(), made[3].clone());
     // A key as the field gets it, through the same `key()` every real key takes.
     let type_keys = |cx: &mut AsyncApp, keys: &[(&str, Option<&str>)]| -> Result<()> {
-        for (key, ch) in keys {
-            let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers::default(), key: (*key).to_owned(), key_char: ch.map(str::to_owned) };
-            window.update(cx, |c, _, cx| { c.key(&gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: true }, cx); })?;
-        }
-        Ok(())
+        let keys: Vec<gpui::Keystroke> = keys.iter().map(|(key, ch)| gpui::Keystroke { modifiers: gpui::Modifiers::default(), key: (*key).to_owned(), key_char: ch.map(str::to_owned) }).collect();
+        press(window, &keys, cx)
     };
     // The context menu opens on a real control-click (what a right press also does) and lists
     // what the Swift menu lists.
@@ -4595,10 +4614,7 @@ async fn window_commands(run: Run, first_session: Option<String>, id1: String, c
     }
     // Rename Window… from the palette's action: the title row shows the field over the tabs.
     window.update(cx, |c, _, cx| c.run_action("rename-window", cx))?;
-    for ch in ["D", "e", "s", "k"] {
-        let keystroke = gpui::Keystroke { modifiers: gpui::Modifiers { shift: ch == "D", ..Default::default() }, key: ch.to_lowercase(), key_char: Some(ch.into()) };
-        window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke, is_held: false, prefer_character_input: false }, cx))?;
-    }
+    press(window, &["shift-d", "e", "s", "k"].map(chord), cx)?;
     ensure!(window.update(cx, |c, _, _| c.renaming_window() && c.header_chips().iter().any(|chip| chip.hit == Hit::Title))?, "Rename Window shows no field in the title row");
     draw(window, Some(output.join("client-window-rename.png")), cx)?;
     let enter = wheel_gpui::keymap::KeyChord::parse("enter").unwrap().keystroke();
@@ -5393,6 +5409,104 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
 }
 
 /// The command palette, key bindings, Run…, the shortcut sheet and ⌘W.
+/// Every one-line field the client draws is a text input: each opened as its control opens it,
+/// emptied with ⌘A Backspace, given the pasteboard with ⌘V, and copied back with ⌘A ⌘C; Esc
+/// closes it. Keys go through the window's own dispatch, as typed keys do.
+async fn text_fields(run: Run, native_panes: Vec<(String, String)>, agent_pane: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    use wheel_gpui::{settings::{Layer, Tab, Topic}, view::SettingsEdit};
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let browser = native_panes.iter().find(|p| p.1 == "browser").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("the fixture has no browser pane"))?;
+    let terminal = native_panes.iter().find(|p| p.1 == "terminal").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("the fixture has no terminal pane"))?;
+    let space = window.update(cx, |c, _, _| c.space_id().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("the window shows no space"))?;
+    let saved = window.update(cx, |_, _, cx| cx.read_from_clipboard())?;
+    let open: Vec<(&str, Box<dyn Fn(&mut Client, &mut gpui::Context<Client>)>)> = vec![
+        ("Address", Box::new(move |c, _| c.browser_press(&browser, wheel_gpui::browser::Press::Edit))),
+        ("SpaceName", Box::new({ let space = space.clone(); move |c, _| c.begin_rename(&space) })),
+        ("WindowName", Box::new(|c, _| c.begin_window_rename())),
+        ("ArtifactSearch", Box::new(move |c, _| c.open_palette(&terminal))),
+        ("CommandSearch", Box::new(|c, _| c.open_command_palette(wheel_gpui::command_palette::Mode::Root))),
+        ("ConversationSearch", Box::new(move |c, _| { c.open_conversations(&agent_pane); })),
+        ("ProcessFilter", Box::new({ let space = space.clone(); move |c, _| c.open_processes(&space) })),
+        // The Chat tab draws a search field; the General tab has none, so a search opened there is never drawn.
+        ("SettingsSearch", Box::new(|c, _| { c.open_settings(); c.settings_tab(Tab::Chat); c.settings_edit = Some(SettingsEdit::Search(Topic::Chat)); })),
+        ("SettingValue", Box::new(|c, _| { c.open_settings(); c.settings_tab(Tab::General); let f = c.settings.field(Layer::Global, "browser.homepage"); c.edit_setting(f); })),
+    ];
+    let mut report = Vec::new();
+    for (name, opener) in open {
+        window.update(cx, |c, _, cx| opener(c, cx))?;
+        draw(window, None, cx)?;
+        let fields = window.update(cx, |c, _, _| c.fields_json())?;
+        ensure!(fields[0]["field"].as_str().is_some_and(|f| f.starts_with(name)), "opening {name} left the fields {fields}");
+        let pasted = format!("pasted into {name}");
+        window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(pasted.clone())))?;
+        press(window, &["cmd-a", "backspace", "cmd-v"].map(chord), cx)?;
+        let after_paste = window.update(cx, |c, _, _| c.fields_json())?[0]["text"].as_str().unwrap_or_default().to_owned();
+        window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("nothing copied yet".into())))?;
+        press(window, &["cmd-a", "cmd-c"].map(chord), cx)?;
+        let copied = window.update(cx, |_, _, cx| cx.read_from_clipboard().and_then(|c| c.text()))?.unwrap_or_default();
+        // Edit › Paste, the action a hardware ⌘V reaches through the main menu.
+        let menu_pasted = format!("menu paste into {name}");
+        window.update(cx, |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(menu_pasted.clone())))?;
+        press(window, &["cmd-a", "backspace"].map(chord), cx)?;
+        let any: gpui::AnyWindowHandle = window.into();
+        any.update(cx, |_, window, cx| window.dispatch_action(Box::new(wheel_gpui::edit_menu::Paste), cx))?;
+        draw(window, None, cx)?;
+        let after_menu = window.update(cx, |c, _, _| c.fields_json())?[0]["text"].as_str().unwrap_or_default().to_owned();
+        if after_menu != menu_pasted {
+            let (fields, focused) = any.update(cx, |_, window, cx| -> Result<(Value, bool)> {
+                let client = wheel_gpui::view::ClientWindow::client_of(window, cx).ok_or_else(|| anyhow::anyhow!("no client"))?;
+                let c = client.read(cx);
+                Ok((c.fields_json(), c.focused_input(window, cx).is_some()))
+            })??;
+            anyhow::bail!("Edit › Paste in {name} left {after_menu:?}, wanted {menu_pasted:?}; open fields {fields}, an input focused {focused}");
+        }
+        draw(window, Some(output.join(format!("client-field-{name}.png"))), cx)?;
+        // The artifact palette's first Esc clears its search; the second closes it.
+        let escapes: &[&str] = if name == "ArtifactSearch" { &["escape", "escape"] } else { &["escape"] };
+        press(window, &escapes.iter().map(|k| chord(k)).collect::<Vec<_>>(), cx)?;
+        if name == "SettingValue" || name == "SettingsSearch" {
+            window.update(cx, |c, _, _| { c.settings_edit = None; c.close_settings(); })?;
+            draw(window, None, cx)?;
+        }
+        let left = window.update(cx, |c, _, _| c.fields_json())?;
+        report.push(json!({"field": name, "after_paste": after_paste, "copied": copied, "open_after_escape": left}));
+        ensure!(after_paste == pasted, "⌘V in {name} left {after_paste:?}, wanted {pasted:?}");
+        ensure!(copied == pasted, "⌘A ⌘C in {name} copied {copied:?}, wanted {pasted:?}");
+        ensure!(left.as_array().is_some_and(Vec::is_empty), "Esc left {name} open: {left}");
+    }
+    // Keys typed between ⌘K and the next frame, while the agent's composer still holds the
+    // keyboard, go into the palette's search in order, and none into the composer.
+    let agent_name = std::env::var("WHEEL_CLIENT_AGENT")?;
+    draw(window, None, cx)?;
+    let composer = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "composer"))?.ok_or_else(|| anyhow::anyhow!("no composer drawn"))?;
+    let p = [f64::from(composer.0 + composer.2 / 2.), f64::from(composer.1 + composer.3 / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    tick(cx, 300).await;
+    draw(window, None, cx)?;
+    let any: gpui::AnyWindowHandle = window.into();
+    let composer_holds = any.update(cx, |_, window, cx| wheel_gpui::view::ClientWindow::client_of(window, cx).and_then(|c| c.read(cx).focused_input(window, cx).map(|i| !c.read(cx).is_field_input(&i))))?;
+    ensure!(composer_holds == Some(true), "a press on the composer left the keyboard on {composer_holds:?} (Some(true) is the composer)");
+    let draft_before = any.update(cx, |_, window, cx| wheel_gpui::view::ClientWindow::client_of(window, cx).and_then(|c| c.read(cx).focused_input(window, cx)).map(|i| i.read(cx).value().to_string()))?;
+    window.update(cx, |c, _, _| c.open_command_palette(wheel_gpui::command_palette::Mode::Root))?;
+    any.update(cx, |_, window, cx| for k in ["a", "b", "c"] { window.dispatch_keystroke(chord(k), cx); })?;
+    draw(window, None, cx)?;
+    draw(window, None, cx)?;
+    let early = window.update(cx, |c, _, _| c.command_palette.as_ref().map(|p| p.query.clone()))?;
+    press(window, &[chord("escape")], cx)?;
+    window.update(cx, |c, _, _| c.close_command_palette())?;
+    draw(window, None, cx)?;
+    let draft_after = any.update(cx, |_, window, cx| wheel_gpui::view::ClientWindow::client_of(window, cx).and_then(|c| c.read(cx).focused_input(window, cx)).map(|i| i.read(cx).value().to_string()))?;
+    report.push(json!({"field": "CommandSearch typed before its frame", "query": early, "draft_before": draft_before, "draft_after": draft_after}));
+    ensure!(early.as_deref() == Some("abc"), "keys typed as ⌘K opened the palette over the composer left its search {early:?}, wanted \"abc\"");
+    ensure!(draft_after == draft_before, "keys typed as ⌘K opened the palette reached the composer: {draft_before:?} -> {draft_after:?}");
+    if let Some(item) = saved {
+        window.update(cx, |_, _, cx| cx.write_to_clipboard(item))?;
+    }
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, json!(report)))
+}
+
 async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
@@ -5700,7 +5814,10 @@ async fn settings_window(run: Run, cli_path: String, cx: &mut AsyncApp) -> Resul
             break;
         }
     }
-    ensure!(refusal.is_some(), "wheeld accepted `big` for {}, or the refusal never showed", int_field.key);
+    if refusal.is_none() {
+        let (text, stored, editing, fields) = window.update(cx, |c, _, _| (c.settings.text(&int_field), c.settings.stored(&int_field), c.settings_edit.is_some(), c.fields_json()))?;
+        anyhow::bail!("wheeld accepted `big` for {}, or the refusal never showed: field text {text:?}, stored {stored:?}, still editing {editing}, open fields {fields}", int_field.key);
+    }
     window.update(cx, |c, _, _| c.settings.revert(&int_field))?;
     // The clear button: the key leaves the file and the default is back.
     window.update(cx, |c, _, _| c.clear_setting(&homepage))?;

@@ -25,31 +25,6 @@ impl Focus {
     }
 }
 
-/// What a key does to a one-line text field (a name being typed): the field's text edited, or
-/// nothing.
-#[derive(Debug, PartialEq)]
-pub enum Typed {
-    Nothing,
-    Edited,
-}
-
-/// Apply a key, named as GPUI names it, to `draft`. `text` is the character it types, if any.
-pub fn type_into(draft: &mut String, key: &str, text: Option<&str>, command: bool) -> Typed {
-    if command {
-        return Typed::Nothing;
-    }
-    match key {
-        "backspace" => if draft.pop().is_some() { Typed::Edited } else { Typed::Nothing },
-        _ => match text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
-            Some(t) => {
-                draft.push_str(t);
-                Typed::Edited
-            }
-            None => Typed::Nothing,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,25 +47,5 @@ mod tests {
         assert_eq!(f.step(&order(), true).as_deref(), Some("p1"));
         assert_eq!(f.step(&[], true), None);
         assert_eq!(f.current, None);
-    }
-
-    #[test]
-    fn typing_builds_a_field_and_backspace_takes_the_last_character() {
-        let mut d = String::new();
-        assert_eq!(type_into(&mut d, "h", Some("h"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "i", Some("i"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "x", Some("x"), false), Typed::Edited);
-        assert_eq!(type_into(&mut d, "backspace", None, false), Typed::Edited);
-        assert_eq!(d, "hi");
-        assert_eq!(type_into(&mut String::new(), "backspace", None, false), Typed::Nothing);
-    }
-
-    #[test]
-    fn command_keys_and_control_characters_type_nothing() {
-        let mut d = String::new();
-        assert_eq!(type_into(&mut d, "]", Some("]"), true), Typed::Nothing);
-        assert_eq!(type_into(&mut d, "escape", Some("\u{1b}"), false), Typed::Nothing);
-        assert_eq!(type_into(&mut d, "enter", Some("\n"), false), Typed::Nothing);
-        assert_eq!(d, "");
     }
 }

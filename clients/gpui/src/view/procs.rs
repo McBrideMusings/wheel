@@ -61,20 +61,11 @@ impl Client {
         let wait = (self.procs.asked_at + REFRESH_MS).saturating_sub(now).max(50);
         self.redraw_in(wait, cx);
     }
-    /// A key while the card is open: it types into the filter; Esc closes the card. The card
+    /// A key the card's filter leaves while the card is open: Esc closes the card. The card
     /// takes every key.
-    pub fn procs_key(&mut self, key: &str, text: Option<&str>, chord: bool) {
-        match key {
-            "escape" => self.close_processes(),
-            "backspace" if !chord => {
-                self.procs.filter.pop();
-            }
-            _ if !chord => {
-                if let Some(t) = text.filter(|t| !t.chars().any(char::is_control)) {
-                    self.procs.filter.push_str(t);
-                }
-            }
-            _ => {}
+    pub fn procs_key(&mut self, key: &str) {
+        if key == "escape" {
+            self.close_processes();
         }
     }
 
@@ -82,11 +73,7 @@ impl Client {
         let space = self.procs.open.clone().unwrap_or_default();
         let rows: Vec<wheel_proto::ProcInfo> = self.procs.rows(&space).into_iter().cloned().collect();
         let chosen = self.procs.chosen;
-        let field: gpui::Div = if self.procs.filter.is_empty() {
-            div().text_color(rgb(DIM)).child("Filter")
-        } else {
-            div().child(self.procs.filter.clone())
-        };
+        let field = self.field_element(&super::fields::FieldId::ProcessFilter, &self.procs.filter);
         let mut list = div().flex().flex_col().gap(px(2.)).w_full().max_h(px(320.)).overflow_hidden();
         if rows.is_empty() {
             list = list.child(div().w_full().min_h(px(60.)).flex().items_center().justify_center().text_color(rgb(DIM)).child("No processes are reporting activity"));

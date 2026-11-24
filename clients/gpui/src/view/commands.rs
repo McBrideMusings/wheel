@@ -619,7 +619,7 @@ impl Client {
         }
     }
     /// A key typed while the palette is open. Returns false when it is closed.
-    pub fn command_palette_key(&mut self, key: &str, text: Option<&str>, chord: bool, cx: &mut App) -> bool {
+    pub fn command_palette_key(&mut self, key: &str, cx: &mut App) -> bool {
         let Some(palette) = &mut self.command_palette else { return false };
         match key {
             "escape" => {
@@ -640,23 +640,9 @@ impl Client {
                     self.ask_dir_list(after);
                 }
             }
-            "backspace" => {
-                if palette.query.is_empty() {
-                    if palette.is_staged() {
-                        palette.leave_stage();
-                    }
-                } else {
-                    let mut query = palette.query.clone();
-                    query.pop();
-                    self.command_palette_typed(&query);
-                }
-            }
-            _ => {
-                if !chord && let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
-                    let query = format!("{}{t}", palette.query);
-                    self.command_palette_typed(&query);
-                }
-            }
+            // Backspace in an empty search leaves the stage; the input takes every other edit.
+            "backspace" if palette.is_staged() => palette.leave_stage(),
+            _ => {}
         }
         true
     }
@@ -770,18 +756,13 @@ pub(super) fn dir_named(name: &str) -> Option<Dir> {
 
 /// The command palette over the window: the window dims, and a search field above the matching
 /// rows sits near its top (CommandPaletteView.swift).
-pub fn command_palette_overlay(palette: &CommandPalette, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
+pub fn command_palette_overlay(palette: &CommandPalette, field: gpui::AnyElement, width: f32, height: f32, cx: &mut Context<Client>) -> gpui::Div {
     let card_w = 560f32.min(width - 32.);
-    let field: gpui::Div = if palette.query.is_empty() {
-        div().text_color(rgb(0x6f8a7d)).child(palette.placeholder())
-    } else {
-        div().text_color(rgb(0xd9e8e1)).child(palette.query.clone())
-    };
     let mut card = div().w(px(card_w)).max_h(px((height - 64.).max(100.))).flex().flex_col().rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(0x3d5247))
         .text_color(rgb(0xd9e8e1)).overflow_hidden()
         .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
         .child(div().h(px(40.)).px_3().flex().items_center().gap_2().border_b_1().border_color(rgb(0x2c3d34))
-            .child(div().text_color(rgb(0x6f8a7d)).child("⌕")).child(field.flex_1().overflow_hidden().whitespace_nowrap()));
+            .child(div().text_color(rgb(0x6f8a7d)).child("⌕")).child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(field)));
     if palette.rows.is_empty() {
         card = card.child(div().min_h(px(60.)).flex().items_center().justify_center().text_color(rgb(0x8fa89b)).child(format!("Nothing matches “{}”", palette.query)));
     } else {

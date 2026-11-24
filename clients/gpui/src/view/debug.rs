@@ -89,6 +89,11 @@ impl Client {
                 }
                 None
             }
+            // One bridge op, its JSON as the body, answered with the bridge's reply.
+            "/native" => {
+                let Ok(op) = serde_json::from_str::<Value>(&request.body) else { return refuse(BAD, "the body must be a JSON bridge op") };
+                return ok(self.native.call(op));
+            }
             "/agent" | "/agent/draft" | "/agent/focus" => {
                 let Some(agent) = q("agent") else { return refuse(BAD, "agent=<name> is required") };
                 let Some(pane) = self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.agent.as_deref() == Some(agent.as_str())).map(|l| l.id.clone()) else {
@@ -744,6 +749,7 @@ impl Client {
         out["last_link"] = json!(self.links.last);
         out["links"] = json!({"generation": self.links.generation(), "relinked": self.links.relinked.get(), "remeasured": self.links.remeasured.get()});
         out["card_views"] = self.card_views_json();
+        out["fields"] = self.fields_json();
         out["agents"] = self.agents_json();
         out["chat_images"] = self.images.json();
         out["chat_diagrams"] = self.diagrams.json();

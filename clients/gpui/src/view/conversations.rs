@@ -55,7 +55,7 @@ impl Client {
         self.send(&ClientMsg::AgentConversationLs { req: Some(req), agent, limit: Some(PAGE), before: None, before_id: None });
     }
     /// The page after the last row held, when older ones remain and none is on its way.
-    fn more_conversations(&mut self) {
+    pub(super) fn more_conversations(&mut self) {
         if self.link != Link::Up {
             return;
         }
@@ -284,23 +284,10 @@ impl Client {
             _ => false,
         }
     }
-    /// A key while the popover is open: it types into the search; Esc closes it. It takes every key.
-    pub fn conversations_key(&mut self, key: &str, text: Option<&str>, chord: bool) {
-        let Some(p) = self.conversations.open.as_mut() else { return };
-        match key {
-            "escape" => return self.close_conversations(),
-            "backspace" if !chord => {
-                p.query.pop();
-            }
-            _ if !chord => {
-                if let Some(t) = text.filter(|t| !t.chars().any(char::is_control)) {
-                    p.query.push_str(t);
-                }
-            }
-            _ => return,
-        }
-        if !p.query.is_empty() {
-            self.more_conversations();
+    /// A key the popover's search leaves while the popover is open: Esc closes it.
+    pub fn conversations_key(&mut self, key: &str) {
+        if key == "escape" {
+            self.close_conversations();
         }
     }
     /// The popover for `/state`.
@@ -328,7 +315,7 @@ impl Client {
         let switching = self.conversations.switching.get(&agent).cloned();
         let controls = self.controls.clone();
         let rec = |id: &str| recorded(&agent, id, &controls).into_any_element();
-        let field: gpui::Div = if p.query.is_empty() { div().text_color(rgb(DIM)).child("Search conversations") } else { div().child(p.query.clone()) };
+        let field = self.field_element(&super::fields::FieldId::ConversationSearch, &p.query);
         // New conversation: one plain line, disabled (dimmed) while a turn runs or a switch waits.
         let mut new_row = row_base(false, block.is_none(), block.is_none()).id("conversation-new").child(rec("conversation:new"))
             .child(div().w(px(14.)).flex_none().child(if switching.as_deref() == Some("") { "…" } else { "+" }))
