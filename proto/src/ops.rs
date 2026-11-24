@@ -84,7 +84,7 @@ impl Offer {
         }
     }
 
-    /// The offer in a `status` frame's text; None for any other frame.
+    /// The offer in a `hello` or `status` frame's text; None for any other frame.
     pub fn read(frame: &str) -> Option<Self> {
         #[derive(Deserialize)]
         struct Head {
@@ -94,7 +94,7 @@ impl Offer {
         }
         serde_json::from_str::<Head>(frame)
             .ok()
-            .filter(|head| head.ev == "status")
+            .filter(|head| head.ev == "hello" || head.ev == "status")
             .map(|head| head.offer)
     }
 

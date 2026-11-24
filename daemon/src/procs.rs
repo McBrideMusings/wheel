@@ -16,6 +16,12 @@ use wheel_proto::{PaneKind, ProcInfo};
 use crate::resume;
 use crate::server::AppState;
 use crate::spaces::space_panes;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use wheel_proto::ServerMsg;
+
+/// How often watched processes are sampled and sent.
+const PROCS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One line of `ps`: a running process before it is tied to a pane.
 #[derive(Debug, Clone, PartialEq)]
@@ -357,6 +363,53 @@ impl AppState {
         .map_err(|e| format!("process listing failed: {e}"))?
     }
 
+    /// Watch `space`'s processes for the connection whose replies go to `out`, in place of what it
+    /// watched before; None stops. The sampler starts with the first watcher and ends with the last.
+    /// A watch holds the connection's sender weakly, so a closing connection's writer is never kept
+    /// waiting on it, and the watch ends with the connection.
+    pub(crate) fn watch_procs(self: &Arc<Self>, out: &mpsc::Sender<ServerMsg>, space: Option<String>) {
+        let mut watchers = self.procs_watchers.lock().unwrap();
+        watchers.0.retain(|(_, tx)| tx.upgrade().is_some_and(|tx| !tx.same_channel(out)));
+        if let Some(space) = space {
+            watchers.0.push((space, out.downgrade()));
+        }
+        tracing::info!(watchers = watchers.0.len(), "procs watchers");
+        if watchers.0.is_empty() || watchers.1 {
+            return;
+        }
+        watchers.1 = true;
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let Some(state) = me.upgrade() else { return };
+                let watching: Vec<(String, mpsc::WeakSender<ServerMsg>)> = {
+                    let mut watchers = state.procs_watchers.lock().unwrap();
+                    watchers.0.retain(|(_, tx)| tx.upgrade().is_some_and(|tx| !tx.is_closed()));
+                    if watchers.0.is_empty() {
+                        watchers.1 = false;
+                        return;
+                    }
+                    watchers.0.clone()
+                };
+                // One scan for every watcher of every space.
+                state.procs_scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match state.all_procs().await {
+                    Ok(mut all) => {
+                        for (space, tx) in watching {
+                            let Some(tx) = tx.upgrade() else { continue };
+                            let procs = all.get(&space).cloned().unwrap_or_default();
+                            let _ = tx.try_send(ServerMsg::ProcsSample { space, procs });
+                        }
+                        all.clear();
+                    }
+                    Err(e) => tracing::warn!(error = %e, "procs sample failed"),
+                }
+                drop(state);
+                tokio::time::sleep(PROCS_EVERY).await;
+            }
+        });
+    }
+
     /// Every process `space` started: under its panes, then detached ones.
     pub async fn space_procs(&self, space: &str) -> Result<Vec<ProcInfo>, String> {
         if !self.spaces.lock().unwrap().spaces.iter().any(|s| s.id == space) {
@@ -401,6 +454,47 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_sampling_serves_every_watcher_and_stops_with_the_last() {
+        let base = crate::test_support::scratch();
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), std::path::PathBuf::new());
+        let (a, mut a_rx) = mpsc::channel(8);
+        let (b, mut b_rx) = mpsc::channel(8);
+        let (c, mut c_rx) = mpsc::channel(8);
+        state.watch_procs(&a, Some("s1".into()));
+        state.watch_procs(&b, Some("s1".into()));
+        state.watch_procs(&c, Some("s2".into()));
+        let deadline = std::time::Duration::from_secs(10);
+        for (rx, want) in [(&mut a_rx, "s1"), (&mut b_rx, "s1"), (&mut c_rx, "s2")] {
+            let got = tokio::time::timeout(deadline, rx.recv()).await.expect("no sample").unwrap();
+            assert!(matches!(got, ServerMsg::ProcsSample { ref space, .. } if space == want), "{got:?}");
+        }
+        // Three watchers, two spaces: each round is one scan.
+        let scans = state.procs_scans.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(scans, 1, "three watchers made {scans} scans in the first round");
+
+        // A watcher moving to another space replaces its watch; none listed twice.
+        state.watch_procs(&a, Some("s2".into()));
+        assert_eq!(state.procs_watchers.lock().unwrap().0.len(), 3);
+        // A connection that closes without unwatching: its watch holds no sender of its own, so
+        // the writer is not kept waiting, and the next round drops the watch.
+        drop((c, c_rx));
+        let gone = tokio::time::Instant::now() + deadline;
+        while state.procs_watchers.lock().unwrap().0.len() == 3 && tokio::time::Instant::now() < gone {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(state.procs_watchers.lock().unwrap().0.len(), 2, "a closed connection kept its watch");
+        for tx in [&a, &b] {
+            state.watch_procs(tx, None);
+        }
+        assert!(state.procs_watchers.lock().unwrap().0.is_empty());
+        let stopped = tokio::time::Instant::now() + deadline;
+        while state.procs_watchers.lock().unwrap().1 && tokio::time::Instant::now() < stopped {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(!state.procs_watchers.lock().unwrap().1, "the sampler outlived its last watcher");
+    }
 
     #[test]
     fn elapsed_forms() {

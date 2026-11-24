@@ -1338,7 +1338,7 @@ impl AppState {
         // Only Claude Code reads `.claude/skills` of a project.
         let projects = if name == "claude" { project_dirs } else { &[] };
         let mut found = home
-            .map(|h| crate::skills::scan(&h, projects))
+            .map(|h| crate::skills::scan_kept(&h, projects))
             .unwrap_or_default();
         if name == "claude" {
             for command in crate::skills::claude_builtins() {

@@ -1277,6 +1277,12 @@ impl AppState {
     /// pane closes, when the daemon starts serving and on a timer, so a daemon that was down when a
     /// pane closed still deletes what that pane's agent owned.
     pub fn artifact_sweep(&self) {
+        self.artifact_sweep_at(now_secs());
+    }
+
+    /// [] judging expiry against `now` (Unix seconds), so a test moves the
+    /// clock instead of waiting.
+    pub fn artifact_sweep_at(&self, now: u64) {
         let (cwds, live) = {
             let spaces = self.spaces.lock().unwrap();
             let mut cwds: Vec<String> = Vec::new();
@@ -1303,7 +1309,6 @@ impl AppState {
             }
             all
         };
-        let now = now_secs();
         let mut registries = vec![(ArtifactScope::Machine, String::new())];
         registries.extend(cwds.into_iter().map(|c| (ArtifactScope::Project, c)));
         for (scope, cwd) in registries {

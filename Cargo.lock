@@ -3224,6 +3224,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "clap",
+ "fsevent-sys",
  "futures-util",
  "ghostty-vt",
  "h2",

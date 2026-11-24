@@ -148,7 +148,7 @@ fn no_renderer_dir(registry: &Path) -> PathBuf {
 /// stops them.
 pub(crate) fn watch_files(
     files: &[PathBuf],
-) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
+) -> Result<(Vec<crate::fswatch::Handle>, mpsc::UnboundedReceiver<()>), String> {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut watchers = Vec::new();
     for file in files {
@@ -157,11 +157,14 @@ pub(crate) fn watch_files(
             .canonicalize()
             .map_err(|e| format!("{}: {e}", parent.display()))?;
         let real = parent.join(file.file_name().ok_or("it names no file")?);
+        let folder = parent.clone();
         let tx = tx.clone();
         let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
                 if let Ok(event) = event {
-                    if !matches!(event.kind, EventKind::Access(_)) && event.paths.contains(&real) {
+                    // A rescan of the folder may hide a change to the file.
+                    let rescan = event.need_rescan() && event.paths.iter().any(|p| p == &folder);
+                    if !matches!(event.kind, EventKind::Access(_)) && (event.paths.contains(&real) || rescan) {
                         let _ = tx.send(());
                     }
                 }
@@ -373,7 +376,7 @@ impl AppState {
         let (tx, rx) = mpsc::unbounded_channel::<notify::Event>();
         let watching = pane.to_string();
         let watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            crate::fswatch::watcher(move |event: notify::Result<notify::Event>| match event {
                 Ok(event)
                     if !event.paths.is_empty()
                         && event
@@ -1727,6 +1730,12 @@ mod follow_tests {
             .unwrap()
             .insert("p1".into(), vec![watch]);
 
+        // The first read runs on a blocking thread; wait for it before checking it is the only one.
+        let first = tokio::time::Instant::now() + Duration::from_secs(5);
+        while reads.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < first {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the entry was not read to start with");
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::time::resume();

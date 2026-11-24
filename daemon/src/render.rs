@@ -25,6 +25,23 @@ const RENDER_WAIT: Duration = Duration::from_secs(15);
 /// How long a browser has to say where it is, so `pane info` never hangs on a slow one.
 const WHERE_WAIT: Duration = Duration::from_secs(3);
 
+/// `WHERE_WAIT`, or `WHEELD_WHERE_WAIT_MS` milliseconds when set: a test of a silent browser shortens it.
+fn where_wait() -> Duration {
+    std::env::var("WHEELD_WHERE_WAIT_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(WHERE_WAIT, Duration::from_millis)
+}
+
+/// A wait as the person reads it: whole seconds, else milliseconds.
+fn wait_text(wait: Duration) -> String {
+    if wait.subsec_millis() == 0 {
+        format!("{}s", wait.as_secs())
+    } else {
+        format!("{}ms", wait.as_millis())
+    }
+}
+
 /// What a client says when it does not show the pane it was asked for.
 pub const NOT_SHOWN: &str = "not shown";
 
@@ -189,7 +206,7 @@ impl AppState {
             return Err("eval needs a script".into());
         }
         tracing::info!(pane, op, arg = ?arg, "pane inspect requested");
-        let wait = if op == "where" { WHERE_WAIT } else { RENDER_WAIT };
+        let wait = if op == "where" { where_wait() } else { RENDER_WAIT };
         let bytes = self
             .ask_clients(pane, side, None, target.is_some(), wait, |id| {
                 ServerMsg::InspectPane {
@@ -365,7 +382,7 @@ impl AppState {
             match tokio::time::timeout(wait, rx).await {
                 Ok(Ok(answer)) => answer,
                 Ok(Err(_)) => Err("the client dropped the request".to_string()),
-                Err(_) => Err(format!("no answer within {}s", wait.as_secs())),
+                Err(_) => Err(format!("no answer within {}", wait_text(wait))),
             }
         };
         self.renderers.pending.lock().unwrap().remove(&id);
@@ -402,7 +419,7 @@ impl AppState {
         let ask = async {
             match phone {
             None => {
-                self.ask_clients(pane, side, None, false, WHERE_WAIT, make)
+                self.ask_clients(pane, side, None, false, where_wait(), make)
                     .await
             }
             Some(name) => {
@@ -418,7 +435,7 @@ impl AppState {
                 let Some((peer, out)) = found else {
                     return Err("the phone is not attached".to_string());
                 };
-                self.ask_client(pane, peer, out, false, WHERE_WAIT, &make)
+                self.ask_client(pane, peer, out, false, where_wait(), &make)
                     .await
                     .map_err(|m| {
                         if m == NOT_SHOWN {
@@ -431,9 +448,9 @@ impl AppState {
             }
         };
         // One deadline for the whole side, sends included, however many clients it has.
-        let bytes = tokio::time::timeout(WHERE_WAIT, ask)
+        let bytes = tokio::time::timeout(where_wait(), ask)
             .await
-            .map_err(|_| format!("no answer within {}s", WHERE_WAIT.as_secs()))??;
+            .map_err(|_| format!("no answer within {}", wait_text(where_wait())))??;
         String::from_utf8(bytes).map_err(|e| format!("the page's answer is not UTF-8: {e}"))
     }
 

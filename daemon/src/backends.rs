@@ -744,7 +744,7 @@ struct Sup {
     failures: u32,
     watch_tx: mpsc::UnboundedSender<String>,
     watch_rx: mpsc::UnboundedReceiver<String>,
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher: Option<crate::fswatch::Handle>,
     /// A change to a watched file, and when it restarts the backend.
     debounce: Option<(tokio::time::Instant, String)>,
 }
@@ -1106,7 +1106,7 @@ impl Sup {
         let base = std::fs::canonicalize(&dir).unwrap_or(dir);
         let tx = self.watch_tx.clone();
         let root = base.clone();
-        let made = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let made = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;

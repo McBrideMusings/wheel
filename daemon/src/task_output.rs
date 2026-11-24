@@ -33,7 +33,7 @@ struct Streamed {
 pub struct TaskOutputs {
     streamed: HashMap<String, Streamed>,
     /// The directories watched for the named output files, each with its watcher.
-    watched: HashMap<PathBuf, notify::RecommendedWatcher>,
+    watched: HashMap<PathBuf, crate::fswatch::Handle>,
 }
 
 impl TaskOutputs {
@@ -53,7 +53,7 @@ impl TaskOutputs {
                 continue;
             }
             let ping = changed.clone();
-            let made = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let made = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
                 if event.is_ok() {
                     ping();
                 }

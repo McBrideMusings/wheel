@@ -1,10 +1,11 @@
 //! The process card (ProcessesView.swift): every process a space's panes started, as wheeld last
 //! listed them, a filter over name, command and pane, and the chosen row whose details show.
-//! wheeld lists them when the card opens and every 2 s while it stays open.
+//! wheeld lists them when the card opens, then sends them while the card watches the space; a
+//! wheeld that cannot be watched is asked again every 2 s.
 use std::collections::HashMap;
 use wheel_proto::ProcInfo;
 
-/// How often an open card asks wheeld again.
+/// How often an open card asks a wheeld that cannot be watched.
 pub const REFRESH_MS: u64 = 2000;
 
 #[derive(Debug, Default)]
@@ -91,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chosen_row_that_left_the_list_is_forgotten_and_the_card_asks_every_two_seconds() {
+    fn a_chosen_row_that_left_the_list_is_forgotten() {
         let mut procs = Procs::default();
         procs.open_for("s1");
         procs.toggle_chosen(5);
@@ -106,6 +107,7 @@ mod tests {
         assert!(!procs.due(2999));
         assert!(procs.due(3000));
         procs.close();
+        assert_eq!(procs.open, None);
         assert!(!procs.due(10_000));
         assert_eq!(detail(&proc(9, "x", "x", None)), "pid 9 · 2 MB · up 7s");
     }

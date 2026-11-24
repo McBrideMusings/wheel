@@ -2002,7 +2002,7 @@ async fn an_agent_in_a_turn_when_wheeld_stops_is_told_once_that_the_turn_ended()
     let (url, _, _) = start_daemon_with(fake, Some(state_file.clone())).await;
     let mut ws = connect(&url).await;
     let events = transcript_when(&mut ws, &busy, |events| told_turn_ended(events) >= 1).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let events_later = attach(&mut ws, &busy, 900).await;
     assert_eq!(told_turn_ended(&events_later), 1, "{events_later:?}");
     assert_eq!(events_later.len(), events.len(), "{events_later:?}");
@@ -2730,7 +2730,7 @@ async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_i
     queue(&mut ws, &agent, "two", 3).await;
     // Codex cannot give a steered message back, so this one is not handed over yet: it stays queued
     // where Remove and Edit work.
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let shown = attach(&mut ws, &agent, 4).await;
     assert!(
         !shown.contains(&AgentEvent::TurnStart { turn: 2 }),
@@ -3885,8 +3885,7 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     }
 
     // After its seconds, the expiring one goes and the rest stay.
-    tokio::time::sleep(Duration::from_millis(4100)).await;
-    daemon.sweep_artifacts();
+    daemon.sweep_artifacts_after(5);
     assert!(!folder("soon").exists());
     let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
     assert!(!entries.contains("[artifacts.soon]"), "{entries}");
@@ -3957,8 +3956,7 @@ async fn an_expiring_artifact_in_a_closed_space_is_swept_after_a_restart() {
     // tells it where to look.
     let (_, _, second) =
         start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(state_file)).await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    second.sweep_artifacts();
+    second.sweep_artifacts_after(2);
     assert!(!folder.exists(), "{}", folder.display());
     let listed = std::fs::read_to_string(project.join("wheel.toml")).unwrap_or_default();
     assert!(!listed.contains("[artifacts.short]"), "{listed}");

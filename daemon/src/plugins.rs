@@ -934,7 +934,7 @@ impl AppState {
 fn watch_targets_start(
     targets: &[Target],
     wanted: Vec<PathBuf>,
-) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
+) -> Result<(Vec<crate::fswatch::Handle>, mpsc::UnboundedReceiver<()>), String> {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut watchers = Vec::new();
     // Events name real paths (/private/var, not /var), so compare against those.
@@ -942,7 +942,7 @@ fn watch_targets_start(
     for target in targets {
         let tx = tx.clone();
         let wanted = wanted.clone();
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let mut watcher = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, EventKind::Access(_)) {
                 return;

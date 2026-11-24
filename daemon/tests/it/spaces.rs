@@ -2386,7 +2386,7 @@ async fn a_web_pane_watch_follows_its_folder_and_stops_with_the_pane() {
     std::fs::write(data("p2").join("rows.json"), "{\"n\":2}").unwrap_err();
     std::fs::write(site.join("index.html"), "<p>three</p>").unwrap();
     assert!(
-        tokio::time::timeout(Duration::from_millis(600), reloaded(&mut events, "p2"))
+        tokio::time::timeout(Duration::from_millis(200), reloaded(&mut events, "p2"))
             .await
             .is_err(),
         "a pane that is no longer web never reloads"
@@ -2969,7 +2969,7 @@ async fn a_browser_panes_home_is_opened_at_read_set_refused_and_kept() {
         }
     }
     assert!(saw_home, "the rendering client got the layout holding the new home");
-    while let Ok(frame) = tokio::time::timeout(Duration::from_millis(300), renderer.next()).await {
+    while let Ok(frame) = tokio::time::timeout(Duration::from_millis(100), renderer.next()).await {
         if let Some(Ok(Message::Text(text))) = frame {
             assert!(!text.contains("inspect_pane"), "a home change asked a browser to move: {text}");
         }
@@ -3133,7 +3133,7 @@ async fn saves(ws: &mut Ws) -> u64 {
 
 /// Read frames until nothing has arrived for a moment, so a later `recv` sees only what follows.
 async fn settled(ws: &mut Ws) {
-    while tokio::time::timeout(Duration::from_millis(200), ws.next())
+    while tokio::time::timeout(Duration::from_millis(100), ws.next())
         .await
         .is_ok()
     {}
@@ -6026,11 +6026,11 @@ async fn a_focus_request_tells_every_client_and_changes_no_state() {
     let (before, _) = layout(&mut ws).await;
     let pane = first_pane(&before[0].root);
     // The new space asked for itself to be shown; read past that request and the layout.
-    while tokio::time::timeout(Duration::from_millis(300), watcher.next())
+    while tokio::time::timeout(Duration::from_millis(100), watcher.next())
         .await
         .is_ok()
     {}
-    while tokio::time::timeout(Duration::from_millis(300), ws.next())
+    while tokio::time::timeout(Duration::from_millis(100), ws.next())
         .await
         .is_ok()
     {}
@@ -6868,7 +6868,7 @@ async fn clients_report_views_that_do_not_reach_each_other() {
         .collect();
     assert_eq!(phone_view[0].space.as_deref(), Some(a.as_str()));
     while let Ok(Some(Ok(Message::Text(text)))) =
-        tokio::time::timeout(Duration::from_millis(300), mac.next()).await
+        tokio::time::timeout(Duration::from_millis(100), mac.next()).await
     {
         let msg: ServerMsg = serde_json::from_str(&text).unwrap();
         assert!(

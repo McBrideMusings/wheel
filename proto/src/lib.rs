@@ -589,6 +589,13 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
     },
+    /// Ask only what the daemon offers (ADR-0050): its protocol, compatibility level and ops, as
+    /// `status` carries them, without the state `status` gathers. A client checks it can talk to
+    /// the daemon with this.
+    Hello {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// An app's own log lines, for the daemon to keep beside its own and ship with them. `client`
     /// names the app (`mac`, `iphone`); the lines are what the app wrote, oldest first. `inode`
     /// names the app's log file, and each line's `end` is the byte offset just past it in that
@@ -1185,6 +1192,15 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
         space: String,
+    },
+    /// Have `space`'s processes sent as `procs_sample` every couple of seconds from now on, in
+    /// place of any space this connection watched before; no `space` stops them. One sampling serves
+    /// every connection watching, however many there are.
+    ProcsWatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
     },
     /// Ask process `pid` to quit (SIGTERM, or SIGKILL with `force`). Only a pid `space_procs`
     /// lists for `space` is accepted. Replies `ok`.
@@ -2179,6 +2195,14 @@ pub struct ConfigChoice {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "ev", rename_all = "snake_case")]
 pub enum ServerMsg {
+    /// The reply to `hello`: what the daemon offers, the same fields `status` carries.
+    Hello {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        protocol: u32,
+        compat: u32,
+        ops: Vec<String>,
+    },
     Status {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -2836,6 +2860,12 @@ pub enum ServerMsg {
         space: String,
         procs: Vec<ProcInfo>,
     },
+    /// The processes of the space this connection watches (`procs_watch`), sent unasked each time
+    /// the daemon samples them.
+    ProcsSample {
+        space: String,
+        procs: Vec<ProcInfo>,
+    },
     /// What `pane_info` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`
     /// or `empty`) and its fields in the order a client lists them.
     PaneInfo {
@@ -2981,7 +3011,8 @@ impl ServerMsg {
     /// so a new one cannot be left out.
     pub fn req(&self) -> Option<u64> {
         match self {
-            ServerMsg::Status { req, .. }
+            ServerMsg::Hello { req, .. }
+            | ServerMsg::Status { req, .. }
             | ServerMsg::TermOpened { req, .. }
             | ServerMsg::TermAttached { req, .. }
             | ServerMsg::AgentAttached { req, .. }
@@ -3043,6 +3074,7 @@ impl ServerMsg {
             | ServerMsg::Ok { req } => Some(*req),
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
+            | ServerMsg::ProcsSample { .. }
             | ServerMsg::UsageChanged { .. }
             | ServerMsg::TitleButtonsChanged { .. }
             | ServerMsg::DevicesChanged { .. }
