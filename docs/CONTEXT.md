@@ -43,7 +43,7 @@ An artifact whose page is HTML or Markdown on disk and which runs no process of 
 _Avoid_: plain artifact
 
 **App artifact**:
-An artifact whose entry names a process (`app`, `mcp` or `mcp_url`) that the daemon runs for the pane showing it.
+An artifact whose entry names a process (`app`) that the daemon runs for the pane showing it.
 _applies-to_: daemon/src/app.rs
 
 **Scope**:

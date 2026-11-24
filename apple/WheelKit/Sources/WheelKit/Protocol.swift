@@ -161,12 +161,6 @@ public enum ClientMsg: Sendable, Equatable {
     /// The artifacts of `space` (the machine's only, with none), project first then machine: what a
     /// pane picker offers. Replies `artifacts`.
     case artifactLs(req: UInt64?, space: String?)
-    /// The tools of the MCP server artifact `name` names, as the server listed them; replies `tools`.
-    case artifactTools(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?)
-    /// Call `tool` of that server with `arguments` (the text of a JSON object); replies `toolResult`.
-    case artifactCall(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, tool: String, arguments: String?)
-    /// `resources/read` of `uri` on that server; replies `resource`.
-    case artifactRead(req: UInt64?, name: String, scope: ArtifactScope?, space: String?, pane: String?, uri: String)
     /// The script plugin pane `pane` shows, read off disk now; replies `pluginSource`.
     case pluginSource(req: UInt64?, pane: String)
     /// Plugin pane `pane` reads `feed` with `params`; replies `feedUpdate` with the current value, then
@@ -413,23 +407,6 @@ public enum ClientMsg: Sendable, Equatable {
         case let .artifactLs(req, space):
             o = ["op": "artifact_ls"]; put(req)
             if let space { o["space"] = space }
-        case let .artifactTools(req, name, scope, space, pane):
-            o = ["op": "artifact_tools", "name": name]; put(req)
-            if let scope { o["scope"] = scope.rawValue }
-            if let space { o["space"] = space }
-            if let pane { o["pane"] = pane }
-        case let .artifactCall(req, name, scope, space, pane, tool, arguments):
-            o = ["op": "artifact_call", "name": name, "tool": tool]; put(req)
-            if let scope { o["scope"] = scope.rawValue }
-            if let space { o["space"] = space }
-            if let pane { o["pane"] = pane }
-            if let arguments, let data = arguments.data(using: .utf8),
-               let object = try? JSONSerialization.jsonObject(with: data) { o["arguments"] = object }
-        case let .artifactRead(req, name, scope, space, pane, uri):
-            o = ["op": "artifact_read", "name": name, "uri": uri]; put(req)
-            if let scope { o["scope"] = scope.rawValue }
-            if let space { o["space"] = space }
-            if let pane { o["pane"] = pane }
         case let .pluginSource(req, pane):
             o = ["op": "plugin_source", "pane": pane]; put(req)
         case let .feedSubscribe(req, pane, feed, params):
@@ -1373,8 +1350,6 @@ public enum ServerMsg: Sendable {
     case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
-    /// The MCP server behind pane `pane` said a resource changed.
-    case mcpUpdated(pane: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
@@ -1384,13 +1359,6 @@ public enum ServerMsg: Sendable {
     case settings(req: UInt64?, space: String?, settings: [SettingInfo])
     /// Every artifact `artifactLs` asked for.
     case artifacts(req: UInt64?, artifacts: [ArtifactInfo])
-    /// The tools of an MCP server, each as the server sent it (`name`, `description`, `input_schema`,
-    /// `meta`), in reply to `artifactTools`.
-    case tools(req: UInt64, tools: [JSONValue])
-    /// What an MCP tool returned (`content`, `structured`, `is_error`, `meta`), in reply to `artifactCall`.
-    case toolResult(req: UInt64, result: JSONValue)
-    /// The `contents` of a `resources/read`, in reply to `artifactRead`.
-    case resource(req: UInt64, contents: [JSONValue])
     /// A plugin pane's script and its package's other `.luau` files by path: the reply to `pluginSource`
     /// (with its `req`), and sent unasked to every connection when the script or a module changes on disk.
     /// `chunk` names the script in error messages (`<plugin>/<script>`).
@@ -1581,7 +1549,6 @@ extension ServerMsg: Decodable {
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
-        case "mcp_updated": self = .mcpUpdated(pane: try c.decode(String.self, forKey: .pane))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))
@@ -1589,9 +1556,6 @@ extension ServerMsg: Decodable {
             self = .settings(req: req, space: try c.decodeIfPresent(String.self, forKey: .space),
                              settings: try c.decode([SettingInfo].self, forKey: .settings))
         case "artifacts": self = .artifacts(req: req, artifacts: try c.decode([ArtifactInfo].self, forKey: .artifacts))
-        case "tools": self = .tools(req: try c.decode(UInt64.self, forKey: .req), tools: try c.decode([JSONValue].self, forKey: .tools))
-        case "tool_result": self = .toolResult(req: try c.decode(UInt64.self, forKey: .req), result: try c.decode(JSONValue.self, forKey: .result))
-        case "resource": self = .resource(req: try c.decode(UInt64.self, forKey: .req), contents: try c.decode([JSONValue].self, forKey: .contents))
         case "plugin_source":
             self = .pluginSource(req: req, pane: try c.decode(String.self, forKey: .pane), plugin: try c.decode(String.self, forKey: .plugin),
                                  pluginPane: try c.decode(String.self, forKey: .plugin_pane), chunk: try c.decodeIfPresent(String.self, forKey: .chunk) ?? "pane",
