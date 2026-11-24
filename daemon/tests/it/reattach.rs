@@ -461,7 +461,7 @@ async fn attaching_twice_streams_output_once() {
     // Wait for any duplicate stream to deliver too, then count.
     let mut tail = seen;
     while let Ok(Some(Ok(Message::Text(text)))) =
-        tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+        tokio::time::timeout(Duration::from_millis(200), ws.next()).await
     {
         if let Ok(ServerMsg::TermOutput { data, .. }) = serde_json::from_str(&text) {
             tail.push_str(&String::from_utf8_lossy(&decode_bytes(&data).unwrap()));

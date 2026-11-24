@@ -56,6 +56,7 @@ fn start_as(dir: &Path, local: u16, instance: &str) -> Daemon {
         .arg(dir)
         .arg("--machine-file")
         .arg(dir.join("wheel.toml"))
+        .env("WHEELD_WHERE_WAIT_MS", "500")
         .arg("--log-dir")
         .arg(dir)
         .stderr(Stdio::null())
@@ -580,7 +581,7 @@ async fn a_peer_past_its_connection_share_is_closed_and_gets_the_slot_back_when_
     for _ in 0..16 {
         held.push(TcpStream::connect(("127.0.0.1", remote)).await.unwrap());
     }
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // The listener accepts in connect order, so the 17th is judged after the sixteen above.
     let mut over = TcpStream::connect(("127.0.0.1", remote)).await.unwrap();
     let mut byte = [0u8; 1];
     let closed = tokio::time::timeout(Duration::from_secs(30), over.read(&mut byte)).await;
@@ -837,7 +838,7 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     let opened = local_req(&mut cli, open(4, "example.test/a b", None)).await;
     assert_eq!(opened["ev"], "opened", "{opened}");
     assert_eq!(opened["url"], "https://example.test/a%20b", "{opened}");
-    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(500)).await.is_none());
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(100)).await.is_none());
 
     // With `on` mac, the Mac's browser is asked to go to the resolved page.
     let opened = local_req_after(&mut cli, open(5, "example.test/two", Some("mac")), async {
@@ -860,7 +861,7 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     // With `on` phone and no phone attached, it fails; nothing is sent to the Mac.
     let refused = local_req(&mut cli, open(6, "example.test/three", Some("phone"))).await;
     assert_eq!(refused["message"], "the phone is not attached", "{refused}");
-    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(100)).await.is_none());
 
     // A paired phone is asked, and the Mac is not.
     let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
@@ -883,7 +884,7 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     })
     .await;
     assert_eq!(opened["url"], "https://example.test/four", "{opened}");
-    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(100)).await.is_none());
 
     // `where --on phone` asks the phone alone, and `pane_info` asks the Mac and each phone at
     // once, naming the phone by its device.
@@ -907,7 +908,7 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     )
     .await;
     assert_eq!(found["text"], "https://phone.example/p\tPhone page", "{found}");
-    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(100)).await.is_none());
     let info = local_req_after(
         &mut cli,
         serde_json::json!({"op":"pane_info","req":21,"pane":pane}),
@@ -947,14 +948,14 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     assert_eq!(of("Mac"), Some("https://mac.example/m (Mac page)"), "{fields:?}");
     assert_eq!(of("Phone Test phone"), Some("https://phone.example/q"), "{fields:?}");
 
-    // A Mac and a phone that both stay silent: one 3 s deadline per side, run together.
+    // A Mac and a phone that both stay silent: one 500 ms deadline per side, run together.
     let started = Instant::now();
     let silent = local_req(&mut cli, serde_json::json!({"op":"pane_info","req":22,"pane":pane})).await;
-    assert!(started.elapsed() < Duration::from_millis(4500), "waited {:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_millis(2000), "waited {:?}", started.elapsed());
     let texts: Vec<String> = silent["fields"].as_array().unwrap().iter()
         .filter(|f| f["label"] == "Mac" || f["label"] == "Phone Test phone")
         .map(|f| f["value"].as_str().unwrap().to_string()).collect();
-    assert_eq!(texts, ["no answer within 3s", "no answer within 3s"], "{silent}");
+    assert_eq!(texts, ["no answer within 500ms", "no answer within 500ms"], "{silent}");
     // The unanswered asks sit in each connection's queue; read them so later checks see only their own.
     assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_some());
     next_event(&mut phone, "inspect_pane").await.unwrap();
@@ -962,7 +963,7 @@ async fn a_page_command_moves_the_one_browser_it_names_and_typed_text_moves_none
     // Text no pane may open is refused before any browser is asked.
     let bad = local_req(&mut cli, open(8, "mailto:a@b.com", Some("mac"))).await;
     assert!(bad["message"].as_str().unwrap().contains("mailto:a@b.com"), "{bad}");
-    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(300)).await.is_none());
+    assert!(local_event(&mut mac, "inspect_pane", Duration::from_millis(100)).await.is_none());
 }
 
 /// What the fake Apple push service received: the request path, its headers and its body.

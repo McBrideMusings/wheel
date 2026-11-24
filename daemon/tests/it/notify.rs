@@ -89,7 +89,7 @@ async fn a_notify_reaches_every_attached_connection_and_a_clear_follows() {
 
     // A connection made afterwards is told nothing: the daemon holds no toast.
     let (mut late, _) = tokio_tungstenite::connect_async(url).await.unwrap();
-    let heard = tokio::time::timeout(Duration::from_millis(500), async {
+    let heard = tokio::time::timeout(Duration::from_millis(100), async {
         loop {
             let Some(Ok(Message::Text(text))) = late.next().await else { break false };
             if let Ok(ServerMsg::Toast { .. }) = serde_json::from_str(&text) {
