@@ -1486,8 +1486,7 @@ mod tests {
 
     #[test]
     fn resolve_stays_inside_the_scopes_root() {
-        let root = std::env::temp_dir().join(format!("wheel-web-resolve-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         std::fs::create_dir_all(root.join("site/sub")).unwrap();
         std::fs::write(root.join("site/index.html"), "top").unwrap();
         std::fs::write(root.join("site/sub/index.html"), "sub").unwrap();
@@ -1532,13 +1531,11 @@ mod tests {
         );
         // A folder missing altogether is not an error either, just nothing to serve.
         assert_eq!(resolve(&root, "gone", "index.html"), None);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_root_symlinked_out_of_its_base_is_refused() {
-        let base = std::env::temp_dir().join(format!("wheel-web-base-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_support::scratch();
         std::fs::create_dir_all(base.join(".wheel")).unwrap();
         std::fs::create_dir_all(base.join("real/x")).unwrap();
         let root = base.join(".wheel/artifacts");
@@ -1548,7 +1545,6 @@ mod tests {
         std::fs::remove_file(&root).unwrap();
         std::os::unix::fs::symlink(base.join("real"), &root).unwrap();
         assert!(inside(&root, &base), "a symlink that stays inside");
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// Which paths the reserved prefix claims. Everything the prefix claims is resolved under the
@@ -1607,11 +1603,8 @@ mod retry_tests {
 
     #[tokio::test]
     async fn a_refused_watch_is_retried_and_reloads_the_page_once_set() {
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("wheel-web-retry-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let tmp = crate::test_support::scratch();
+        let base = tmp.canonicalize().unwrap();
         let folder = base.join("site");
         std::fs::create_dir_all(&folder).unwrap();
 
@@ -1677,7 +1670,6 @@ mod retry_tests {
         assert!(matches!(msg, ServerMsg::PaneReload { pane } if pane == "p1"));
 
         state.watchers.lock().unwrap().clear();
-        std::fs::remove_dir_all(&base).unwrap();
     }
 }
 
@@ -1688,11 +1680,8 @@ mod follow_tests {
 
     #[tokio::test]
     async fn an_artifacts_entry_is_read_once_then_only_when_its_file_changes() {
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("wheel-web-follow-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let tmp = crate::test_support::scratch();
+        let base = tmp.canonicalize().unwrap();
         let (old, new) = (base.join("old"), base.join("new"));
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new).unwrap();
@@ -1754,6 +1743,5 @@ mod follow_tests {
         assert_eq!(state.watches()[0].watching, Some(new.display().to_string()));
 
         state.watchers.lock().unwrap().clear();
-        std::fs::remove_dir_all(&base).unwrap();
     }
 }

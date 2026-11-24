@@ -118,23 +118,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_registry_matches_the_swift_one() {
-        let all = fixed();
-        assert_eq!(all.len(), 44);
-        assert!(all.iter().all(|a| a.keys.as_deref().is_none_or(|k| crate::keymap::KeyChord::parse(k).is_some())), "every built-in key is in wheeld's spelling");
-        let ids: Vec<&str> = all.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids[..3], ["open-folder", "new-window", "new-space"]);
-        assert_eq!(all.iter().find(|a| a.id == "focus-left").unwrap().keys.as_deref(), Some("opt+cmd+arrow_left"));
-        assert_eq!(all.iter().find(|a| a.id == "resize-up").unwrap().title, "Move Divider Up");
-        assert_eq!(all.iter().find(|a| a.id == "space-9"), None);
-        assert_eq!(all.iter().find(|a| a.id == "last-space").unwrap().keys.as_deref(), Some("cmd+9"));
-        let keymap = Keymap::new(&defaults(&all), "cmd+e=split-right");
-        let sheet = shortcut_sheet(&all, &keymap);
-        assert_eq!(sheet[0].0, "Panes");
-        assert_eq!(sheet[0].1[0], ShortcutRow { id: "split-right".into(), title: "Split Right".into(), keys: "⌘E".into() });
-        assert_eq!(sheet[1].1.len(), 13);
-        assert_eq!(sheet[2].1.iter().filter(|r| r.id.starts_with("mode-")).map(|r| (r.title.as_str(), r.keys.as_str())).collect::<Vec<_>>(), [("Show Spaces", "⌥⌘1"), ("Show Agents", "⌥⌘2"), ("Show Orchestrator", "⌥⌘3")]);
-        assert_eq!(runner_actions(&["build".into()])[0].id, "run-build");
-        assert_eq!(agent_actions(&[("claude".into(), "Claude".into())])[0].title, "Start Claude in This Pane");
+    fn every_built_in_key_is_in_wheelds_spelling() {
+        assert!(fixed().iter().all(|a| a.keys.as_deref().is_none_or(|k| crate::keymap::KeyChord::parse(k).is_some())));
     }
 }

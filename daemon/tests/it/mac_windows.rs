@@ -2,7 +2,7 @@
 //! daemon stores no windows, forwards each command to the attached app and returns its answer,
 //! and says so when no app is attached.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

@@ -2,6 +2,7 @@
 //! home waits on a slow login shell) gets the agent's transcript once the agent starts. Its own
 //! test binary, since it points `SHELL` at a stand-in shell for the whole process.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::path::Path;

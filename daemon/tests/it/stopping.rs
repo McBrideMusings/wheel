@@ -1,7 +1,7 @@
 //! When wheeld stops, every attached client is sent `stopping` and the socket closes after it, so a
 //! client can tell a stop or restart from a crash.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

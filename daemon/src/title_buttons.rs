@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_project_entry_replaces_the_machines_by_id_and_new_ones_follow() {
-        let dir = std::env::temp_dir().join(format!("tb-merge-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let machine = file(
             &dir,
@@ -486,24 +486,22 @@ mod tests {
         assert_eq!(merged[0].origin, SettingOrigin::Project);
         assert!(merged[1].hidden);
         assert_eq!(merged[2].every, 2);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn only_the_machines_file_keeps_a_state_command() {
-        let dir = std::env::temp_dir().join(format!("tb-state-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = file(&dir, "[[title.button]]\nid='a'\nicon='x'\ncommand='true'\nstate='echo {}'\n");
         assert!(read(&path, SettingOrigin::Machine)[0].state.is_some());
         let project = read(&path, SettingOrigin::Project);
         assert!(project[0].state.is_none());
         assert_eq!(project[0].command.as_deref(), Some("true"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_bad_entry_is_skipped_and_the_rest_stay() {
-        let dir = std::env::temp_dir().join(format!("tb-bad-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = file(
             &dir,
@@ -513,7 +511,6 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].id, "ok");
         assert_eq!(got[0].icon, "star");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

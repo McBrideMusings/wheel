@@ -146,8 +146,7 @@ mod tests {
 
     #[test]
     fn a_linked_worktree_is_not_listed_unless_a_space_is_open_on_it() {
-        let root = std::env::temp_dir().join(format!("wheel-dirs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let (plain, tree) = (root.join("plain"), root.join("tree"));
         std::fs::create_dir_all(&plain).unwrap();
         std::fs::create_dir_all(&tree).unwrap();
@@ -158,6 +157,5 @@ mod tests {
         let t = tree.to_string_lossy().into_owned();
         let shown = list(&r, &root, |p| (p == t).then(|| "s1".to_string())).unwrap();
         assert_eq!(names(shown), vec!["plain", "tree"]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

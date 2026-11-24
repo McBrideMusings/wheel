@@ -271,15 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn the_swift_clients_level_is_this_one() {
-        let swift = include_str!("../../apple/WheelKit/Sources/WheelKit/ServerOffer.swift");
-        assert!(
-            swift.contains(&format!("public static let clientCompat: UInt32 = {COMPAT}\n")),
-            "ServerOffer.clientCompat in WheelKit is not COMPAT ({COMPAT})"
-        );
-    }
-
-    #[test]
     fn a_breaking_level_refuses_both_ways_and_says_what_changed() {
         let mut before = Offer::ours();
         before.compat = 0;

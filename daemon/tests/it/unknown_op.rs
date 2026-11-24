@@ -1,7 +1,7 @@
 //! A frame the daemon cannot parse gets an error under its `req`, so a client waiting on it hears
 //! at once instead of timing out.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

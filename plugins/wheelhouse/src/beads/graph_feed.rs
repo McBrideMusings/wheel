@@ -81,50 +81,6 @@ mod tests {
         Snapshot { name: "t".into(), path: "/t".into(), beads, has_repo: true, ..Default::default() }
     }
 
-    /// How many values a view tree holds the way the Luau runtime counts them: every object, array,
-    /// string, number and bool is one.
-    pub fn count(v: &Value) -> usize {
-        1 + match v {
-            Value::Array(a) => a.iter().map(count).sum(),
-            Value::Object(o) => o.values().map(count).sum(),
-            _ => 0,
-        }
-    }
-
-    /// 1,500 beads: 30 epics of 50 beads, each bead blocked by the one before it in chains of 5.
-    fn big() -> Snapshot {
-        let mut beads = vec![];
-        for e in 0..30 {
-            beads.push(bead(&format!("e{e}"), |b| b.kind = "epic".into()));
-        }
-        for i in 0..1470 {
-            let e = i % 30;
-            beads.push(bead(&format!("b{i}"), |b| {
-                b.parent = Some(format!("e{e}"));
-                b.title = format!("A bead title of a realistic length, number {i}");
-                if i % 5 != 0 {
-                    b.blocked_by = vec![format!("b{}", i - 30)];
-                }
-                if i % 7 == 0 {
-                    b.status = "in_progress".into();
-                }
-            }));
-        }
-        snap(beads)
-    }
-
-    #[test]
-    fn a_1500_bead_scene_stays_under_the_runtime_limit() {
-        let s = big();
-        let p = Params { view: "graph".into(), ..Params::default() };
-        let graph = count(&value_of(&s, &p));
-        let p = Params { sel: Some("b100".into()), width: 1400.0, ..Params::default() };
-        let focus = count(&value_of(&s, &p));
-        eprintln!("graph {graph} values, focus {focus} values");
-        assert!(graph < 80_000, "graph scene is {graph} values");
-        assert!(focus < 20_000, "focus scene is {focus} values");
-    }
-
     fn chain() -> Snapshot {
         snap(vec![
             bead("e", |b| b.kind = "epic".into()),

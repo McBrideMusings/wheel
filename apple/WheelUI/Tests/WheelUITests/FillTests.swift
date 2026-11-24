@@ -21,6 +21,11 @@ struct FillTests {
         #expect(!pane(#"ui.Text("a")"#).fillsPane)
     }
 
+    @Test func aVideoStreamWithNoHeightFillsThePaneUnderAZStack() {
+        #expect(pane(#"ui.ZStack{ ui.VideoStream{ stream = "p.s" }, ui.Button{ child = ui.Text("x") }, alignment = "topLeading" }"#).fillsPane)
+        #expect(!pane(#"ui.VideoStream{ stream = "p.s", height = 200 }"#).fillsPane)
+    }
+
     @Test func aFramelessTableFillsThePane() {
         #expect(pane(#"ui.Table{ columns = {}, sections = {} }"#).fillsPane)
     }

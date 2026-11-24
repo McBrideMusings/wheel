@@ -2,7 +2,7 @@
 //! line once; a store that is down holds them back without losing them; a store that refuses a
 //! batch is shown as failing and not asked again in a loop; and the shipper's own lines stay home.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -114,7 +114,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
         .await
         .unwrap();
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
             .await
             .expect("daemon replied")
             .unwrap()

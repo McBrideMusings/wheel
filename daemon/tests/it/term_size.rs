@@ -42,7 +42,7 @@ async fn send(ws: &mut Ws, msg: ClientMsg) {
 
 async fn recv(ws: &mut Ws) -> ServerMsg {
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
             .await
             .expect("daemon replied")
             .unwrap()

@@ -3,6 +3,7 @@
 //! restored agent, and a picked value outlives any route. Its own test binary, since it points
 //! `SHELL` at a stand-in shell for the whole process.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::path::{Path, PathBuf};

@@ -875,14 +875,12 @@ impl AppState {
             )
         });
         if let Err(e) = made {
-            let _ = std::fs::remove_dir_all(&dir);
             remove_made(&made_parents);
             return Err(e);
         }
         if ends_with_pane.is_some() || expires_at.is_some() {
             if let Err(e) = self.remember_lifetime_dir(&cwd) {
                 let _ = self.delete_entry(&file, inside_of(scope, &cwd), name);
-                let _ = std::fs::remove_dir_all(&dir);
                 remove_made(&made_parents);
                 return Err(e);
             }
@@ -1724,17 +1722,11 @@ fn remove_made(parents: &[PathBuf]) {
 mod tests {
     use super::*;
 
-    fn folder(case: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "wheel-entry-{}-{case}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn folder() -> (crate::test_support::Scratch, PathBuf) {
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        let real = dir.canonicalize().unwrap();
+        (dir, real)
     }
 
     /// The entry `name` in a `wheel.toml` holding `text`, written into `dir`.
@@ -1748,7 +1740,7 @@ mod tests {
     /// that needs a folder of ours.
     #[test]
     fn a_url_entry_names_a_page_and_no_folder() {
-        let dir = folder("url");
+        let (_tmp, dir) = folder();
         let e = read(
             &dir,
             "[artifacts.sim]\nurl = \"http://127.0.0.1:3100/\"\n",
@@ -1775,7 +1767,7 @@ mod tests {
     /// is what a listing and a `show` print, so this is the text a person reads.
     #[test]
     fn the_reader_reports_what_is_wrong_with_an_entry() {
-        let dir = folder("problems");
+        let (_tmp, dir) = folder();
         std::fs::create_dir(dir.join("site")).unwrap();
         std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>").unwrap();
 
@@ -1873,7 +1865,6 @@ mod tests {
             .contains("not a table"));
         // A file that is not there holds no entries.
         assert!(entry(&dir.join("none.toml"), "x").unwrap().is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// An entry's page, wherever the path points: a folder serves its `index.html`, a file is the
@@ -1881,7 +1872,7 @@ mod tests {
     /// a link — the path itself, or a folder on the way — is followed to where the page really is.
     #[test]
     fn an_entry_locates_its_page_wherever_it_lives() {
-        let dir = folder("locate");
+        let (_tmp, dir) = folder();
         let course = dir.join("elsewhere/course");
         std::fs::create_dir_all(course.join("lessons")).unwrap();
         std::fs::write(course.join("index.html"), "home").unwrap();
@@ -1929,7 +1920,6 @@ mod tests {
         assert!(at("../missing").unwrap_err().starts_with("nothing at "));
         let e = read(&reg, "[artifacts.c]\npath = \"../later/page.html\"\n", "c");
         assert_eq!(e.watch_dir(), Some(reg.join("../later")));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The path a new entry writes is relative when the folder is under the file's directory, so a
@@ -1973,7 +1963,7 @@ mod tests {
     /// where the link points.
     #[test]
     fn a_default_folder_never_leads_out_of_its_space() {
-        let dir = folder("default");
+        let (_tmp, dir) = folder();
         let (space, outside) = (dir.join("space"), dir.join("outside"));
         std::fs::create_dir_all(&space).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
@@ -1997,14 +1987,13 @@ mod tests {
             state.default_folder(&artifact, cwd).unwrap(),
             space.join(".wheel/artifacts/dash")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A machine artifact's default folder sits beside the machine `wheel.toml`, not in the
     /// instance directory, so the relative path its entry carries finds it.
     #[test]
     fn a_machine_default_folder_is_beside_the_machine_file() {
-        let dir = folder("machine-default");
+        let (_tmp, dir) = folder();
         let machine = dir.join("home/.wheel");
         std::fs::create_dir_all(&machine).unwrap();
         let state = AppState::with_machine_file(
@@ -2027,7 +2016,6 @@ mod tests {
         let e = entry(&machine.join(FILE), "dash").unwrap().unwrap();
         assert_eq!(e.locate().unwrap().root, folder.canonicalize().unwrap());
         assert!(!dir.join("inst/artifacts").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn state_in(dir: &Path) -> std::sync::Arc<AppState> {
@@ -2043,7 +2031,7 @@ mod tests {
     /// entry, and the folder goes with the last of them.
     #[test]
     fn a_shared_default_folder_goes_with_the_last_entry_reaped() {
-        let dir = folder("shared");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         let space = dir.join("space");
         let shared = space.join(".wheel/artifacts/dash");
@@ -2067,7 +2055,6 @@ mod tests {
         reap("b");
         assert!(entry(&file, "b").unwrap().is_none());
         assert!(!shared.exists(), "the last entry takes the folder");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A remembered directory is dropped once it is no open space's and holds no entry with a
@@ -2075,7 +2062,7 @@ mod tests {
     /// path.
     #[test]
     fn forgetting_lifetime_dirs_keeps_only_what_still_needs_a_sweep() {
-        let dir = folder("forget");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         std::fs::create_dir_all(dir.join("inst")).unwrap();
         let live = dir.join("live\nline");
@@ -2100,14 +2087,13 @@ mod tests {
         );
         state.forget_lifetime_dirs(&[s(&open)]);
         assert_eq!(state.remembered_lifetime_dirs(), vec![s(&live), s(&open)]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A directory that cannot be saved is an error, so an artifact is never left with a lifetime
     /// no later sweep would visit.
     #[test]
     fn remembering_a_directory_that_cannot_be_saved_is_an_error() {
-        let dir = folder("unsaved");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         std::fs::create_dir_all(dir.join("inst/lifetime-dirs.tmp")).unwrap();
         let err = state.remember_lifetime_dir("/some/space").unwrap_err();
@@ -2116,6 +2102,5 @@ mod tests {
         std::fs::write(dir.join("inst/lifetime-dirs"), "/plain/path\n").unwrap();
         let err = state.remember_lifetime_dir("/some/space").unwrap_err();
         assert!(err.contains("cannot read"), "{err}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

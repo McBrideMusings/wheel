@@ -3,6 +3,7 @@
 //! survives starts of kept agents that cannot start it. Its own test binary, since it points
 //! `SHELL` at a stand-in shell for the whole process.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::path::Path;

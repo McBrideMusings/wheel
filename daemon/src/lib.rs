@@ -65,6 +65,8 @@ mod sites;
 pub mod spaces;
 mod status;
 mod stream_time;
+#[cfg(test)]
+mod test_support;
 mod streams;
 mod uploads;
 mod web;

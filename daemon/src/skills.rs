@@ -196,8 +196,7 @@ mod tests {
 
     #[test]
     fn scan_lists_skill_folders_and_the_system_folder() {
-        let home = std::env::temp_dir().join(format!("wheel-skills-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         for (dir, text) in [
             ("skills/b", "---\nname: b\ndescription: Bee\n---\n"),
             ("skills/a", "---\ndescription: Ay\n---\n"),
@@ -211,13 +210,11 @@ mod tests {
         std::fs::create_dir_all(home.join("skills/empty")).unwrap();
         let names: Vec<_> = scan(&home, &[]).into_iter().map(|s| s.name).collect();
         assert_eq!(names, ["a", "b", "s"]);
-        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
     fn scan_adds_project_skills_and_plugin_skills_named_by_plugin() {
-        let root = std::env::temp_dir().join(format!("wheel-skills-p-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let home = root.join("home");
         let project = root.join("proj");
         let plugin = root.join("cache/canvas");
@@ -245,6 +242,5 @@ mod tests {
             .map(|s| s.name)
             .collect();
         assert_eq!(names, ["a", "canvas:post", "p"]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }
