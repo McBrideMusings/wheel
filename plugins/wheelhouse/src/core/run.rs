@@ -60,6 +60,12 @@ pub fn button(label: &str, sh: &str, dir: &str, pane: &str, env: &[(&str, &str)]
     button_then(label, sh, dir, pane, env, log, |_| {})
 }
 
+/// How long a button waits for its command before handing the wait to a thread; short in tests.
+#[cfg(not(test))]
+const QUICK: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const QUICK: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// `button`, and `then` gets the last line the command printed once it has exited with 0, or `None` when it
 /// failed after the ten seconds: at once when the command was quick (a quick failure is the `Err`, and `then`
 /// does not run), else from the thread that waits for it.
@@ -93,7 +99,7 @@ pub fn button_then(
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
-            Ok(None) if started.elapsed() > std::time::Duration::from_secs(10) => break None,
+            Ok(None) if started.elapsed() > std::time::Duration::QUICK => break None,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
             Err(_) => break None,
         }
@@ -139,8 +145,8 @@ mod tests {
         let err = button_then("t", "echo boom >&2; exit 3", "/", "default", &[], &dir.join("e.log"), |_| panic!("then ran")).unwrap_err();
         assert!(err.contains("boom"), "{err}");
         let (tx, rx) = std::sync::mpsc::channel();
-        button_then("t", "sleep 11; echo p7", "/", "default", &[], &dir.join("slow.log"), move |l| tx.send(l).unwrap()).unwrap();
-        assert_eq!(rx.recv().unwrap().as_deref(), Some("p7"), "a command past ten seconds still reports its pane");
+        button_then("t", "sleep 0.5; echo p7", "/", "default", &[], &dir.join("slow.log"), move |l| tx.send(l).unwrap()).unwrap();
+        assert_eq!(rx.recv().unwrap().as_deref(), Some("p7"), "a command past the quick wait still reports its pane");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
