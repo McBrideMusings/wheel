@@ -656,6 +656,8 @@ local function own_class(data)
         { "VideoStream", "VideoStream", {
             { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall, as wide as it is offered, the picture fitted to it; with no height it fills the height the rest of the pane leaves, as a frame-less Table does (put it in a ZStack to float controls over it). input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 200 }) },
+            { "fit = \"cover\": the picture fills the frame and what overflows is cropped, as Image's fit does; any other value fits the whole picture inside",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 120, fit = "cover" }) },
             { "input = false: the picture and sound only; nothing is sent",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 120, input = false }) },
             { "what the backend got: its gallery.input feed", secondary(last) },
