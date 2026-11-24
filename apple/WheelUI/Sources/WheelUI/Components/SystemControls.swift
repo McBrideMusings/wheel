@@ -140,8 +140,20 @@ private func gridAlignment(_ name: String?) -> Alignment {
     case "top": .top
     case "bottom": .bottom
     case "topLeading": .topLeading
+    case "topTrailing": .topTrailing
+    case "bottomLeading": .bottomLeading
+    case "bottomTrailing": .bottomTrailing
     case "firstTextBaseline": .leadingFirstTextBaseline
     default: .leading
+    }
+}
+
+// MARK: ZStack(alignment:) { layers, first at the back }
+struct PaneZStackView: View {
+    let node: ViewNode
+    let tree: ViewTree
+    var body: some View {
+        ZStack(alignment: gridAlignment(node.string("alignment") ?? "center")) { kids(node, tree) }
     }
 }
 

@@ -8,7 +8,8 @@ public extension EnvironmentValues {
 }
 
 /// `VideoStream{stream, height?, input?}`: the live H.264 or HEVC stream `stream` (`<plugin>.<name>`) that the plugin's
-/// backend serves, `height` points tall (default 320). `input` (default true) sends the keys, pointer and controller
+/// backend serves, `height` points tall, or with no `height` the height the rest of the pane leaves (as a frame-less
+/// Table, `ViewTree.fillsPane`). `input` (default true) sends the keys, pointer and controller
 /// events on it to the backend. Frames, audio and input never pass through the script.
 struct PaneVideoStreamView: View {
     let node: ViewNode
@@ -16,7 +17,7 @@ struct PaneVideoStreamView: View {
     var body: some View {
         let p = node.props
         let stream = p["stream"]?.stringValue ?? ""
-        let height = p["height"]?.numberValue ?? 320
+        let height = p["height"]?.numberValue.map { CGFloat($0) }
         let input = p["input"]?.boolValue ?? true
         Group {
             if stream.isEmpty {
@@ -27,7 +28,7 @@ struct PaneVideoStreamView: View {
                 PaneEmbedNote(text: "This client cannot play a video stream; \(stream) plays in Wheel on the Mac")
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: height == nil ? .infinity : nil)
         .frame(height: height)
         .clipShape(Rectangle())
         .accessibilityIdentifier("pane.videostream.\(stream)")
