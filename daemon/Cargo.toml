@@ -59,4 +59,5 @@ workspace-hack = { version = "0.1", path = "../workspace-hack" }
 sha2 = "0.10"
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 rmcp = { version = "3.8", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }

@@ -1249,12 +1249,12 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         let older = "aaaaaaaa-2222-3333-4444-555555555555";
         std::fs::write(project.join(format!("{older}.jsonl")), "{}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         let conversations = claude_sessions(&home, "/tmp/my.proj");
         // The older session is written to again after the newer one was created, as a live session
         // in a shared folder is. A process that started between the two is the newer one's.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(project.join(format!("{older}.jsonl")), "{}\n{}").unwrap();
         let between_creations = conversations[0].1 - std::time::Duration::from_millis(1);
         let rewritten = claude_sessions(&home, "/tmp/my.proj");
