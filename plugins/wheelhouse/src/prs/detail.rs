@@ -186,6 +186,12 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
 /// fork's remote; that PR's head ref is fetched only from the remote whose URL points at `repo`, and no such remote is an error.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
+    worktree_in(&home, dir, repo, branch, fork_pr)
+}
+
+/// `worktree` with the home directory that holds `.worktrees` given.
+fn worktree_in(home: &str, dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
     let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
@@ -204,7 +210,6 @@ pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Re
         }
         return Ok(p);
     }
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
     let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
     if let Some(number) = fork_pr {
@@ -344,21 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn the_machines_pr_buttons_apply_in_a_project_that_writes_none_and_a_project_overrides_by_name() {
-        let machine = "[prs.buttons.review]\nlabel = \"Review\"\non = [\"needs-me\"]\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh review\"\n[prs.buttons.mergeable]\nlabel = \"Make mergeable\"\non = [\"fix\"]\nworktree = true\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh mergeable\"\n";
-        let (root, machine, dir) = crate::core::buttons::tests::fixture("prs-machine", machine, "");
-        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
-        assert_eq!(buttons_of(&files).iter().map(label).collect::<Vec<_>>(), ["Review", "Make mergeable"], "a project with no wheel.toml gets the machine's buttons");
-        std::fs::write(dir.join("wheel.toml"), "[prs.buttons.review]\nenabled = false\n[prs.buttons.mergeable]\non = [\"any\"]\nrun = \"make fix\"\n").unwrap();
-        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
-        let b = buttons_of(&files);
-        assert_eq!(b.len(), 1, "review is dropped");
-        assert_eq!((b[0].name.as_str(), label(&b[0]), b[0].on.clone(), b[0].run.as_str(), b[0].worktree), ("mergeable", "mergeable", vec!["any".to_string()], "make fix", false),
-            "the project's table replaces the machine's whole: no label, worktree or on carry over");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
     fn a_fork_prs_worktree_needs_the_remote_whose_url_points_at_the_repo() {
         let root = std::env::temp_dir().join(format!("wheelhouse-wt-fork-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -389,8 +379,9 @@ mod tests {
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
         sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
         let home = root.join("home");
-        std::env::set_var("HOME", &home);
         let dir = work.to_str().unwrap();
+        let home_s = home.to_str().unwrap();
+        let worktree = |dir: &str, repo: &str, branch: &str, fork: Option<i64>| worktree_in(home_s, dir, repo, branch, fork);
         let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));

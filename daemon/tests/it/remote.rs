@@ -65,7 +65,7 @@ fn start_as(dir: &Path, local: u16, instance: &str) -> Daemon {
     let started = Instant::now();
     while !std::fs::read_to_string(&log).is_ok_and(|t| t.contains("spaces restored")) {
         assert!(
-            started.elapsed() < Duration::from_secs(300),
+            started.elapsed() < Duration::from_secs(10),
             "wheeld never started"
         );
         std::thread::sleep(Duration::from_millis(20));

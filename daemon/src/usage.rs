@@ -1846,7 +1846,7 @@ mod tests {
 
     #[test]
     fn logins_are_named_by_the_directory_whose_hash_they_carry() {
-        let home = std::env::temp_dir().join(format!("wheel-usage-home-{}", std::process::id()));
+        let home = crate::test_support::scratch();
         for d in [".claude", ".claude-work", ".claude-other", "Documents"] {
             std::fs::create_dir_all(home.join(d)).unwrap();
         }
@@ -1873,7 +1873,6 @@ mod tests {
                 (Some(home.join(".claude-other")), false),
             ]
         );
-        std::fs::remove_dir_all(&home).unwrap();
     }
 
     fn login(service: &str, dir: Option<&str>) -> Login {
@@ -2035,11 +2034,8 @@ mod tests {
 
     #[tokio::test]
     async fn several_logins_poll_rekey_back_off_and_keep_the_longest_wait() {
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("wheel-usage-poll-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let tmp = crate::test_support::scratch();
+        let base = tmp.canonicalize().unwrap();
         let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
         let skipped = Err(UsageFailure::Failed {
             status: None,
@@ -2127,7 +2123,6 @@ mod tests {
         // The wait holds even a forced read back: the source is not asked again.
         state.usage_read(true).await;
         assert_eq!(source.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

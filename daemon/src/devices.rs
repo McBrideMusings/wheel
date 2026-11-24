@@ -310,16 +310,9 @@ impl Devices {
 mod tests {
     use super::*;
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheeld-devices-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn a_token_pairs_one_device_once() {
-        let dir = scratch("once");
+        let dir = crate::test_support::scratch();
         let devices = Devices::load(&dir);
         let (token, _) = devices.issue();
         let (id, credential) = devices.redeem(&token, "Pierce's iPhone").unwrap();
@@ -327,12 +320,11 @@ mod tests {
         assert!(devices.redeem(&token, "Another phone").is_err());
         assert_eq!(devices.list().len(), 1);
         assert_eq!(devices.name(&id).as_deref(), Some("Pierce's iPhone"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_push_token_is_kept_with_its_device_and_leaves_with_it() {
-        let dir = scratch("push");
+        let dir = crate::test_support::scratch();
         let devices = Devices::load(&dir);
         let (token, _) = devices.issue();
         let (id, _) = devices.redeem(&token, "phone").unwrap();
@@ -342,12 +334,11 @@ mod tests {
         assert_eq!(Devices::load(&dir).push_tokens(), vec![(id.clone(), "ab12".to_string())]);
         assert!(devices.set_push_token(&id, None));
         assert!(Devices::load(&dir).push_tokens().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_expired_token_is_refused_and_spent() {
-        let dir = scratch("expired");
+        let dir = crate::test_support::scratch();
         let devices = Devices::load(&dir);
         let (token, _) = devices.issue();
         devices.inner.lock().unwrap().pending[0].until = Instant::now() - Duration::from_secs(1);
@@ -356,12 +347,11 @@ mod tests {
             Err("that pairing token has expired")
         );
         assert!(devices.list().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_credential_survives_a_restart_and_a_revoke_ends_only_that_device() {
-        let dir = scratch("revoke");
+        let dir = crate::test_support::scratch();
         let devices = Devices::load(&dir);
         let (a, b) = (devices.issue().0, devices.issue().0);
         let (first, first_credential) = devices.redeem(&a, "one").unwrap();
@@ -377,6 +367,5 @@ mod tests {
             !text.contains(&second_credential),
             "the file holds the credential itself"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

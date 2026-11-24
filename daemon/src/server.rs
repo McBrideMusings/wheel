@@ -3778,8 +3778,7 @@ mod tests {
     /// comparing a space's folder with `orchestrator.dir` finds the space.
     #[test]
     fn a_space_folder_and_a_directory_setting_are_resolved_through_symlinks() {
-        let base = std::env::temp_dir().join(format!("wheel-symlink-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_support::scratch();
         let real = base.join("real");
         std::fs::create_dir_all(&real).unwrap();
         let real = std::fs::canonicalize(&real).unwrap();
@@ -3804,15 +3803,13 @@ mod tests {
         let (_, dirs, _) = state.dir_list(&base.display().to_string());
         let listed = dirs.iter().find(|d| d.name == "link").unwrap();
         assert_eq!(listed.space.as_deref(), Some(space.id.as_str()));
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// A feed forward ends with the refusal when the pane that held the grant changes kind. The
     /// state, the plugin folder and the spaces are real; only the connection is a channel.
     #[tokio::test]
     async fn a_feed_forward_ends_with_an_error_when_its_pane_changes_kind() {
-        let base = std::env::temp_dir().join(format!("wheel-forward-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_support::scratch();
         let space_dir = base.join("space");
         let package = space_dir.join(".wheel/plugins/reader");
         std::fs::create_dir_all(&package).unwrap();
@@ -3865,7 +3862,6 @@ mod tests {
             other => panic!("expected the refusal, got {other:?}"),
         }
         tokio::time::timeout(Duration::from_secs(5), forward).await.unwrap().unwrap();
-        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

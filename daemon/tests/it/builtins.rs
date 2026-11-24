@@ -2,7 +2,7 @@
 //! `installed.json`; an artifact Wheel did not install is never installed over; an update reports,
 //! keeps or replaces a file a person edited; remove takes all three away again.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -40,7 +40,7 @@ async fn call(ws: &mut Ws, msg: ClientMsg) -> ServerMsg {
         .await
         .unwrap();
     loop {
-        let frame = tokio::time::timeout(Duration::from_secs(60), ws.next())
+        let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
             .await
             .expect("daemon replied")
             .unwrap()

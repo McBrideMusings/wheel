@@ -3,7 +3,7 @@
 //! client, where the first answer resumes the agent and a second answer is refused, and a pane's
 //! conversation survives a restart and moves between its chat and its terminal.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

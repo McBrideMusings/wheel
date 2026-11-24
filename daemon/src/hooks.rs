@@ -409,8 +409,7 @@ mod tests {
 
     #[test]
     fn a_file_names_its_hooks_and_skips_what_it_cannot_run() {
-        let dir = std::env::temp_dir().join(format!("wheel-hooks-unit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("wheel.toml");
         std::fs::write(
@@ -450,7 +449,6 @@ inbox = "/abs/box"
         assert!(hooks_in(&dir.join("missing.toml"), &dir).is_empty());
         std::fs::write(&file, "not = [toml").unwrap();
         assert!(hooks_in(&file, &dir).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

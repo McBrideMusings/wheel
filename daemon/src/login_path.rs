@@ -294,23 +294,19 @@ mod tests {
 
     #[test]
     fn a_shell_that_never_prints_path_is_stopped_with_its_group() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let shell = std::env::temp_dir().join(format!("wheel-login-path-{}", std::process::id()));
-        std::fs::write(&shell, "#!/bin/sh\nsleep 4731 & sleep 4732\n").unwrap();
-        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (shell, group) = sleeper_shell("wheel-login-path");
         let start = Instant::now();
         let failed = probe(&shell.display().to_string(), Duration::from_millis(500)).unwrap_err();
         std::fs::remove_file(&shell).unwrap();
         assert!(failed.timed_out, "{failed:?}");
         assert!(start.elapsed() < Duration::from_secs(2));
-        let gone = wait_for(|| sleepers_running("sleep 473[12]"), false);
-        assert!(gone, "the shell's group outlived the probe");
+        let group = read_group(&group).expect("the shell wrote its group");
+        assert!(wait_for(|| group_alive(group), false), "the shell's group outlived the probe");
     }
     #[test]
     fn the_shell_is_asked_from_the_directory_the_agent_runs_in() {
         use std::os::unix::fs::PermissionsExt as _;
-        let root = std::env::temp_dir().join(format!("wheel-login-var-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let (routed, plain) = (root.join("routed"), root.join("plain"));
         std::fs::create_dir_all(&routed).unwrap();
         std::fs::create_dir_all(&plain).unwrap();
@@ -333,19 +329,15 @@ mod tests {
             probe_in(&shell, &plain, &["WHEEL_TEST_HOME"], limit).unwrap(),
             [""]
         );
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_wheeld_killed_mid_probe_takes_the_shells_group_with_it() {
-        use std::os::unix::fs::PermissionsExt as _;
         if let Ok(shell) = std::env::var("WHEEL_LOGIN_PATH_PROBE_SHELL") {
             let _ = probe(&shell, Duration::from_secs(30));
             return;
         }
-        let shell = std::env::temp_dir().join(format!("wheel-login-kill-{}", std::process::id()));
-        std::fs::write(&shell, "#!/bin/sh\nsleep 4741 & sleep 4742\n").unwrap();
-        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (shell, group_file) = sleeper_shell("wheel-login-kill");
         let mut probing = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -359,22 +351,44 @@ mod tests {
         // Under load the shell can take seconds to start, and the watcher seconds to kill its
         // group, so each wait polls up to a deadline that outlasts it.
         assert!(
-            wait_for(|| sleepers_running("sleep 474[12]"), true),
+            wait_for(|| read_group(&group_file).is_some(), true),
             "the shell never started"
         );
+        let group = read_group(&group_file).unwrap();
         probing.kill().unwrap();
         probing.wait().unwrap();
-        let gone = wait_for(|| sleepers_running("sleep 474[12]"), false);
+        let gone = wait_for(|| group_alive(group), false);
         std::fs::remove_file(&shell).unwrap();
+        let _ = std::fs::remove_file(&group_file);
         assert!(gone, "the shell's group outlived wheeld");
     }
 
-    fn sleepers_running(pattern: &str) -> bool {
-        let found = Command::new("pgrep")
-            .args(["-f", pattern])
-            .output()
-            .unwrap();
-        !found.stdout.is_empty()
+    /// A shell that writes its process group to a file beside it, then waits on two sleeps;
+    /// the group, not a process-table search, says whether its children are still alive.
+    fn sleeper_shell(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir();
+        let shell = dir.join(format!("{name}-{}", std::process::id()));
+        let group = dir.join(format!("{name}-{}.group", std::process::id()));
+        let _ = std::fs::remove_file(&group);
+        let script = format!(
+            "#!/bin/sh\nps -o pgid= -p $$ | tr -d ' ' > {}.tmp && mv {}.tmp {}\nsleep 600 & sleep 600\n",
+            group.display(),
+            group.display(),
+            group.display()
+        );
+        std::fs::write(&shell, script).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (shell, group)
+    }
+
+    fn read_group(file: &std::path::Path) -> Option<i32> {
+        std::fs::read_to_string(file).ok()?.trim().parse().ok()
+    }
+
+    fn group_alive(group: i32) -> bool {
+        // SAFETY: signal 0 only asks whether any process in the group exists.
+        unsafe { libc::kill(-group, 0) == 0 }
     }
 
     /// Poll `check` until it returns `want` or 60s pass; whether it did.
@@ -384,7 +398,7 @@ mod tests {
             if check() == want {
                 return true;
             }
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(10));
         }
         false
     }

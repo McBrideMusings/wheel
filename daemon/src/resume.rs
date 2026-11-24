@@ -477,12 +477,6 @@ pub(crate) fn pi_conversations(
 mod listing_tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheel-listing-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
-
     fn write(path: &Path, lines: &[serde_json::Value]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -491,7 +485,7 @@ mod listing_tests {
 
     #[test]
     fn codex_lists_this_directorys_conversations_titled_by_the_first_real_prompt() {
-        let home = scratch("codex");
+        let home = crate::test_support::scratch();
         let day = home.join("sessions/2026/11/10");
         let meta = |id: &str, cwd: &str| serde_json::json!({"type":"session_meta","payload":{"id":id,"cwd":cwd}});
         let user = |text: &str| serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}});
@@ -499,7 +493,6 @@ mod listing_tests {
         write(&day.join("rollout-b.jsonl"), &[meta("b", "/work/other"), user("not mine")]);
         write(&day.join("rollout-c.jsonl"), &[meta("c", "/work/x")]);
         let listed = codex_conversations(&home, "/work/x");
-        let _ = std::fs::remove_dir_all(&home);
         let mut ids: Vec<_> = listed.iter().map(|c| (c.id.as_str(), c.title.as_deref())).collect();
         ids.sort();
         assert_eq!(ids, vec![("a", Some("fix the build")), ("c", None)]);
@@ -508,21 +501,20 @@ mod listing_tests {
 
     #[test]
     fn pi_lists_this_directorys_conversations_titled_by_the_first_user_message() {
-        let home = scratch("pi");
+        let home = crate::test_support::scratch();
         let dir = pi_session_dir(&home, "/work/x", None);
         let header = |id: &str, cwd: &str| serde_json::json!({"type":"session","id":id,"cwd":cwd});
         let message = |role: &str, text: &str| serde_json::json!({"type":"message","message":{"role":role,"content":[{"type":"text","text":text}]}});
         write(&dir.join("1_a.jsonl"), &[header("a", "/work/x"), message("system", "preamble"), message("user", "  list the files  ")]);
         write(&dir.join("2_b.jsonl"), &[header("b", "/work/y"), message("user", "elsewhere")]);
         let listed = pi_conversations(&home, "/work/x", None);
-        let _ = std::fs::remove_dir_all(&home);
         assert_eq!(listed.len(), 1);
         assert_eq!((listed[0].id.as_str(), listed[0].title.as_deref()), ("a", Some("list the files")));
     }
 
     #[test]
     fn claude_pages_conversations_titled_by_ai_title_with_the_last_reply() {
-        let home = scratch("claude-page");
+        let home = crate::test_support::scratch();
         let dir = claude_project_dir(&home, "/work/x");
         let user = |text: &str| serde_json::json!({"type":"user","message":{"role":"user","content":text}});
         let said = |text: &str| serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}});
@@ -538,7 +530,6 @@ mod listing_tests {
         let (first, more) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), Some(2), None);
         let last = first.last().unwrap();
         let (rest, more_after) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), Some(2), Some((last.updated_at.as_deref().unwrap(), Some(last.id.as_str()))));
-        let _ = std::fs::remove_dir_all(&home);
         // Newest first: c (100s old), b, then a; the first page of two leaves one.
         assert_eq!(first.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["c", "b"]);
         assert!(more);
@@ -552,7 +543,7 @@ mod listing_tests {
 
     #[test]
     fn a_long_claude_transcript_takes_its_newest_title_and_last_reply_from_its_end() {
-        let home = scratch("claude-long");
+        let home = crate::test_support::scratch();
         let dir = claude_project_dir(&home, "/work/x");
         let said = |text: &str| serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}});
         let title = |t: &str| serde_json::json!({"type":"ai-title","aiTitle":t});
@@ -567,7 +558,6 @@ mod listing_tests {
         huge.push(serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Write","input":{"data":"y".repeat(200_000)}}]}}));
         write(&dir.join("huge.jsonl"), &huge);
         let (listed, _) = crate::claude::conversations(&home, std::path::Path::new("/work/x"), None, None);
-        let _ = std::fs::remove_dir_all(&home);
         let by = |id: &str| listed.iter().find(|c| c.id == id).unwrap();
         assert_eq!(by("long").title.as_deref(), Some("Late title"));
         assert_eq!(by("long").last_reply.as_deref(), Some("the end"));
@@ -1244,19 +1234,18 @@ mod tests {
 
     #[test]
     fn the_newest_claude_transcript_for_a_directory_is_its_conversation() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-claude-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         let project = claude_project_dir(&home, "/tmp/my.proj");
         assert_eq!(project, home.join("projects/-tmp-my-proj"));
         std::fs::create_dir_all(&project).unwrap();
         let older = "aaaaaaaa-2222-3333-4444-555555555555";
         std::fs::write(project.join(format!("{older}.jsonl")), "{}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(project.join(format!("{ID}.jsonl")), "{}").unwrap();
         let conversations = claude_sessions(&home, "/tmp/my.proj");
         // The older session is written to again after the newer one was created, as a live session
         // in a shared folder is. A process that started between the two is the newer one's.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(project.join(format!("{older}.jsonl")), "{}\n{}").unwrap();
         let between_creations = conversations[0].1 - std::time::Duration::from_millis(1);
         let rewritten = claude_sessions(&home, "/tmp/my.proj");
@@ -1310,13 +1299,11 @@ mod tests {
             ..agent
         };
         assert!(!conversation_exists(&gone, "/tmp/my.proj"));
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn a_codex_rollouts_last_token_count_is_the_context_use() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-ctx-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         let day = home.join("sessions/2026/10/22");
         std::fs::create_dir_all(&day).unwrap();
         let count = |last: u64, total: u64| {
@@ -1342,13 +1329,11 @@ mod tests {
         std::fs::write(&file, empty).unwrap();
         assert_eq!(codex_context(&home, ID), None);
         assert_eq!(codex_context(&home, "missing"), None);
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn the_newest_codex_session_started_in_a_directory_is_found() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-codex-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         let day = home.join("sessions/2026/10/19");
         std::fs::create_dir_all(&day).unwrap();
         let line = |cwd: &str| {
@@ -1365,13 +1350,11 @@ mod tests {
             .collect();
         assert_eq!(found, vec![ID.to_string()]);
         assert!(codex_sessions(&home, "/tmp/q").is_empty());
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn a_pi_session_is_found_by_directory() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-pi-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         let dir = home.join("sessions/--tmp-p-q--");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(format!("2026-10-21T21-16-53-978Z_{ID}.jsonl"));
@@ -1393,13 +1376,11 @@ mod tests {
         assert!(pi_sessions(&home, "/tmp/p", None).is_empty());
         // `/tmp/p/q` files its conversations in the same directory, but this one is not its.
         assert!(pi_sessions(&home, "/tmp/p/q", None).is_empty());
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn pi_sessions_are_found_where_its_settings_or_environment_say() {
-        let home = std::env::temp_dir().join(format!("wheel-resume-pi-dir-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::test_support::scratch();
         let elsewhere = home.join("elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
         let header = format!(r#"{{"type":"session","id":"{ID}","cwd":"/tmp/p"}}"#);
@@ -1435,7 +1416,6 @@ mod tests {
         assert_eq!(pi_session_dir(&home, "/tmp/p", None), user.join("s"));
         std::fs::write(home.join("settings.json"), "{ not json").unwrap();
         assert_eq!(pi_session_dir(&home, "/tmp/p", None), default);
-        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

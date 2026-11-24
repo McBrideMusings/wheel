@@ -44,7 +44,7 @@ pub struct Registry {
     /// Where the main window closed last was: the next new window opens there (saved.rs).
     pub last_closed: Option<crate::saved::Frame>,
     /// Told after every change to the windows: the menu bar item counts what no window shows.
-    pub(crate) watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
+    pub watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
 }
 impl Registry {
     /// A channel that hears once after each change to the list, until its receiver drops.
