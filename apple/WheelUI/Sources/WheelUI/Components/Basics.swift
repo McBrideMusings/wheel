@@ -11,7 +11,7 @@ struct PaneNodeView: View {
     let tree: ViewTree
     var body: some View {
         ViewPerf.bodies += 1
-        return view.paneModified(node).paneHover(node)
+        return view.paneModified(node, tree: tree).paneHover(node)
     }
 
     @ViewBuilder
