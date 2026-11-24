@@ -1759,6 +1759,9 @@ fn lost(e: impl std::fmt::Display) -> Fail {
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// How long the daemon has to take a connection, read a request, or answer one it answers by itself.
+const LINK_WAIT: Duration = Duration::from_secs(10);
+
 struct Conn {
     ws: Ws,
     next_req: u64,
@@ -1783,12 +1786,18 @@ impl Conn {
         let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
             .max_message_size(Some(64 << 20))
             .max_frame_size(Some(64 << 20));
-        let (ws, _) = tokio_tungstenite::connect_async_with_config(
-            format!("{url}?token={}", token.trim()),
-            Some(config),
-            false,
+        // A wheeld too busy to take the connection would otherwise hold this command forever:
+        // the kernel completes the TCP handshake whether or not wheeld ever reads.
+        let (ws, _) = tokio::time::timeout(
+            LINK_WAIT,
+            tokio_tungstenite::connect_async_with_config(
+                format!("{url}?token={}", token.trim()),
+                Some(config),
+                false,
+            ),
         )
         .await
+        .map_err(|_| Fail::Timeout(format!("wheeld at {url} took no connection within {}s", LINK_WAIT.as_secs())))?
         .map_err(|e| Fail::Connect(format!("connect to {url}: {e}")))?;
         Ok(Conn {
             ws,
@@ -1810,7 +1819,10 @@ impl Conn {
                 .admit(&text)
                 .map_err(|refused| Fail::Daemon(format!("{refused} (Restart Server in the app)")))?;
         }
-        self.ws.send(Message::Text(text.into())).await.map_err(lost)
+        tokio::time::timeout(LINK_WAIT, self.ws.send(Message::Text(text.into())))
+            .await
+            .map_err(|_| Fail::Timeout(format!("wheeld read nothing for {}s", LINK_WAIT.as_secs())))?
+            .map_err(lost)
     }
 
     /// The next daemon message, or None if `wait` passes first.
@@ -1827,8 +1839,8 @@ impl Conn {
         self.call_within(msg, req, Duration::from_secs(10)).await
     }
 
-    /// The same, waiting `wait` for each frame: for a request the daemon cannot answer until a
-    /// person has, such as a permission request.
+    /// The same, waiting `wait` in all for the reply carrying `req`: for a request the daemon
+    /// cannot answer until a person has, such as a permission request.
     async fn call_within(
         &mut self,
         msg: ClientMsg,
@@ -1836,9 +1848,17 @@ impl Conn {
         wait: Duration,
     ) -> Result<ServerMsg, Fail> {
         self.send(&msg).await?;
+        // One deadline for the reply: frames for other requests do not buy more time.
+        let deadline = tokio::time::Instant::now() + wait;
         let mut held = std::collections::VecDeque::new();
         let result = loop {
-            let Some(reply) = self.recv_frame(wait).await? else {
+            // Checked first: a socket with frames waiting answers at once, even at no time left.
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let reply = match left.is_zero() {
+                true => None,
+                false => self.recv_frame(left).await?,
+            };
+            let Some(reply) = reply else {
                 break Err(Fail::Timeout(format!(
                     "no reply from daemon within {:.0}s",
                     wait.as_secs_f64()
@@ -1868,8 +1888,13 @@ impl Conn {
 
     /// The next text frame, undecoded.
     async fn recv_text(&mut self, wait: Duration) -> Result<Option<String>, Fail> {
+        // Pings and other non-text frames do not restart the wait.
+        let deadline = tokio::time::Instant::now() + wait;
         loop {
-            match tokio::time::timeout(wait, self.ws.next()).await {
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            match tokio::time::timeout_at(deadline, self.ws.next()).await {
                 Err(_) => return Ok(None),
                 Ok(None) => return Err(lost("it closed the socket")),
                 Ok(Some(frame)) => match frame.map_err(lost)? {
@@ -1923,10 +1948,15 @@ impl Conn {
         };
         let op = serde_json::to_value(&ask).ok().and_then(|v| v["op"].as_str().map(String::from)).unwrap_or_default();
         self.send(&ask).await?;
-        let wait = Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + LINK_WAIT;
         loop {
-            let Some(text) = self.recv_text(wait).await? else {
-                return Err(Fail::Timeout("no reply from daemon within 10s".into()));
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let text = match left.is_zero() {
+                true => None,
+                false => self.recv_text(left).await?,
+            };
+            let Some(text) = text else {
+                return Err(Fail::Timeout(format!("no reply from daemon within {}s", LINK_WAIT.as_secs())));
             };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
                 continue;
@@ -6843,6 +6873,74 @@ mod older_server_tests {
         let token = dir.join("token");
         std::fs::write(&token, "t").unwrap();
         Conn::open(url, Some(token)).await.unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wheeld_that_never_takes_the_connection_times_out() {
+        // The kernel finishes the TCP handshake; nothing ever answers the WebSocket one.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        let dir = std::env::temp_dir().join(format!("wheel-qdrj4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("token"), "t").unwrap();
+        let err = Conn::open(&url, Some(dir.join("token"))).await.err().expect("it connected").to_string();
+        assert!(err.contains("took no connection within 10s"), "{err}");
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn frames_for_other_requests_do_not_extend_a_calls_wait() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = ws.next().await;
+            // Chatter under someone else's req every second, never the answer.
+            loop {
+                let other = serde_json::json!({ "ev": "ok", "req": 999 }).to_string();
+                if ws.send(Message::Text(other.into())).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        // Connected on the real clock: a paused one would jump past the connect limit while the
+        // handshake waits on the socket.
+        let mut conn = open(&url).await;
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let err = conn
+            .call(ClientMsg::Status { req: Some(1) }, 1)
+            .await
+            .err()
+            .expect("a reply arrived")
+            .to_string();
+        assert!(err.contains("no reply from daemon within 10s"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(11), "waited {:?}", started.elapsed());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_flood_of_frames_for_other_requests_does_not_hold_a_call_past_its_wait() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/ws", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = ws.next().await;
+            let other = serde_json::json!({ "ev": "ok", "req": 999 }).to_string();
+            while ws.send(Message::Text(other.clone().into())).await.is_ok() {}
+        });
+        let mut conn = open(&url).await;
+        let started = std::time::Instant::now();
+        let err = conn
+            .call_within(ClientMsg::Status { req: Some(1) }, 1, Duration::from_secs(1))
+            .await
+            .err()
+            .expect("a reply arrived")
+            .to_string();
+        assert!(err.contains("no reply from daemon within 1s"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
     }
 
     #[tokio::test]
