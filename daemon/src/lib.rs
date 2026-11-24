@@ -27,6 +27,7 @@ mod leases;
 mod link_patterns;
 pub mod checkout;
 pub mod login_path;
+mod agent_homes;
 pub mod logship;
 mod mac_windows;
 mod page;

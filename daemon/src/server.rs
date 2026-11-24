@@ -146,6 +146,8 @@ pub struct AppState {
     pub(crate) log_path: String,
     token: String,
     pub(crate) next_id: AtomicU64,
+    /// The login shell's answers for agent home variables, per checkout.
+    agent_homes: crate::agent_homes::AgentHomes,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
     /// Daemon-wide events (permission requests, every agent's state, layout) every connection
     /// forwards.
@@ -381,6 +383,7 @@ impl AppState {
             log_path,
             token,
             next_id: AtomicU64::new(1),
+            agent_homes: Default::default(),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
@@ -679,16 +682,12 @@ impl AppState {
         let asked = crate::checkout::primary(Path::new(cwd));
         let var = harness.home_var();
         let shell = crate::login_path::shell();
-        let answer = {
-            let (program, dir) = (shell.clone(), asked.clone());
-            tokio::task::spawn_blocking(move || {
-                crate::login_path::probe_in(&program, &dir, var, crate::login_path::LIMIT)
-            })
+        let (answer, fresh) = self
+            .agent_homes
+            .value(&shell, &asked, var)
             .await
-            .map_err(|e| format!("asking {shell} for {var} failed: {e}"))?
-        }
-        .map_err(|f| format!("{shell} gave no {var} for {}: {}", asked.display(), f.why))?;
-        tracing::info!(%agent, %var, asked = %asked.display(), home = %answer, "agent home from the login shell");
+            .map_err(|f| format!("{shell} gave no {var} for {}: {}", asked.display(), f.why))?;
+        tracing::info!(%agent, %var, asked = %asked.display(), home = %answer, shell_ran = fresh, "agent home from the login shell");
         let home = (!answer.is_empty()).then(|| PathBuf::from(answer));
         Ok(home
             .filter(|h| Some(h) != harness.daemon_home().as_ref())

@@ -30,7 +30,7 @@ const MOST: usize = 256 * 1024;
 const MARK: u8 = 0x1e;
 
 /// Why a shell gave no PATH, and whether that was running out of time, which asking again can fix.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Failed {
     pub why: String,
     pub timed_out: bool,
@@ -102,26 +102,31 @@ pub fn ask(shell: &str, own: &str, try_: u32) -> (wheel_proto::LoginPath, bool) 
 
 /// Ask `shell -il` for PATH; blocks for up to `limit`. Why not, when it gave none.
 pub fn probe(shell: &str, limit: Duration) -> Result<String, Failed> {
-    ask_shell(shell, None, r#"printf '\036%s\036' "$PATH""#, "PATH", limit)
+    ask_shell(shell, None, r#"printf '\036%s\036' "$PATH""#, "PATH", 1, limit)
+        .map(|mut values| values.remove(0))
 }
 
-/// Ask `shell -il`, started in `cwd`, for the value of environment variable `var`: what a terminal
-/// opened there would hold, since the person's startup files may set it per directory. An unset
-/// variable answers empty. Blocks for up to `limit`.
-pub fn probe_in(shell: &str, cwd: &Path, var: &str, limit: Duration) -> Result<String, Failed> {
-    let script = format!(r#"printf '\036%s\036' "${{{var}-}}""#);
-    ask_shell(shell, Some(cwd), &script, var, limit)
+/// Ask one `shell -il`, started in `cwd`, for the value of each environment variable in `vars`:
+/// what a terminal opened there would hold, since the person's startup files may set them per
+/// directory. An unset variable answers empty. Blocks for up to `limit`.
+pub fn probe_in(shell: &str, cwd: &Path, vars: &[&str], limit: Duration) -> Result<Vec<String>, Failed> {
+    let mut script = String::from(r"printf '\036'");
+    for var in vars {
+        script.push_str(&format!(r#"; printf '%s\036' "${{{var}-}}""#));
+    }
+    ask_shell(shell, Some(cwd), &script, &vars.join(", "), vars.len(), limit)
 }
 
-/// Run `script` in `shell -ilc`, in `cwd` when given, and return what it printed between two
-/// [`MARK`]s; `what` names the answer in the errors.
+/// Run `script` in `shell -ilc`, in `cwd` when given, and return the `count` values it printed,
+/// each between two [`MARK`]s; `what` names the answer in the errors.
 fn ask_shell(
     shell: &str,
     cwd: Option<&Path>,
     script: &str,
     what: &str,
+    count: usize,
     limit: Duration,
-) -> Result<String, Failed> {
+) -> Result<Vec<String>, Failed> {
     let failed = |why: String| Failed {
         why,
         timed_out: false,
@@ -160,8 +165,11 @@ fn ask_shell(
     let mut chunk = [0u8; 4096];
     let answer = loop {
         let parts: Vec<&[u8]> = bytes.split(|b| *b == MARK).collect();
-        if parts.len() >= 3 {
-            break Ok(String::from_utf8_lossy(parts[1]).into_owned());
+        if parts.len() >= count + 2 {
+            break Ok(parts[1..=count]
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect());
         }
         if bytes.len() > MOST {
             break Err(failed(format!("{name} -il printed over 256 KB without {what}, so it was stopped; something in its startup files prints without end")));
@@ -318,12 +326,12 @@ mod tests {
         let shell = shell.display().to_string();
         let limit = Duration::from_secs(20);
         assert_eq!(
-            probe_in(&shell, &routed, "WHEEL_TEST_HOME", limit).unwrap(),
-            "/routed/home"
+            probe_in(&shell, &routed, &["WHEEL_TEST_HOME", "WHEEL_TEST_UNSET"], limit).unwrap(),
+            ["/routed/home", ""]
         );
         assert_eq!(
-            probe_in(&shell, &plain, "WHEEL_TEST_HOME", limit).unwrap(),
-            ""
+            probe_in(&shell, &plain, &["WHEEL_TEST_HOME"], limit).unwrap(),
+            [""]
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

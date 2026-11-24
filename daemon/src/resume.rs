@@ -21,6 +21,8 @@ pub enum Harness {
 }
 
 impl Harness {
+    pub(crate) const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Pi];
+
     pub fn name(self) -> &'static str {
         match self {
             Harness::Claude => "claude",
