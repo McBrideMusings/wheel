@@ -3885,8 +3885,7 @@ async fn an_artifact_lives_until_its_creator_ends_it_and_a_plain_one_never_ends(
     }
 
     // After its seconds, the expiring one goes and the rest stay.
-    tokio::time::sleep(Duration::from_millis(4100)).await;
-    daemon.sweep_artifacts();
+    daemon.sweep_artifacts_after(5);
     assert!(!folder("soon").exists());
     let entries = std::fs::read_to_string(dir.join("wheel.toml")).unwrap();
     assert!(!entries.contains("[artifacts.soon]"), "{entries}");
@@ -3957,8 +3956,7 @@ async fn an_expiring_artifact_in_a_closed_space_is_swept_after_a_restart() {
     // tells it where to look.
     let (_, _, second) =
         start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(state_file)).await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    second.sweep_artifacts();
+    second.sweep_artifacts_after(2);
     assert!(!folder.exists(), "{}", folder.display());
     let listed = std::fs::read_to_string(project.join("wheel.toml")).unwrap_or_default();
     assert!(!listed.contains("[artifacts.short]"), "{listed}");
