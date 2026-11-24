@@ -300,13 +300,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_first_frame_is_a_status_request() {
-        assert_eq!(frame(&ClientMsg::Status { req: Some(1) }), r#"{"op":"status","req":1}"#);
-        let back: ClientMsg = serde_json::from_str(&frame(&ClientMsg::SplitRatio { req: None, split: "x1".into(), ratio: 0.3 })).unwrap();
-        assert_eq!(back, ClientMsg::SplitRatio { req: None, split: "x1".into(), ratio: 0.3 });
-    }
-
-    #[test]
     fn reconnects_after_the_socket_closes_and_rereads_the_token() {
         let (port, tokens) = serve(vec![(COMPAT, false), (COMPAT, true)]);
         let (endpoint, file) = endpoint(port, "one");

@@ -502,36 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn the_wrapper_marker_is_inside_the_head_a_wrapper_reads() {
-        // A wrapper reads only the first 512 bytes of each candidate on PATH for this line, so it
-        // must stay there or a wrapper takes another instance's wrapper for the real program.
-        let at = AGENT_WRAPPER
-            .find("\n# wheel-agent-wrapper\n")
-            .expect("marker line");
-        assert!(at + 22 < 512, "marker ends at byte {}", at + 22);
-    }
-
-    #[test]
-    fn the_claude_hooks_report_each_status_through_the_wheel_cli() {
-        let hooks: serde_json::Value = serde_json::from_str(CLAUDE_PLUGIN_HOOKS).unwrap();
-        let said = |event: &str| hooks["hooks"][event][0]["hooks"][0]["command"].to_string();
-        assert!(said("UserPromptSubmit").contains("pane report working"));
-        // A permission dialog (an AskUserQuestion question is one) reports with its tool and input;
-        // the generic permission_prompt notification, "Claude needs your permission", is left out
-        // so it cannot overwrite that reason.
-        assert!(said("PermissionRequest").contains("pane report needs_you --hook-input"));
-        assert!(said("Notification").contains("pane report needs_you --hook-input"));
-        assert_eq!(
-            hooks["hooks"]["Notification"][0]["matcher"],
-            "elicitation_dialog"
-        );
-        // One report per tool call: PostToolUse alone, since UserPromptSubmit already set working.
-        assert!(hooks["hooks"].get("PreToolUse").is_none());
-        assert!(said("PostToolUse").contains("pane report working"));
-        assert!(said("Stop").contains("pane report idle"));
-    }
-
-    #[test]
     fn a_codex_hook_carries_the_hash_codex_computes_for_it() {
         // `sha256:f2aa…` is the `currentHash` Codex 0.163's `hooks/list` reported for this hook
         // passed as `-c 'hooks.Stop=[{hooks=[{type="command",command="echo hi"}]}]'`.

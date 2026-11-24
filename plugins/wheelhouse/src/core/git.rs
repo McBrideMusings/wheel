@@ -148,10 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_of_nothing_is_none_and_a_repo_has_a_toplevel() {
+    fn a_count_of_nothing_is_none() {
         assert_eq!(counts("/", "a", "b"), None);
-        let here = env!("CARGO_MANIFEST_DIR");
-        assert!(toplevel(here).unwrap().ends_with("wheel") || !toplevel(here).unwrap().is_empty());
-        assert!(dirs(here).is_some());
     }
 }

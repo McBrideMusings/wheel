@@ -52,6 +52,7 @@ struct PaneCatalog {
         case "Section": PaneSectionView(node: node, tree: tree)
         case "LabeledContent": PaneLabeledContentView(node: node, tree: tree)
         case "Grid": PaneGridView(node: node, tree: tree)
+        case "ZStack": PaneZStackView(node: node, tree: tree)
         case "GridRow": PaneGridRowView(node: node, tree: tree)
         case "Stepper": PaneStepperView(node: node, tree: tree)
         case "ColorPicker": PaneColorPickerView(node: node, tree: tree)
