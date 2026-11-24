@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use notify::{RecursiveMode, Watcher};
+use notify::RecursiveMode;
 use wheel_proto::SkillInfo;
 
 /// Each home's last scan.
@@ -62,15 +62,7 @@ fn watch_read(home: &Path, projects: &[PathBuf], fresh: Arc<AtomicBool>) -> Opti
     })
     .ok()?;
     for dir in dirs {
-        // A folder not made yet is seen being made from the nearest one that exists above it.
-        let result = match dir.is_dir() {
-            true => watch.watch(&dir, RecursiveMode::Recursive),
-            false => match dir.ancestors().skip(1).find(|a| a.is_dir()) {
-                Some(above) => watch.watch(above, RecursiveMode::NonRecursive),
-                None => Ok(()),
-            },
-        };
-        if let Err(e) = result {
+        if let Err(e) = crate::fswatch::watch_folder(&mut watch, &dir, RecursiveMode::Recursive) {
             tracing::warn!(dir = %dir.display(), error = %e, "cannot watch a skills folder; its skills are read again on every status");
             return None;
         }
@@ -268,7 +260,8 @@ mod tests {
 
     #[test]
     fn a_kept_scan_is_reused_until_a_skill_or_a_new_skills_folder_appears() {
-        let home = crate::test_support::scratch().canonicalize().unwrap();
+        let scratch = crate::test_support::scratch();
+        let home = scratch.canonicalize().unwrap();
         let project = home.join("project");
         std::fs::create_dir_all(&project).unwrap();
         let write = |dir: PathBuf, name: &str| {

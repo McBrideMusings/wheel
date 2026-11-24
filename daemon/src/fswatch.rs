@@ -385,6 +385,18 @@ impl Hub {
 }
 
 
+/// Watch `dir` with `mode`, or, while it does not exist, the nearest folder above it that does,
+/// so the folder being made is seen. A cache that reads `dir` drops what it kept on either.
+pub(crate) fn watch_folder(watch: &mut Handle, dir: &Path, mode: RecursiveMode) -> notify::Result<()> {
+    match dir.is_dir() {
+        true => watch.watch(dir, mode),
+        false => match dir.ancestors().skip(1).find(|a| a.is_dir()) {
+            Some(above) => watch.watch(above, RecursiveMode::NonRecursive),
+            None => Ok(()),
+        },
+    }
+}
+
 /// A watcher on the daemon's one shared stream. Dropping it stops its watches.
 pub struct Handle {
     id: u64,
