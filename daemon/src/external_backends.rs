@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn entries_parse_and_a_project_entry_replaces_the_machines() {
-        let dir = std::env::temp_dir().join(format!("ext-be-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         let machine = write(
             &dir,
             "[[external_backend]]\nid = 'clock'\nconnect = 'unix:///tmp/m.sock'\n\
@@ -211,7 +211,6 @@ mod tests {
         };
         assert!(!secret.key().contains("s3cret"), "the key never holds the token");
         assert!(!format!("{secret:?}").contains("s3cret"), "Debug never prints the token");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn an_entry_with_an_unknown_key_keeps_its_id_and_says_why() {
-        let dir = std::env::temp_dir().join(format!("ext-be-bad-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         let file = write(
             &dir,
             "[[external_backend]]\nid = 'x'\nconect = 'unix:///a'\n[[external_backend]]\nconnect = 'unix:///b'\n\
@@ -237,6 +236,5 @@ mod tests {
         let all = read(&file, PluginScope::Machine);
         assert_eq!(all.len(), 1);
         assert!(all[0].connect.as_ref().unwrap_err().contains("conect"), "{:?}", all[0].connect);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

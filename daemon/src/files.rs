@@ -240,16 +240,9 @@ pub(crate) fn file_image(req: u64, path: &str, cwd: Option<&str>, unless: Option
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheel-files-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn an_image_file_comes_back_whole_and_other_files_do_not() {
-        let dir = scratch("image");
+        let dir = crate::test_support::scratch();
         let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
         std::fs::write(dir.join("a.PNG"), png).unwrap();
         std::fs::write(dir.join("notes.txt"), "hi").unwrap();
@@ -280,7 +273,7 @@ mod tests {
 
     #[test]
     fn lines_around_the_wanted_one_and_the_first_lines_without_one() {
-        let dir = scratch("lines");
+        let dir = crate::test_support::scratch();
         let body: String = (1..=30).map(|n| format!("line {n}\n")).collect();
         std::fs::write(dir.join("a.txt"), body).unwrap();
         let cwd = dir.to_string_lossy().into_owned();
@@ -299,12 +292,11 @@ mod tests {
         );
         let p = peek("a.txt", Some(&cwd), None, None);
         assert_eq!((p.start, p.lines.len()), (1, 11));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_path_that_is_not_a_file_is_not_found() {
-        let dir = scratch("missing");
+        let dir = crate::test_support::scratch();
         let cwd = dir.to_string_lossy().into_owned();
         assert!(!peek("nope.txt", Some(&cwd), None, None).found);
         assert!(
@@ -312,27 +304,24 @@ mod tests {
             "a folder is not a file"
         );
         assert!(!peek("relative.txt", None, None, None).found);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_context_of_zero_with_no_line_only_says_the_file_is_there() {
-        let dir = scratch("exists");
+        let dir = crate::test_support::scratch();
         std::fs::write(dir.join("big.bin"), [0u8; 16]).unwrap();
         let p = peek(&dir.join("big.bin").to_string_lossy(), None, None, Some(0));
         assert_eq!((p.found, p.lines.len(), p.error), (true, 0, None));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_binary_file_exists_but_gives_no_lines() {
-        let dir = scratch("binary");
+        let dir = crate::test_support::scratch();
         std::fs::write(dir.join("b.bin"), [1u8, 0, 2, 3]).unwrap();
         let p = peek(&dir.join("b.bin").to_string_lossy(), None, None, None);
         assert_eq!(
             (p.found, p.lines.len(), p.error.as_deref()),
             (true, 0, Some("binary file"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

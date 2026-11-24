@@ -298,8 +298,7 @@ mod tests {
     #[test]
     fn the_shell_is_asked_from_the_directory_the_agent_runs_in() {
         use std::os::unix::fs::PermissionsExt as _;
-        let root = std::env::temp_dir().join(format!("wheel-login-var-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let (routed, plain) = (root.join("routed"), root.join("plain"));
         std::fs::create_dir_all(&routed).unwrap();
         std::fs::create_dir_all(&plain).unwrap();
@@ -322,7 +321,6 @@ mod tests {
             probe_in(&shell, &plain, "WHEEL_TEST_HOME", limit).unwrap(),
             ""
         );
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

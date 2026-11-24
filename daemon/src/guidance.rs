@@ -102,9 +102,8 @@ impl AppState {
 mod tests {
     use super::*;
 
-    fn state(name: &str) -> (std::sync::Arc<AppState>, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("wheel-guidance-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn state() -> (std::sync::Arc<AppState>, crate::test_support::Scratch, PathBuf) {
+        let dir = crate::test_support::scratch();
         let state = AppState::with_machine_file(
             "/dev/null".into(),
             "t".into(),
@@ -112,12 +111,13 @@ mod tests {
             dir.join("home/.wheel/wheel.toml"),
             "/bin/false".into(),
         );
-        (state, dir.join("home/.wheel"))
+        let home = dir.join("home/.wheel");
+        (state, dir, home)
     }
 
     #[test]
     fn no_files_add_nothing_and_every_agent_is_listed() {
-        let (state, _) = state("none");
+        let (state, _root, _) = state();
         assert_eq!(state.guidance_for("claude"), "");
         let (brief, given, files) = state.guidance_ls(None).unwrap();
         assert_eq!(brief, crate::brief::fixed());
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn path_makes_the_file_empty_and_keeps_one_that_is_there() {
-        let (state, dir) = state("path");
+        let (state, _root, dir) = state();
         let path = state.guidance_path(Some("pi")).unwrap();
         assert_eq!(PathBuf::from(&path), dir.join("guidance/pi.md"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn a_name_that_is_not_an_agent_is_refused_before_anything_is_made() {
-        let (state, dir) = state("refused");
+        let (state, _root, dir) = state();
         for name in ["../x", "nope", "", "claude/../../x"] {
             assert!(state.guidance_path(Some(name)).is_err(), "{name}");
         }
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn an_agent_gets_the_all_agents_text_then_its_own_and_no_other_agents() {
-        let (state, dir) = state("order");
+        let (state, _root, dir) = state();
         std::fs::create_dir_all(dir.join("guidance")).unwrap();
         std::fs::write(dir.join("guidance.md"), "EVERY '''quoted''' {x}\n").unwrap();
         std::fs::write(dir.join("guidance/codex.md"), "CODEX ONLY").unwrap();
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn a_terminal_pane_gets_a_brief_of_its_own_for_each_agent_with_guidance() {
-        let (state, dir) = state("panebrief");
+        let (state, _root, dir) = state();
         std::fs::create_dir_all(dir.join("guidance")).unwrap();
         std::fs::write(dir.join("guidance.md"), "EVERY").unwrap();
         std::fs::write(dir.join("guidance/codex.md"), "CODEX").unwrap();
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_text_adds_nothing() {
-        let (state, dir) = state("binary");
+        let (state, _root, dir) = state();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("guidance.md"), [0xff, 0xfe, 0x00]).unwrap();
         assert_eq!(state.guidance_for("claude"), "");

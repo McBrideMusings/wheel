@@ -582,8 +582,7 @@ mod tests {
 
     #[test]
     fn a_wrapper_skips_the_wrappers_of_other_instances_on_path() {
-        let root = std::env::temp_dir().join(format!("wheel-shell-two-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let (mine, other) = (root.join("mine"), root.join("other"));
         install(&mine, None).unwrap();
         install(&other, None).unwrap();
@@ -597,14 +596,12 @@ mod tests {
         );
         let out = sh("claude hi", &[("PATH", path.as_str())]);
         assert_eq!(out.trim(), "real hi");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_terminals_agent_runs_with_the_home_setting_unless_the_person_set_one() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("wheel-shell-home-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let cli = root.join("wheel-cli");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&cli, "#!/bin/sh\necho /homes/work\n").unwrap();
@@ -646,13 +643,11 @@ mod tests {
             "dir=unset",
             "an agent pane keeps the home its own launch chose"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_wrapper_hands_its_agent_the_brief_made_for_it_when_there_is_one() {
-        let root = std::env::temp_dir().join(format!("wheel-shell-own-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         install(&root, None).unwrap();
         let real = root.join("real");
         fake_tool(&real, "claude");
@@ -688,13 +683,11 @@ mod tests {
             text,
             "codex reads the same text the file holds"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_claude_wrapper_adds_the_brief_file_inside_wheel_and_passes_through_outside() {
-        let root = std::env::temp_dir().join(format!("wheel-shell-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         install(&root, None).unwrap();
         let real = root.join("real");
         fake_tool(&real, "claude");
@@ -764,13 +757,11 @@ mod tests {
                 && !agent.contains("--plugin-dir"),
             "{agent}"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_codex_wrapper_passes_the_brief_as_developer_instructions() {
-        let root = std::env::temp_dir().join(format!("wheel-shell-codex-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         install(&root, None).unwrap();
         let real = root.join("real");
         fake_tool(&real, "codex");
@@ -798,13 +789,11 @@ mod tests {
         );
         assert!(out.contains("-c hooks.state={\"/<session-flags>/"), "{out}");
         assert!(out.trim_end().ends_with("fix it"), "{out}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn the_pi_wrapper_appends_the_brief_inside_wheel_and_skips_subcommands() {
-        let root = std::env::temp_dir().join(format!("wheel-shell-pi-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         install(&root, None).unwrap();
         let real = root.join("real");
         fake_tool(&real, "pi");
@@ -832,24 +821,21 @@ mod tests {
             "{outside}"
         );
         assert!(!sub.contains(" -e "), "{sub}");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Run `shell` interactively through `launch` with `HOME` at a directory whose startup files
     /// leave a mark and put their own directory first on `PATH`; return what it printed.
-    fn run_shell(shell: &str, name: &str, extra: &[(&str, &str)]) -> String {
-        run_shell_picked(shell, name, extra, &Default::default())
+    fn run_shell(shell: &str, extra: &[(&str, &str)]) -> String {
+        run_shell_picked(shell, extra, &Default::default())
     }
 
     /// [`run_shell`] with `picked` environment values for the pane's shell.
     fn run_shell_picked(
         shell: &str,
-        name: &str,
         extra: &[(&str, &str)],
         picked: &std::collections::BTreeMap<String, String>,
     ) -> String {
-        let root = std::env::temp_dir().join(format!("wheel-shell-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_support::scratch();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         for file in [".zshenv", ".zshrc", ".bash_profile"] {
@@ -884,7 +870,6 @@ mod tests {
             .env("PATH", "/usr/bin:/bin")
             .envs(launch.env.iter().cloned());
         let out = cmd.output().unwrap();
-        let _ = std::fs::remove_dir_all(&root);
         assert!(
             out.status.success(),
             "{}",
@@ -895,7 +880,7 @@ mod tests {
 
     #[test]
     fn zsh_runs_the_persons_files_and_then_puts_the_bin_directory_first() {
-        let out = run_shell("/bin/zsh", "zsh", &[]);
+        let out = run_shell("/bin/zsh", &[]);
         assert!(out.contains("mark=.zshenv .zshrc"), "{out}");
         assert!(
             out.contains("path=") && out.contains("shell/bin:/user/bin:"),
@@ -906,7 +891,7 @@ mod tests {
 
     #[test]
     fn bash_runs_the_persons_files_and_then_puts_the_bin_directory_first() {
-        let out = run_shell("/bin/bash", "bash", &[]);
+        let out = run_shell("/bin/bash", &[]);
         assert!(out.contains("mark=.bash_profile"), "{out}");
         assert!(out.contains("shell/bin:/user/bin:"), "{out}");
         assert!(out.contains("pane=p2"), "{out}");
@@ -916,8 +901,7 @@ mod tests {
     fn a_picked_value_outlasts_the_persons_startup_files() {
         let picked = [("MARK".to_string(), "picked value".to_string())].into();
         for shell in ["/bin/zsh", "/bin/bash"] {
-            let name = format!("picked-{}", shell.rsplit('/').next().unwrap());
-            let out = run_shell_picked(shell, &name, &[], &picked);
+            let out = run_shell_picked(shell, &[], &picked);
             assert!(out.contains("mark=picked value\n"), "{shell}: {out}");
             assert!(out.contains("left=\n"), "{shell}: {out}");
         }
@@ -927,7 +911,6 @@ mod tests {
     fn zsh_follows_a_zshenv_that_moves_zdotdir() {
         let out = run_shell(
             "/bin/zsh",
-            "zsh-moved",
             &[
                 (".zshenv", "ZDOTDIR=\"$HOME/zd\"\n"),
                 ("zd/.zshrc", "MARK=\"${MARK}zd-zshrc \"; export MARK\n"),

@@ -1653,29 +1653,25 @@ fn real_path(path: &Path) -> PathBuf {
 mod tests {
     #[test]
     fn a_reported_file_path_has_its_folder_resolved() {
-        let dir = std::env::temp_dir().join(format!("wheel-resolved-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let real = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(dir.file_name().unwrap()).join("real");
+        let dir = crate::test_support::scratch();
+        let real = dir.canonicalize().unwrap().join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = dir.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         assert_eq!(super::resolved_path(&link.join("wheel.toml")), real.join("wheel.toml"));
         let missing = std::path::Path::new("/no/such/folder/wheel.toml");
         assert_eq!(super::resolved_path(missing), missing);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_path_not_made_yet_resolves_through_its_nearest_existing_ancestor() {
-        let dir = std::env::temp_dir().join(format!("wheel-real-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let real = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(dir.file_name().unwrap()).join("real");
+        let dir = crate::test_support::scratch();
+        let real = dir.canonicalize().unwrap().join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = dir.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         assert_eq!(super::real_path(&link), real);
         assert_eq!(super::real_path(&link.join("a/b")), real.join("a/b"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1692,7 +1688,7 @@ mod tests {
 
     #[test]
     fn runners_reads_any_string_key_and_skips_the_rest() {
-        let dir = std::env::temp_dir().join(format!("wheel-runner-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wheel.toml");
         std::fs::write(
@@ -1719,12 +1715,11 @@ mod tests {
             ]
         );
         assert!(super::runners(&dir.join("missing.toml")).is_empty());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn runners_names_a_nested_entry_by_its_dotted_path() {
-        let dir = std::env::temp_dir().join(format!("wheel-runner-nested-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wheel.toml");
         std::fs::write(
@@ -1734,7 +1729,6 @@ mod tests {
         .unwrap();
         let names: Vec<String> = super::runners(&path).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["proto.terrarium.build", "wheel.dev.deploy"]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     use super::*;
@@ -1742,7 +1736,7 @@ mod tests {
     /// The server makes the empty file a client is about to open, and leaves an existing one alone.
     #[test]
     fn settings_file_ensure_creates_an_absent_file_and_keeps_a_present_one() {
-        let dir = std::env::temp_dir().join(format!("wheel-ensure-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         let machine = dir.join("home/.wheel").join(FILE);
         let state = crate::AppState::with_machine_file(
             "/dev/null".into(),
@@ -1758,7 +1752,6 @@ mod tests {
         state.settings_file_ensure(None, true).unwrap();
         assert_eq!(std::fs::read_to_string(&machine).unwrap(), "[runner]\nship = \"make\"\n");
         assert!(state.settings_file_ensure(None, false).is_err());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A dotted key reaches into nested tables, and writing one leaves everything else in place.
@@ -1820,7 +1813,7 @@ mod tests {
     /// order alone, through a temporary file that is renamed away.
     #[test]
     fn a_write_keeps_a_hand_written_files_comments_and_order() {
-        let dir = std::env::temp_dir().join(format!("wheel-comment-test-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(FILE);
         let before = "# my settings\nzzz = 1\n\n[browser]\n# where new panes go\nhomepage = \"about:blank\" # keep\naaa = 2\n";
@@ -1858,7 +1851,6 @@ mod tests {
                 && after.contains("aaa = 2"),
             "{after}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What a value has to look like, and what the refusal says.
