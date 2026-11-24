@@ -186,6 +186,12 @@ pub fn checkout(dir: &str, number: i64) -> Result<(), String> {
 /// a PR from a fork: its head ref is fetched, then `gh pr checkout` runs inside the worktree, which sets up the
 /// fork's remote; that PR's head ref is fetched only from the remote whose URL points at `repo`, and no such remote is an error.
 pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
+    worktree_in(&home, dir, repo, branch, fork_pr)
+}
+
+/// `worktree` with the home directory that holds `.worktrees` given.
+fn worktree_in(home: &str, dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Result<String, String> {
     let remote = crate::core::git::remote_of_repo(dir, repo);
     let list = crate::core::git::run(dir, &["worktree", "list", "--porcelain"])?;
     let want = format!("branch refs/heads/{branch}");
@@ -204,7 +210,6 @@ pub fn worktree(dir: &str, repo: &str, branch: &str, fork_pr: Option<i64>) -> Re
         }
         return Ok(p);
     }
-    let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
     let wt = format!("{home}/.worktrees/{}/{}", crate::core::project::name_of(dir), branch.replace('/', "-"));
     let local = !crate::core::git::quiet(dir, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")]).trim().is_empty();
     if let Some(number) = fork_pr {
@@ -389,8 +394,9 @@ mod tests {
         sh(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
         sh(&work, &["push", "-q", "upstream", "HEAD:refs/heads/feat/x"]);
         let home = root.join("home");
-        std::env::set_var("HOME", &home);
         let dir = work.to_str().unwrap();
+        let home_s = home.to_str().unwrap();
+        let worktree = |dir: &str, repo: &str, branch: &str, fork: Option<i64>| worktree_in(home_s, dir, repo, branch, fork);
         let a = worktree(dir, "owner/repo", "feat/x", None).unwrap();
         assert_eq!(a, format!("{}/.worktrees/proj/feat-x", home.display()));
         assert_eq!(crate::core::git::current_branch(&a).as_deref(), Some("feat/x"));

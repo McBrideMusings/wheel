@@ -87,6 +87,8 @@ public final class DaemonClient {
     /// A batch is being read off the log's queue.
     private var logReading = false
     private var logShipQueued = false
+    /// How long a written line waits for others before the batch goes out.
+    private let logBatchDelay: Duration
     /// Refused handshakes in a row since the last connection.
     private var refusals = 0
     /// Set when wheeld refused a batch; nothing more is sent until the next connection, so a wheeld
@@ -105,11 +107,12 @@ public final class DaemonClient {
 
     /// `makeSocket` opens the socket for a URL (not yet resumed); `retryDelay` is how long a failed
     /// connection waits before the next attempt; `logTimeout` is how long a `log` request waits for
-    /// its answer.
-    public init(endpoint: DaemonEndpoint, retryDelay: Duration = .seconds(2), logTimeout: Duration = .seconds(30), makeSocket: @escaping (URL) -> any DaemonSocket) {
+    /// its answer; `logBatchDelay` is how long written lines gather into one batch.
+    public init(endpoint: DaemonEndpoint, retryDelay: Duration = .seconds(2), logTimeout: Duration = .seconds(30), logBatchDelay: Duration = .seconds(1), makeSocket: @escaping (URL) -> any DaemonSocket) {
         self.endpoint = endpoint
         self.retryDelay = retryDelay
         self.logTimeout = logTimeout
+        self.logBatchDelay = logBatchDelay
         self.makeSocket = makeSocket
     }
 
@@ -251,7 +254,7 @@ public final class DaemonClient {
         guard !logShipQueued else { return }
         logShipQueued = true
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: self?.logBatchDelay ?? .seconds(1))
             self?.logShipQueued = false
             self?.shipLogs()
         }

@@ -1652,11 +1652,14 @@ mod retry_tests {
         assert!(!row.waiting);
 
         // Two retry periods with the watch still refused: no reload, still not watching.
-        tokio::time::sleep(RETRY * 2).await;
+        tokio::time::pause();
+        tokio::time::advance(RETRY * 2).await;
         assert!(events.try_recv().is_err(), "nothing reloads while refused");
         assert_eq!(state.watches()[0].watching, None);
 
         refuse.store(false, Ordering::SeqCst);
+        tokio::time::advance(RETRY * 2).await;
+        tokio::time::resume();
         let msg = tokio::time::timeout(RETRY * 3, events.recv())
             .await
             .expect("a retry reloads once the watch is set")
@@ -1735,7 +1738,9 @@ mod follow_tests {
             .unwrap()
             .insert("p1".into(), vec![watch]);
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::time::resume();
         assert_eq!(reads.load(Ordering::SeqCst), 1, "an idle watch reads again");
 
         *named.lock().unwrap() = new.display().to_string();
