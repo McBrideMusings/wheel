@@ -54,6 +54,11 @@ public struct Composer: View {
     let showsReadAloud: Bool
     /// The pane's own controls for the row, drawn left of the mic and send: the phone's model menu.
     var accessory: AnyView?
+    /// The conversation dictation writes into, on the phone; nil draws no microphone.
+    var dictation: String?
+    /// Opens voice mode for this conversation; nil when wheeld cannot take it, which leaves the round
+    /// button a dimmed Send while the field is empty and the agent idle.
+    var voice: (() -> Void)?
 
     public init(
         placeholder: String,
@@ -77,9 +82,13 @@ public struct Composer: View {
         takeBack: @escaping () -> Bool = { false },
         permissionKey: ((PermissionKey) -> Bool)? = nil,
         readAloud: Binding<Bool>? = nil,
-        accessory: AnyView? = nil
+        accessory: AnyView? = nil,
+        dictation: String? = nil,
+        voice: (() -> Void)? = nil
     ) {
+        self.voice = voice
         self.accessory = accessory
+        self.dictation = dictation
         self._readAloud = readAloud ?? .constant(false)
         self.showsReadAloud = readAloud != nil
         self.takeBack = takeBack
@@ -263,19 +272,18 @@ public struct Composer: View {
                 #endif
                 if let error {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
+                } else if let note = dictationNote {
+                    Text(note).font(ChatFont.meta).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
                 // Right of the spacer, so its width (a model's name, the menu arriving with the agent's config) moves
                 // no other control.
                 if let accessory { accessory }
                 #if os(iOS)
-                // hack: placeholders, in place and sized, that do nothing until wheel-eg4e.19.31 builds dictation and voice mode.
-                Button("Dictate", systemImage: "mic") { UILog.info("composer: dictate tapped, not built") }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.chat("composer", "Dictate"))
-                    .accessibilityIdentifier("dictate")
+                if let dictation { DictateButton(owner: dictation) }
                 #endif
-                if showsStop {
+                switch roundButton {
+                case .stop:
                     #if os(macOS)
                     Text("esc").font(ChatFont.meta).foregroundStyle(.tertiary)
                     #endif
@@ -285,13 +293,14 @@ public struct Composer: View {
                         .font(.title2)
                         .help("Stop the current turn (Esc)")
                         .disabled(!enabled)
-                } else if showsVoice {
-                    Button("Voice mode", systemImage: "waveform.circle.fill") { UILog.info("composer: voice mode tapped, not built") }
+                case .voice:
+                    Button("Voice mode", systemImage: "waveform.circle.fill") { voice?() }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.chat("composer", "Voice mode"))
                         .font(.title2)
+                        .disabled(!enabled)
                         .accessibilityIdentifier("voice mode")
-                } else {
+                case .send:
                     Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.chat("composer", "Send the message"))
@@ -311,7 +320,45 @@ public struct Composer: View {
         .contentShape(Rectangle())
         .onTapGesture { focused = true }
         .modifier(AttachDrops(attach: attach))
+        #if os(iOS)
+        .onChange(of: Dictation.shared.heard) { _, heard in
+            guard let heard, heard.owner == dictation else { return }
+            insert(heard.text)
+        }
+        .alert("Download the speech model?", isPresented: asking) {
+            Button("Download") { Dictation.shared.download() }
+            Button("Cancel", role: .cancel) { Dictation.shared.cancel() }
+        } message: {
+            Text("Dictation turns your voice into text on this iPhone with \(Dictation.modelName), a \(Dictation.modelSize) model Wheel downloads once from \(Dictation.modelSource) into \(Dictation.modelFolder.path). Your voice never leaves the phone; only the text you send does.")
+        }
+        .task { if dictation != nil { Dictation.shared.prepare() } }
+        #endif
     }
+
+    #if os(iOS)
+    /// The prompt naming the model, shown while this conversation's tap waits on it.
+    private var asking: Binding<Bool> {
+        Binding(get: { dictation != nil && Dictation.shared.phase == .asking && Dictation.shared.owner == dictation },
+                set: { if !$0, Dictation.shared.phase == .asking { Dictation.shared.cancel() } })
+    }
+
+    /// What dictation is doing for this conversation, under the text.
+    private var dictationNote: String? {
+        let d = Dictation.shared
+        guard let dictation else { return nil }
+        if d.owner == dictation {
+            switch d.phase {
+            case .downloading(let done): return "Downloading \(Dictation.modelName), \(Int(done * 100))%"
+            case .recording: return "Listening…"
+            case .transcribing: return "Transcribing…"
+            default: return nil
+            }
+        }
+        return d.problemOwner == dictation ? d.problem : nil
+    }
+    #else
+    private var dictationNote: String? { nil }
+    #endif
 
     private var draftIsEmpty: Bool {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -324,14 +371,11 @@ public struct Composer: View {
         attachments.allSatisfy { $0.state == .ready }
     }
 
-    private var showsStop: Bool { busy && !hasContent }
-
-    /// The right button starts voice mode while the field is empty and the agent idle, on the phone.
-    private var showsVoice: Bool {
+    private var roundButton: ComposerRoundButton {
         #if os(iOS)
-        !busy && !hasContent
+        ComposerRoundButton.of(busy: busy, hasContent: hasContent, voiceOffered: voice != nil)
         #else
-        false
+        ComposerRoundButton.of(busy: busy, hasContent: hasContent, voiceOffered: false)
         #endif
     }
 
@@ -359,6 +403,19 @@ public struct Composer: View {
 
     private func insert(_ text: String) {
         draft += (draft.isEmpty || draft.hasSuffix(" ") || draft.hasSuffix("\n") ? "" : " ") + text
+    }
+}
+
+/// What the round button at the right of the composer's lower row is: Stop while the agent works and
+/// nothing is typed, voice mode with an empty draft and an idle agent when wheeld offers it, else Send
+/// (dimmed while there is nothing to send). All three draw at one size in one place.
+public enum ComposerRoundButton: Equatable, Sendable {
+    case stop, voice, send
+
+    public static func of(busy: Bool, hasContent: Bool, voiceOffered: Bool) -> ComposerRoundButton {
+        if busy && !hasContent { return .stop }
+        if !busy && !hasContent && voiceOffered { return .voice }
+        return .send
     }
 }
 
@@ -589,3 +646,27 @@ extension EnvironmentValues {
         set { self[ComposerBlurKey.self] = newValue }
     }
 }
+
+#if os(iOS)
+/// The composer's microphone: tap to start dictating into `owner`'s draft, tap again to stop and
+/// transcribe. The same size in every state, so nothing beside it moves.
+private struct DictateButton: View {
+    let owner: String
+
+    var body: some View {
+        let d = Dictation.shared
+        let mine = d.owner == owner
+        let recording = mine && d.phase == .recording
+        let busy = mine && (d.phase == .transcribing || { if case .downloading = d.phase { true } else { false } }())
+        Button(recording ? "Stop dictating" : "Dictate", systemImage: recording ? "stop.circle.fill" : "mic") {
+            d.toggle(for: owner)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.chat("composer", recording ? "Stop dictating" : "Dictate"))
+        .foregroundStyle(recording ? Color.red : Color.secondary)
+        .opacity(busy ? 0.4 : 1)
+        .disabled(busy)
+        .accessibilityIdentifier("dictate")
+    }
+}
+#endif

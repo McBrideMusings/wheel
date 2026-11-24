@@ -160,11 +160,11 @@ public struct Transcript: Sendable, Equatable {
         switch event {
         case .text, .notice, .toolCall, .plan, .mode, .turnEnd, .error:
             if let last = lastSettled, case .thought = rows[last].kind, rows[last].open { close(last, at: at) }
-        case .user, .reload, .turnStart, .retract, .thought, .textRevised, .thoughtRevised, .toolUpdate, .other:
+        case .user, .reload, .turnStart, .retract, .thought, .textRevised, .thoughtRevised, .toolUpdate, .card, .other:
             break
         }
         switch event {
-        case .user, .reload, .turnStart, .retract, .notice, .textRevised, .thoughtRevised, .other:
+        case .user, .reload, .turnStart, .retract, .notice, .textRevised, .thoughtRevised, .card, .other:
             break
         default:
             unansweredTurn = nil
@@ -256,7 +256,7 @@ public struct Transcript: Sendable, Equatable {
             closeAll(at: at)
             finishTurn(at: at, stopped: false)
             append(.error(message), at: at)
-        case .other:
+        case .card, .other:
             break
         }
     }

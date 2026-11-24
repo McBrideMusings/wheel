@@ -769,6 +769,17 @@ impl Client {
         out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
         out["read_aloud"] = json!(self.read_aloud);
         out["reads_aloud"] = json!(self.reads_aloud.iter().collect::<std::collections::BTreeSet<_>>());
+        let (d, v) = (&self.speech.dictation, &self.speech.voice);
+        let last_user = self.voice.as_ref().and_then(|s| self.transcripts.get(&s.agent)).and_then(|t| t.rows.iter().rev().find_map(|r| match &r.kind {
+            crate::transcript::Kind::User { text, .. } => Some(text.clone()),
+            _ => None,
+        }));
+        out["voice"] = json!({"phase": v.phase.name(), "owner": v.owner.as_ref().map(|o| json!({"window": o.window, "agent": o.agent})), "muted": v.muted, "level": v.level,
+            "said": v.said.as_ref().map(|s| json!({"agent": s.owner.agent, "text": s.text, "id": s.id})), "caption": v.caption, "problem": v.problem, "reply_waiting": v.reply_waiting(),
+            "session": self.voice.as_ref().map(|s| json!({"agent": s.agent, "pane": s.pane, "pill": s.pill, "holder": s.holder, "sent": s.sent})), "last_user": last_user});
+        out["dictation"] = json!({"phase": d.phase.name(), "owner": d.owner, "window": d.window, "problem": d.problem, "problem_owner": d.problem_owner,
+            "heard": d.heard.as_ref().map(|h| json!({"owner": h.owner, "window": h.window, "text": h.text, "id": h.id})),
+            "model_on_disk": crate::speech_models::PARAKEET.on_disk(&crate::speech_models::root())});
         out
     }
 }
