@@ -64,7 +64,7 @@ public enum WebPanes {
     }
 
     /// Whether a frame inside the page may load `target`: its own inline document (`about:srcdoc`,
-    /// `about:blank`), which is how the page shows an MCP app's HTML in a sandboxed frame. The
+    /// `about:blank`), which a page builds in place rather than loads from an address. The
     /// page's own address and every other address are the navigation rules' to judge, and the
     /// pane's main frame never navigates to `about:`.
     public static func allowsInlineFrame(_ target: URL, isMainFrame: Bool) -> Bool {
