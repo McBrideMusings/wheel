@@ -10,10 +10,11 @@ release wheeld as `com.piercemakes.wheel.daemon` on 7420. `dev` makes `target/ap
 items under, so `make deploy-client` and `make deploy-dev` install these bundles as
 `/Applications/Wheel.app` and `/Applications/Wheel Dev.app` (ADR-0040).
 
-The bridge links Wheel's already-built release objects (GhosttyTerminal, WheelKit, WheelUI and what
-they use) from DerivedData, so the Swift Release build runs first (`tools/install-app.sh` does it,
-or a Release xcodebuild into `DerivedData-deploy-release.noindex`). WHEEL_NATIVE_PRODUCTS selects
-another product directory. CARGO_TARGET_DIR is honoured for the client's own crates.
+The bridge links Wheel's release objects (GhosttyTerminal, WheelKit, WheelUI and what they use):
+`tools/swift-objects.sh` builds them from this checkout into `DerivedData-deploy-release.noindex`
+first, its output in `target/swift-objects.log`. WHEEL_NATIVE_PRODUCTS names a product directory a
+caller built already (`tools/install-app.sh` does), and skips that build. CARGO_TARGET_DIR is
+honoured for the client's own crates.
 
 The server goes in the same way as the Mac app's: `apple/Mac/embed-wheeld.sh`, the Xcode build
 phase, run with the variables Xcode would set (CONFIGURATION Release or Debug picks the variant),
@@ -48,7 +49,14 @@ spec = VARIANTS[variant]
 here = pathlib.Path(__file__).resolve().parent
 client = here.parent
 repo = client.parents[1]
-products = pathlib.Path(os.environ.get('WHEEL_NATIVE_PRODUCTS', repo / 'DerivedData-deploy-release.noindex/Build/Products/Release'))
+if 'WHEEL_NATIVE_PRODUCTS' in os.environ:
+    products = pathlib.Path(os.environ['WHEEL_NATIVE_PRODUCTS'])
+else:
+    # Objects left by an earlier build may predate this checkout's Swift (a protocol level the bridge then refuses).
+    swift_log = client / 'target/swift-objects.log'
+    if subprocess.run([str(repo / 'tools/swift-objects.sh'), str(swift_log)]).returncode:
+        sys.exit(f'the Swift Release objects failed to build; see {swift_log}')
+    products = repo / 'DerivedData-deploy-release.noindex/Build/Products/Release'
 # The libghostty headers come from the same build as the objects linked: <derived data>/Build/Products/Release.
 headers = products.parents[2] / 'SourcePackages/artifacts/libghostty-spm/libghostty/GhosttyKit.xcframework/macos-arm64_x86_64/Headers'
 target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', client / 'target'))

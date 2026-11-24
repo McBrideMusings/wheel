@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hidden regression check: the client against a fixture wheeld. Never shows a window."""
-import hashlib, json, pathlib, plistlib, re, subprocess, sys, time
+import hashlib, json, pathlib, plistlib, re, shutil, subprocess, sys, time
 
 here = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(here))
@@ -72,6 +72,15 @@ with fixture() as (env, info):
             if process.poll() is None:
                 process.kill()
                 process.wait()
+            if process.returncode:
+                # The fixture's folder goes when this block ends; a failure or a timeout keeps wheeld's and the plugins' logs.
+                kept = out / 'fixture-logs'
+                shutil.rmtree(kept, ignore_errors=True)
+                kept.mkdir(parents=True)
+                if (info['root'] / 'logs').is_dir():
+                    shutil.copytree(info['root'] / 'logs', kept, dirs_exist_ok=True)
+                if (info['root'] / 'daemon.log').exists():
+                    shutil.copy2(info['root'] / 'daemon.log', kept)
         if process.returncode:
             raise subprocess.CalledProcessError(process.returncode, str(host))
     report = json.loads((out / 'report.json').read_text())

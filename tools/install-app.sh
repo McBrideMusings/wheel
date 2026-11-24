@@ -32,36 +32,13 @@ exec > >(tee -a "$LOG") 2>&1
 say() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 say "install-app $VARIANT from $ROOT"
 
-# Sign with the Apple Development certificate by its hash, so macOS keeps the permissions it
-# granted the app. With no such certificate the app is signed ad hoc.
-IDENTITY="$("$ROOT/tools/signing-identity")"
-if [ "$IDENTITY" = - ]; then
-  say "warning: no Apple Development certificate in the keychain; signing ad hoc"
-  IDENTITY=-
-fi
-# Swift compilation caching is keyed by file content, so a fresh DerivedData (a new worktree, a cleared
-# build) reuses every module compiled before.
-SETTINGS=(COMPILATION_CACHING=YES CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=)
-[ -n "${IOS_DEVELOPMENT_TEAM:-}" ] && SETTINGS+=(DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM")
-
-# The Release objects go in their own derived data, the directory build.py reads, so a deploy never
-# replaces the Debug app `make build-client` leaves for the checks. `.noindex` keeps Spotlight from
-# importing the build products.
+[ "$("$ROOT/tools/signing-identity")" = - ] && say "warning: no Apple Development certificate in the keychain; signing ad hoc"
 DERIVED="$ROOT/DerivedData-deploy-release.noindex"
-
-( cd "$ROOT" && xcodegen generate --spec apple/project.yml --project apple )
 BUILD_LOG="$LOG_DIR/deploy-$VARIANT-xcodebuild.log"
 say "building the Swift Release objects; xcodebuild's output is in $BUILD_LOG"
-# The generated workspace records the package versions once resolved; reading them back skips a
-# network round trip per build. A project that was never resolved resolves on its first build.
-RESOLVE=()
-[ -f "$ROOT/apple/Wheel.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" ] \
-  && RESOLVE=(-disableAutomaticPackageResolution)
 status=0
-xcodebuild -project "$ROOT/apple/Wheel.xcodeproj" -scheme Wheel -configuration Release \
-  -destination platform=macOS -derivedDataPath "$DERIVED" ${RESOLVE[@]+"${RESOLVE[@]}"} -showBuildTimingSummary build "${SETTINGS[@]}" >"$BUILD_LOG" 2>&1 || status=$?
+"$ROOT/tools/swift-objects.sh" "$BUILD_LOG" || status=$?
 say "xcodebuild finished (exit $status)"
-grep -E '(: error:|^error:|^\*\* |^embedded wheeld)' "$BUILD_LOG" || true
 if [ "$status" -ne 0 ]; then
   say "build failed (xcodebuild exited $status); nothing was installed"
   exit 1
