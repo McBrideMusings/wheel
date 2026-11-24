@@ -31,6 +31,8 @@ pub struct Leaf {
     /// An agent pane's conversations as wheeld's `visited` lists them, oldest first, the last
     /// being the one it shows now; empty from a wheeld that does not keep them.
     pub visited: Vec<String>,
+    /// The pane sends no push of its own (`pane_push`).
+    pub quiet: bool,
 }
 
 /// What a mirror pane says about its source.
@@ -146,8 +148,8 @@ impl From<&Node> for Tree {
                 a: Box::new(Tree::from(a.as_ref())),
                 b: Box::new(Tree::from(b.as_ref())),
             },
-            Node::Pane { id, kind, status, name, title, .. } => {
-                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone(), name: name.clone(), title: title.clone(), visited: vec![], mirror: None };
+            Node::Pane { id, kind, status, name, title, quiet, .. } => {
+                let mut leaf = Leaf { id: id.clone(), kind: String::new(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, status: status.clone(), name: name.clone(), title: title.clone(), visited: vec![], mirror: None, quiet: *quiet };
                 leaf.show(kind);
                 Tree::Pane(leaf)
             }
@@ -424,14 +426,17 @@ mod tests {
     #[test]
     fn every_kind_keeps_what_the_view_draws() {
         let leaves: Vec<_> = leaves_of(&tree()).into_iter().cloned().collect();
-        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None });
-        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None });
-        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None });
+        assert_eq!(leaves[0], Leaf { id: "p1".into(), kind: "web".into(), label: "page".into(), term: None, url: None, scope: Some("project".into()), agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None, quiet: false });
+        assert_eq!(leaves[1], Leaf { id: "p2".into(), kind: "terminal".into(), label: "/tmp".into(), term: Some("t1".into()), url: None, scope: None, agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None, quiet: false });
+        assert_eq!(leaves[2], Leaf { id: "p3".into(), kind: "browser".into(), label: "about:blank".into(), term: None, url: Some("about:blank".into()), scope: None, agent: None, harness: None, status: None, name: None, title: None, visited: vec![], mirror: None, quiet: false });
         let agent = node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}));
-        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None, name: None, title: None, visited: vec![], mirror: None }));
+        assert_eq!(agent, Tree::Pane(Leaf { id: "p4".into(), kind: "agent".into(), label: String::new(), term: None, url: None, scope: None, agent: Some("w1".into()), harness: Some("claude".into()), status: None, name: None, title: None, visited: vec![], mirror: None, quiet: false }));
         // A shell running a coding agent carries the agent as its harness.
         let shell = node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","agent":{"name":"codex","conversation":"c1"}}));
-        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None, name: None, title: None, visited: vec![], mirror: None }));
+        assert_eq!(shell, Tree::Pane(Leaf { id: "p5".into(), kind: "terminal".into(), label: String::new(), term: Some("t2".into()), url: None, scope: None, agent: None, harness: Some("codex".into()), status: None, name: None, title: None, visited: vec![], mirror: None, quiet: false }));
+        // A pane made quiet (`pane_push`) says so; one that sends pushes omits the field.
+        let Tree::Pane(quiet) = node(json!({"node":"pane","id":"p6","kind":"empty","quiet":true})) else { panic!() };
+        assert!(quiet.quiet);
     }
 
     #[test]
@@ -476,7 +481,7 @@ mod tests {
     #[test]
     fn unknown_kinds_survive_parsing() {
         let leaf = node(json!({"node":"pane","id":"p9","kind":"hologram"}));
-        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None }));
+        assert_eq!(leaf, Tree::Pane(Leaf { id: "p9".into(), kind: "hologram".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None, quiet: false }));
     }
 
     #[test]

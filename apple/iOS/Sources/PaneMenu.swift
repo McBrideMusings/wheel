@@ -49,6 +49,13 @@ struct PaneMenu: View {
                 }
                 Button("Browser…", systemImage: "safari") { askingForAddress = true }
             }
+            // A mirror's pushes are its source's, so only the source offers the switch.
+            if !mirrored, model.serverOffer.has("pane_push") {
+                let quiet = model.isQuiet(pane)
+                Button(quiet ? "Turn Notifications On" : "Turn Notifications Off", systemImage: quiet ? "bell" : "bell.slash") {
+                    model.setPush(pane, on: quiet)
+                }
+            }
             // The phone's own: the pane leaves the pages for the sheet over them, and the Mac shows nothing different.
             Button("Pin", systemImage: "pin") { model.pin(pane) }
             Divider()
@@ -116,7 +123,7 @@ struct PaneMenu: View {
     /// Runs one menu item without the confirmation a finger would answer, for the debug launch
     /// variable `WHEEL_MENU`: `split-right`, `split-down`, `close`, `view-chat`, `view-terminal`,
     /// `kind-empty`, `kind-terminal`, `kind-agent:<name>`, `kind-web:<artifact name>`,
-    /// `kind-browser[:<url>]`, `pin`.
+    /// `kind-browser[:<url>]`, `pin`, `push-on`, `push-off`.
     @MainActor static func drive(_ item: String, model: PhoneModel, pane: String, kind: PaneKind) async {
         Log.info("menu item \(item) on \(pane)")
         let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
@@ -126,6 +133,8 @@ struct PaneMenu: View {
         case "split-down": model.split(pane, .down)
         case "close": model.closePane(pane)
         case "pin": model.pin(pane)
+        case "push-on": model.setPush(pane, on: true)
+        case "push-off": model.setPush(pane, on: false)
         case "view-chat": model.switchView(pane, to: .agent)
         case "view-terminal": model.switchView(pane, to: .terminal)
         case "kind-empty": model.setKind(pane, .empty)

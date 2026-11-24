@@ -168,7 +168,7 @@ mod tests {
     use super::*;
 
     fn leaf(kind: &str) -> Leaf {
-        Leaf { id: "p".into(), kind: kind.into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None }
+        Leaf { id: "p".into(), kind: kind.into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None, quiet: false }
     }
 
     #[test]

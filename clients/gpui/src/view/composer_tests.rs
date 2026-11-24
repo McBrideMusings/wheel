@@ -11,7 +11,7 @@ struct Rig {
 }
 
 fn leaf(id: &str, kind: &str, agent: Option<&str>) -> Leaf {
-    Leaf { id: id.into(), kind: kind.into(), label: id.into(), term: None, url: None, scope: None, agent: agent.map(str::to_owned), harness: agent.map(|_| "claude".to_owned()), name: None, title: None, status: None, visited: vec![], mirror: None }
+    Leaf { id: id.into(), kind: kind.into(), label: id.into(), term: None, url: None, scope: None, agent: agent.map(str::to_owned), harness: agent.map(|_| "claude".to_owned()), name: None, title: None, status: None, visited: vec![], mirror: None, quiet: false }
 }
 
 /// A client window over a space holding one agent pane, focused, as wheeld left it connected.

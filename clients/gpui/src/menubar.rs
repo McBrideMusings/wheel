@@ -170,7 +170,7 @@ mod tests {
     use crate::windows::{Little, Record};
 
     fn leaf(id: &str, kind: &str, agent: Option<&str>) -> Leaf {
-        Leaf { id: id.into(), kind: kind.into(), label: String::new(), term: None, url: None, scope: None, agent: agent.map(Into::into), harness: None, name: None, title: None, status: None, visited: vec![], mirror: None }
+        Leaf { id: id.into(), kind: kind.into(), label: String::new(), term: None, url: None, scope: None, agent: agent.map(Into::into), harness: None, name: None, title: None, status: None, visited: vec![], mirror: None, quiet: false }
     }
     fn space(id: &str, panes: Vec<Leaf>) -> Space {
         let mut leaves = panes.into_iter().map(Tree::Pane);

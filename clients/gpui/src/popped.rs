@@ -187,7 +187,7 @@ mod tests {
     use crate::layout::Leaf;
 
     fn tree(id: &str) -> Tree {
-        Tree::Pane(Leaf { id: id.into(), kind: "empty".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None })
+        Tree::Pane(Leaf { id: id.into(), kind: "empty".into(), label: String::new(), term: None, url: None, scope: None, agent: None, harness: None, name: None, title: None, status: None, visited: vec![], mirror: None, quiet: false })
     }
 
     #[test]

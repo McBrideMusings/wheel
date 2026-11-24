@@ -29,13 +29,16 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
     /// What each pane is called, by pane id: the name a person or an agent gave it, else the title
     /// its program set. A pane with neither has none.
     public var paneNames: [String: String]
+    /// The panes that send no push of their own (`pane_push`).
+    public var quietPanes: Set<String>
     /// Each mirror pane drawn as its source, by the mirror's id (`resolvingMirrors`). Empty as
     /// decoded: a mirror's source can sit in another space.
     public var mirrors: [String: MirrorShown] = [:]
 
     public init(id: String, name: String, cwd: String, root: Node, focus: String,
                 status: PaneStatus? = nil, paneStatuses: [String: PaneStatus] = [:], background: Bool = false,
-                popped: [Node] = [], backgrounded: [Node] = [], paneNames: [String: String] = [:]) {
+                popped: [Node] = [], backgrounded: [Node] = [], paneNames: [String: String] = [:],
+                quietPanes: Set<String> = []) {
         self.id = id
         self.name = name
         self.cwd = cwd
@@ -47,6 +50,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         self.popped = popped
         self.backgrounded = backgrounded
         self.paneNames = paneNames
+        self.quietPanes = quietPanes
     }
 
     private enum K: String, CodingKey { case id, name, cwd, root, status, background, popped, backgrounded }
@@ -68,6 +72,7 @@ public struct SpaceInfo: Decodable, Sendable, Equatable, Identifiable {
         }
         paneStatuses = fields.statuses
         paneNames = fields.names
+        quietPanes = fields.quiet
         background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
     }
 }
@@ -123,12 +128,13 @@ extension SpaceInfo {
     public var firstPaneKind: PaneKind { root.panes.first?.kind ?? .empty }
 }
 
-/// The `status`, `pane_name` and `pane_title` fields of a split tree, by pane id, read apart from the layout.
+/// The `status`, `pane_name`, `pane_title` and `quiet` fields of a split tree, by pane id, read apart from the layout.
 private struct LeafFields: Decodable {
     var statuses: [String: PaneStatus] = [:]
     var names: [String: String] = [:]
+    var quiet: Set<String> = []
 
-    private enum K: String, CodingKey { case id, status, a, b, pane_name, pane_title }
+    private enum K: String, CodingKey { case id, status, a, b, pane_name, pane_title, quiet }
 
     init() {}
 
@@ -140,6 +146,7 @@ private struct LeafFields: Decodable {
         let named = (try? c.decodeIfPresent(String.self, forKey: .pane_name)) ?? nil
         let titled = (try? c.decodeIfPresent(String.self, forKey: .pane_title)) ?? nil
         if let name = named ?? titled { names[try c.decode(String.self, forKey: .id)] = name }
+        if (try? c.decodeIfPresent(Bool.self, forKey: .quiet)) == true { quiet.insert(try c.decode(String.self, forKey: .id)) }
         for side in [K.a, K.b] {
             if let tree = try c.decodeIfPresent(LeafFields.self, forKey: side) { merge(tree) }
         }
@@ -148,6 +155,7 @@ private struct LeafFields: Decodable {
     mutating func merge(_ other: LeafFields) {
         statuses.merge(other.statuses) { $1 }
         names.merge(other.names) { $1 }
+        quiet.formUnion(other.quiet)
     }
 }
 

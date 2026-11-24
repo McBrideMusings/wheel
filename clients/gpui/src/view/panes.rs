@@ -46,6 +46,11 @@ pub(crate) fn agent_view_title(luau: bool) -> &'static str {
     if luau { "Show Native View" } else { "Show Luau View" }
 }
 
+/// The push item's title: what choosing it does to a pane that is `quiet` now.
+fn push_title(quiet: bool) -> &'static str {
+    if quiet { "Turn Notifications On" } else { "Turn Notifications Off" }
+}
+
 /// The width `n` header buttons take.
 fn buttons_width(n: usize) -> f32 {
     n as f32 * BUTTON + n.saturating_sub(1) as f32 * BUTTON_GAP
@@ -266,6 +271,10 @@ impl Client {
             items.push(item("kind:artifact".into(), "Change Type ▸ Artifact…".into(), true));
             items.push(item("kind:empty".into(), "Change Type ▸ Empty".into(), leaf.kind != "empty"));
         }
+        // A mirror's pushes are its source's, so only the source offers the switch.
+        if leaf.mirror.is_none() && self.server_has("pane_push") {
+            items.push(item("push".into(), push_title(leaf.quiet).into(), true));
+        }
         items.push(item("rename".into(), "Rename Pane…".into(), self.server_has("pane_rename")));
         items.push(item("move-new-space".into(), "Move Pane to New Space".into(), true));
         items.push(item("move-new-little".into(), "Move Pane to New Little Window".into(), false));
@@ -310,6 +319,11 @@ impl Client {
             "browser:home" => self.browser_press(&pane, Press::Home),
             "close" => self.ask_close_pane(&pane),
             "rename" => self.begin_pane_rename(&pane),
+            "push" => {
+                let on = self.leaf(&pane).is_some_and(|l| l.quiet);
+                self.log(format!("pane {pane}: push {}", if on { "on" } else { "off" }));
+                self.send_layout(|req| ClientMsg::PanePush { req: Some(req), pane, on });
+            }
             "kind:shell" => self.ask_set_kind(&pane, NewPaneKind::Terminal),
             "kind:browser" => self.ask_set_kind(&pane, NewPaneKind::Browser),
             "kind:empty" => self.ask_set_kind(&pane, NewPaneKind::Empty),

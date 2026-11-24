@@ -96,6 +96,9 @@ public enum ClientMsg: Sendable, Equatable {
     /// or into a new space.
     case paneMove(req: UInt64?, pane: String, to: PaneMoveTarget)
     case paneClose(req: UInt64?, pane: String)
+    /// Let `pane` send pushes of its own (`needs_you`, `failed`, `turn_done`), or with `on` false
+    /// make it quiet; saved with the pane.
+    case panePush(req: UInt64?, pane: String, on: Bool)
     /// `artifact` names the artifact a `web` pane shows and `scope` pins which root it is under;
     /// the daemon refuses both for any other kind, and with no `scope` resolves project, then
     /// machine.
@@ -355,6 +358,8 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "pane_move", "pane": pane, "to": to.object]; put(req)
         case let .paneClose(req, pane):
             o = ["op": "pane_close", "pane": pane]; put(req)
+        case let .panePush(req, pane, on):
+            o = ["op": "pane_push", "pane": pane, "on": on]; put(req)
         case let .paneSetKind(req, pane, kind, artifact, scope, url):
             o = ["op": "pane_set_kind", "pane": pane, "kind": kind.rawValue]; put(req)
             if let artifact { o["artifact"] = artifact }

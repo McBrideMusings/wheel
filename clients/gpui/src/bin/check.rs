@@ -7268,6 +7268,28 @@ async fn pane_header(run: Run, mut debug: wheel_gpui::debug::Server, bearer: Str
     let (code, _) = call!("POST", "/paneheader?kind=browser&reset=1");
     ensure!(code == 200, "paneheader browser reset got {code}");
     header_report["browser"] = json!({"pane": browser_pane, "from": browser_from, "menu": titles});
+    // The pane menu turns the pane's own pushes off and on (`pane_push`), its title read back
+    // from the leaf's `quiet` in wheeld's layout, on the fixture's
+    // browser pane: the grid space is closed by now.
+    let push_title = |s: &Value| -> String {
+        s["panes"][browser_pane.as_str()]["menu"].as_array().and_then(|m| m.iter().find(|i| i["id"] == "push")).and_then(|i| i["title"].as_str()).unwrap_or_default().to_owned()
+    };
+    let push_before = push_title(&state!());
+    ensure!(push_before == "Turn Notifications Off", "a pane that sends pushes offers {push_before:?}");
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={browser_pane}&item=push"));
+    ensure!(code == 200, "Turn Notifications Off got {code}");
+    until!("Turn Notifications Off making the pane quiet", |s: &Value| push_title(s) == "Turn Notifications On");
+    let (code, _) = call!("POST", format!("/panemenu?action=open&pane={browser_pane}&x=420&y=120"));
+    ensure!(code == 200, "the quiet pane's menu did not open: {code}");
+    draw(window, Some(output.join("client-pane-menu-quiet.png")), cx)?;
+    let (code, _) = call!("POST", "/panemenu?action=close");
+    ensure!(code == 200, "the quiet pane's menu did not close: {code}");
+    let listed = std::process::Command::new(&cli).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "status", "--json"]).output()?;
+    ensure!(String::from_utf8_lossy(&listed.stdout).replace(char::is_whitespace, "").contains("\"quiet\":true"), "wheeld's status shows no quiet pane after Turn Notifications Off");
+    let (code, _) = call!("POST", format!("/panemenu?action=run&pane={browser_pane}&item=push"));
+    ensure!(code == 200, "Turn Notifications On got {code}");
+    until!("Turn Notifications On letting the pane push again", |s: &Value| push_title(s) == "Turn Notifications Off");
+    header_report["push"] = json!({"before": push_before, "toggled": true});
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, header_report, new_space))
 }

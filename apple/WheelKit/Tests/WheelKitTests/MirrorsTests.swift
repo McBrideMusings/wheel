@@ -59,4 +59,16 @@ extension MirrorsTests {
         #expect(AgentPanes.harness(ofAgent: "w1", in: spaces) == "claude")
         #expect(spaces[0].ownedPanes.map(\.id) == ["m4", "m5"])
     }
+
+    /// A quiet pane (`pane_push`) is read from the grid and the tray alike, and the op says which way.
+    @Test func quietPanesAreReadAndTheSwitchIsSent() throws {
+        let json = """
+        {"id":"s1","name":"w","cwd":"/w","root":{"node":"split","id":"x1","axis":"horizontal","ratio":0.5,
+            "a":{"node":"pane","id":"p1","kind":"empty","quiet":true},"b":{"node":"pane","id":"p2","kind":"empty"}},
+         "backgrounded":[{"node":"pane","id":"p3","kind":"empty","quiet":true}]}
+        """
+        let space = try JSONDecoder().decode(SpaceInfo.self, from: Data(json.utf8))
+        #expect(space.quietPanes == ["p1", "p3"])
+        #expect(try ClientMsg.panePush(req: 7, pane: "p1", on: true).json() == #"{"on":true,"op":"pane_push","pane":"p1","req":7}"#)
+    }
 }

@@ -1965,6 +1965,9 @@ final class PhoneModel {
     }
     func split(_ pane: String, _ dir: Dir?) { menuOp(showing: .pane) { .paneSplit(req: $0, pane: pane, dir: dir, focus: false) } }
     func closePane(_ pane: String) { menuOp { .paneClose(req: $0, pane: pane) } }
+    /// Whether `pane` sends no push of its own, as wheeld's layout last said.
+    func isQuiet(_ pane: String) -> Bool { spaces.contains { $0.quietPanes.contains(pane) } }
+    func setPush(_ pane: String, on: Bool) { menuOp { .panePush(req: $0, pane: pane, on: on) } }
     func setKind(_ pane: String, _ kind: NewPaneKind, artifact: ArtifactInfo? = nil, url: String? = nil) {
         menuOp { .paneSetKind(req: $0, pane: pane, kind: kind, artifact: artifact?.name, scope: artifact?.scope, url: url) }
     }
