@@ -2,7 +2,7 @@
 //! runs a shell in its space's directory, closing the last pane leaves one empty pane, and a restarted
 //! daemon gets the same layout back with fresh shells.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::time::Duration;

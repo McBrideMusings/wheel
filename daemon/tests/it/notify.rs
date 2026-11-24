@@ -1,7 +1,7 @@
 //! `notify` sends a toast to every connection attached now, the sender included, and keeps nothing
 //! for one that attaches later.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

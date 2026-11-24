@@ -2,7 +2,7 @@
 //! the newest client that offered to render, falls through to the next when one does not show the
 //! pane, writes the image whole, and says which of its failures it hit.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 
