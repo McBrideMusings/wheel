@@ -42,7 +42,7 @@ pub struct Registry {
     /// Where each window's content was last measured on screen, by window id (saved.rs).
     pub frames: std::collections::HashMap<String, crate::saved::Frame>,
     /// Told after every change to the windows: the menu bar item counts what no window shows.
-    pub(crate) watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
+    pub watchers: Vec<futures::channel::mpsc::UnboundedSender<()>>,
 }
 impl Registry {
     /// A channel that hears once after each change to the list, until its receiver drops.
