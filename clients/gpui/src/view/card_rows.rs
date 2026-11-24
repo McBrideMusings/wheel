@@ -88,7 +88,7 @@ impl Client {
             }
             CardRef::Artifact { id, name, scope, space } => {
                 let slot = CardSlot { id: id.clone(), name: name.clone(), scope: *scope, space: space.clone(), bounds: Bounds::default(), clip: Bounds::default() };
-                let (slots, last) = (self.card_slots.clone(), self.card_last.clone());
+                let (slots, last, drew_in) = (self.card_slots.clone(), self.card_last.clone(), self.card_slots.scope());
                 let page = canvas(
                     move |bounds, window, _| {
                         let clip = window.content_mask().bounds;
@@ -98,7 +98,7 @@ impl Client {
                         if last.borrow().get(&slot.id) != Some(&(bounds, clip)) {
                             window.refresh();
                         }
-                        slots.borrow_mut().push(slot);
+                        slots.push(&drew_in, slot);
                     },
                     |_, _, _, _| (),
                 ).w_full().h(px(PAGE_H));
@@ -119,7 +119,9 @@ impl Client {
             self.sync_sidebar_overlay();
             self.footer_overlay = menu;
         }
-        let slots = std::mem::take(&mut *self.card_slots.borrow_mut());
+        // A replayed pane body keeps the slots it drew last; a body that drew again replaced its own.
+        let slots: Vec<CardSlot> = self.card_slots.borrow().clone();
+        self.card_slots.clear(super::scoped::SHELL);
         let over: Vec<Rect> = self.tray_holes().into_iter().chain(self.edge_bar()).chain(self.toast_frames.borrow().iter().copied()).collect();
         let at = |r: Rect| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)];
         let mut seen = HashSet::new();

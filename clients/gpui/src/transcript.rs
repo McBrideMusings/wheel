@@ -112,6 +112,11 @@ impl MessageAction {
 }
 
 impl Transcript {
+    /// How many tool calls have finished: what may have made or removed a file the transcript
+    /// names, so the files it links and shows are asked about again when this changes.
+    pub fn tools_done(&self) -> usize {
+        self.rows.iter().filter(|r| matches!(&r.kind, Kind::Tool { status, .. } if is_final(status))).count()
+    }
     /// Row `ix`'s Markdown source when it is a message (`messageTexts`): the person's message as
     /// typed, or the agent's reply. None for every other row, which opens no message menu.
     pub fn message_markdown(&self, ix: usize) -> Option<&str> {

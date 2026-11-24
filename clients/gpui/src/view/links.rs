@@ -18,7 +18,8 @@ pub struct LinkState {
     asks: RefCell<Vec<(String, String)>>,
     reqs: HashMap<u64, (String, String)>,
     /// Each agent's row count when its directory's answers were last taken.
-    rows_seen: HashMap<String, usize>,
+    /// Each agent's finished tool calls when its files were last asked about (`Transcript::tools_done`).
+    tools_seen: HashMap<String, usize>,
     /// Moves when what a link shows changed (a probe's answer, a pane's chip, an agent's space
     /// or directory, a setting), so a reply's cached links are made again.
     generation: Cell<u64>,
@@ -113,16 +114,15 @@ impl Client {
             self.links.moved();
         }
     }
-    /// Ask wheeld about the files the last frame found. A transcript that gained a row (a tool
+    /// Ask wheeld about the files the last frame found. A transcript whose tool call finished (it
     /// may have made or removed a file) asks again about its directory's files, keeping each
     /// answer until the new one comes.
     pub(super) fn ask_probes(&mut self) {
         self.read_layout();
         let grown: Vec<(String, usize)> = self.transcripts.iter()
-            .filter(|(agent, t)| self.links.rows_seen.get(*agent) != Some(&t.rows.len()))
-            .map(|(agent, t)| (agent.clone(), t.rows.len())).collect();
+            .filter_map(|(agent, t)| { let done = t.tools_done(); (self.links.tools_seen.get(agent) != Some(&done)).then(|| (agent.clone(), done)) }).collect();
         for (agent, rows) in grown {
-            self.links.rows_seen.insert(agent.clone(), rows);
+            self.links.tools_seen.insert(agent.clone(), rows);
             if let Some((_, _, dir)) = self.agent_place(&agent) {
                 let known: Vec<(String, String)> = self.links.probes.borrow().iter().filter(|((d, _), p)| *d == dir && **p != Probe::Unknown).map(|(k, _)| k.clone()).collect();
                 let waiting: HashSet<(String, String)> = self.links.reqs.values().cloned().collect();

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Side by side numbers for the two Mac clients against one fixture wheeld (wheel-ynjo.19).
 
-    compare.py [--reps 3] [--clients swift,gpui] [--out DIR] [--phases startup,memory,cpu,frames]
+    compare.py [--reps 3] [--clients swift,gpui] [--out DIR] [--phases startup,memory,cpu,working,frames]
 
 One fixture wheeld (`fixture.py`) serves both clients, one run after the other, interleaved
 (swift, gpui, swift, gpui, ...). Every run builds its own space on that wheeld: two agent panes
@@ -13,6 +13,7 @@ the script reads, per run:
   memory    RSS (ps) and phys_footprint (footprint) idle after settle, after 40 replies, at the end
   cpu       idle mean over 10 s, and mean over the last 20 s of 36 s in which the agent replies
             every 2 s while ten characters a second are typed into its composer (perf-chat.sh)
+  working   mean CPU over 20 s while both agents sit in a turn that sends nothing (the working arc turns)
   frames    a 2.5 s window resize sweep: Swift reports `/metrics` (display-link gaps, main-thread
             CPU), GPUI reports `/measure/sweep` (the time of each `Window::draw`, one per 16 ms step)
 
@@ -249,6 +250,19 @@ def activity(client, env, agent, agent_session, seconds=36):
     return mean
 
 
+def working(client, env, agents, seconds=20):
+    """Mean CPU over `seconds` while every agent in `agents` sits in a turn that sends nothing for a minute:
+    only the panes' working arcs move."""
+    senders = [threading.Thread(target=run_cli, args=(env, 'agent', 'send', a, 'work slowly 60', '--timeout', '90'), kwargs=dict(timeout=100)) for a in agents]
+    for t in senders:
+        t.start()
+    time.sleep(3)
+    mean = cpu_mean(client, seconds)
+    for t in senders:
+        t.join()
+    return mean
+
+
 def frames(client):
     if client.kind == 'gpui':
         report = client.http('POST', '/measure/sweep', timeout=60, seconds=2.5, by=300)
@@ -292,6 +306,9 @@ def one_run(kind, rep, env, info, scratch, phases):
             if 'cpu' in phases:
                 run['cpu_busy_pct'] = round(activity(client, env, space['agent'], session), 2)
                 run['load_busy'] = load()
+            if 'working' in phases:
+                run['cpu_working_pct'] = round(working(client, env, [space['agent'], space['agent2']]), 2)
+                run['load_working'] = load()
             if 'frames' in phases:
                 run['frames'] = frames(client)
                 run['load_frames'] = load()
@@ -330,6 +347,7 @@ METRICS = [('startup (s)', 'startup_s'), ('RSS idle (MB)', 'mem_idle.rss_mb'), (
            ('RSS after 40 replies (MB)', 'mem_40_replies.rss_mb'), ('footprint after 40 replies (MB)', 'mem_40_replies.footprint_mb'),
            ('RSS end (MB)', 'mem_end.rss_mb'), ('footprint end (MB)', 'mem_end.footprint_mb'),
            ('CPU idle, mean of 10 s (%)', 'cpu_idle_pct'), ('CPU while replying and typing (%)', 'cpu_busy_pct'),
+           ('CPU while two agents work quietly (%)', 'cpu_working_pct'),
            ('resize frame p50 (ms)', 'frames.p50_ms'), ('resize frame p95 (ms)', 'frames.p95_ms'), ('resize frame max (ms)', 'frames.max_ms'),
            ('resize frames over 34 ms', 'frames.over_34ms'), ('resize frames recorded', 'frames.frames')]
 
@@ -369,7 +387,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--reps', type=int, default=3)
     ap.add_argument('--clients', default='swift,gpui')
-    ap.add_argument('--phases', default='startup,memory,cpu,frames')
+    ap.add_argument('--phases', default='startup,memory,cpu,working,frames')
     ap.add_argument('--out', default='/private/tmp/claude/wheel/compare')
     args = ap.parse_args()
     kinds, phases = args.clients.split(','), set(args.phases.split(','))

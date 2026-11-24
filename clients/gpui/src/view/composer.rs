@@ -590,7 +590,7 @@ pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &m
 /// the SF Symbol the bridge drew ("+" until it has). A press opens its menu above it, `items` in
 /// order with the row `at` lit for the arrow keys; Read aloud is ticked while `reads_aloud`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusAction], reads_aloud: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusAction], reads_aloud: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let a = agent.to_owned();
     let mut button = div().id(gpui::ElementId::Name(format!("plus-{agent}").into())).tooltip(crate::tooltip::tip("Add files and more"))
         .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
@@ -632,7 +632,7 @@ pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusActio
 /// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
 /// until it has). It stops the running turn, as Esc and Control-C do. Its slot is there while no
 /// turn runs too, empty, so the text never rewraps when a turn starts or ends.
-pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let slot = div().id(gpui::ElementId::Name(format!("stop-{agent}").into())).relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON));
     if !busy {
         return slot;
@@ -651,7 +651,7 @@ pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement
 
 /// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the
 /// `doc` symbol `doc` draws, the name, its size, Folder or why it failed (red), and × to take it out.
-pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let mut row = div().flex_none().h(px(CHIPS - 4.)).mt_1().flex().gap(px(6.)).overflow_hidden().child(recorded(agent, "chips", controls));
     for item in tray.items() {
         let (a, id) = (agent.to_owned(), item.id);
@@ -685,7 +685,7 @@ pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Optio
 
 /// The command list over the composer: up to `COMMAND_ROWS` rows around the highlight, each the
 /// prefixed name and its description, the highlighted one shaded. A click picks a row.
-pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usize, prefix: char, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usize, prefix: char, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let start = (at + 1).saturating_sub(COMMAND_ROWS);
     let mut list = div().flex_none().flex().flex_col().mt_1().p(px(2.)).rounded_sm().bg(rgb(0x1d2823)).border_1().border_color(rgb(0x2c3d34))
         .child(recorded(agent, "command-list", controls));
@@ -708,7 +708,7 @@ pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usi
 /// The line under a queued message (Queued, then Send now, Edit, Remove, and Clear queue on the
 /// first of two or more), or under the message of a turn that has said nothing yet (Edit). None
 /// for any other message. A queued reload has no text to edit, so its line has no Edit.
-pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, reload: bool, queue: &QueueView, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
+pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, reload: bool, queue: &QueueView, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
     let button = |label: &'static str, id: String, act: fn(&mut Client, &str, u64), cx: &mut Context<Client>| {
         let a = agent.to_owned();
         div().relative().cursor_pointer().text_color(rgb(0x7fb89a))
