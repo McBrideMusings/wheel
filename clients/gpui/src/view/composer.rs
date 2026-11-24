@@ -3,7 +3,7 @@
 //! prefix, and Send now, Edit, Remove and Clear queue on the messages waiting behind a turn.
 //! The model is `crate::composer`.
 use super::*;
-use crate::composer::{self, Command, Picker, Tray};
+use crate::composer::{self, Command, Picker, PlusAction, Tray};
 use serde_json::{Value, json};
 use gpui::{ExternalPaths, Focusable as _, img};
 use std::path::PathBuf;
@@ -20,15 +20,14 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
-/// The paperclip and the read-aloud toggle at the start of the button row and the stop button
-/// at its end, each this wide and tall.
+/// The + at the start of the button row and the stop button at its end, each this wide and tall.
 pub(super) const ROW_BUTTON: f32 = 18.;
 /// The room across the composer box that is neither draft nor button: the pane's 1 px border and
 /// `p_2`, the box's border and `px_2`.
 const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16.;
-/// The button row's room that its extras cannot take: the chrome, then the paperclip, the
-/// read-aloud toggle and the stop button, each with its gap.
-pub(super) const BUTTON_ROW_CHROME: f32 = COMPOSER_CHROME + 3. * (ROW_BUTTON + 8.);
+/// The button row's room that its extras cannot take: the chrome, then the + and the stop
+/// button, each with its gap.
+pub(super) const BUTTON_ROW_CHROME: f32 = COMPOSER_CHROME + 2. * (ROW_BUTTON + 8.);
 /// The gap between the draft's last line and the button row under it.
 pub(super) const BUTTON_ROW_GAP: f32 = 4.;
 /// The draft's text size, `text_sm`'s 0.875 rem.
@@ -495,8 +494,8 @@ impl Client {
         }
     }
 
-    /// The paperclip: the Mac's file picker, directories and several files allowed; what it
-    /// returns attaches to `agent`'s next message.
+    /// The + menu's Add files…: the Mac's file picker, directories and several files allowed;
+    /// what it returns attaches to `agent`'s next message.
     fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
         self.press(format!("attach {agent}"));
         let chosen = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: true, multiple: true, prompt: None });
@@ -511,7 +510,41 @@ impl Client {
         })
         .detach();
     }
+
+    /// What `agent`'s + menu offers: Clear chat only where its harness starts over on `/clear`.
+    pub(super) fn plus_items(&self, agent: &str) -> Vec<PlusAction> {
+        let harness = self.spaces.iter().flat_map(|s| s.all()).find(|l| l.agent.as_deref() == Some(agent)).and_then(|l| l.harness.clone());
+        composer::plus_items(composer::can_clear(harness.as_deref()))
+    }
+
+    /// Run one + menu item for `agent`, closing the menu.
+    pub(super) fn run_plus(&mut self, agent: &str, action: PlusAction, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.press(format!("plus {agent} {}", action.id()));
+        match action {
+            PlusAction::AddFiles => self.pick_files(agent, cx),
+            // Asked first, as the phone's AttachMenu asks: the conversation cannot be taken back here.
+            PlusAction::Clear => self.confirm("Clear this chat?", "The agent starts a new conversation.".into(), "Clear Chat".into(), Pending::ClearChat(agent.to_owned())),
+            PlusAction::ReadAloud => self.toggle_reads_aloud(agent),
+        }
+    }
+
+    /// Start `agent`'s conversation over (the phone's `clearChat`): `/clear` goes out as a
+    /// message, leaving the draft and its attachments in the box.
+    pub(super) fn clear_chat(&mut self, agent: &str) {
+        if self.link != Link::Up {
+            self.composer_errors.insert(agent.to_owned(), "Not connected to wheeld; the chat was not cleared.".into());
+            return;
+        }
+        self.log(format!("clear chat {agent}"));
+        self.follow_end(agent);
+        let req = self.agent_req(agent, false, None);
+        self.send(&ClientMsg::AgentSend { req: Some(req), agent: agent.to_owned(), text: "/clear".into() });
+    }
 }
+
+/// The id `Client::menu` holds while an agent's + menu is open, beside the config options' ids.
+pub(super) const PLUS_MENU: &str = "+";
 
 /// The composer and its chips as one drop target: files dropped there attach to `agent`'s next
 /// message, and the box is outlined (`over`) while they are held over it. GPUI's own `on_drop`
@@ -553,40 +586,53 @@ pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &m
         .when(over, |d| d.child(div().absolute().top_0().left_0().size_full().border_1().border_color(rgb(0x7fb89a)).rounded_sm()))
 }
 
-/// The paperclip at the start of the composer, `icon` the SF Symbol the bridge drew ("+" until
-/// it has).
-pub(super) fn paperclip(agent: &str, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+/// The + at the start of the composer row (the phone's `AttachMenu`, design §8.6 K1), `icon`
+/// the SF Symbol the bridge drew ("+" until it has). A press opens its menu above it, `items` in
+/// order with the row `at` lit for the arrow keys; Read aloud is ticked while `reads_aloud`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusAction], reads_aloud: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let a = agent.to_owned();
-    div().id(gpui::ElementId::Name(format!("attach-{agent}").into())).tooltip(crate::tooltip::tip("Attach files"))
+    let mut button = div().id(gpui::ElementId::Name(format!("plus-{agent}").into())).tooltip(crate::tooltip::tip("Add files and more"))
         .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.pick_files(&a, cx);
+            // The pane under the button closes any menu on a press; this press is the button's.
             cx.stop_propagation();
-        }))
-        .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
-        .child(recorded(agent, "attach", controls))
-}
-
-/// The read-aloud toggle after the paperclip (Composer.swift's), `icon` the SF Symbol the bridge
-/// drew for its state: on, each of this agent's finished replies is spoken; off stops it at once.
-pub(super) fn speaker_button(agent: &str, on: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
-    let a = agent.to_owned();
-    let help = if on { "Stop reading replies aloud" } else { "Read this agent's replies aloud" };
-    div().id(gpui::ElementId::Name(format!("read-aloud-{agent}").into())).tooltip(crate::tooltip::tip(help))
-        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
-        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.toggle_reads_aloud(&a);
-            cx.stop_propagation();
+            this.press(format!("plus {a}"));
+            this.toggle_menu(&a, PLUS_MENU);
             cx.notify();
         }))
-        .child(icon.unwrap_or_else(|| div().text_xs().child(if on { "on" } else { "off" }).into_any_element()))
-        .child(recorded(agent, "read-aloud", controls))
+        .child(icon.unwrap_or_else(|| div().child("+").into_any_element()))
+        .child(recorded(agent, "plus", controls));
+    if open {
+        // Recorded as `menu:+`, so the bridge's overlay lets it over a card's page view, as a config menu is.
+        let mut list = div().relative().flex().flex_col().min_w(px(140.)).rounded_sm().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247)).py_1().text_xs().text_color(rgb(0xd9e8e1))
+            .child(recorded(agent, &format!("menu:{PLUS_MENU}"), controls));
+        for (row, action) in items.iter().copied().enumerate() {
+            let a = agent.to_owned();
+            let mut entry = div().relative().px_2().py_1().cursor_pointer().flex().gap_2().whitespace_nowrap();
+            if row == at {
+                entry = entry.bg(rgb(0x31483e));
+            }
+            list = list.child(entry
+                .child(div().w(px(12.)).child(if action == PlusAction::ReadAloud && reads_aloud { "✓" } else { "" }))
+                .child(action.title())
+                .child(recorded(agent, &format!("plus:{}", action.id()), controls))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.run_plus(&a, action, cx);
+                    cx.notify();
+                })));
+        }
+        // Out of the button's flex layout, so the menu's bottom-left corner sits at the button's top-left.
+        button = button.child(div().absolute().top_0().left_0().child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window().child(list))));
+    }
+    button
 }
 
 /// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
 /// until it has). It stops the running turn, as Esc and Control-C do. Its slot is there while no
 /// turn runs too, empty, so the text never rewraps when a turn starts or ends.
-pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let slot = div().id(gpui::ElementId::Name(format!("stop-{agent}").into())).relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON));
     if !busy {
         return slot;
@@ -605,7 +651,7 @@ pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement
 
 /// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the
 /// `doc` symbol `doc` draws, the name, its size, Folder or why it failed (red), and × to take it out.
-pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let mut row = div().flex_none().h(px(CHIPS - 4.)).mt_1().flex().gap(px(6.)).overflow_hidden().child(recorded(agent, "chips", controls));
     for item in tray.items() {
         let (a, id) = (agent.to_owned(), item.id);
@@ -639,7 +685,7 @@ pub(super) fn attachment_chips(agent: &str, tray: &Tray, doc: impl Fn() -> Optio
 
 /// The command list over the composer: up to `COMMAND_ROWS` rows around the highlight, each the
 /// prefixed name and its description, the highlighted one shaded. A click picks a row.
-pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usize, prefix: char, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usize, prefix: char, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let start = (at + 1).saturating_sub(COMMAND_ROWS);
     let mut list = div().flex_none().flex().flex_col().mt_1().p(px(2.)).rounded_sm().bg(rgb(0x1d2823)).border_1().border_color(rgb(0x2c3d34))
         .child(recorded(agent, "command-list", controls));
@@ -662,7 +708,7 @@ pub(super) fn command_list(agent: &str, harness: &str, rows: &[Command], at: usi
 /// The line under a queued message (Queued, then Send now, Edit, Remove, and Clear queue on the
 /// first of two or more), or under the message of a turn that has said nothing yet (Edit). None
 /// for any other message. A queued reload has no text to edit, so its line has no Edit.
-pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, reload: bool, queue: &QueueView, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
+pub(super) fn queue_line(agent: &str, turn: u64, queued: bool, reload: bool, queue: &QueueView, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> Option<gpui::Div> {
     let button = |label: &'static str, id: String, act: fn(&mut Client, &str, u64), cx: &mut Context<Client>| {
         let a = agent.to_owned();
         div().relative().cursor_pointer().text_color(rgb(0x7fb89a))

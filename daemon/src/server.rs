@@ -146,6 +146,17 @@ pub struct AppState {
     pub(crate) log_path: String,
     token: String,
     pub(crate) next_id: AtomicU64,
+    /// The login shell's answers for agent home variables, per checkout.
+    agent_homes: crate::agent_homes::AgentHomes,
+    /// Each connection watching a space's processes (`procs_watch`), and whether the one sampler
+    /// that serves them all is running.
+    pub(crate) procs_watchers: Mutex<(Vec<(String, mpsc::WeakSender<ServerMsg>)>, bool)>,
+    /// How many times the sampler scanned the process table, for the tests.
+    pub(crate) procs_scans: AtomicU64,
+    /// The last status built and when its build began, shared by callers that asked before then.
+    status_built: tokio::sync::Mutex<Option<(std::time::Instant, ServerMsg)>>,
+    /// How many statuses were built, for the log and the tests.
+    pub(crate) status_builds: AtomicU64,
     pub(crate) terms: Mutex<HashMap<String, Held>>,
     /// Daemon-wide events (permission requests, every agent's state, layout) every connection
     /// forwards.
@@ -246,8 +257,6 @@ pub struct AppState {
     pub(crate) refreshers: Mutex<crate::refresh::Refreshers>,
     /// The app process of each web pane whose artifact declares one, keyed by pane id.
     pub(crate) apps: Mutex<crate::app::Apps>,
-    /// The MCP session of each artifact entry that names a server.
-    pub(crate) mcp: crate::mcp::Sessions,
     /// The `[runner]` watch of each web pane showing the runner built-in, keyed by pane id.
     pub(crate) runner_feeds: Mutex<HashMap<String, crate::runner_feed::Feed>>,
     /// Each space's title-row buttons: the `state` output seen and the list clients were told (ADR-0037).
@@ -383,6 +392,11 @@ impl AppState {
             log_path,
             token,
             next_id: AtomicU64::new(1),
+            agent_homes: Default::default(),
+            status_built: Default::default(),
+            status_builds: AtomicU64::new(0),
+            procs_watchers: Mutex::new((Vec::new(), false)),
+            procs_scans: AtomicU64::new(0),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
@@ -425,7 +439,6 @@ impl AppState {
             embed_seq: std::sync::atomic::AtomicU64::new(0),
             refreshers: Mutex::new(crate::refresh::Refreshers::new()),
             apps: Mutex::new(crate::app::Apps::new()),
-            mcp: Default::default(),
             runner_feeds: Mutex::new(HashMap::new()),
             title_buttons: Mutex::new(crate::title_buttons::Buttons::default()),
             streams: Default::default(),
@@ -682,16 +695,12 @@ impl AppState {
         let asked = crate::checkout::primary(Path::new(cwd));
         let var = harness.home_var();
         let shell = crate::login_path::shell();
-        let answer = {
-            let (program, dir) = (shell.clone(), asked.clone());
-            tokio::task::spawn_blocking(move || {
-                crate::login_path::probe_in(&program, &dir, var, crate::login_path::LIMIT)
-            })
+        let (answer, fresh) = self
+            .agent_homes
+            .value(&shell, &asked, var)
             .await
-            .map_err(|e| format!("asking {shell} for {var} failed: {e}"))?
-        }
-        .map_err(|f| format!("{shell} gave no {var} for {}: {}", asked.display(), f.why))?;
-        tracing::info!(%agent, %var, asked = %asked.display(), home = %answer, "agent home from the login shell");
+            .map_err(|f| format!("{shell} gave no {var} for {}: {}", asked.display(), f.why))?;
+        tracing::info!(%agent, %var, asked = %asked.display(), home = %answer, shell_ran = fresh, "agent home from the login shell");
         let home = (!answer.is_empty()).then(|| PathBuf::from(answer));
         Ok(home
             .filter(|h| Some(h) != harness.daemon_home().as_ref())
@@ -993,7 +1002,33 @@ impl AppState {
         }
     }
 
+    /// The daemon's state under `req`. Callers asking at once share one build: one waits on the
+    /// build under way, then takes the next one when it began after they asked, so no caller gets
+    /// state from before its ask, and a burst of asks (clients lagging together, every agent's
+    /// CLI) builds once.
     async fn status(self: &Arc<Self>, req: Option<u64>) -> ServerMsg {
+        let asked = std::time::Instant::now();
+        let mut built = self.status_built.lock().await;
+        let mut msg = match &*built {
+            Some((began, msg)) if *began >= asked => msg.clone(),
+            _ => {
+                let began = std::time::Instant::now();
+                let msg = self.build_status().await;
+                let n = self.status_builds.fetch_add(1, Ordering::SeqCst) + 1;
+                tracing::debug!(builds = n, ms = began.elapsed().as_millis() as u64, "status built");
+                *built = Some((began, msg.clone()));
+                msg
+            }
+        };
+        drop(built);
+        if let ServerMsg::Status { req: under, .. } = &mut msg {
+            *under = req;
+        }
+        msg
+    }
+
+    async fn build_status(self: &Arc<Self>) -> ServerMsg {
+        let req = None;
         let mut terms: Vec<_> = self
             .terms
             .lock()
@@ -1508,6 +1543,12 @@ async fn handle(
             None
         }
         ClientMsg::Status { req } => Some(state.status(req).await),
+        ClientMsg::Hello { req } => Some(ServerMsg::Hello {
+            req,
+            protocol: wheel_proto::PROTOCOL_VERSION,
+            compat: wheel_proto::COMPAT,
+            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
+        }),
         ClientMsg::Log {
             req,
             client,
@@ -2228,6 +2269,10 @@ async fn handle(
             });
             None
         }
+        ClientMsg::ProcsWatch { req, space } => {
+            state.watch_procs(out, space);
+            req.map(|req| ServerMsg::Ok { req })
+        }
         ClientMsg::ProcStop {
             req,
             space,
@@ -2704,80 +2749,6 @@ async fn handle(
             state.artifact_show(&name, scope, space.as_deref()),
             "artifact show",
         ),
-        // On a task of its own: connecting starts a process, and a tool call can run long, while
-        // this connection has to keep reading frames.
-        ClientMsg::ArtifactTools {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let reply = match state.mcp_tools(&name, scope, space.as_deref(), pane.as_deref()).await {
-                    Ok(tools) => req.map(|req| ServerMsg::Tools { req, tools }),
-                    Err(message) => {
-                        tracing::warn!(%name, %message, "artifact tools refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::ArtifactRead {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-            uri,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let reply = match state.mcp_resource(&name, scope, space.as_deref(), pane.as_deref(), &uri).await {
-                    Ok(contents) => req.map(|req| ServerMsg::Resource { req, contents }),
-                    Err(message) => {
-                        tracing::warn!(%name, %uri, %message, "artifact read refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
-        ClientMsg::ArtifactCall {
-            req,
-            name,
-            scope,
-            space,
-            pane,
-            tool,
-            arguments,
-        } => {
-            let (state, out) = (state.clone(), out.clone());
-            tokio::spawn(async move {
-                let called = state
-                    .mcp_call(&name, scope, space.as_deref(), pane.as_deref(), &tool, arguments)
-                    .await;
-                let reply = match called {
-                    Ok(result) => req.map(|req| ServerMsg::ToolResult { req, result }),
-                    Err(message) => {
-                        tracing::warn!(%name, %tool, %message, "artifact call refused");
-                        Some(failed(req, message))
-                    }
-                };
-                if let Some(reply) = reply {
-                    let _ = out.send(reply).await;
-                }
-            });
-            None
-        }
         ClientMsg::RunnerLs { req, space } => match state.runner_ls(space.as_deref()) {
             Ok(runners) => req.map(|req| ServerMsg::Runners { req, runners }),
             Err(message) => Some(failed(req, message)),
@@ -3852,12 +3823,30 @@ mod tests {
     use super::*;
     use wheel_proto::{NewPaneKind, Node, PluginPaneRef};
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn callers_asking_for_status_at_once_share_a_build_and_keep_their_own_req() {
+        let base = crate::test_support::scratch();
+        let state = AppState::new(String::new(), "t".into(), base.join("inst"), PathBuf::new());
+        let asks = (1..=8u64).map(|i| {
+            let state = state.clone();
+            tokio::spawn(async move { (i, state.status(Some(i)).await) })
+        });
+        for ask in futures_util::future::join_all(asks).await {
+            let (i, msg) = ask.unwrap();
+            assert_eq!(msg.req(), Some(i), "a shared build kept another caller's req");
+        }
+        let builds = state.status_builds.load(Ordering::SeqCst);
+        assert!(builds <= 2, "eight callers at once built {builds} statuses");
+        // An ask after those builds finished gets a new one.
+        state.status(None).await;
+        assert_eq!(state.status_builds.load(Ordering::SeqCst), builds + 1);
+    }
+
     /// A folder reached through a symlink is held and reported as its real path, so a client
     /// comparing a space's folder with `orchestrator.dir` finds the space.
     #[test]
     fn a_space_folder_and_a_directory_setting_are_resolved_through_symlinks() {
-        let base = std::env::temp_dir().join(format!("wheel-symlink-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_support::scratch();
         let real = base.join("real");
         std::fs::create_dir_all(&real).unwrap();
         let real = std::fs::canonicalize(&real).unwrap();
@@ -3882,15 +3871,13 @@ mod tests {
         let (_, dirs, _) = state.dir_list(&base.display().to_string());
         let listed = dirs.iter().find(|d| d.name == "link").unwrap();
         assert_eq!(listed.space.as_deref(), Some(space.id.as_str()));
-        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// A feed forward ends with the refusal when the pane that held the grant changes kind. The
     /// state, the plugin folder and the spaces are real; only the connection is a channel.
     #[tokio::test]
     async fn a_feed_forward_ends_with_an_error_when_its_pane_changes_kind() {
-        let base = std::env::temp_dir().join(format!("wheel-forward-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_support::scratch();
         let space_dir = base.join("space");
         let package = space_dir.join(".wheel/plugins/reader");
         std::fs::create_dir_all(&package).unwrap();
@@ -3943,7 +3930,6 @@ mod tests {
             other => panic!("expected the refusal, got {other:?}"),
         }
         tokio::time::timeout(Duration::from_secs(5), forward).await.unwrap().unwrap();
-        let _ = std::fs::remove_dir_all(&base);
     }
 }
 

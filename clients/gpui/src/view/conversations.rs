@@ -115,7 +115,7 @@ impl Client {
         self.press(format!("play {agent} {ix}"));
         self.log(format!("transcript {agent}: read aloud row {ix}: {}", answer["playing"]));
     }
-    /// The composer's read-aloud toggle: on, `agent`'s next finished reply is spoken; off stops
+    /// The + menu's Read aloud: on, `agent`'s next finished reply is spoken; off stops
     /// its speech at once and leaves another conversation's alone (`AgentChat.readsAloud`).
     pub fn toggle_reads_aloud(&mut self, agent: &str) {
         let on = !self.reads_aloud.remove(agent);

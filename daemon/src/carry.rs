@@ -127,21 +127,10 @@ mod tests {
     }
 
     /// A throwaway HOME holding two homes, removed when dropped.
-    struct Home(PathBuf);
-
-    impl Drop for Home {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn homes() -> (Home, PathBuf, PathBuf) {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("wheel-carry-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn homes() -> (crate::test_support::Scratch, PathBuf, PathBuf) {
+        let dir = crate::test_support::scratch();
         let (old, new) = (dir.join(".claude"), dir.join(".claude-work"));
-        (Home(dir), old, new)
+        (dir, old, new)
     }
 
     const TURNS: &str = "{\"turn\":1}\n{\"turn\":2}\n";

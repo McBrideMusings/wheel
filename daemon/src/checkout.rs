@@ -49,16 +49,9 @@ pub fn is_linked_worktree(dir: &Path) -> bool {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheel-checkout-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn a_linked_worktree_is_asked_as_its_primary_checkout() {
-        let root = scratch("linked");
+        let root = crate::test_support::scratch();
         let primary_dir = root.join("Work/app");
         std::fs::create_dir_all(primary_dir.join(".git/worktrees/feat")).unwrap();
         let tree = root.join("worktrees/app/feat");
@@ -74,14 +67,12 @@ mod tests {
         assert!(is_linked_worktree(&tree));
         assert!(!is_linked_worktree(&tree.join("src")));
         assert!(!is_linked_worktree(&primary_dir));
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[tokio::test]
     async fn a_directory_outside_any_repository_is_its_own_primary() {
-        let root = scratch("none");
+        let root = crate::test_support::scratch();
         assert_eq!(primary(&root), root);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 
@@ -125,7 +116,7 @@ mod changes_tests {
 
     #[tokio::test]
     async fn a_repository_reports_its_branch_and_the_lines_changed_against_head() {
-        let dir = std::env::temp_dir().join(format!("wheel-footer-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
             let ok = std::process::Command::new("git")
@@ -141,16 +132,14 @@ mod changes_tests {
         git(&["commit", "-q", "-m", "first"]);
         std::fs::write(dir.join("a.txt"), "one\nthree\nfour\n").unwrap();
         let found = changes(&dir).await;
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, (Some("work".into()), 2, 1));
     }
 
     #[tokio::test]
     async fn a_directory_outside_a_repository_has_no_branch() {
-        let dir = std::env::temp_dir().join(format!("wheel-footer-none-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let found = changes(&dir).await;
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(found, (None, 0, 0));
     }
 }

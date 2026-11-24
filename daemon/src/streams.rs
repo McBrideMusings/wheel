@@ -693,12 +693,11 @@ mod tests {
     }
 
     fn parse(toml_text: &str) -> BTreeMap<String, Vec<StreamSourceInfo>> {
-        let dir = std::env::temp_dir().join(format!("wheel-streams-test-{}", unix_ms_now()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("wheel.toml");
         std::fs::write(&path, toml_text).unwrap();
         let found = groups(&path);
-        let _ = std::fs::remove_dir_all(&dir);
         found
     }
 

@@ -1,47 +1,13 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
+pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, strip, toasts, topic, transcript, tray, windows};
 pub mod actions;
 pub mod browser;
-pub mod cards;
-pub mod chat_links;
-pub mod command_palette;
-pub mod composer;
-pub mod conversations;
-pub mod crash_guard;
-pub mod daemon;
-pub mod debug;
-pub mod earlier;
 pub mod edit_menu;
-pub mod focus;
-pub mod footer;
-pub mod grid_drop;
-pub mod header;
 pub mod keymap;
-pub mod layout;
-pub mod markdown;
-pub mod menubar;
-pub mod motion;
-pub mod native;
-pub mod pairing;
-pub mod perms;
-pub mod popped;
 pub mod saved;
-pub mod palette;
-pub mod pane_header;
-pub mod procs;
-pub mod queue;
-pub mod running;
-pub mod server;
-pub mod settings;
-pub mod sidebar;
 pub mod status;
-pub mod strip;
-pub mod topic;
-pub mod toasts;
 pub mod tooltip;
-pub mod transcript;
-pub mod tray;
 pub mod view;
-pub mod windows;
 
 use anyhow::Result;
 use futures::StreamExt as _;
@@ -230,6 +196,9 @@ pub fn create_window(
                     refresh_windows(cx);
                 })
                 .detach();
+                // Anything that notifies the client may change what a pane body shows, so every body
+                // draws again; a notify that reaches only a body (its working arc, its scroll) does not.
+                cx.observe_self(|client: &mut view::Client, cx| client.invalidate_bodies(cx)).detach();
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
                 client.publish();
@@ -484,7 +453,20 @@ pub fn open_window(
     prefer_space: Option<String>,
     hidden: bool,
 ) -> Result<view::ClientWindow> {
-    open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main, None)
+    open_window_as(cx, bridge, endpoint, prefer_session, prefer_space, hidden, Opening::Main, new_window_frame())
+}
+
+/// Where a new main window opens: where the last one closed, moved down and right by a title bar
+/// while an open window already sits there, so the two never stack exactly.
+fn new_window_frame() -> Option<saved::Frame> {
+    windows::with(|r| {
+        let mut frame = r.last_closed?;
+        while r.frames.values().any(|f| f[0] == frame[0] && f[1] == frame[1]) {
+            frame[0] += 28.;
+            frame[1] += 28.;
+        }
+        Some(frame)
+    })
 }
 
 /// `open_window` for a main or a little window, at `frame` when it is restored.
@@ -664,6 +646,7 @@ fn run_window_command(cx: &mut App, via: view::ClientWindow, command: &WindowCom
 /// The handles in the order they opened; the focused window is the last main one.
 pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, file: Option<std::path::PathBuf>) -> Result<Vec<view::ClientWindow>> {
     let saved = saved::Saved::load(file.as_ref());
+    windows::with(|r| r.last_closed = saved.last_closed);
     saved::start(cx, file, saved.restore);
     let opened = open_saved(cx, bridge, endpoint, space, hidden, &saved);
     if opened.is_err() {

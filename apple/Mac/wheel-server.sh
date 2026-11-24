@@ -99,6 +99,8 @@ write_plist() {
   plutil -insert ProgramArguments -json "$args" "$next"
   plutil -insert RunAtLoad -bool true "$next"
   plutil -insert KeepAlive -bool true "$next"
+  # Without it launchd runs wheeld, and every agent, shell and build it starts, in the throttled background band.
+  plutil -insert ProcessType -string Interactive "$next"
   plutil -insert StandardOutPath -string "$HOME/Library/Logs/$INSTANCE/launchd.log" "$next"
   plutil -insert StandardErrorPath -string "$HOME/Library/Logs/$INSTANCE/launchd.log" "$next"
   if cmp -s "$next" "$PLIST" 2>/dev/null; then rm -f "$next"; return 1; fi

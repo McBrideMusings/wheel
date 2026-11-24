@@ -1879,7 +1879,7 @@ mod tests {
     #[test]
     fn history_leaves_a_task_notification_out_of_its_turn() {
         use super::history;
-        let home = std::env::temp_dir().join(format!("wheel-j6ry-{}", std::process::id()));
+        let home = crate::test_support::scratch();
         let cwd = std::path::Path::new("/work/proj");
         let dir = crate::resume::claude_project_dir(&home, &super::store_cwd(cwd));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1890,7 +1890,6 @@ mod tests {
         let body: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         std::fs::write(dir.join("c1.jsonl"), body.join("\n")).unwrap();
         let found = history(&home, cwd, "c1").unwrap();
-        std::fs::remove_dir_all(&home).unwrap();
         assert_eq!(found.turns.len(), 1);
         assert_eq!(found.turns[0].0, "start the build");
         assert!(found.turns[0].1.is_empty());
@@ -1899,7 +1898,7 @@ mod tests {
     #[test]
     fn a_fork_point_is_the_last_message_before_the_next_prompt() {
         use super::fork_point;
-        let home = std::env::temp_dir().join(format!("wheel-fork-{}", std::process::id()));
+        let home = crate::test_support::scratch();
         let cwd = std::path::Path::new("/work/proj");
         let dir = crate::resume::claude_project_dir(&home, &super::store_cwd(cwd));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1920,7 +1919,6 @@ mod tests {
         let all = fork_point(&home, cwd, "c1", 2);
         let past = fork_point(&home, cwd, "c1", 3);
         let none = fork_point(&home, cwd, "c1", 0);
-        std::fs::remove_dir_all(&home).unwrap();
         assert_eq!(first, Ok(Some("a1b".to_string())));
         assert_eq!(all, Ok(None));
         assert!(past.unwrap_err().contains("has 2 turn(s)"));
@@ -1991,12 +1989,12 @@ mod tests {
     #[test]
     fn a_folder_that_allows_perm_answer_by_name_drops_the_deny() {
         use crate::driver::{Conversation, Launch};
-        let dir = std::env::temp_dir().join(format!("wheel-perm-grant-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(dir.join(".claude")).unwrap();
         let launch = Launch {
             agent: crate::resume::Harness::Claude,
             command: "claude".into(),
-            cwd: dir.clone(),
+            cwd: dir.to_path_buf(),
             config_dir: None,
             brief: Some("brief".into()),
             env: Vec::new(),
@@ -2015,7 +2013,6 @@ mod tests {
         std::fs::remove_file(dir.join(".claude/settings.json")).unwrap();
         std::fs::write(dir.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Bash(wheel perm answer:*)"]}}"#).unwrap();
         assert!(!super::arguments(&launch, None).iter().any(|a| a == "--disallowedTools"), "settings.local.json counts");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

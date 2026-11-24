@@ -3,6 +3,7 @@
 //! survives starts of kept agents that cannot start it. Its own test binary, since it points
 //! `SHELL` at a stand-in shell for the whole process.
 
+#[path = "it/common/mod.rs"]
 mod common;
 
 use std::path::Path;
@@ -187,7 +188,7 @@ async fn a_kept_agent_survives_a_start_during_the_restore() {
             std::time::Instant::now() < deadline,
             "the agent never started once the shell answered"
         );
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     running.abort();
 
@@ -210,7 +211,7 @@ async fn a_kept_agent_survives_a_start_during_the_restore() {
             std::time::Instant::now() < deadline,
             "the kept agent never started"
         );
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     running.abort();
     let _ = std::fs::remove_dir_all(&dir);

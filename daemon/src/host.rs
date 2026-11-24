@@ -172,31 +172,20 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Removes the directory on the way out, even when an assertion fails.
-    struct Home(std::path::PathBuf);
-    impl Drop for Home {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn a_folder_the_daemon_may_not_list_is_denied_and_a_missing_one_is_not() {
-        let dir = std::env::temp_dir().join(format!("wheel-host-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let home = Home(dir);
-        std::fs::create_dir(home.0.join("Downloads")).unwrap();
-        std::fs::create_dir(home.0.join("Desktop")).unwrap();
+        let home = crate::test_support::scratch();
+        std::fs::create_dir(home.join("Downloads")).unwrap();
+        std::fs::create_dir(home.join("Desktop")).unwrap();
         std::fs::set_permissions(
-            home.0.join("Downloads"),
+            home.join("Downloads"),
             std::fs::Permissions::from_mode(0o000),
         )
         .unwrap();
         let got = Probe::new(
             ["Downloads", "Desktop", "Documents"]
                 .iter()
-                .map(|name| home.0.join(name))
+                .map(|name| home.join(name))
                 .collect(),
             Arc::new(list),
             Duration::from_secs(5),
@@ -204,7 +193,7 @@ mod tests {
         )
         .access();
         std::fs::set_permissions(
-            home.0.join("Downloads"),
+            home.join("Downloads"),
             std::fs::Permissions::from_mode(0o755),
         )
         .unwrap();

@@ -92,7 +92,7 @@ fn line(text: &str, color: u32) -> gpui::Div {
 /// buttons. Every press on a button sends `perm_answer`; each button records its bounds as control
 /// `perm:<option id>`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn perm_card(perm: &PermInfo, tool: Option<&ToolLine>, position: usize, count: usize, keys: bool, height: f32, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn perm_card(perm: &PermInfo, tool: Option<&ToolLine>, position: usize, count: usize, keys: bool, height: f32, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let agent = perm.agent.as_str();
     let button = |option: &wheel_proto::PermOption, prominent: bool, tall: bool, cx: &mut Context<Client>| {
         let (id, choice) = (perm.id.clone(), option.id.clone());

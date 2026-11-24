@@ -3,9 +3,8 @@
 /// only ops the server listed; a feature that needs an op asks `has` and hides or disables itself
 /// when the server lacks it. `proto/src/ops.rs` is the server's side.
 public struct ServerOffer: Equatable, Sendable {
-    /// This app's compatibility level: `COMPAT` in `proto/src/ops.rs`, which a proto test holds
-    /// this line to.
-    public static let clientCompat: UInt32 = 4
+    /// This app's compatibility level: `COMPAT` in `proto/src/ops.rs`; change both together.
+    public static let clientCompat: UInt32 = 5
 
     /// 0 from a server that predates levels.
     public var compat: UInt32

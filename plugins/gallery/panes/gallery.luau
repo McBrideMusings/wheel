@@ -457,6 +457,11 @@ local function system_class()
         { "Grid, GridRow", "Grid, GridRow", {
             { "two rows", put("Grid", { put("GridRow", { txt("a"), txt("b") }), put("GridRow", { txt("c"), txt("d") }) }, { horizontalSpacing = 16 }) },
         } },
+        { "ZStack", "ZStack", {
+            { "alignment (topLeading, top, topTrailing, leading, center, trailing, bottomLeading, bottom, bottomTrailing; default center): children layered, the first at the back",
+                put("ZStack", { put("Column", { txt("back layer") }, { modifiers = { { frame = { height = 80 } }, { background = "soft" } } }),
+                    put("Button", nil, { child = txt("floating"), action = act() }) }, { alignment = "topTrailing" }) },
+        } },
         { "Stepper", "Stepper", {
             { "min 0, max 10, step 1", put("Stepper", nil, { title = "Count", value = 4, min = 0, max = 10, step = 1 }) },
         } },
@@ -649,7 +654,7 @@ local function own_class(data)
                 put("WebView", nil, { artifact = "gallery-sample", height = 220 }) },
         } },
         { "VideoStream", "VideoStream", {
-            { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall (default 320), as wide as it is offered, the picture fitted to it. input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
+            { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall, as wide as it is offered, the picture fitted to it; with no height it fills the height the rest of the pane leaves, as a frame-less Table does (put it in a ZStack to float controls over it). input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 200 }) },
             { "input = false: the picture and sound only; nothing is sent",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 120, input = false }) },

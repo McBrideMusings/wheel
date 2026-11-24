@@ -27,6 +27,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
+fsevent-sys = "4.1.0"
 tower-http = { version = "0.6", features = ["fs"] }
 notify = "7.0.0"
 ghostty-vt = "=0.7.0"
@@ -48,7 +49,6 @@ tracing.workspace = true
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ureq = "3"
-rmcp = { version = "3.8", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
 wheel-proto = { path = "../proto" }
 similar = "3.2.0"
 tokio-tungstenite = "0.28"
@@ -59,4 +59,5 @@ workspace-hack = { version = "0.1", path = "../workspace-hack" }
 sha2 = "0.10"
 
 [dev-dependencies]
-rmcp = { version = "3.8", features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

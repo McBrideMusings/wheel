@@ -934,7 +934,7 @@ impl AppState {
 fn watch_targets_start(
     targets: &[Target],
     wanted: Vec<PathBuf>,
-) -> Result<(Vec<notify::RecommendedWatcher>, mpsc::UnboundedReceiver<()>), String> {
+) -> Result<(Vec<crate::fswatch::Handle>, mpsc::UnboundedReceiver<()>), String> {
     let (tx, rx) = mpsc::unbounded_channel();
     let mut watchers = Vec::new();
     // Events name real paths (/private/var, not /var), so compare against those.
@@ -942,7 +942,7 @@ fn watch_targets_start(
     for target in targets {
         let tx = tx.clone();
         let wanted = wanted.clone();
-        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let mut watcher = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
@@ -991,13 +991,6 @@ script = "main.luau"
 reads = ["a.b"]
 actions = ["go"]
 "#;
-
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheel-plugins-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     fn write_plugin(root: &Path, folder: &str, manifest: &str) {
         let dir = root.join(folder);
@@ -1096,18 +1089,17 @@ actions = ["go"]
 
     #[test]
     fn a_bad_package_lists_with_an_error_and_no_panes() {
-        let machine = tmp("bad");
+        let machine = crate::test_support::scratch();
         write_plugin(&machine, "broken", "[plugin\n");
         let all = discover(None, &machine);
         let broken = all.iter().find(|p| p.info.id == "broken").unwrap();
         assert!(broken.info.error.is_some() && broken.info.panes.is_empty());
         assert!(resolve(&all, "broken").is_err());
-        std::fs::remove_dir_all(&machine).unwrap();
     }
 
     #[test]
     fn an_id_resolves_project_then_machine_then_builtin() {
-        let root = tmp("order");
+        let root = crate::test_support::scratch();
         let (space, machine) = (root.join("space"), root.join("machine"));
         write_plugin(&project_plugins(space.to_str().unwrap()), "sample", &GOOD.replace("demo", "sample"));
         write_plugin(&machine, "sample", &GOOD.replace("demo", "sample").replace("1.2.3", "9.9.9"));
@@ -1130,12 +1122,11 @@ actions = ["go"]
         assert_eq!(read_script(resolve(&all, "demo").unwrap(), pane).unwrap().source, "-- script");
         assert!(find_pane(resolve(&all, "demo").unwrap(), "nope").is_err());
         assert!(resolve(&all, "ghost").is_err());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_project_plugin_lists_only_for_its_own_space() {
-        let root = tmp("scope");
+        let root = crate::test_support::scratch();
         let (a, b, machine) = (root.join("a"), root.join("b"), root.join("machine"));
         write_plugin(&project_plugins(a.to_str().unwrap()), "demo", GOOD);
         std::fs::create_dir_all(&b).unwrap();
@@ -1144,7 +1135,6 @@ actions = ["go"]
         assert!(in_a.iter().any(|p| p.info.id == "demo"));
         assert!(!in_b.iter().any(|p| p.info.id == "demo"));
         assert!(in_b.iter().any(|p| p.info.id == "sample"), "built-ins are everywhere");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -1200,7 +1190,7 @@ actions = ["go"]
 
     #[test]
     fn a_project_package_with_id_agent_wins_over_the_builtin() {
-        let root = tmp("agent-override");
+        let root = crate::test_support::scratch();
         let (space, machine) = (root.join("space"), root.join("machine"));
         let own = GOOD.replace("demo", "agent").replace("\"main\"", "\"view\"");
         write_plugin(&project_plugins(space.to_str().unwrap()), "agent", &own);
@@ -1209,12 +1199,11 @@ actions = ["go"]
         assert_eq!(agent.info.scope, PluginScope::Project);
         let pane = find_pane(agent, AGENT_VIEW_PANE).unwrap();
         assert_eq!(read_script(agent, pane).unwrap().source, "-- script");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_symlinked_script_out_of_the_package_is_not_read() {
-        let root = tmp("link");
+        let root = crate::test_support::scratch();
         let machine = root.join("machine");
         write_plugin(&machine, "demo", GOOD);
         std::fs::write(root.join("secret"), "secret").unwrap();
@@ -1224,12 +1213,11 @@ actions = ["go"]
         let all = discover(None, &machine);
         let demo = resolve(&all, "demo").unwrap();
         assert!(read_script(demo, find_pane(demo, "main").unwrap()).is_err());
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_script_over_one_megabyte_is_refused() {
-        let root = tmp("big");
+        let root = crate::test_support::scratch();
         let machine = root.join("machine");
         write_plugin(&machine, "demo", GOOD);
         let script = machine.join("demo/main.luau");
@@ -1241,12 +1229,11 @@ actions = ["go"]
         std::fs::write(&script, vec![b'-'; MAX_SCRIPT as usize + 1]).unwrap();
         let err = read_script(demo, pane).unwrap_err();
         assert!(err.contains("larger than 1 MB"), "{err}");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn the_packages_other_luau_files_come_with_the_script() {
-        let root = tmp("modules");
+        let root = crate::test_support::scratch();
         let machine = root.join("machine");
         write_plugin(&machine, "demo", GOOD);
         let dir = machine.join("demo");
@@ -1271,12 +1258,11 @@ actions = ["go"]
         let keys: Vec<&str> = script.modules.keys().map(String::as_str).collect();
         assert_eq!(keys, ["lib/deep/x.luau", "lib/ui.luau"]);
         assert_eq!(script.modules["lib/ui.luau"], "return 1");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_package_folder_that_is_a_symlink_is_found_and_its_modules_come_with_it() {
-        let root = tmp("symlinked-root");
+        let root = crate::test_support::scratch();
         let machine = root.join("machine");
         write_plugin(&root, "repo-package", GOOD);
         std::fs::create_dir_all(root.join("repo-package/lib")).unwrap();
@@ -1289,12 +1275,11 @@ actions = ["go"]
         assert_eq!(script.source, "-- script");
         let keys: Vec<&str> = script.modules.keys().map(String::as_str).collect();
         assert_eq!(keys, ["lib/ui.luau"]);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn modules_count_against_the_one_megabyte_budget() {
-        let root = tmp("bigmodules");
+        let root = crate::test_support::scratch();
         let machine = root.join("machine");
         write_plugin(&machine, "demo", GOOD);
         let half = MAX_SCRIPT as usize / 2;
@@ -1304,7 +1289,6 @@ actions = ["go"]
         let demo = resolve(&all, "demo").unwrap();
         let err = read_script(demo, find_pane(demo, "main").unwrap()).unwrap_err();
         assert!(err.contains("larger than 1 MB"), "{err}");
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

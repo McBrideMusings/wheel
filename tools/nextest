@@ -1,0 +1,3 @@
+#!/bin/sh
+# cargo-nextest at the version the repo pins. mise installs it on first use, as tools/zig does Zig.
+exec mise exec cargo:cargo-nextest@0.9.152 -- cargo nextest "$@"

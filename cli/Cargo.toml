@@ -7,6 +7,11 @@ edition.workspace = true
 name = "wheel"
 path = "src/main.rs"
 
+# The scripted agent the daemon tests drive, built here so `cargo test -p wheel-cli` has it.
+[[bin]]
+name = "wheel-fake-agent"
+path = "../daemon/src/bin/wheel-fake-agent.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
@@ -14,6 +19,7 @@ clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 serde_json.workspace = true
 tokio.workspace = true
+toml = "1"
 tokio-tungstenite = "0.28"
 wheel-proto = { path = "../proto" }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }

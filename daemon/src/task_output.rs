@@ -33,7 +33,7 @@ struct Streamed {
 pub struct TaskOutputs {
     streamed: HashMap<String, Streamed>,
     /// The directories watched for the named output files, each with its watcher.
-    watched: HashMap<PathBuf, notify::RecommendedWatcher>,
+    watched: HashMap<PathBuf, crate::fswatch::Handle>,
 }
 
 impl TaskOutputs {
@@ -53,7 +53,7 @@ impl TaskOutputs {
                 continue;
             }
             let ping = changed.clone();
-            let made = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let made = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
                 if event.is_ok() {
                     ping();
                 }
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn a_tail_reads_only_the_end_and_names_size_and_time() {
-        let dir = std::env::temp_dir().join(format!("wheel-tail-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.output");
         let body: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
@@ -264,7 +264,6 @@ mod tests {
         assert!(text.ends_with("line 19999\n"));
         assert!(text.starts_with("line "), "the cut first line is dropped: {text:?}");
         assert_eq!(tail_file(&dir.join("missing")).unwrap(), None);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -286,7 +285,7 @@ mod tests {
     #[test]
     fn an_unreadable_output_file_is_said_on_the_task() {
         let outputs = TaskOutputs::default();
-        let dir = std::env::temp_dir().join(format!("wheel-tail-dir-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         // A directory where the file should be: it exists and cannot be read as one.
         let mut tasks = vec![BackgroundTask { id: "t".into(), output_path: Some(dir.display().to_string()), ..Default::default() }];
@@ -294,6 +293,5 @@ mod tests {
         assert!(tasks[0].output_error.as_deref().unwrap().starts_with("cannot read"), "{:?}", tasks[0].output_error);
         let missing = BackgroundTask { id: "m".into(), output_path: Some(dir.join("not-yet").display().to_string()), ..Default::default() };
         assert_eq!(outputs.read(&missing).unwrap(), (String::new(), false));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

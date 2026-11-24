@@ -108,6 +108,8 @@ pub(crate) struct Refresh {
     /// run during the on-open one waits rather than racing it.
     running: tokio::sync::Mutex<()>,
     seen: Mutex<Seen>,
+    /// Signalled when `seen` changes what the timer waits for: the interval, or a failure streak.
+    changed: tokio::sync::Notify,
     /// Why the last tick skipped, until a tick runs again: a skip is logged when this changes, so a
     /// pane left open on an entry with no command writes one line rather than one per tick.
     skipped: Mutex<Option<&'static str>>,
@@ -212,10 +214,13 @@ impl Refresh {
                 self.pane
             ));
         };
-        let mut seen = self.seen.lock().unwrap();
-        seen.command = command.clone();
-        seen.every = every;
-        seen.dir = dir.display().to_string();
+        {
+            let mut seen = self.seen.lock().unwrap();
+            seen.command = command.clone();
+            seen.every = every;
+            seen.dir = dir.display().to_string();
+        }
+        self.changed.notify_one();
         Ok((command, dir))
     }
 
@@ -268,6 +273,8 @@ impl Refresh {
         }
         seen.runs += 1;
         seen.last = Some(last);
+        drop(seen);
+        self.changed.notify_one();
     }
 
     /// Run `command` through `/bin/sh -c` in the space's directory, with the pane's data directory
@@ -410,23 +417,26 @@ impl Refresh {
 /// interval comes from each tick's own reading of the entry, so editing `every` takes effect at
 /// the tick after the edit, and the first tick is one interval after the pane's opening run.
 async fn ticking(refresh: Arc<Refresh>, mut every: u64) {
-    let mut waited = 0;
+    let mut since = tokio::time::Instant::now();
     loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        waited += 1;
         // The interval the entry asks for now; the one last read when it asks for none, so that
         // re-adding `every` is picked up rather than needing the pane reopened. A command that has
-        // kept failing the same way is waited on longer, up to `BACKOFF_MAX`. Read every second, so
-        // a run that worked, or an edited `every`, takes effect at once rather than after the
-        // sleep that was already under way.
+        // kept failing the same way is waited on longer, up to `BACKOFF_MAX`. Read again whenever
+        // the runner's record changes, so a run that worked, or an edited `every`, moves the next
+        // tick at once rather than after the sleep already under way.
         let wait = {
             let seen = refresh.seen.lock().unwrap();
             every = seen.every.unwrap_or(every);
             wait_secs(every, seen.streak.as_ref().map_or(0, |(_, n)| *n))
         };
-        if waited >= wait {
-            refresh.tick().await;
-            waited = 0;
+        // An `every` too large to add to the clock is one that never comes round.
+        let due = since.checked_add(Duration::from_secs(wait));
+        tokio::select! {
+            () = async { match due { Some(due) => tokio::time::sleep_until(due).await, None => std::future::pending().await } } => {
+                refresh.tick().await;
+                since = tokio::time::Instant::now();
+            }
+            () = refresh.changed.notified() => {}
         }
     }
 }
@@ -752,6 +762,7 @@ impl AppState {
                 last: None,
                 streak: None,
             }),
+            changed: tokio::sync::Notify::new(),
             skipped: Mutex::new(None),
             timer: std::sync::OnceLock::new(),
         });

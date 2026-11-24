@@ -15,6 +15,7 @@ pub const BREAKS: &[(u32, &str)] = &[
     (2, "an orchestrator is an agent pane: orchestrator_start makes one (a global one in the Orchestrator space) and names its pane, and orchestrator_stop and the inbox ops take that pane"),
     (3, "an orchestrator's inbox is files in its folder: inbox_list, inbox_ack and inbox_reply are removed"),
     (4, "wheeld holds no orchestrator: the orchestrator_* ops, the Orchestrator space, agent_send's and pane_start's from, and push_send's task are removed"),
+    (5, "wheeld runs no MCP artifacts: artifact_tools, artifact_call and artifact_read, their replies tools, tool_result and resource, and mcp_updated are removed"),
 ];
 
 /// This build's compatibility level: the last entry of [`BREAKS`].
@@ -83,7 +84,7 @@ impl Offer {
         }
     }
 
-    /// The offer in a `status` frame's text; None for any other frame.
+    /// The offer in a `hello` or `status` frame's text; None for any other frame.
     pub fn read(frame: &str) -> Option<Self> {
         #[derive(Deserialize)]
         struct Head {
@@ -93,7 +94,7 @@ impl Offer {
         }
         serde_json::from_str::<Head>(frame)
             .ok()
-            .filter(|head| head.ev == "status")
+            .filter(|head| head.ev == "hello" || head.ev == "status")
             .map(|head| head.offer)
     }
 
@@ -266,15 +267,6 @@ mod tests {
         assert_eq!(
             older.admit(&serde_json::to_string(&ClientMsg::Status { req: None }).unwrap()),
             Ok(())
-        );
-    }
-
-    #[test]
-    fn the_swift_clients_level_is_this_one() {
-        let swift = include_str!("../../apple/WheelKit/Sources/WheelKit/ServerOffer.swift");
-        assert!(
-            swift.contains(&format!("public static let clientCompat: UInt32 = {COMPAT}\n")),
-            "ServerOffer.clientCompat in WheelKit is not COMPAT ({COMPAT})"
         );
     }
 

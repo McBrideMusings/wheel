@@ -118,16 +118,9 @@ mod tests {
         std::fs::write(path, "").unwrap();
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wheel-homes-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn a_folder_is_valid_empty_missing_or_a_file() {
-        let home = scratch("claude");
+        let home = crate::test_support::scratch();
         touch(&home.join(".claude/settings.json"));
         std::fs::create_dir_all(home.join(".claude-new")).unwrap();
         std::fs::create_dir_all(home.join(".claude-work/projects")).unwrap();
@@ -181,7 +174,7 @@ mod tests {
 
     #[test]
     fn pi_homes_are_the_agent_folder_inside_each_pi_folder() {
-        let home = scratch("pi");
+        let home = crate::test_support::scratch();
         touch(&home.join(".pi/agent/auth.json"));
         std::fs::create_dir_all(home.join(".pi-work/agent")).unwrap();
         let (homes, _) = agent_homes("pi", None, &home).unwrap();

@@ -29,7 +29,7 @@ const PAGE: &str = "index.html";
 const RESERVED: &str = crate::web::DATA;
 
 /// The keys an entry has; anything else is reported as a problem rather than ignored.
-const KEYS: [&str; 16] = [
+const KEYS: [&str; 13] = [
     "path",
     "url",
     "title",
@@ -43,9 +43,6 @@ const KEYS: [&str; 16] = [
     "webhook",
     "app",
     "restart",
-    "mcp",
-    "mcp_url",
-    "shared",
 ];
 
 /// One artifact's entry, and what is wrong with it. Read afresh by every caller, so a value a
@@ -81,13 +78,6 @@ pub(crate) struct Entry {
     pub(crate) app: Option<String>,
     /// When an app's process is started again after it ends; absent means `on-failure`.
     pub(crate) restart: Option<wheel_proto::AppRestart>,
-    /// The command of an MCP server the daemon runs and talks to over its stdin and stdout.
-    pub(crate) mcp: Option<String>,
-    /// The URL of an MCP server that speaks streamable HTTP.
-    pub(crate) mcp_url: Option<String>,
-    /// The MCP server declares it serves every project at once: one process for every space,
-    /// told the open projects as roots (ADR-0028). Absent means one process per space.
-    pub(crate) shared: bool,
     problems: Vec<String>,
 }
 
@@ -238,9 +228,6 @@ impl Entry {
             webhook: None,
             app: None,
             restart: None,
-            mcp: None,
-            mcp_url: None,
-            shared: false,
             problems: Vec::new(),
         };
         let toml::Value::Table(table) = value else {
@@ -260,8 +247,7 @@ impl Entry {
                 // path would be the directory the file is in.
                 (
                     key @ ("path" | "url" | "title" | "description" | "command" | "ends_with_pane"
-                    | "renderer" | "reply_to" | "webhook" | "app" | "mcp"
-                    | "mcp_url"),
+                    | "renderer" | "reply_to" | "webhook" | "app"),
                     toml::Value::String(text),
                 ) if text.trim().is_empty() => e.problems.push(format!("{key} is empty")),
                 ("path", toml::Value::String(text)) => match e.resolve(text.trim()) {
@@ -297,13 +283,6 @@ impl Entry {
                 }
                 ("command", toml::Value::String(command)) => e.command = Some(command.clone()),
                 ("app", toml::Value::String(command)) => e.app = Some(command.clone()),
-                ("mcp", toml::Value::String(command)) => e.mcp = Some(command.clone()),
-                ("shared", toml::Value::Boolean(on)) => e.shared = *on,
-                ("shared", _) => e.problems.push("shared is true or false".into()),
-                ("mcp_url", toml::Value::String(url)) => match mcp_url(url.trim()) {
-                    Ok(()) => e.mcp_url = Some(url.trim().to_string()),
-                    Err(why) => e.problems.push(why),
-                },
                 ("restart", toml::Value::String(policy)) => match policy.trim() {
                     "on-failure" => e.restart = Some(wheel_proto::AppRestart::OnFailure),
                     "always" => e.restart = Some(wheel_proto::AppRestart::Always),
@@ -330,7 +309,7 @@ impl Entry {
         }
         match (table.contains_key("path"), table.contains_key("url")) {
             // An app's page is its program's, so it names none of its own.
-            (false, false) if e.app.is_some() || e.mcp.is_some() || e.mcp_url.is_some() => {}
+            (false, false) if e.app.is_some() => {}
             (false, false) => e
                 .problems
                 .push("no path, so there is no page to show".into()),
@@ -368,34 +347,11 @@ impl Entry {
         if e.renderer.is_some() && e.app.is_some() {
             e.problems.push("a post carries no app".into());
         }
-        if e.mcp.is_some() && e.mcp_url.is_some() {
-            e.problems
-                .push("mcp and mcp_url both name the server; keep one".into());
-        }
-        if (e.mcp.is_some() || e.mcp_url.is_some()) && e.app.is_some() {
-            e.problems
-                .push("an entry names one process: app or an MCP server, not both".into());
-        }
-        if (e.mcp.is_some() || e.mcp_url.is_some())
-            && (table.contains_key("url") || e.renderer.is_some())
-        {
-            e.problems
-                .push("an MCP server entry is neither a url entry nor a post".into());
-        }
-        if e.shared && e.mcp.is_none() && e.mcp_url.is_none() {
-            e.problems
-                .push("shared says an MCP server serves every project, but no mcp or mcp_url names one".into());
-        }
         if e.restart.is_some() && e.app.is_none() {
             e.problems
                 .push("restart says when an app starts again, but no app says what to run".into());
         }
         e
-    }
-
-    /// What is wrong with the entry as written, before anything on disk is looked at.
-    pub(crate) fn problems(&self) -> &[String] {
-        &self.problems
     }
 
     /// Where `text`, an entry's `path`, points: a leading `~` from the home directory, and a
@@ -919,14 +875,12 @@ impl AppState {
             )
         });
         if let Err(e) = made {
-            let _ = std::fs::remove_dir_all(&dir);
             remove_made(&made_parents);
             return Err(e);
         }
         if ends_with_pane.is_some() || expires_at.is_some() {
             if let Err(e) = self.remember_lifetime_dir(&cwd) {
                 let _ = self.delete_entry(&file, inside_of(scope, &cwd), name);
-                let _ = std::fs::remove_dir_all(&dir);
                 remove_made(&made_parents);
                 return Err(e);
             }
@@ -1243,12 +1197,6 @@ impl AppState {
     /// Tell every connection that artifact `name` has no entry any more, so a client can drop the
     /// browser storage its page kept. Only a `project` entry belongs to a space's directory.
     pub(crate) fn announce_gone(&self, scope: ArtifactScope, cwd: &str, name: &str) {
-        if scope == ArtifactScope::Machine {
-            if let (Some(me), Ok(runtime)) = (self.me.upgrade(), tokio::runtime::Handle::try_current()) {
-                let owner = format!("{}\0{name}", scope.name());
-                runtime.spawn(async move { me.mcp_release(&owner).await });
-            }
-        }
         let cwd = (scope == ArtifactScope::Project).then(|| cwd.to_string());
         tracing::info!(scope = scope.name(), %name, ?cwd, "artifact gone announced");
         let _ = self.global.send(wheel_proto::ServerMsg::ArtifactGone {
@@ -1329,6 +1277,12 @@ impl AppState {
     /// pane closes, when the daemon starts serving and on a timer, so a daemon that was down when a
     /// pane closed still deletes what that pane's agent owned.
     pub fn artifact_sweep(&self) {
+        self.artifact_sweep_at(now_secs());
+    }
+
+    /// [] judging expiry against `now` (Unix seconds), so a test moves the
+    /// clock instead of waiting.
+    pub fn artifact_sweep_at(&self, now: u64) {
         let (cwds, live) = {
             let spaces = self.spaces.lock().unwrap();
             let mut cwds: Vec<String> = Vec::new();
@@ -1355,7 +1309,6 @@ impl AppState {
             }
             all
         };
-        let now = now_secs();
         let mut registries = vec![(ArtifactScope::Machine, String::new())];
         registries.extend(cwds.into_iter().map(|c| (ArtifactScope::Project, c)));
         for (scope, cwd) in registries {
@@ -1668,10 +1621,6 @@ fn renderer_reads(located: &Located) -> Option<String> {
 }
 
 /// A webhook is an `http://` or `https://` URL with a host and no whitespace.
-fn mcp_url(url: &str) -> Result<(), String> {
-    webhook_url(url).map_err(|e| e.replacen("webhook", "mcp_url", 1))
-}
-
 fn webhook_url(url: &str) -> Result<(), String> {
     let rest = url
         .strip_prefix("https://")
@@ -1778,17 +1727,11 @@ fn remove_made(parents: &[PathBuf]) {
 mod tests {
     use super::*;
 
-    fn folder(case: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "wheel-entry-{}-{case}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn folder() -> (crate::test_support::Scratch, PathBuf) {
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        let real = dir.canonicalize().unwrap();
+        (dir, real)
     }
 
     /// The entry `name` in a `wheel.toml` holding `text`, written into `dir`.
@@ -1802,7 +1745,7 @@ mod tests {
     /// that needs a folder of ours.
     #[test]
     fn a_url_entry_names_a_page_and_no_folder() {
-        let dir = folder("url");
+        let (_tmp, dir) = folder();
         let e = read(
             &dir,
             "[artifacts.sim]\nurl = \"http://127.0.0.1:3100/\"\n",
@@ -1829,7 +1772,7 @@ mod tests {
     /// is what a listing and a `show` print, so this is the text a person reads.
     #[test]
     fn the_reader_reports_what_is_wrong_with_an_entry() {
-        let dir = folder("problems");
+        let (_tmp, dir) = folder();
         std::fs::create_dir(dir.join("site")).unwrap();
         std::fs::write(dir.join("site/index.html"), "<h1>hi</h1>").unwrap();
 
@@ -1927,7 +1870,6 @@ mod tests {
             .contains("not a table"));
         // A file that is not there holds no entries.
         assert!(entry(&dir.join("none.toml"), "x").unwrap().is_none());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// An entry's page, wherever the path points: a folder serves its `index.html`, a file is the
@@ -1935,7 +1877,7 @@ mod tests {
     /// a link — the path itself, or a folder on the way — is followed to where the page really is.
     #[test]
     fn an_entry_locates_its_page_wherever_it_lives() {
-        let dir = folder("locate");
+        let (_tmp, dir) = folder();
         let course = dir.join("elsewhere/course");
         std::fs::create_dir_all(course.join("lessons")).unwrap();
         std::fs::write(course.join("index.html"), "home").unwrap();
@@ -1983,7 +1925,6 @@ mod tests {
         assert!(at("../missing").unwrap_err().starts_with("nothing at "));
         let e = read(&reg, "[artifacts.c]\npath = \"../later/page.html\"\n", "c");
         assert_eq!(e.watch_dir(), Some(reg.join("../later")));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The path a new entry writes is relative when the folder is under the file's directory, so a
@@ -2027,7 +1968,7 @@ mod tests {
     /// where the link points.
     #[test]
     fn a_default_folder_never_leads_out_of_its_space() {
-        let dir = folder("default");
+        let (_tmp, dir) = folder();
         let (space, outside) = (dir.join("space"), dir.join("outside"));
         std::fs::create_dir_all(&space).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
@@ -2051,14 +1992,13 @@ mod tests {
             state.default_folder(&artifact, cwd).unwrap(),
             space.join(".wheel/artifacts/dash")
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A machine artifact's default folder sits beside the machine `wheel.toml`, not in the
     /// instance directory, so the relative path its entry carries finds it.
     #[test]
     fn a_machine_default_folder_is_beside_the_machine_file() {
-        let dir = folder("machine-default");
+        let (_tmp, dir) = folder();
         let machine = dir.join("home/.wheel");
         std::fs::create_dir_all(&machine).unwrap();
         let state = AppState::with_machine_file(
@@ -2081,7 +2021,6 @@ mod tests {
         let e = entry(&machine.join(FILE), "dash").unwrap().unwrap();
         assert_eq!(e.locate().unwrap().root, folder.canonicalize().unwrap());
         assert!(!dir.join("inst/artifacts").exists());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn state_in(dir: &Path) -> std::sync::Arc<AppState> {
@@ -2097,7 +2036,7 @@ mod tests {
     /// entry, and the folder goes with the last of them.
     #[test]
     fn a_shared_default_folder_goes_with_the_last_entry_reaped() {
-        let dir = folder("shared");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         let space = dir.join("space");
         let shared = space.join(".wheel/artifacts/dash");
@@ -2121,7 +2060,6 @@ mod tests {
         reap("b");
         assert!(entry(&file, "b").unwrap().is_none());
         assert!(!shared.exists(), "the last entry takes the folder");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A remembered directory is dropped once it is no open space's and holds no entry with a
@@ -2129,7 +2067,7 @@ mod tests {
     /// path.
     #[test]
     fn forgetting_lifetime_dirs_keeps_only_what_still_needs_a_sweep() {
-        let dir = folder("forget");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         std::fs::create_dir_all(dir.join("inst")).unwrap();
         let live = dir.join("live\nline");
@@ -2154,14 +2092,13 @@ mod tests {
         );
         state.forget_lifetime_dirs(&[s(&open)]);
         assert_eq!(state.remembered_lifetime_dirs(), vec![s(&live), s(&open)]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A directory that cannot be saved is an error, so an artifact is never left with a lifetime
     /// no later sweep would visit.
     #[test]
     fn remembering_a_directory_that_cannot_be_saved_is_an_error() {
-        let dir = folder("unsaved");
+        let (_tmp, dir) = folder();
         let state = state_in(&dir);
         std::fs::create_dir_all(dir.join("inst/lifetime-dirs.tmp")).unwrap();
         let err = state.remember_lifetime_dir("/some/space").unwrap_err();
@@ -2170,6 +2107,5 @@ mod tests {
         std::fs::write(dir.join("inst/lifetime-dirs"), "/plain/path\n").unwrap();
         let err = state.remember_lifetime_dir("/some/space").unwrap_err();
         assert!(err.contains("cannot read"), "{err}");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

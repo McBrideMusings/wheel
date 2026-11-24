@@ -744,7 +744,7 @@ struct Sup {
     failures: u32,
     watch_tx: mpsc::UnboundedSender<String>,
     watch_rx: mpsc::UnboundedReceiver<String>,
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher: Option<crate::fswatch::Handle>,
     /// A change to a watched file, and when it restarts the backend.
     debounce: Option<(tokio::time::Instant, String)>,
 }
@@ -1106,7 +1106,7 @@ impl Sup {
         let base = std::fs::canonicalize(&dir).unwrap_or(dir);
         let tx = self.watch_tx.clone();
         let root = base.clone();
-        let made = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let made = crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
             let Ok(event) = event else { return };
             if matches!(event.kind, notify::EventKind::Access(_)) {
                 return;
@@ -2436,7 +2436,7 @@ mod tests {
 
     #[test]
     fn a_log_tail_reads_the_last_lines_from_the_end() {
-        let dir = std::env::temp_dir().join(format!("wheel-tail-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("x.log");
         let text: String = (0..30000).map(|i| format!("line {i}\n")).collect();
@@ -2445,7 +2445,6 @@ mod tests {
         assert_eq!(tail_lines(&path, 50000).unwrap(), text);
         std::fs::write(&path, "").unwrap();
         assert_eq!(tail_lines(&path, 5).unwrap(), "");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2680,7 +2679,7 @@ mod tests {
 
     #[test]
     fn a_restart_runs_what_the_manifest_says_now() {
-        let dir = std::env::temp_dir().join(format!("wheel-spec-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let old = spec_for(&dir);
         let text = "[plugin]\nid = \"p\"\nversion = \"1\"\n\n[backend]\ncommand = \"new\"\ntransport = \"unix\"\nrestart = \"always\"\nwatch = [\"*\"]\n";
@@ -2692,7 +2691,6 @@ mod tests {
         let none = spec_from_manifest(&old, "[plugin]\nid = \"p\"\nversion = \"1\"\n").err().unwrap();
         assert!(none.contains("no [backend]"), "{none}");
         assert!(spec_from_manifest(&old, "[plugin\n").err().unwrap().contains("wheel-plugin.toml"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2740,7 +2738,7 @@ mod tests {
 
     /// A supervisor task over fake shell processes, driven the way `Backends` drives it.
     struct Fake {
-        dir: PathBuf,
+        dir: crate::test_support::Scratch,
         cmd: mpsc::UnboundedSender<Cmd>,
         watch: mpsc::UnboundedSender<String>,
         closing: Arc<AtomicBool>,
@@ -2749,9 +2747,8 @@ mod tests {
     }
 
     impl Fake {
-        fn start(name: &str) -> Fake {
-            let dir = std::env::temp_dir().join(format!("wheel-sup-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+        fn start() -> Fake {
+            let dir = crate::test_support::scratch();
             std::fs::create_dir_all(&dir).unwrap();
             let (cmd, rx) = mpsc::unbounded_channel();
             let (watch, watch_rx) = mpsc::unbounded_channel();
@@ -2810,7 +2807,7 @@ mod tests {
                 if let Err(why) = self.ensure(spec()).await {
                     return why;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
             panic!("the backend never went to a restart wait");
         }
@@ -2827,7 +2824,7 @@ mod tests {
                 if self.task.is_finished() && self.cmd.is_closed() {
                     return true;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
             false
         }
@@ -2845,8 +2842,17 @@ mod tests {
                     unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
                 }
             }
-            let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    /// Move the clock `by` ahead at once, so the supervisor's timers fire now, then give a
+    /// process the supervisor wrongly started a moment of real time to leave its mark. Real
+    /// processes make auto-advancing paused time race their IO, so only this step is paused.
+    async fn past(by: Duration) {
+        tokio::time::pause();
+        tokio::time::advance(by).await;
+        tokio::time::resume();
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     /// Whether the process group `pgid` still has a member.
@@ -2859,14 +2865,14 @@ mod tests {
             if let Some(pid) = *backend.pgid.lock().unwrap() {
                 return pid;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("the process never started");
     }
 
     #[tokio::test]
     async fn an_ensure_during_a_backoff_wait_is_told_when_it_restarts() {
-        let fake = Fake::start("ensure");
+        let fake = Fake::start();
         fake.ensure(fake.failing()).await.expect("the first ensure starts the process");
         let why = fake.until_waiting(|| fake.failing()).await;
         assert!(
@@ -2879,7 +2885,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_restart_during_a_backoff_wait_launches_at_once() {
-        let fake = Fake::start("restart");
+        let fake = Fake::start();
         let first = fake.ensure(fake.failing()).await.unwrap();
         fake.until_waiting(|| fake.failing()).await;
         let next = fake.restart(fake.spec("sleep 30")).await.expect("a restart replies with the new instance");
@@ -2894,37 +2900,37 @@ mod tests {
 
     #[tokio::test]
     async fn a_quit_during_a_backoff_wait_leaves_no_task_and_starts_nothing() {
-        let fake = Fake::start("quit-wait");
+        let fake = Fake::start();
         fake.ensure(fake.failing()).await.unwrap();
         fake.until_waiting(|| fake.failing()).await;
         fake.quit().await;
         assert!(fake.ended().await, "the supervisor task ended");
-        tokio::time::sleep(BACKOFF_FIRST + Duration::from_millis(500)).await;
+        past(BACKOFF_FIRST + Duration::from_millis(500)).await;
         assert_eq!(fake.starts(), 1, "the wait never ran out into another start");
     }
 
     #[tokio::test]
     async fn a_quit_during_a_debounce_leaves_no_task_and_no_process() {
-        let fake = Fake::start("quit-debounce");
+        let fake = Fake::start();
         let backend = fake.ensure(fake.spec("sleep 30")).await.unwrap();
         let pgid = pgid_of(&backend).await;
         fake.watch.send("trigger".into()).unwrap();
         fake.quit().await;
         assert!(fake.ended().await, "the supervisor task ended");
         assert!(!group_alive(pgid), "the process group is gone");
-        tokio::time::sleep(WATCH_QUIET * 2).await;
+        past(WATCH_QUIET * 2).await;
         let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(live, vec![backend.id], "the pending restart never made another instance");
     }
 
     #[tokio::test]
     async fn a_watched_change_after_closing_is_set_restarts_nothing() {
-        let fake = Fake::start("closing-change");
+        let fake = Fake::start();
         let backend = fake.ensure(fake.spec("sleep 30")).await.unwrap();
         pgid_of(&backend).await;
         fake.closing.store(true, Ordering::SeqCst);
         fake.watch.send("trigger".into()).unwrap();
-        tokio::time::sleep(WATCH_QUIET * 3).await;
+        past(WATCH_QUIET * 3).await;
         let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(live, vec![backend.id], "the watched change restarted nothing");
         fake.quit().await;
@@ -2932,11 +2938,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_wait_that_ends_after_closing_is_set_starts_nothing() {
-        let fake = Fake::start("closing");
+        let fake = Fake::start();
         fake.ensure(fake.failing()).await.unwrap();
         fake.until_waiting(|| fake.failing()).await;
         fake.closing.store(true, Ordering::SeqCst);
-        tokio::time::sleep(BACKOFF_FIRST * 2).await;
+        past(BACKOFF_FIRST * 2).await;
         assert_eq!(fake.starts(), 1, "wheeld is stopping: the wait ran out and started nothing");
         fake.quit().await;
     }
