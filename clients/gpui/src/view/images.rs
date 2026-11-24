@@ -32,8 +32,7 @@ pub struct ImageState {
     asks: RefCell<Vec<(String, String)>>,
     reqs: HashMap<u64, (String, String)>,
     /// Each agent's row count when its images were last asked about.
-    /// Each agent's finished tool calls when its files were last asked about (`Transcript::tools_done`).
-    tools_seen: HashMap<String, usize>,
+    rows_seen: HashMap<String, usize>,
     /// Per agent, each (row, source) a reply drew and the directory it was read against.
     shown: RefCell<HashMap<String, BTreeMap<(usize, String), String>>>,
 }
@@ -159,9 +158,10 @@ impl Client {
             return;
         }
         let grown: Vec<(String, usize)> = self.transcripts.iter()
-            .filter_map(|(agent, t)| { let done = t.tools_done(); (self.images.tools_seen.get(agent) != Some(&done)).then(|| (agent.clone(), done)) }).collect();
+            .filter(|(agent, t)| self.images.rows_seen.get(*agent) != Some(&t.rows.len()))
+            .map(|(agent, t)| (agent.clone(), t.rows.len())).collect();
         for (agent, rows) in grown {
-            self.images.tools_seen.insert(agent.clone(), rows);
+            self.images.rows_seen.insert(agent.clone(), rows);
             self.images.ask_again(&agent);
         }
         let asks: Vec<(String, String)> = self.images.asks.borrow_mut().drain(..).collect();
