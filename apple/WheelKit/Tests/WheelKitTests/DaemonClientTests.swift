@@ -57,6 +57,7 @@ private final class Harness {
             endpoint: DaemonEndpoint(url: URL(string: "ws://127.0.0.1:7499/ws")!, token: token, pairingAs: pairingAs),
             retryDelay: .milliseconds(20),
             logTimeout: logTimeout,
+            logBatchDelay: .milliseconds(5),
             makeSocket: { url in
                 let socket = FakeSocket(url: url)
                 made?(socket)
@@ -225,7 +226,7 @@ struct DaemonClientTests {
         h.sockets[1].takeReceive()?(.failure(HandshakeRefused(underlying: NSError(domain: "fake", code: 53))))
         await h.until { refused == 1 }
         // Several retry delays pass; no second socket opens.
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(60))
         #expect(h.sockets.count == 2)
         #expect(refused == 1)
         guard case .unreachable = h.client.connection else { Issue.record("not unreachable"); return }
@@ -246,10 +247,10 @@ struct DaemonClientTests {
         await h.until { h.client.connection == .connected && h.connects.count == 2 }
 
         first.deliver(#"{"ev":"perms","perms":[]}"#)
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(20))
         #expect(h.messages.isEmpty)
         first.fail("late")
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .milliseconds(60))
         #expect(h.client.connection == .connected)
         #expect(h.sockets.count == 2)
     }
@@ -285,7 +286,7 @@ struct DaemonClientTests {
         for _ in 0..<200 where await gate.count() < 2 { try await Task.sleep(for: .milliseconds(10)) }
         await gate.release()
         await h.until { !h.sockets.isEmpty }
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(for: .milliseconds(20))
         // Two starts, two token reads, one socket: only the newest generation connects.
         #expect(h.sockets.count == 1)
     }
@@ -329,7 +330,7 @@ struct AppLogTests {
         try h.answerProbe(h.sockets[1])
         await h.until { h.client.connection == .connected }
         log.write("line 6")
-        try await Task.sleep(for: .milliseconds(1300))
+        await h.until { !logFrames(h.sockets[1]).isEmpty }
         let again = logFrames(h.sockets[1]).flatMap { $0["lines"] as? [[String: Any]] ?? [] }
         #expect(again.map { $0["msg"] as? String } == ["line 6"])
         #expect(h.messages.isEmpty)
@@ -433,15 +434,15 @@ struct AppLogTests {
     /// A wheeld that never answers is sent the batch again after 1, 2 and 4 timeouts, not after every one.
     @Test func anUnansweredLogRequestIsRetriedWithBackoff() async throws {
         let log = AppLog(url: try tempLog(), client: "mac")
-        let h = Harness(logTimeout: .milliseconds(100))
+        let h = Harness(logTimeout: .milliseconds(30))
         h.client.appLog = log
         log.write("only line")
         h.client.start()
         await h.until { h.sockets.first?.sent.count == 1 }
         let socket = try #require(h.sockets.first)
         try h.answerProbe(socket)
-        try? await Task.sleep(for: .milliseconds(450))
-        // Sent at 0, 100 and 300 ms; a constant 100 ms wait would also have sent at 200 and 400.
+        try? await Task.sleep(for: .milliseconds(135))
+        // Sent at 0, 30 and 90 ms; a constant 30 ms wait would also have sent at 60 and 120.
         #expect((2...3).contains(logFrames(socket).count))
     }
 
