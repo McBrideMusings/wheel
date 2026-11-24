@@ -4499,6 +4499,13 @@ async fn window_commands(run: Run, first_session: Option<String>, id1: String, c
     let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "moved"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space new failed: {err}");
     let moved = out.trim().to_owned();
+    // wheeld forwards the move to this client, which resolves the name against the spaces it holds: wait for the new one's broadcast.
+    for _ in 0..50 {
+        if window.update(cx, |c, _, _| c.space_name(&moved).is_some())? {
+            break;
+        }
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+    }
     let (ok, out, err) = run_pumped(&["space", "move", "moved", "Second"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space move failed: {err} {out}");
     let mut placed = false;
@@ -6819,7 +6826,12 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     let unzoom_button = &zoomed["panes"][grid_a.as_str()]["header_buttons"]["zoom"];
     ensure!(unzoom_button["on"] == true && unzoom_button["label"] == "Unzoom Pane (⇧⌘↩)", "the zoomed pane's button reads {unzoom_button}");
     draw(window, Some(output.join("client-grid-zoomed.png")), cx)?;
-    let title_at = [zoom_area[0] + 40., zoom_area[1] + 11.];
+    // The header beside the title zooms; the title's text renames (wheel-9v76).
+    let beside_title = |cx: &mut AsyncApp| -> Result<[f64; 2]> {
+        let b = window.update(cx, |c, _, _| c.control_bounds(&grid_a, "pane-title"))?.ok_or_else(|| anyhow::anyhow!("{grid_a}'s title was not drawn"))?;
+        Ok([f64::from(b.0 + b.2) + 20., f64::from(b.1 + b.3 / 2.)])
+    };
+    let title_at = beside_title(cx)?;
     for clicks in [1, 2] {
         native.call(json!({"op":"post_mouse","kind":"down","point":title_at,"clicks":clicks}));
         native.call(json!({"op":"post_mouse","kind":"up","point":title_at,"clicks":clicks}));
@@ -6828,7 +6840,18 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     ensure!(unzoomed["sidebar"]["pane_drag"].is_null() && unzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == false, "after the unzoom the drag reads {} and the third view {}", unzoomed["sidebar"]["pane_drag"], unzoomed["panes"][grid_c.as_str()]["bridge"]);
     unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
     // A double-click zooms too, at normal speed; ⇧⌘↩ puts the grid back and zooms again.
-    let header_at = [a_from[0] + 40., a_from[1] + 11.];
+    // A double-click on the title's text names the pane instead, and leaves the grid alone.
+    let text_at = window.update(cx, |c, _, _| c.control_bounds(&grid_a, "pane-title"))?.map(|b| [f64::from(b.0) + 4., f64::from(b.1 + b.3 / 2.)]).ok_or_else(|| anyhow::anyhow!("{grid_a}'s title was not drawn"))?;
+    for clicks in [1, 2] {
+        native.call(json!({"op":"post_mouse","kind":"down","point":text_at,"clicks":clicks}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":text_at,"clicks":clicks}));
+    }
+    let renaming = until!("a double-click on the title's text began a rename", |s: &Value| s["grid_motion"]["zoomed"].is_null() && s["grid_motion"]["moving"] != true);
+    ensure!(window.update(cx, |c, _, _| c.rename.as_ref().and_then(|r| r.pane.clone()))?.as_deref() == Some(grid_a.as_str()), "a double-click on {grid_a}'s title text began no rename: zoomed {}", renaming["grid_motion"]["zoomed"]);
+    window.update(cx, |c, _, _| c.cancel_rename())?;
+    // Measure the title as drawn after the rename: the field it replaced has the draft's width.
+    draw(window, None, cx)?;
+    let header_at = beside_title(cx)?;
     for clicks in [1, 2] {
         native.call(json!({"op":"post_mouse","kind":"down","point":header_at,"clicks":clicks}));
         native.call(json!({"op":"post_mouse","kind":"up","point":header_at,"clicks":clicks}));

@@ -2382,7 +2382,8 @@ impl Client {
                     // With an error beside it the title keeps its own width and the error gives way first.
                     let failed = p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some());
                     let title = div().relative().min_w(px(0.)).overflow_hidden().whitespace_nowrap();
-                    let title = if failed { title.flex_none().max_w(px(r.w * 0.6)) } else { title.flex_1() };
+                    // The title hugs its text, so a double-click on the header beside it zooms and one on the text renames.
+                    let title = if failed { title.flex_none().max_w(px(r.w * 0.6)) } else { title.flex_initial() };
                     let named = p.leaf.name.as_ref().or(p.leaf.title.as_ref());
                     if let Some(rn) = self.rename.as_ref().filter(|rn| rn.pane.as_deref() == Some(p.leaf.id.as_str())) {
                         let field = div().h(px(TITLE - 6.)).px(px(4.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(sidebar::ACCENT)).overflow_hidden().whitespace_nowrap().flex().items_center()
@@ -2409,6 +2410,7 @@ impl Client {
                     }).child(recorded(&p.leaf.id, "pane-title", &self.controls)).into_any_element()
                     }
                 })
+                .when(!(p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some())), |d| d.child(div().flex_1()))
                 .children(p.leaf.mirror.as_ref().map(|m| {
                     // A mirror's header shows its source in one click.
                     let (pane, source) = (p.leaf.id.clone(), m.source.clone());
