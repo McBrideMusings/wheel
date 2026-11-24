@@ -60,7 +60,7 @@ impl Bridge {
     }
 }
 
-#[cfg(test)]
+// Not `cfg(test)`: the app crate's tests call it, and a gate does not cross crates.
 impl Bridge {
     /// A bridge that answers every command with `{}`, for a test that draws a client with no Swift side.
     pub fn stub() -> Rc<Self> {

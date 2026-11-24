@@ -8281,6 +8281,7 @@ dependencies = [
  "tungstenite",
  "uuid",
  "wheel-diagrams",
+ "wheel-gpui-core",
  "wheel-proto",
 ]
 
@@ -8296,6 +8297,26 @@ dependencies = [
  "serde_json",
  "tungstenite",
  "wheel-gpui",
+ "wheel-proto",
+]
+
+[[package]]
+name = "wheel-gpui-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "image",
+ "json-patch",
+ "libc",
+ "libloading",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tungstenite",
+ "uuid",
  "wheel-proto",
 ]
 

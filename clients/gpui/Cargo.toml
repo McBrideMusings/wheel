@@ -1,7 +1,7 @@
 # A Rust and GPUI client for wheeld. Its own workspace, so the daemon's workspace
 # and Cargo.lock never pull in GPUI (ADR-0020: the server depends on no client).
 [workspace]
-members = [".", "check"]
+members = [".", "check", "core"]
 default-members = ["."]
 
 [package]
@@ -30,6 +30,7 @@ raw-window-handle = "0.6"
 libloading = "0.8"
 tungstenite = "0.30"
 wheel-proto = { path = "../../proto" }
+wheel-gpui-core = { path = "core" }
 regex = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 wheel-diagrams = { path = "../../diagrams" }
