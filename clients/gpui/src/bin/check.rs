@@ -4499,13 +4499,17 @@ async fn window_commands(run: Run, first_session: Option<String>, id1: String, c
     let (ok, out, err) = run_pumped(&["space", "new", &dir.to_string_lossy(), "--name", "moved"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space new failed: {err}");
     let moved = out.trim().to_owned();
-    // wheeld forwards the move to this client, which resolves the name against the spaces it holds: wait for the new one's broadcast.
-    for _ in 0..50 {
-        if window.update(cx, |c, _, _| c.space_name(&moved).is_some())? {
+    // wheeld forwards the move to one of the windows, which resolves the name against the spaces it holds: wait until each has the new one's broadcast.
+    let mut known = false;
+    for _ in 0..300 {
+        if window.update(cx, |c, _, _| c.space_name(&moved).is_some())? && made.update(cx, |c, _, _| c.space_name(&moved).is_some())? {
+            known = true;
             break;
         }
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
     }
+    let lists = |w: ClientWindow, cx: &mut AsyncApp| w.update(cx, |c, _, _| c.session_spaces().iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+    ensure!(known, "the new space {moved} never reached both windows' lists: the first window's session shows {:?}, the new window's {:?}", lists(window, cx)?, lists(made, cx)?);
     let (ok, out, err) = run_pumped(&["space", "move", "moved", "Second"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel space move failed: {err} {out}");
     let mut placed = false;
@@ -8297,7 +8301,11 @@ fn main() -> Result<()> {
                     *done.lock().unwrap() = true;
                     println!("client checks passed");
                 }
-                Err(error) => eprintln!("client check failed: {error:#}"),
+                Err(error) => {
+                    eprintln!("client check failed: {error:#}");
+                    // Quitting ends the process with status 0, so a failure leaves with its own.
+                    std::process::exit(1);
+                }
             }
             cx.update(|cx| cx.quit());
         })
