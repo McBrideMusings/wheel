@@ -1,6 +1,6 @@
 # Voice mode
 
-Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Of it, only composer dictation is built (below); voice mode itself is not.
+Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Built so far: composer dictation (§5.8) and voice mode on the Mac (§5.9); the iPhone has dictation but not voice mode.
 
 ## 1. What it is
 
@@ -77,7 +77,7 @@ A Spaces agent pane (W11482 in llama-broker) in voice mode. The layout is the sa
 
 ## 5.8 Composer dictation (built)
 
-The microphone in an agent's composer, on the Mac (GPUI, before the stop button) and the iPhone (left of send). Press it, speak, press again: the recording becomes text added to the draft, and the person sends it as typed text with `agent_send`. Parakeet TDT 0.6b v3 runs through FluidAudio on the device (`docs/voice-mode/stt-engines.md`); the code is WheelUI's `Dictation`, which the iPhone's composer and the Mac's bridge (`dictation` op and event) share. The first press with no model on the device shows what the download fetches (469 MB from `huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml`, into FluidAudio's cache) with Download and Cancel. Nothing in it talks to wheeld, so it works with wheeld out of reach until the send.
+The microphone in an agent's composer, on the Mac (GPUI, in the row under the draft, left of the round button) and the iPhone (left of send). Press it, speak, press again: the recording becomes text added to the draft, and the person sends it as typed text with `agent_send`. Parakeet TDT 0.6b v3 runs through FluidAudio on the device (`docs/voice-mode/stt-engines.md`); the code is WheelUI's `Dictation`, which the iPhone's composer and the Mac's bridge (`dictation` op and event) share. The first press with no model on the device shows what the download fetches (469 MB from `huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml`, into FluidAudio's cache) with Download and Cancel. Nothing in it talks to wheeld, so it works with wheeld out of reach until the send.
 
 ## 6. Where things run
 
@@ -95,6 +95,17 @@ The microphone in an agent's composer, on the Mac (GPUI, before the stop button)
 These sit under Settings in the orchestrator doc:
 - **Voice:** the transcription model (download size, keep on device), the system voice and speed, hold-to-talk vs automatic turn-taking, and whether to speak replies.
 - **Approvals by voice:** off / reversible only / all with a spoken yes for irreversible.
+
+## 5.9 Voice mode on the Mac (built)
+
+The round button at the right end of the composer's lower row is voice mode while the draft is empty and the agent idle, Send while there is a draft or a file, and Stop while the agent works; with a wheeld that lacks `lease_claim` or `agent_voice` the empty state is a dimmed Send. Voice mode covers the agent pane whose button opened it; the rest of the grid stays as it was.
+
+- **Audio:** WheelUI's `Voice` (shared with a later iPhone build) through the bridge's `voice` op and event. One `AVAudioEngine` with voice processing on holds the microphone and plays the spoken reply, so its echo cancellation hears what it plays. Silero VAD v6 (1.1 MB from `huggingface.co/FluidInference/silero-vad-coreml`) decides when a turn ends; Parakeet transcribes it; the text goes with `agent_send`. When the agent's turn ends, its reply is spoken with the system voice, and the caption shows it. Speaking over the reply, or pressing the orb, stops the speech; the chat keeps the whole reply.
+- **wheeld:** opening claims the `voice` lease, then names the agent with `agent_voice`; X or Esc clears both. Another client taking the lease closes voice mode here, and the composer says "Voice mode moved to another device."
+- **Layer:** the pane's label and "space · harness" at the top with the panes button on the right (no badge: the Mac grid shows its panes); the orb and its state word in the middle; at the bottom +, "Type instead…", mute and X. The first start with a model missing names both downloads with a Download button.
+- **Pill:** the panes button, "Type instead…" and a card's chip shrink the layer to a pill over the transcript's foot (orb, state, caption, mute, X), and pressing its orb brings the layer back. A card the agent shows during voice is a chip above the orb, which shrinks; pressing it shows the card in the transcript under the pill.
+- **Ends with its pane:** closing the window, closing the pane, or showing another space in that window ends voice mode, since nothing on screen would say the microphone is open. A reply that arrives while the person is still speaking waits until their turn is sent.
+- **Not yet:** hold-to-talk, the Voice settings of §7, approvals by voice (§4), and the iPhone's voice mode.
 
 ## 8. Open items
 

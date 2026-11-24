@@ -1645,6 +1645,20 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             default: break
             }
             return dictationFrame()
+        case "voice":
+            // Voice mode's audio (WheelUI's `Voice`): the layer the GPUI view draws over an agent pane.
+            watchVoice()
+            switch value["action"] as? String {
+            case "start": Voice.shared.start(for: value["owner"] as? String ?? "")
+            case "stop": Voice.shared.stop(for: value["owner"] as? String ?? "")
+            case "download": Voice.shared.download()
+            case "mute": Voice.shared.setMuted(value["on"] as? Bool ?? false)
+            case "interrupt": Voice.shared.interrupt()
+            case "sent": Voice.shared.sent()
+            case "speak": Voice.shared.speak(value["text"] as? String ?? "")
+            default: break
+            }
+            return voiceFrame()
         case "terminal_look": restyle(value)
         case "term_drop":
             // What a drop of these files does, for the check: the drag itself needs a real pointer.
@@ -2319,6 +2333,34 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             "problem": d.problem as Any? ?? NSNull(), "problem_owner": d.problemOwner as Any? ?? NSNull(), "heard": heard,
             "model": ["name": Dictation.modelName, "size": Dictation.modelSize, "source": Dictation.modelSource,
                       "folder": Dictation.modelFolder.path, "on_disk": d.modelOnDisk]]
+}
+@MainActor private var watchingVoice = false
+/// Tell every window what voice mode is doing whenever that changes: its phase, the levels that
+/// move the orb, the caption and each turn the person spoke.
+@MainActor func watchVoice() {
+    guard !watchingVoice else { return }
+    watchingVoice = true
+    observeVoice()
+}
+@MainActor private func observeVoice() {
+    withObservationTracking {
+        let v = Voice.shared
+        _ = (v.phase, v.owner, v.muted, v.level, v.said, v.caption, v.problem)
+    } onChange: {
+        Task { @MainActor in
+            let frame = voiceFrame()
+            for native in natives.values { native.emit(frame) }
+            observeVoice()
+        }
+    }
+}
+/// The `voice` event.
+@MainActor func voiceFrame() -> [String: Any] {
+    let v = Voice.shared
+    let said: Any = v.said.map { ["owner": $0.owner, "text": $0.text, "id": $0.id] as [String: Any] } ?? NSNull()
+    return ["event": "voice", "phase": v.phase.rawValue, "owner": v.owner as Any? ?? NSNull(), "muted": v.muted, "level": Double(v.level),
+            "said": said, "caption": v.caption as Any? ?? NSNull(), "problem": v.problem as Any? ?? NSNull(),
+            "models": "\(Dictation.modelName) (\(Dictation.modelSize), \(Dictation.modelSource)) and \(Voice.vadName) (\(Voice.vadSize), \(Voice.vadSource)), into \(Voice.vadFolder.deletingLastPathComponent().path)"]
 }
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor

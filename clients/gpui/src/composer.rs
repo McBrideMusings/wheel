@@ -185,6 +185,28 @@ pub fn dictation_note(d: &crate::native::Dictation, agent: &str) -> Option<Strin
 /// The message a draft and its attachments' paths make (`composerMessage`): the text, then each
 /// path in backticks on its own line, since a path may hold a space and the backticks keep it one
 /// path. Empty when both are.
+/// What the round button at the right of the composer's lower row does (wheel-eg4e.19.31).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RightButton {
+    /// The agent works: stop its turn, as Esc does.
+    Stop,
+    /// Something to send: the draft or attached files.
+    Send,
+    /// Nothing typed and the agent idle: open voice mode.
+    Voice,
+    /// Nothing typed, the agent idle and wheeld without voice mode's ops: a Send that does nothing.
+    Idle,
+}
+
+pub fn right_button(busy: bool, has_message: bool, voice_offered: bool) -> RightButton {
+    match (busy, has_message, voice_offered) {
+        (true, _, _) => RightButton::Stop,
+        (false, true, _) => RightButton::Send,
+        (false, false, true) => RightButton::Voice,
+        (false, false, false) => RightButton::Idle,
+    }
+}
+
 pub fn message(typed: &str, paths: &[String]) -> String {
     let listed = paths.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join("\n");
     [typed.trim(), listed.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n")
@@ -374,6 +396,16 @@ pub fn stamp_now() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_right_button_stops_a_turn_sends_a_draft_and_otherwise_opens_voice() {
+        use super::{right_button, RightButton::*};
+        assert_eq!(right_button(true, true, true), Stop);
+        assert_eq!(right_button(true, false, false), Stop);
+        assert_eq!(right_button(false, true, true), Send);
+        assert_eq!(right_button(false, false, true), Voice);
+        assert_eq!(right_button(false, false, false), Idle);
+    }
+
     use super::*;
 
     #[test]

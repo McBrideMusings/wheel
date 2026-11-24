@@ -129,6 +129,18 @@ public final class Dictation {
         }
     }
 
+    /// The loaded model, for voice mode, which transcribes each turn with the same one.
+    func loadedModel() async throws -> AsrManager {
+        prepare()
+        guard let loading else { throw DictationError("\(Self.modelName) is not on this device.") }
+        do {
+            return try await loading.value
+        } catch {
+            self.loading = nil
+            throw error
+        }
+    }
+
     private func start(for owner: String) {
         // A recording on disk standing in for the microphone, for a check that has no one to speak.
         let file = ProcessInfo.processInfo.environment["WHEEL_DICTATION_FILE"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
@@ -200,7 +212,7 @@ public final class Dictation {
     }
 }
 
-private struct DictationError: LocalizedError {
+struct DictationError: LocalizedError {
     let errorDescription: String?
     init(_ text: String) { errorDescription = text }
 }

@@ -34,6 +34,7 @@ mod perms;
 mod procs;
 mod queue;
 mod topic;
+mod voice;
 mod running;
 mod settings;
 pub mod server;
@@ -416,6 +417,10 @@ pub struct Client {
     /// pressed the microphone for: only that window puts the text it heard in a draft.
     dictation: crate::native::Dictation,
     dictation_here: Option<String>,
+    /// Voice mode, open over one agent pane of this window (`view/voice.rs`), and what the app's
+    /// voice audio last said it was doing (`voice` events).
+    voice: Option<crate::voice::Session>,
+    voice_audio: crate::native::Voice,
     /// A space or pane to show once this window's layout lists it (a focus request that came
     /// before the layout, a split's new pane): (space, pane, since when in unix ms).
     pending_focus: Option<(Option<String>, Option<String>, u64)>,
@@ -546,7 +551,7 @@ impl Client {
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(), earlier: HashMap::new(), history_reqs: HashMap::new(),
             server_offer: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), dictation: Default::default(), dictation_here: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), dictation: Default::default(), dictation_here: None, voice: None, voice_audio: Default::default(), conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
         }
     }
@@ -622,6 +627,7 @@ impl Client {
                             return false;
                         }
                         ServerMsg::Error { req: Some(req), message, .. } => {
+                            self.on_lease_refused(*req, message);
                             self.on_agent_answer(*req, Some(message));
                             self.running_refused(*req, message);
                             // A failed `plugin_ls` leaves the space unasked, so the next layout change asks again.
@@ -718,6 +724,10 @@ impl Client {
                         }
                         ServerMsg::AgentQueued { req, agent, turn } => self.on_queued(*req, agent, *turn),
                         ServerMsg::Ok { req } => self.on_agent_answer(*req, None),
+                        ServerMsg::LeaseClaimed { req, owner, .. } => {
+                            self.on_lease_claimed(*req, owner);
+                        }
+                        ServerMsg::Lease { key, owner } => self.on_lease(key, owner.as_deref()),
                         ServerMsg::Started { req, pane, agent: Some(forked), .. } if self.agent_reqs.contains_key(req) => {
                             self.log(format!("forked into {forked} in pane {pane}"));
                             self.on_agent_answer(*req, None);
@@ -741,7 +751,7 @@ impl Client {
                         t.on_message(&message, agent);
                     }
                     if let ServerMsg::Agent { agent, event } = &*message {
-                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") && self.reads_aloud.contains(agent) {
+                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") && !self.voice_turn_ended(agent) && self.reads_aloud.contains(agent) {
                             self.speak_last_reply(agent);
                         }
                     }
@@ -1032,6 +1042,8 @@ impl Client {
     /// The window is closing: drop its native views. Its connection ends with it, and wheeld
     /// drops the window's reported view with the connection.
     pub fn shutdown(&mut self) {
+        // The microphone closes with the window that shows its layer.
+        self.close_voice();
         // A space or pane drag this window held ends with it, so no other window keeps drawing it.
         self.cancel_space_drag(false);
         self.cancel_pane_drag();
@@ -1456,6 +1468,7 @@ impl Client {
             Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
             Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
             Frame::Event(BrowserEvent::Dictation(d)) => self.on_dictation(d),
+            Frame::Event(BrowserEvent::Voice(v)) => self.on_voice(v),
             Frame::Event(BrowserEvent::ReduceMotion { on }) => {
                 if self.reduce_motion != on {
                     self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
@@ -1889,6 +1902,11 @@ impl Client {
         if self.perm_key(e) {
             return true;
         }
+        // Esc on the voice layer closes it, as X does; on the pill it is the composer's.
+        if e.keystroke.key == "escape" && self.voice.as_ref().is_some_and(|s| !s.pill) {
+            self.close_voice();
+            return true;
+        }
         if self.queue_key(e) {
             return true;
         }
@@ -2299,7 +2317,12 @@ impl Client {
                     composer::plus_button(a, menu.as_deref() == Some(composer::PLUS_MENU), self.menu_at, &items, self.reads_aloud.contains(a), title::symbol(&self.native, &self.symbols, "plus", 13., 0x8fa89b), &self.controls, cx)
                 });
                 let busy = t.is_some_and(Transcript::busy);
-                let stop = agent.map(|a| composer::stop_button(a, busy, title::symbol(&self.native, &self.symbols, "stop.fill", 10., 0xd9e8e1), &self.controls, cx));
+                let stop = agent.map(|a| {
+                    let has_message = self.drafts.get(a).is_some_and(|d| !d.trim().is_empty()) || self.holds_attachments(a);
+                    let state = crate::composer::right_button(busy, has_message, self.voice_offered());
+                    let (symbol, color) = composer::right_symbol(state);
+                    composer::right_button(a, &p.leaf.id, state, title::symbol(&self.native, &self.symbols, symbol, 10., color), &self.controls, cx)
+                });
                 let mic = agent.map(|a| {
                     let (symbol, color) = composer::mic_symbol(&self.dictation, a);
                     composer::mic_button(a, &self.dictation, title::symbol(&self.native, &self.symbols, symbol, 13., color), &self.controls, cx)
@@ -2307,8 +2330,9 @@ impl Client {
                 // As tall as the row's buttons.
                 let config = agent.filter(|_| extras.config).map(|a| row_config(t).into_iter().map(|o| config_control(&p.leaf.id, a, o, menu.as_deref(), self.menu_at, &self.controls, cx).h(px(composer::ROW_BUTTON))).collect()).unwrap_or_default();
                 let ring = agent.map(|a| context_ring(&p.leaf.id, a, t, raw, extras.figure, harness, &self.controls, cx));
+                let voice = agent.and_then(|a| self.voice_layer(a, &p.leaf.label, harness, fit.height, cx));
                 let over = cx.has_active_drag() && agent.is_some_and(|a| self.file_drag.as_ref().is_some_and(|(held, _)| held == a));
-                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, plus, over }, Composer { fit, input, error, muted, config, ring, mic, stop }, footer, &self.controls, cx)
+                agent_pane(&p.leaf.label, &p.leaf.id, agent, t, focused, column, empty, body, card, card_h + list_h + chips_h + tasks.height, list, tasks, Attach { chips, plus, over }, Composer { fit, input, error, muted, config, ring, mic, stop, voice }, footer, &self.controls, cx)
             }
             "empty" => {
                 let button = |label: &'static str, kind: NewPaneKind, cx: &mut Context<Self>| {
@@ -2515,6 +2539,13 @@ impl Render for Client {
         // leaves no files held over a composer.
         if !cx.has_active_drag() {
             self.file_drag = None;
+        }
+        // Voice mode ends once its pane is no longer shown here (closed, moved, another space):
+        // nothing on screen would say the microphone is open or offer its X.
+        if let Some(pane) = self.voice.as_ref().map(|s| s.pane.clone())
+            && !self.scene().0.iter().any(|p| p.leaf.id == pane)
+        {
+            self.close_voice();
         }
         let layers = self.layers();
         if std::mem::take(&mut self.close_window_requested) {
@@ -2909,8 +2940,10 @@ struct Composer<'a> {
     muted: bool,
     /// The microphone before the stop button (`composer::mic_button`).
     mic: Option<gpui::Stateful<gpui::Div>>,
-    /// The stop button at the row's end (`composer::stop_button`).
+    /// The round button at the row's end: Stop, Send or voice mode (`composer::right_button`).
     stop: Option<gpui::Stateful<gpui::Div>>,
+    /// Voice mode's layer over the pane, or its pill over the transcript (`view/voice.rs`).
+    voice: Option<gpui::AnyElement>,
 }
 
 /// An agent pane's body: its label and state, the transcript column (`column`, the list of its
@@ -2929,7 +2962,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
     // Only the transcript gives up room; the label, a request card, the composer and the footer
     // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
     // Swift's AgentBody stack is.
-    div().flex().flex_col().h(px(height.max(1.))).overflow_hidden()
+    div().relative().flex().flex_col().h(px(height.max(1.))).overflow_hidden()
         .child(div().flex_none().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
         .children(tasks.strip)
@@ -2957,6 +2990,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
                     .children(composer.stop))
                 .children(agent.map(|a| recorded(a, "composer", controls)))), cx))
         .child(footer_row(pane, agent.unwrap_or(""), t, footer, controls))
+        .children(composer.voice)
 }
 
 impl Client {

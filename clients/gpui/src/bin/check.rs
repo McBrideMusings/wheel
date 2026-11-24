@@ -318,6 +318,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, attachments_report) = attachments(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, dictation_report) = dictation(run, agent_name.clone(), cx).await?;
+    let (run, voice_report) = voice_mode(run, agent_name.clone(), cx).await?;
     let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams, earlier_report) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, fork_row, fork_text, fork_rows, reply_buttons, fork_report) = fork_and_reply_buttons(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
@@ -429,6 +430,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
     report["composer"]["attachments"] = attachments_report;
     report["composer"]["dictation"] = dictation_report;
+    report["composer"]["voice"] = voice_report;
     report["conversations"] = conversations_report;
     report["conversations"]["fork_rows"] = json!(fork_rows);
     report["conversations"]["fork"] = fork_report;
@@ -2474,6 +2476,112 @@ async fn dictation(run: Run, agent_name: String, cx: &mut AsyncApp) -> Result<(R
     draw(window, Some(output.join("dictation-done.png")), cx)?;
     window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
     let report = json!({"asked": asked["phase"], "prompt": prompt, "listening_note": listening, "draft": draft, "transcribed_ms": started.elapsed().as_millis() as u64});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
+}
+
+/// The round button at the composer's end (wheel-eg4e.19.31) and voice mode behind it
+/// (wheel-e1xk.11): voice with nothing typed, Send with a draft; voice opens a layer over the pane,
+/// hears a spoken turn (a `say` clip standing in for the microphone), sends it, speaks the reply
+/// (silently), shrinks to the pill and back, and X closes it and gives the lease back.
+async fn voice_mode(run: Run, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let state = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["voice"].clone())?) };
+    let drawn = |name: &str, cx: &mut AsyncApp| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, name))?.is_some()) };
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-voice-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+            // SAFETY: only the bridge reads these, on this thread, when a press asks it to.
+            unsafe {
+                std::env::remove_var("WHEEL_VOICE_FILE");
+                std::env::remove_var("WHEEL_VOICE_SILENT");
+            }
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+
+    // Empty and idle: the round button is voice mode; with a draft it is Send.
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice", cx)? && !drawn("send", cx)? && !drawn("stop", cx)? && drawn("dictate", cx)?, "an empty composer drew no voice button beside the microphone");
+    draw(window, Some(output.join("composer-empty.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, "hello there".into()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("send", cx)? && !drawn("voice", cx)?, "a draft drew no Send");
+    draw(window, Some(output.join("composer-text.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+
+    let clip = dir.join("turn.wav");
+    let said = std::process::Command::new("/usr/bin/say").arg("-o").arg(&clip).args(["--data-format=LEI16@16000", "What is two plus two?"]).status()?;
+    ensure!(said.success() && clip.exists(), "say wrote no clip");
+    // SAFETY: as above.
+    unsafe {
+        std::env::set_var("WHEEL_VOICE_FILE", &clip);
+        std::env::set_var("WHEEL_VOICE_SILENT", "1");
+    }
+    press_named(&native, window, &agent_name, "voice", cx).await?;
+    let started = std::time::Instant::now();
+    let mut seen = vec![];
+    let mut v = Value::Null;
+    // The first start may download the VAD model and compile both models: give it minutes.
+    while started.elapsed() < Duration::from_secs(300) {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        v = state(cx)?;
+        let phase = v["phase"].as_str().unwrap_or("").to_owned();
+        if phase == "asking" && drawn("voice-download", cx)? {
+            draw(window, Some(output.join("voice-asking.png")), cx)?;
+            press_named(&native, window, &agent_name, "voice-download", cx).await?;
+        }
+        if seen.last() != Some(&phase) {
+            if phase == "listening" && !seen.contains(&phase) {
+                draw(window, None, cx)?;
+                draw(window, Some(output.join("voice-listening.png")), cx)?;
+            }
+            if phase == "speaking" {
+                draw(window, None, cx)?;
+                draw(window, Some(output.join("voice-speaking.png")), cx)?;
+            }
+            seen.push(phase.clone());
+        }
+        if seen.iter().any(|p| p == "speaking") && phase == "listening" {
+            break;
+        }
+    }
+    ensure!(v["session"]["holder"].is_string(), "voice mode holds no lease: {v}");
+    let spoken = v["last_user"].as_str().unwrap_or("").to_lowercase();
+    ensure!(spoken.contains("two plus two"), "voice sent {spoken:?}, not the clip's words; phases {seen:?}; {v}");
+    ensure!(seen.iter().any(|p| p == "speaking") && v["caption"].as_str().is_some_and(|c| c.contains("echo")), "the reply was not spoken: phases {seen:?}; {v}");
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-layer", cx)? && drawn("voice-mute", cx)? && drawn("voice-end", cx)? && drawn("voice-type", cx)?, "the layer lacks its controls");
+
+    press_named(&native, window, &agent_name, "voice-mute", cx).await?;
+    tick(cx, 200).await;
+    draw(window, None, cx)?;
+    ensure!(state(cx)?["muted"] == true, "mute did not mute: {}", state(cx)?);
+    draw(window, Some(output.join("voice-muted.png")), cx)?;
+    press_named(&native, window, &agent_name, "voice-mute", cx).await?;
+    press_named(&native, window, &agent_name, "voice-panes", cx).await?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-pill", cx)? && !drawn("voice-layer", cx)?, "the panes button left no pill");
+    draw(window, Some(output.join("voice-pill.png")), cx)?;
+    press_named(&native, window, &agent_name, "voice-orb", cx).await?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-layer", cx)?, "the pill's orb did not bring the layer back");
+    press_named(&native, window, &agent_name, "voice-end", cx).await?;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if state(cx)?["phase"] == "off" {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    let closed = state(cx)?;
+    ensure!(closed["phase"] == "off" && closed["session"].is_null() && !drawn("voice-layer", cx)? && drawn("voice", cx)?, "X left voice mode open: {closed}");
+    let report = json!({"phases": seen, "sent": spoken, "caption": v["caption"], "lease_holder": v["session"]["holder"], "seconds": started.elapsed().as_secs_f32()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 

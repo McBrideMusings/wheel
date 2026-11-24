@@ -263,6 +263,8 @@ pub enum BrowserEvent {
     ReadAloud { playing: Option<String> },
     /// What the composer's dictation is doing (`dictation`), sent to every window on every change.
     Dictation(Dictation),
+    /// What voice mode's audio is doing (`voice`), sent to every window on every change.
+    Voice(Voice),
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
@@ -289,6 +291,24 @@ pub struct Heard {
     pub owner: String,
     pub text: String,
     pub id: u64,
+}
+/// Voice mode's audio (WheelUI's `Voice`): its phase (`off`, `asking`, `downloading`, `starting`,
+/// `listening`, `hearing`, `transcribing`, `thinking`, `speaking`), the conversation it talks to,
+/// the level moving the orb, the last turn spoken, the caption being said and what the models'
+/// download fetches.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Voice {
+    pub phase: String,
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub level: f32,
+    pub said: Option<Heard>,
+    pub caption: Option<String>,
+    pub problem: Option<String>,
+    #[serde(default)]
+    pub models: String,
 }
 /// What the model download fetches, named before it starts (ADR-0013).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -331,6 +351,8 @@ mod tests {
         assert!(matches!(reduced, Frame::Event(BrowserEvent::ReduceMotion { on: true })));
         let stopped: Frame = serde_json::from_str(r#"{"event":"read_aloud","playing":null}"#).unwrap();
         assert!(matches!(stopped, Frame::Event(BrowserEvent::ReadAloud { playing: None })));
+        let voice: Frame = serde_json::from_str(r#"{"event":"voice","phase":"thinking","owner":"w3","muted":false,"level":0.25,"said":{"owner":"w3","text":"what changed","id":1},"caption":null,"problem":null,"models":"m"}"#).unwrap();
+        assert!(matches!(voice, Frame::Event(BrowserEvent::Voice(Voice { ref phase, said: Some(Heard { id: 1, .. }), .. })) if phase == "thinking"));
         let heard: Frame = serde_json::from_str(r#"{"event":"dictation","phase":"idle","progress":0,"owner":null,"problem":null,"problem_owner":null,"heard":{"owner":"w3","text":"run cargo test","id":2},"model":{"name":"Parakeet TDT 0.6b v3","size":"469 MB","source":"huggingface.co/x","folder":"/m","on_disk":true}}"#).unwrap();
         assert!(matches!(heard, Frame::Event(BrowserEvent::Dictation(Dictation { heard: Some(Heard { ref text, id: 2, .. }), .. })) if text == "run cargo test"));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();

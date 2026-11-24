@@ -5,6 +5,7 @@ pub mod cards;
 pub mod chat_links;
 pub mod command_palette;
 pub mod composer;
+pub mod voice;
 pub mod conversations;
 pub mod crash_guard;
 pub mod daemon;

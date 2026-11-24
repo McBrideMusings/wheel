@@ -770,6 +770,13 @@ impl Client {
         out["read_aloud"] = json!(self.read_aloud);
         out["reads_aloud"] = json!(self.reads_aloud.iter().collect::<std::collections::BTreeSet<_>>());
         let d = &self.dictation;
+        let v = &self.voice_audio;
+        let last_user = self.voice.as_ref().and_then(|s| self.transcripts.get(&s.agent)).and_then(|t| t.rows.iter().rev().find_map(|r| match &r.kind {
+            crate::transcript::Kind::User { text, .. } => Some(text.clone()),
+            _ => None,
+        }));
+        out["voice"] = json!({"phase": v.phase, "owner": v.owner, "muted": v.muted, "level": v.level, "said": v.said.as_ref().map(|h| json!({"owner": h.owner, "text": h.text, "id": h.id})), "caption": v.caption, "problem": v.problem,
+            "session": self.voice.as_ref().map(|s| json!({"agent": s.agent, "pane": s.pane, "pill": s.pill, "holder": s.holder, "sent": s.sent})), "last_user": last_user});
         out["dictation"] = json!({"phase": d.phase, "owner": d.owner, "problem": d.problem, "heard": d.heard.as_ref().map(|h| json!({"owner": h.owner, "text": h.text, "id": h.id})), "model_on_disk": d.model.on_disk, "here": self.dictation_here});
         out
     }

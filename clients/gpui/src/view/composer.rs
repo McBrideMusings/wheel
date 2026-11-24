@@ -546,7 +546,7 @@ impl Client {
 
     /// The + menu's Add files…: the Mac's file picker, directories and several files allowed;
     /// what it returns attaches to `agent`'s next message.
-    fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
+    pub(super) fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
         self.press(format!("attach {agent}"));
         let chosen = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: true, multiple: true, prompt: None });
         let agent = agent.to_owned();
@@ -732,24 +732,43 @@ pub(super) fn dictation_prompt(agent: &str, d: &crate::native::Dictation, contro
         .child(div().flex_none().flex().flex_col().gap_1().child(button("Download", "download", Client::download_dictation_model, cx)).child(button("Cancel", "cancel", Client::cancel_dictation, cx)))
 }
 
-/// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
-/// until it has). It stops the running turn, as Esc and Control-C do. Its slot is there while no
-/// turn runs too, empty, so the text never rewraps when a turn starts or ends.
-pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
-    let slot = div().id(gpui::ElementId::Name(format!("stop-{agent}").into())).relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON));
-    if !busy {
-        return slot;
-    }
-    let a = agent.to_owned();
-    slot.tooltip(crate::tooltip::tip("Stop (Esc or ⌃C)")).flex().items_center().justify_center().rounded_sm().cursor_pointer()
-        .bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
-        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.stop_turn(&a);
+/// The round button at the end of the composer row (wheel-eg4e.19.31): Stop while the agent
+/// works (as Esc and Control-C do), Send with a draft or files, voice mode with nothing typed.
+/// `icon` is the SF Symbol the bridge drew for that state. Recorded as `stop`, `send` or `voice`.
+pub(super) fn right_button(agent: &str, pane: &str, state: crate::composer::RightButton, icon: Option<gpui::AnyElement>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    use crate::composer::RightButton::*;
+    let (name, tip, fallback, bg) = match state {
+        Stop => ("stop", "Stop (Esc or ⌃C)", "■", 0x31483e),
+        Send => ("send", "Send (Return)", "↑", 0x7fb89a),
+        Voice => ("voice", "Voice mode: talk to the agent and hear it", "◉", 0xd9e8e1),
+        Idle => ("send", "Type a message to send", "↑", 0x31483e),
+    };
+    let (a, p) = (agent.to_owned(), pane.to_owned());
+    div().id(gpui::ElementId::Name(format!("right-{agent}").into())).tooltip(crate::tooltip::tip(tip))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().rounded_full().bg(rgb(bg))
+        .when(state == Idle, |d| d.opacity(0.5))
+        .when(state != Idle, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
+            match state {
+                Stop => this.stop_turn(&a),
+                Send => this.send_draft(&a, false),
+                Voice => this.open_voice(&a, &p, window),
+                Idle => {}
+            }
             cx.notify();
-        }))
-        .child(icon.unwrap_or_else(|| div().text_xs().child("■").into_any_element()))
-        .child(recorded(agent, "stop", controls))
+        })))
+        .child(icon.unwrap_or_else(|| div().text_xs().child(fallback).into_any_element()))
+        .child(recorded(agent, name, controls))
+}
+
+/// The SF Symbol and its colour for the round button in `state`.
+pub(super) fn right_symbol(state: crate::composer::RightButton) -> (&'static str, u32) {
+    use crate::composer::RightButton::*;
+    match state {
+        Stop => ("stop.fill", 0xd9e8e1),
+        Send | Idle => ("arrow.up", 0x0e1311),
+        Voice => ("waveform", 0x0e1311),
+    }
 }
 
 /// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the
