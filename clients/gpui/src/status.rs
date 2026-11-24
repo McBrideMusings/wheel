@@ -1,7 +1,7 @@
 //! A pane's or space's status drawn as a mark: a 9 px dot or, while a turn runs, a 12 px arc
 //! turning once a second. The words, ranks and ordering are `wheel_gpui_core::status`.
-use gpui::{Animation, AnimationExt as _, AnyElement, Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px, rgb};
-use std::{collections::HashSet, f32::consts::PI, time::Duration};
+use gpui::{AnyElement, Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px, rgb};
+use std::{collections::HashSet, f32::consts::PI};
 use wheel_gpui_core::layout::{Space, leaves_of};
 use wheel_proto::PaneStatus;
 pub use wheel_gpui_core::status::*;
@@ -35,8 +35,8 @@ pub fn dot_with(status: &PaneStatus, shown: &HashSet<&'static str>, id: impl Int
     Some(slot.child(mark).into_any_element())
 }
 
-/// The working arc as a view of its own. Each animation frame notifies the view it draws in; drawn
-/// here, that is this view, so a cached pane body beside it replays instead of drawing again.
+/// The working arc as a view of its own: the window's one spin clock (`Client::spinner`) notifies
+/// it, so a cached pane body beside it replays instead of drawing again.
 pub struct Spinner {
     pub id: gpui::ElementId,
 }
@@ -47,12 +47,18 @@ impl gpui::Render for Spinner {
     }
 }
 
-/// The 3/4 arc, 1.8 px wide with round ends, turning clockwise once a second.
-fn arc(id: impl Into<gpui::ElementId>) -> AnyElement {
+/// How often the arc steps: each step redraws the whole window, so it turns in eight steps a
+/// second rather than once per display refresh.
+pub const SPIN_STEP_MS: u64 = 125;
+
+/// The 3/4 arc, 1.8 px wide with round ends, turning clockwise once a second in eight steps. Its
+/// angle comes from the clock, so every arc in the window shows the same step.
+fn arc(_id: impl Into<gpui::ElementId>) -> AnyElement {
+    let steps = 1000 / SPIN_STEP_MS;
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let angle = ((ms / SPIN_STEP_MS) % steps) as f32 / steps as f32 * 2. * PI;
     div().w(px(12.)).h(px(12.))
-        .with_animation(id, Animation::new(Duration::from_secs(1)).repeat(), |slot, delta| {
-            slot.child(canvas(|_, _, _| (), move |bounds: Bounds<Pixels>, _, window, _| paint_arc(bounds, delta * 2. * PI, window)).w(px(12.)).h(px(12.)))
-        })
+        .child(canvas(|_, _, _| (), move |bounds: Bounds<Pixels>, _, window, _| paint_arc(bounds, angle, window)).w(px(12.)).h(px(12.)))
         .into_any_element()
 }
 
