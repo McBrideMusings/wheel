@@ -99,7 +99,7 @@ pub fn button_then(
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
-            Ok(None) if started.elapsed() > std::time::Duration::QUICK => break None,
+            Ok(None) if started.elapsed() > QUICK => break None,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
             Err(_) => break None,
         }
