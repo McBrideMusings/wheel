@@ -12,6 +12,14 @@ private let clip = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().appendingPathComponent("plugins/gallery/demo.h264")
 
 struct VideoStreamTests {
+    @Test func aFittedPictureLetterboxesAndAFillingOneCrops() {
+        let video = CGSize(width: 1920, height: 1080)
+        let wide = CGRect(x: 0, y: 0, width: 400, height: 100)
+        let r = { (rect: CGRect) in [rect.minX, rect.minY, rect.width, rect.height].map { ($0 * 10).rounded() / 10 } }
+        #expect(r(StreamView.videoRect(video, in: wide, fills: false)) == [111.1, 0, 177.8, 100])
+        #expect(r(StreamView.videoRect(video, in: wide, fills: true)) == [0, -62.5, 400, 225])
+    }
+
     @Test func aReaderKeepsACutFrameUntilTheRestArrives() throws {
         let video = StreamFrame.frame(type: 2, payload: Data([0, 0, 0, 0, 0, 0, 0x01, 0x02, 0, 0, 0, 1, 0x65, 0xAA, 0, 0, 1, 0x41, 0xBB]))
         let audio = StreamFrame.frame(type: 3, payload: Data([0, 0, 0xBB, 0x80, 2, 1, 0, 2, 0]))
