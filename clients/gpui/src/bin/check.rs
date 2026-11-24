@@ -1724,6 +1724,9 @@ async fn footer(run: Run, agent_pane: String, agent_name: String, cli_path: Stri
     let menu = window.update(cx, |c, _, _| c.open_menu())?;
     ensure!(menu == Some((agent_name.clone(), "model".into())), "after a click on the model control the open menu is {menu:?} (model at {model:?}, meter at {meter:?}, viewport {:?}, presses {:?})", window.update(cx, |_, w, _| w.viewport_size())?, window.update(cx, |c, _, _| c.presses.clone())?);
     draw(window, Some(output.join("client-config-menu.png")), cx)?;
+    // Its bottom row sits on the chip: the menu opens from the chip, never ~40 pt above it.
+    let rows: Vec<(String, (f32, f32, f32, f32))> = window.update(cx, |c, _, _| c.controls_drawn(&agent_name))?.into_iter().filter(|(id, _)| id.starts_with("model:")).collect();
+    ensure!(rows.last().is_some_and(|(_, b)| b.1 + b.3 <= model.1 + 0.5 && model.1 - (b.1 + b.3) < 12. && (b.0 - model.0).abs() < 12.), "the model menu's last row {:?} is not just above the model chip {model:?}", rows.last());
     let before_set = controls.iter().find(|(id, _)| id == "model").map(|(_, t)| t.clone()).unwrap_or_default();
     let haiku = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "model:haiku"))?.ok_or_else(|| anyhow::anyhow!("the menu drew no haiku item"))?;
     press(&native, haiku);

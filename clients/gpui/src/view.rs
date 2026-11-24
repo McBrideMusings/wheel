@@ -3155,7 +3155,8 @@ fn config_control(pane: &str, agent: &str, option: &wheel_proto::ConfigOption, m
                     cx.notify();
                 })));
         }
-        control = control.child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window().child(list)));
+        // Out of the chip's flex layout, so the menu's bottom-left corner sits at the chip's top-left.
+        control = control.child(div().absolute().top_0().left_0().child(deferred(anchored().anchor(Anchor::BottomLeft).snap_to_window().child(list))));
     }
     control
 }
