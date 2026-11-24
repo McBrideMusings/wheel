@@ -18,6 +18,7 @@ publish = false
 base64 = { version = "0.23" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "help", "std", "suggestions", "usage"] }
+crc32fast = { version = "1" }
 form_urlencoded = { version = "1" }
 futures = { version = "0.3" }
 futures-core = { version = "0.3" }
@@ -38,15 +39,17 @@ rmcp = { version = "3", features = ["client", "reqwest-tls-no-provider", "transp
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value"] }
+simd-adler32 = { version = "0.3" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "rt"] }
 toml_datetime = { version = "1", features = ["serde"] }
 toml_parser = { version = "1" }
 toml_writer = { version = "1" }
 tracing = { version = "0.1", features = ["log"] }
 tracing-core = { version = "0.1" }
+ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
 url = { version = "2", features = ["serde"] }
 winnow = { version = "1" }
 

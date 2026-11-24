@@ -4263,6 +4263,7 @@ dependencies = [
  "bitflags 2.13.2",
  "clap",
  "clap_builder",
+ "crc32fast",
  "form_urlencoded",
  "futures",
  "futures-channel",
@@ -4290,6 +4291,7 @@ dependencies = [
  "serde",
  "serde_core",
  "serde_json",
+ "simd-adler32",
  "slab",
  "smallvec",
  "syn 2.0.119",
@@ -4304,6 +4306,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-core",
+ "ttf-parser",
  "url",
  "winnow",
 ]
