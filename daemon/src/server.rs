@@ -148,6 +148,11 @@ pub struct AppState {
     pub(crate) next_id: AtomicU64,
     /// The login shell's answers for agent home variables, per checkout.
     agent_homes: crate::agent_homes::AgentHomes,
+    /// Each connection watching a space's processes (`procs_watch`), and whether the one sampler
+    /// that serves them all is running.
+    pub(crate) procs_watchers: Mutex<(Vec<(String, mpsc::WeakSender<ServerMsg>)>, bool)>,
+    /// How many times the sampler scanned the process table, for the tests.
+    pub(crate) procs_scans: AtomicU64,
     /// The last status built and when its build began, shared by callers that asked before then.
     status_built: tokio::sync::Mutex<Option<(std::time::Instant, ServerMsg)>>,
     /// How many statuses were built, for the log and the tests.
@@ -390,6 +395,8 @@ impl AppState {
             agent_homes: Default::default(),
             status_built: Default::default(),
             status_builds: AtomicU64::new(0),
+            procs_watchers: Mutex::new((Vec::new(), false)),
+            procs_scans: AtomicU64::new(0),
             terms: Mutex::new(HashMap::new()),
             perms: Arc::new(Perms::new(global.clone())),
             global,
@@ -2261,6 +2268,10 @@ async fn handle(
                 }
             });
             None
+        }
+        ClientMsg::ProcsWatch { req, space } => {
+            state.watch_procs(out, space);
+            req.map(|req| ServerMsg::Ok { req })
         }
         ClientMsg::ProcStop {
             req,

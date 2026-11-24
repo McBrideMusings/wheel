@@ -1193,6 +1193,15 @@ pub enum ClientMsg {
         req: Option<u64>,
         space: String,
     },
+    /// Have `space`'s processes sent as `procs_sample` every couple of seconds from now on, in
+    /// place of any space this connection watched before; no `space` stops them. One sampling serves
+    /// every connection watching, however many there are.
+    ProcsWatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
     /// Ask process `pid` to quit (SIGTERM, or SIGKILL with `force`). Only a pid `space_procs`
     /// lists for `space` is accepted. Replies `ok`.
     ProcStop {
@@ -2851,6 +2860,12 @@ pub enum ServerMsg {
         space: String,
         procs: Vec<ProcInfo>,
     },
+    /// The processes of the space this connection watches (`procs_watch`), sent unasked each time
+    /// the daemon samples them.
+    ProcsSample {
+        space: String,
+        procs: Vec<ProcInfo>,
+    },
     /// What `pane_info` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`
     /// or `empty`) and its fields in the order a client lists them.
     PaneInfo {
@@ -3059,6 +3074,7 @@ impl ServerMsg {
             | ServerMsg::Ok { req } => Some(*req),
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
+            | ServerMsg::ProcsSample { .. }
             | ServerMsg::UsageChanged { .. }
             | ServerMsg::TitleButtonsChanged { .. }
             | ServerMsg::DevicesChanged { .. }

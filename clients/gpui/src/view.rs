@@ -562,12 +562,17 @@ impl Client {
                 Some(layout) => {
                     if let ServerMsg::Status { agents, perms, uptime_secs, .. } = message.as_ref() {
                         let offer = message.offer();
-                        if self.server_offer != offer {
+                        let new_offer = self.server_offer != offer;
+                        if new_offer {
                             if let Some(offer) = &offer {
                                 self.log(format!("server protocol {}, level {}; lacks {:?}", offer.protocol, offer.compat, offer.lacks()));
                             }
                         }
                         self.server_offer = offer;
+                        // A watch lives on one connection, and this is the first status on a new one.
+                        if let Some(space) = self.procs.open.clone().filter(|_| new_offer) {
+                            self.watch_procs(Some(&space));
+                        }
                         self.server_started = Some(settings::now_ms().saturating_sub(uptime_secs * 1000));
                         self.agents = agents.clone();
                         self.perms = perms.clone();
