@@ -2349,6 +2349,27 @@ pub enum ServerMsg {
         agent: String,
         turn: u64,
     },
+    /// The answer to `agent_attach` when the target is a terminal pane with a coding agent's TUI
+    /// in its foreground: the daemon sees no events of it, only which agent it is (`claude`,
+    /// `codex` or `pi`), what its hooks last reported and the context its sampler read.
+    AgentInTerminal {
+        req: u64,
+        pane: String,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<ReportedStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<ContextUse>,
+    },
+    /// The answer to `agent_send` to a terminal pane's agent: the message was pasted into its
+    /// composer and submitted. `queued` is true when the agent's hooks said it was mid-turn, so
+    /// the message waits behind that turn.
+    AgentTyped {
+        req: u64,
+        pane: String,
+        agent: String,
+        queued: bool,
+    },
     /// The answer to `agent_wait`: the agent and its pane, its state, and
     /// whether it was ready.
     AgentWaited {
@@ -2999,6 +3020,8 @@ impl ServerMsg {
             | ServerMsg::WindowReply { req, .. }
             | ServerMsg::Devices { req, .. }
             | ServerMsg::AgentQueued { req, .. }
+            | ServerMsg::AgentInTerminal { req, .. }
+            | ServerMsg::AgentTyped { req, .. }
             | ServerMsg::AgentWaited { req, .. }
             | ServerMsg::Conversations { req, .. }
             | ServerMsg::ConversationHistory { req, .. }

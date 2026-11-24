@@ -103,6 +103,11 @@ pub struct Sample {
     pub agent: Option<TermAgent>,
 }
 
+/// The coding agent process `pid` runs, if it runs one.
+pub fn harness_of(pid: u32) -> Option<Harness> {
+    detect(&process_args(pid)?.0).map(|(harness, _)| harness)
+}
+
 /// The agent a command line starts, and the conversation id it names, if it names one.
 pub fn detect(argv: &[String]) -> Option<(Harness, Option<String>)> {
     let base = |arg: &String| {

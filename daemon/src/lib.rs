@@ -52,6 +52,7 @@ mod settings_watch;
 mod task_output;
 mod skills;
 mod submit;
+mod term_agents;
 mod title_buttons;
 pub mod usage;
 mod views;
