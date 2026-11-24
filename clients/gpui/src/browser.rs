@@ -5,7 +5,7 @@
 //! the bridge emits and sends it the presses.
 use crate::{native::BrowserState, view::{Client, Control}};
 use gpui::{Context, MouseButton, div, prelude::*, px, rgb};
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 /// The chrome row's height, in points.
 pub const CHROME: f32 = 34.0;
@@ -107,7 +107,7 @@ pub enum Press {
 
 /// The chrome row for `pane`, `width` points wide. `editing` is the address draft while the
 /// field is being edited. Each control records its bounds under `browser:<name>` for the check.
-pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str>, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let narrow = width < FULL_WIDTH;
     let button = |label: &'static str, name: &'static str, enabled: bool, press: Press, cx: &mut Context<Client>| {
         let pane = pane.to_owned();
@@ -166,7 +166,7 @@ pub fn chrome(pane: &str, state: &BrowserState, width: f32, editing: Option<&str
 
 /// Why the page did not load, in place of the page, with a way to try the same address again
 /// (the Swift client's `BrowserFailure`).
-pub fn failure_card(pane: &str, failure: &crate::native::Failure, controls: &Rc<RefCell<Vec<Control>>>, cx: &mut Context<Client>) -> gpui::Div {
+pub fn failure_card(pane: &str, failure: &crate::native::Failure, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let pane = pane.to_owned();
     div().size_full().min_h(px(0.)).overflow_hidden().flex().flex_col().items_center().justify_center().gap(px(6.)).p(px(12.)).bg(rgb(0x17201c)).text_color(rgb(0x8fa89b))
         .child(div().flex_none().text_color(rgb(0xd9e8e1)).child("Can’t open this page"))

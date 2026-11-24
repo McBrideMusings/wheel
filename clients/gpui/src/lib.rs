@@ -216,6 +216,9 @@ pub fn create_window(
                     refresh_windows(cx);
                 })
                 .detach();
+                // Anything that notifies the client may change what a pane body shows, so every body
+                // draws again; a notify that reaches only a body (its working arc, its scroll) does not.
+                cx.observe_self(|client: &mut view::Client, cx| client.invalidate_bodies(cx)).detach();
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
                 client.publish();

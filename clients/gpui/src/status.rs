@@ -96,6 +96,12 @@ pub fn colour(status: &PaneStatus) -> u32 {
 /// `label`. `id` keeps the arc's turn going from frame to frame; a working mark takes the arc's 12 px slot, every other a 9 px dot
 /// centred in the same slot so a mark never moves its neighbours when its rank changes.
 pub fn dot(status: &PaneStatus, shown: &HashSet<&'static str>, id: impl Into<gpui::ElementId>) -> Option<AnyElement> {
+    dot_with(status, shown, id, None)
+}
+
+/// `dot`, its working arc drawn by `spinner` when given: a view of its own, so the arc's frames
+/// redraw it and not the view around it.
+pub fn dot_with(status: &PaneStatus, shown: &HashSet<&'static str>, id: impl Into<gpui::ElementId>, spinner: Option<gpui::AnyView>) -> Option<AnyElement> {
     if !shown.contains(rank(status)) {
         return None;
     }
@@ -103,13 +109,28 @@ pub fn dot(status: &PaneStatus, shown: &HashSet<&'static str>, id: impl Into<gpu
     // Hovering the mark names its status, as the Swift client's `.help(status.label)` does.
     let slot = div().id(id.clone()).tooltip(crate::tooltip::tip(&label(status))).w(px(12.)).h(px(12.)).flex().items_center().justify_center().flex_none();
     let mark = match status {
-        PaneStatus::Working => return Some(slot.child(arc(id)).into_any_element()),
+        PaneStatus::Working => return Some(match spinner {
+            Some(view) => slot.child(view),
+            None => slot.child(arc(id)),
+        }.into_any_element()),
         PaneStatus::NeedsYou { .. } => div().w(px(9.)).h(px(9.)).rounded_full().bg(rgb(ORANGE)),
         PaneStatus::Stopped => div().w(px(9.)).h(px(9.)).rounded_full().border(px(1.8)).border_color(rgb(RED)),
         PaneStatus::Done => div().w(px(9.)).h(px(9.)).rounded_full().bg(rgb(BLUE)),
         PaneStatus::Idle => div().w(px(9.)).h(px(9.)).rounded_full().bg(rgb(GREEN)),
     };
     Some(slot.child(mark).into_any_element())
+}
+
+/// The working arc as a view of its own. Each animation frame notifies the view it draws in; drawn
+/// here, that is this view, so a cached pane body beside it replays instead of drawing again.
+pub struct Spinner {
+    pub id: gpui::ElementId,
+}
+
+impl gpui::Render for Spinner {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        arc(self.id.clone())
+    }
 }
 
 /// The 3/4 arc, 1.8 px wide with round ends, turning clockwise once a second.
