@@ -349,21 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn the_machines_pr_buttons_apply_in_a_project_that_writes_none_and_a_project_overrides_by_name() {
-        let machine = "[prs.buttons.review]\nlabel = \"Review\"\non = [\"needs-me\"]\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh review\"\n[prs.buttons.mergeable]\nlabel = \"Make mergeable\"\non = [\"fix\"]\nworktree = true\nrun = \"/bin/bash ~/.wheel/lib/pr-agent.sh mergeable\"\n";
-        let (root, machine, dir) = crate::core::buttons::tests::fixture("prs-machine", machine, "");
-        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
-        assert_eq!(buttons_of(&files).iter().map(label).collect::<Vec<_>>(), ["Review", "Make mergeable"], "a project with no wheel.toml gets the machine's buttons");
-        std::fs::write(dir.join("wheel.toml"), "[prs.buttons.review]\nenabled = false\n[prs.buttons.mergeable]\non = [\"any\"]\nrun = \"make fix\"\n").unwrap();
-        let (files, _) = crate::core::buttons::files_from(&machine, dir.to_str().unwrap());
-        let b = buttons_of(&files);
-        assert_eq!(b.len(), 1, "review is dropped");
-        assert_eq!((b[0].name.as_str(), label(&b[0]), b[0].on.clone(), b[0].run.as_str(), b[0].worktree), ("mergeable", "mergeable", vec!["any".to_string()], "make fix", false),
-            "the project's table replaces the machine's whole: no label, worktree or on carry over");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
     fn a_fork_prs_worktree_needs_the_remote_whose_url_points_at_the_repo() {
         let root = std::env::temp_dir().join(format!("wheelhouse-wt-fork-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

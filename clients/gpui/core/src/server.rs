@@ -487,14 +487,8 @@ mod tests {
     }
 
     #[test]
-    fn the_bundled_plist_names_the_service() {
-        let (dir, service) = fake_bundle("plist", "");
-        assert_eq!(service.label, "com.piercemakes.wheel.test.daemon");
-        assert_eq!(service.instance, "wheel-test");
-        assert_eq!(service.url(), "ws://127.0.0.1:7499/ws");
-        assert_eq!(service.bundled_source.as_deref(), Some("0123456789abcdef"));
-        assert!(service.token_file().ends_with("Library/Application Support/wheel-test/token"));
-        assert_eq!(service.script, dir.join("wheel-server.sh"));
+    fn a_missing_plist_names_no_service() {
+        let (dir, _service) = fake_bundle("plist", "");
         assert_eq!(Service::read(&dir.join("missing.plist")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }

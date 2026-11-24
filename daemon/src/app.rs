@@ -645,7 +645,7 @@ mod tests {
     /// `.log.old`, the one before it is replaced, and the newest bytes are always kept.
     #[test]
     fn a_runs_log_keeps_its_last_two_segments() {
-        let dir = std::env::temp_dir().join(format!("wheel-applog-{}", std::process::id()));
+        let dir = crate::test_support::scratch();
         std::fs::create_dir_all(&dir).unwrap();
         let (path, old) = (dir.join("1.log"), dir.join("1.log.old"));
         let mut log = Rotating::create(path.clone(), old.clone()).unwrap();
@@ -660,6 +660,5 @@ mod tests {
         );
         assert!(new <= LOG_SEGMENT && older <= LOG_SEGMENT, "{new} {older}");
         assert_eq!(std::fs::read(&path).unwrap().last(), Some(&b'5'));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

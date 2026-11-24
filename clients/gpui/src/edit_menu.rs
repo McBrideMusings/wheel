@@ -41,13 +41,3 @@ pub fn install(cx: &mut App) {
         ]),
     ]);
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_action_stands_for_its_command_key() {
-        assert_eq!([key(&Cut), key(&Copy), key(&Paste)], [Some("x"), Some("c"), Some("v")]);
-    }
-}

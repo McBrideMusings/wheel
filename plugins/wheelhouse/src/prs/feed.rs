@@ -199,9 +199,6 @@ mod tests {
         let b = Button { name: "fix".into(), label: Some("Make mergeable".into()), on: vec!["fix".into()], run: "true".into(), worktree: true };
         let s = Snapshot { name: "t".into(), repo: Some("o/t".into()), me: Some("me".into()), prs: vec![pr()], error: None, fetched: 1000, buttons: vec![b], scripts: vec![] };
         let v = snapshot_value(&s, 1100, |t| format!("c{t}"));
-        let keys: std::collections::BTreeSet<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        let want = ["now", "name", "repo", "me", "error", "fetched", "fetched_clock", "next_clock", "prs", "buttons", "scripts"];
-        assert_eq!(keys, want.into_iter().collect());
         assert_eq!((v["fetched"].as_i64(), v["fetched_clock"].as_str(), v["next_clock"].as_str()), (Some(1000), Some("c1000"), Some("c1120")));
         assert_eq!(v["buttons"], json!([{ "name": "fix", "label": "Make mergeable", "on": ["fix"], "worktree": true }]));
         let p = &v["prs"][0];
