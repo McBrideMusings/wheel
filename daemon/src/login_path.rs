@@ -251,7 +251,8 @@ impl Watchdog {
                     match libc::read(read, (&mut byte as *mut u8).cast(), 1) {
                         1 => libc::_exit(0),
                         0 => break,
-                        _ if *libc::__error() == libc::EINTR => {}
+                        _ if std::io::Error::last_os_error().raw_os_error()
+                            == Some(libc::EINTR) => {}
                         _ => break,
                     }
                 }

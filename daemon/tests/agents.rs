@@ -2135,7 +2135,8 @@ async fn an_agent_lists_its_conversations_and_a_new_one_resets_every_clients_tra
     assert_eq!(listed[0].id, first);
     assert!(listed[0].current, "{listed:?}");
     assert_eq!(listed[0].title.as_deref(), Some("hello"));
-    assert_eq!(listed[0].cwd, "/private/tmp", "a space holds its folder resolved");
+    let tmp = std::fs::canonicalize("/tmp").unwrap();
+    assert_eq!(listed[0].cwd, tmp.to_string_lossy(), "a space holds its folder resolved");
     assert!(
         listed[0]
             .updated_at

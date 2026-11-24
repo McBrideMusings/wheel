@@ -106,6 +106,11 @@ async fn call_json(ws: &mut Ws, msg: serde_json::Value) -> ServerMsg {
     }
 }
 
+/// `path` as wheeld resolves it: `/tmp` is `/private/tmp` on macOS and itself on Linux.
+fn resolved(path: &str) -> String {
+    std::fs::canonicalize(path).unwrap().to_string_lossy().into_owned()
+}
+
 async fn created(ws: &mut Ws, msg: ClientMsg) -> String {
     match call(ws, msg).await {
         ServerMsg::Created { id, .. } => id,
@@ -199,7 +204,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
     };
     assert_eq!(
         (spaces[0].name.as_str(), spaces[0].cwd.as_str()),
-        ("tmp", "/private/tmp")
+        ("tmp", resolved("/tmp").as_str())
     );
     let Node::Pane {
         id: first,
@@ -240,7 +245,7 @@ async fn changes_reach_every_client_and_the_last_pane_leaves_an_empty_one() {
         .find(|t| t.id == term)
         .expect("terminal is listed");
     assert!(info.alive);
-    assert_eq!(info.cwd, "/private/tmp");
+    assert_eq!(info.cwd, resolved("/tmp"));
 
     ok(
         &mut ws,
@@ -602,7 +607,8 @@ async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() 
     let mut ws = connect(&url).await;
     let ask = ClientMsg::SpaceRecent { req: Some(7) };
     assert!(recent(call(&mut ws, ask.clone()).await).is_empty());
-    for cwd in ["/private/tmp", "/private/var", "/private/tmp"] {
+    let (tmp, var) = (resolved("/tmp"), resolved("/var"));
+    for cwd in [&tmp, &var, &tmp] {
         let id = created(&mut ws, new_space(cwd)).await;
         ok(
             &mut ws,
@@ -614,7 +620,7 @@ async fn recent_directories_list_newest_first_once_each_and_survive_a_restart() 
         )
         .await;
     }
-    let want = vec!["/private/tmp".to_string(), "/private/var".to_string()];
+    let want = vec![tmp, var];
     assert_eq!(recent(call(&mut ws, ask.clone()).await), want);
     drop(ws);
     first_daemon.abort();
@@ -4286,7 +4292,7 @@ async fn a_pane_moves_into_a_new_space_after_its_own() {
     assert_eq!(spaces.len(), 3);
     assert_eq!([&spaces[0].id, &spaces[2].id], [&s1, &s2]);
     assert_eq!(spaces[1].name, "moved");
-    assert_eq!(spaces[1].cwd, "/private/tmp", "a space holds its folder resolved");
+    assert_eq!(spaces[1].cwd, resolved("/tmp"), "a space holds its folder resolved");
     assert_eq!(only_pane(&spaces[1]), a1);
     assert_eq!(term_of(&spaces[1], &a1).unwrap(), term);
     assert_eq!(only_pane(&spaces[0]), a2);
@@ -4546,7 +4552,7 @@ async fn a_terminal_restores_into_its_last_directory_and_resumes_its_agent() {
     }
     assert_eq!(
         cwd_of("p5"),
-        "/private/tmp",
+        resolved("/tmp"),
         "a directory that has gone falls back to the space's, resolved"
     );
 
@@ -5232,7 +5238,8 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
         std::slice::from_ref(&home)
     );
 
-    for cwd in ["/usr/lib", "/private/tmp"] {
+    let tmp = resolved("/tmp");
+    for cwd in ["/usr/lib", tmp.as_str()] {
         let id = created(&mut ws, new_space(cwd)).await;
         ok(
             &mut ws,
@@ -5244,10 +5251,11 @@ async fn spaces_roots_default_to_home_and_the_parents_of_recent_spaces() {
         )
         .await;
     }
-    assert_eq!(get(&mut ws).await, "~,/private,/usr");
+    let tmp_parent = std::path::Path::new(&tmp).parent().unwrap().to_string_lossy().into_owned();
+    assert_eq!(get(&mut ws).await, format!("~,{tmp_parent},/usr"));
     assert_eq!(
         roots(call(&mut ws, ClientMsg::DirRoots { req: Some(9) }).await),
-        [home, "/private".to_string(), "/usr".to_string()]
+        [home, tmp_parent, "/usr".to_string()]
     );
 }
 

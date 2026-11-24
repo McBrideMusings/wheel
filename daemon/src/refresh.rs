@@ -585,35 +585,62 @@ impl Drop for Group<'_> {
 /// this process's group — the refresh command and everything it started — and with it this process.
 /// `wheeld` calls this for [`WARDEN_ARG`] before it starts a runtime, a thread or anything else.
 pub fn warden() -> ! {
-    // SAFETY: each call takes integers or a pointer to a `kevent` on this stack, valid for the call.
+    // SAFETY: each call takes integers or a descriptor this function made.
     unsafe {
         let parent = libc::getppid();
-        let kq = libc::kqueue();
-        let change = libc::kevent {
-            ident: parent as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
         // The watch names a pid; the parent check after it is what says that pid is still the
         // process that started this one, and not one handed the pid after wheeld already died.
-        let watching = parent > 1
-            && kq >= 0
-            && libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0
-            && libc::getppid() == parent;
-        if watching {
+        let watch = if parent > 1 { watch_exit(parent) } else { None };
+        if let Some(watch) = watch.filter(|_| libc::getppid() == parent) {
             println!("{ARMED}");
-            let mut fired: libc::kevent = std::mem::zeroed();
-            while libc::kevent(kq, std::ptr::null(), 0, &mut fired, 1, std::ptr::null()) < 0
-                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-            {
-            }
+            wait_exit(watch);
         }
         libc::killpg(libc::getpgrp(), libc::SIGKILL);
         libc::_exit(1)
     }
+}
+
+/// A kqueue that fires when `pid` exits, or None when the system refused the watch.
+#[cfg(target_os = "macos")]
+unsafe fn watch_exit(pid: libc::pid_t) -> Option<libc::c_int> {
+    let kq = libc::kqueue();
+    let change = libc::kevent {
+        ident: pid as libc::uintptr_t,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: `change` is a `kevent` on this stack, valid for the call.
+    (kq >= 0 && libc::kevent(kq, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) == 0)
+        .then_some(kq)
+}
+
+/// Block until the watch from [`watch_exit`] fires.
+#[cfg(target_os = "macos")]
+unsafe fn wait_exit(kq: libc::c_int) {
+    let mut fired: libc::kevent = std::mem::zeroed();
+    while libc::kevent(kq, std::ptr::null(), 0, &mut fired, 1, std::ptr::null()) < 0
+        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+    {}
+}
+
+/// A pidfd that becomes readable when `pid` exits, or None when the system refused it.
+#[cfg(target_os = "linux")]
+unsafe fn watch_exit(pid: libc::pid_t) -> Option<libc::c_int> {
+    let fd = libc::syscall(libc::SYS_pidfd_open, pid, 0) as libc::c_int;
+    (fd >= 0).then_some(fd)
+}
+
+/// Block until the watch from [`watch_exit`] fires.
+#[cfg(target_os = "linux")]
+unsafe fn wait_exit(fd: libc::c_int) {
+    let mut ready = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // SAFETY: `ready` is a `pollfd` on this stack, valid for the call.
+    while libc::poll(&mut ready, 1, -1) < 0
+        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+    {}
 }
 
 /// The end of a stream and how long the whole stream was. It keeps one byte more than

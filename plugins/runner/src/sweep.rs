@@ -201,8 +201,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::copy("/bin/sleep", &path).unwrap();
-        // A copy of a platform binary is killed on launch until it carries its own signature.
-        assert!(Command::new("codesign").args(["--force", "-s", "-"]).arg(&path).stderr(Stdio::null()).status().unwrap().success());
+        // On macOS a copy of a platform binary is killed on launch until it carries its own signature.
+        if cfg!(target_os = "macos") {
+            assert!(Command::new("codesign").args(["--force", "-s", "-"]).arg(&path).stderr(Stdio::null()).status().unwrap().success());
+        }
         path
     }
 
