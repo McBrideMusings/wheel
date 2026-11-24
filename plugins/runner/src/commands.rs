@@ -369,11 +369,11 @@ mod tests {
     async fn dropping_a_run_kills_its_command() {
         let marker = std::env::temp_dir().join(format!("wheel-cmd-drop-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
-        let run = format!("sleep 1.5; touch {}", marker.display());
+        let run = format!("sleep 0.4; touch {}", marker.display());
         let t = std::time::Instant::now();
-        let r = tokio::time::timeout(Duration::from_millis(300), run_bounded(run, std::env::temp_dir(), vec![], 20.0)).await;
-        assert!(r.is_err(), "the run should still be going at 300 ms");
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let r = tokio::time::timeout(Duration::from_millis(100), run_bounded(run, std::env::temp_dir(), vec![], 20.0)).await;
+        assert!(r.is_err(), "the run should still be going at 100 ms");
+        tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(!marker.exists(), "the dropped run went on to touch its file");
         assert!(t.elapsed() < Duration::from_secs(5));
     }

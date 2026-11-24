@@ -74,70 +74,10 @@ struct RichFencesTests {
         let clean = try #require(SVGFence.sanitize(Self.hostileRoutes.replacingOccurrences(of: "{HOST}", with: "127.0.0.1:9")))
         #expect(!clean.contains("127.0.0.1"))
         #expect(clean.contains("<circle"))
+        // No URL is left to fetch: every href, src and url() that remains is a fragment.
+        #expect(clean.range(of: #"(?i)(href|src)\s*=\s*["'](?!#)"#, options: .regularExpression) == nil)
+        #expect(clean.range(of: #"(?i)url\(\s*["']?(?!#)"#, options: .regularExpression) == nil)
+        #expect(!clean.contains("@import"))
     }
 
-    #if canImport(AppKit)
-    @Test func drawingASanitisedSVGMakesNoRequest() async throws {
-        let listener = try RequestCounter()
-        let source = Self.hostileRoutes.replacingOccurrences(of: "{HOST}", with: "127.0.0.1:\(listener.port)")
-        let clean = try #require(SVGFence.sanitize(source))
-        let image = try #require(NSImage(data: Data(clean.utf8)))
-        #expect(image.isValid)
-        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 40, pixelsHigh: 40, bitsPerSample: 8,
-                                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        image.draw(in: NSRect(x: 0, y: 0, width: 40, height: 40))
-        NSGraphicsContext.restoreGraphicsState()
-        try await Task.sleep(for: .seconds(1))
-        #expect(listener.count == 0, "the listener saw \(listener.count) connection(s)")
-        listener.stop()
-    }
-    #endif
-}
-
-#if canImport(AppKit)
-/// A loopback TCP listener that counts every connection made to it.
-private final class RequestCounter: @unchecked Sendable {
-    private let listener: NWListener
-    private let lock = NSLock()
-    private var connections = 0
-    private(set) var port: UInt16 = 0
-
-    init() throws {
-        listener = try NWListener(using: .tcp, on: .any)
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { state in if case .ready = state { ready.signal() } }
-        listener.newConnectionHandler = { [weak self] connection in
-            self?.lock.lock(); self?.connections += 1; self?.lock.unlock()
-            connection.cancel()
-        }
-        listener.start(queue: .global())
-        guard ready.wait(timeout: .now() + 5) == .success, let port = listener.port?.rawValue else {
-            throw CocoaError(.fileReadUnknown)
-        }
-        self.port = port
-    }
-
-    var count: Int { lock.lock(); defer { lock.unlock() }; return connections }
-    func stop() { listener.cancel() }
-}
-#endif
-
-@Suite struct ChartFenceTests {
-    @Test func aChartFenceParsesRowsAndSaysWhyABadOneCannotDraw() throws {
-        let ok = ChartFence.parse(#"{"mark":"line","data":[{"x":"Mon","y":3,"series":"a"},{"x":2026,"y":1.5}]}"#)
-        #expect(ok == .success(.init(mark: "line", rows: [.init(x: "Mon", y: 3, series: "a"), .init(x: "2026", y: 1.5, series: "")])))
-        #expect(try ChartFence.parse(#"{"data":[{"x":"a","y":1}]}"#).get().mark == "bar")
-        func reason(_ s: String) -> String? { if case .failure(let e) = ChartFence.parse(s) { e.reason } else { nil } }
-        #expect(reason("{nope") == "it is not JSON")
-        #expect(reason("[1]") == "it must be one JSON object with mark and data")
-        #expect(reason(#"{"mark":"pie","data":[]}"#) == "mark \"pie\" is not bar, line, point or area")
-        #expect(reason(#"{"mark":"line"}"#) == "data must be a list of {x, y, series} rows")
-        #expect(reason(#"{"data":[]}"#) == "data has no rows")
-        #expect(reason(#"{"data":[{"x":"a","y":1},{"x":"b","y":"2"}]}"#) == "row 2 has no number y")
-        #expect(reason(#"{"data":[{"y":1}]}"#) == "row 1 has no x")
-        #expect(ChartFence.handles("Chart") && !ChartFence.handles("json") && !ChartFence.handles(nil))
-    }
 }

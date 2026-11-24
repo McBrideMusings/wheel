@@ -2810,7 +2810,7 @@ mod tests {
                 if let Err(why) = self.ensure(spec()).await {
                     return why;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
             panic!("the backend never went to a restart wait");
         }
@@ -2827,7 +2827,7 @@ mod tests {
                 if self.task.is_finished() && self.cmd.is_closed() {
                     return true;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
             false
         }
@@ -2849,6 +2849,16 @@ mod tests {
         }
     }
 
+    /// Move the clock `by` ahead at once, so the supervisor's timers fire now, then give a
+    /// process the supervisor wrongly started a moment of real time to leave its mark. Real
+    /// processes make auto-advancing paused time race their IO, so only this step is paused.
+    async fn past(by: Duration) {
+        tokio::time::pause();
+        tokio::time::advance(by).await;
+        tokio::time::resume();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
     /// Whether the process group `pgid` still has a member.
     fn group_alive(pgid: u32) -> bool {
         unsafe { libc::kill(-(pgid as i32), 0) == 0 }
@@ -2859,7 +2869,7 @@ mod tests {
             if let Some(pid) = *backend.pgid.lock().unwrap() {
                 return pid;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("the process never started");
     }
@@ -2899,7 +2909,7 @@ mod tests {
         fake.until_waiting(|| fake.failing()).await;
         fake.quit().await;
         assert!(fake.ended().await, "the supervisor task ended");
-        tokio::time::sleep(BACKOFF_FIRST + Duration::from_millis(500)).await;
+        past(BACKOFF_FIRST + Duration::from_millis(500)).await;
         assert_eq!(fake.starts(), 1, "the wait never ran out into another start");
     }
 
@@ -2912,7 +2922,7 @@ mod tests {
         fake.quit().await;
         assert!(fake.ended().await, "the supervisor task ended");
         assert!(!group_alive(pgid), "the process group is gone");
-        tokio::time::sleep(WATCH_QUIET * 2).await;
+        past(WATCH_QUIET * 2).await;
         let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(live, vec![backend.id], "the pending restart never made another instance");
     }
@@ -2924,7 +2934,7 @@ mod tests {
         pgid_of(&backend).await;
         fake.closing.store(true, Ordering::SeqCst);
         fake.watch.send("trigger".into()).unwrap();
-        tokio::time::sleep(WATCH_QUIET * 3).await;
+        past(WATCH_QUIET * 3).await;
         let live = fake.hub.live.lock().unwrap().values().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(live, vec![backend.id], "the watched change restarted nothing");
         fake.quit().await;
@@ -2936,7 +2946,7 @@ mod tests {
         fake.ensure(fake.failing()).await.unwrap();
         fake.until_waiting(|| fake.failing()).await;
         fake.closing.store(true, Ordering::SeqCst);
-        tokio::time::sleep(BACKOFF_FIRST * 2).await;
+        past(BACKOFF_FIRST * 2).await;
         assert_eq!(fake.starts(), 1, "wheeld is stopping: the wait ran out and started nothing");
         fake.quit().await;
     }

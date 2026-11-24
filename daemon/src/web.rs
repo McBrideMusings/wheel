@@ -1095,123 +1095,6 @@ async fn page_events(
         .into_response()
 }
 
-/// The page a pane shows for an MCP server artifact: the host of the server's MCP Apps view, or
-/// its tools when it has none.
-const MCP_HOST: &str = include_str!("mcp_host.html");
-
-/// The MCP server a pane's page makes a request of, once the caller is let in.
-fn mcp_for(
-    state: &AppState,
-    listener: Listener,
-    pane: &str,
-    via: &str,
-    headers: &HeaderMap,
-) -> Result<(String, wheel_proto::ArtifactScope, String), Response> {
-    authorize(state, listener, via, headers, None).map_err(|status| status.into_response())?;
-    state.mcp_pane(pane).ok_or_else(|| {
-        let why = format!("{pane} shows no MCP server");
-        tracing::warn!(via, %why, "MCP request refused");
-        (StatusCode::NOT_FOUND, why).into_response()
-    })
-}
-
-/// `GET /artifacts/<pane>/.wheel/mcp/view`: the server's tools and its MCP Apps view.
-async fn mcp_view(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/view");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state.mcp_view(&name, Some(scope), Some(&space)).await {
-        Ok(view) => axum::Json(view).into_response(),
-        Err(why) => {
-            tracing::warn!(via, %why, "MCP view failed");
-            (StatusCode::BAD_GATEWAY, why).into_response()
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct McpCall {
-    tool: String,
-    #[serde(default)]
-    arguments: Option<serde_json::Value>,
-    /// The host running the tool that links the view, not the view.
-    #[serde(default)]
-    initial: bool,
-    /// The person calling a tool from the pane's own tool list.
-    #[serde(default)]
-    person: bool,
-}
-
-/// `POST /artifacts/<pane>/.wheel/mcp/call`: `{tool, arguments}`, answered with the server's result.
-async fn mcp_call(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-    axum::Json(call): axum::Json<McpCall>,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/call");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state
-        .mcp_app_call(
-            &name,
-            Some(scope),
-            Some(&space),
-            &call.tool,
-            call.arguments,
-            call.initial,
-            call.person,
-        )
-        .await
-    {
-        Ok(result) => axum::Json(result).into_response(),
-        Err(why) => {
-            tracing::warn!(via, tool = call.tool, %why, "MCP call refused");
-            (StatusCode::BAD_REQUEST, why).into_response()
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct McpRead {
-    uri: String,
-}
-
-/// `POST /artifacts/<pane>/.wheel/mcp/read`: `{uri}`, answered with the server's `resources/read`.
-async fn mcp_read(
-    State(state): State<Arc<AppState>>,
-    Extension(listener): Extension<Listener>,
-    UrlPath(pane): UrlPath<String>,
-    headers: HeaderMap,
-    axum::Json(read): axum::Json<McpRead>,
-) -> Response {
-    let via = format!("artifacts {pane}/.wheel/mcp/read");
-    let (name, scope, space) = match mcp_for(&state, listener, &pane, &via, &headers) {
-        Ok(found) => found,
-        Err(r) => return r,
-    };
-    match state
-        .mcp_app_read(&name, Some(scope), Some(&space), &read.uri)
-        .await
-    {
-        Ok(result) => axum::Json(result).into_response(),
-        Err(why) => {
-            tracing::warn!(via, uri = read.uri, %why, "MCP read refused");
-            (StatusCode::BAD_REQUEST, why).into_response()
-        }
-    }
-}
-
 /// A request under `/artifacts/<mirror>/` goes to the same path under the mirror's source, so a
 /// mirror of a web pane shows the source's page and talks to its page channel: the mirror holds
 /// no page of its own.
@@ -1258,9 +1141,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/artifacts/{pane}/.wheel/review-flag",
             post(page_review_flag),
         )
-        .route("/artifacts/{pane}/.wheel/mcp/view", get(mcp_view))
-        .route("/artifacts/{pane}/.wheel/mcp/call", post(mcp_call))
-        .route("/artifacts/{pane}/.wheel/mcp/read", post(mcp_read))
         .route("/artifacts/{pane}/", any(artifact))
         .route("/artifacts/{pane}/{*path}", any(artifact))
         .route("/loopback/{port}", any(loopback))
@@ -1512,23 +1392,6 @@ async fn artifact(
             return token_for_cookie(&via, pane, token, &uri);
         }
         return crate::proxy::forward(&app, pane, COOKIE, req).await;
-    }
-    // A pane showing an MCP server has the one page that hosts the server's view.
-    if state.mcp_pane(pane).is_some() {
-        if let Some(token) = from_query {
-            return token_for_cookie(&via, pane, token, &uri);
-        }
-        if req.method() != axum::http::Method::GET || !matches!(path, "" | "index.html") {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        return (
-            [
-                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            MCP_HOST,
-        )
-            .into_response();
     }
     if req.method() != axum::http::Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
@@ -1789,11 +1652,14 @@ mod retry_tests {
         assert!(!row.waiting);
 
         // Two retry periods with the watch still refused: no reload, still not watching.
-        tokio::time::sleep(RETRY * 2).await;
+        tokio::time::pause();
+        tokio::time::advance(RETRY * 2).await;
         assert!(events.try_recv().is_err(), "nothing reloads while refused");
         assert_eq!(state.watches()[0].watching, None);
 
         refuse.store(false, Ordering::SeqCst);
+        tokio::time::advance(RETRY * 2).await;
+        tokio::time::resume();
         let msg = tokio::time::timeout(RETRY * 3, events.recv())
             .await
             .expect("a retry reloads once the watch is set")
@@ -1872,7 +1738,9 @@ mod follow_tests {
             .unwrap()
             .insert("p1".into(), vec![watch]);
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::time::resume();
         assert_eq!(reads.load(Ordering::SeqCst), 1, "an idle watch reads again");
 
         *named.lock().unwrap() = new.display().to_string();
