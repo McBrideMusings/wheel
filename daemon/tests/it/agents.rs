@@ -6750,6 +6750,52 @@ async fn hook_logged(path: &std::path::Path, event: &str, agent: &str) -> serde_
     panic!("no {event} event for {agent} in {}: {:?}", path.display(), hook_log(path));
 }
 
+/// Decide hooks for different permission requests run at the same time (wheel-qdrj.9): one hook
+/// that takes 6 s on one request leaves another request's answer unheld.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_decide_hook_holds_up_only_the_request_it_is_deciding() {
+    let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let machine = daemon.state().machine_file();
+    let (_, slow_pane) = space(&url, "/tmp").await;
+    let (_, quick_pane) = space(&url, "/tmp").await;
+    let slow = start_agent(&url, &slow_pane, Some("hello")).await;
+    let quick = start_agent(&url, &quick_pane, Some("hello")).await;
+    let mut toml = std::fs::read_to_string(&machine).unwrap_or_default();
+    // Slow for the first agent's request, by its name in the event, quick for the other's.
+    toml.push_str(&format!(
+        "\n[[hook]]\non = \"permission\"\nrun = 'asked=$(cat); case \"$asked\" in *\\\"{slow}\\\"*) sleep 6;; esac; echo allow'\ndecide = true\n"
+    ));
+    std::fs::write(&machine, toml).unwrap();
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &slow, "needs permission").await;
+    let slow_perm = loop {
+        if let ServerMsg::PermRequested { perm } = recv(&mut ws).await {
+            break perm;
+        }
+    };
+    let mut ws = connect(&url).await;
+    attach_and_send(&mut ws, &quick, "needs permission").await;
+    let quick_perm = loop {
+        if let ServerMsg::PermRequested { perm } = recv(&mut ws).await {
+            if perm.id != slow_perm.id {
+                break perm;
+            }
+        }
+    };
+    let started = std::time::Instant::now();
+    let resolved = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let ServerMsg::PermResolved { id, .. } = recv(&mut ws).await {
+                if id == quick_perm.id {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(resolved.is_ok(), "the quick request waited behind the slow hook ({:?})", started.elapsed());
+}
+
 /// `[[hook]]` (wheel-zxts.2): a machine hook's command gets every agent's turn_end, permission and
 /// fail events as JSON on stdin, each first written into its inbox through tmp/ into new/; a
 /// machine decide hook's `allow` answers the request, and `ask` leaves it waiting for the person,
