@@ -476,11 +476,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn seen(rx: &mpsc::Receiver<PathBuf>, want: &Path) -> bool {
+    /// Whether `want` changed: named itself, or covered by a rescan of a folder above it, which is
+    /// how FSEvents reports a change it replays across a stream rebuild.
+    fn seen(rx: &mpsc::Receiver<(PathBuf, bool)>, want: &Path) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
             match rx.recv_timeout(left) {
-                Ok(p) if p == want => return true,
+                Ok((p, rescan)) if p == want || (rescan && want.starts_with(&p)) => return true,
                 Ok(_) => {}
                 Err(_) => return false,
             }
@@ -488,11 +490,12 @@ mod tests {
         false
     }
 
-    fn handle(tx: mpsc::Sender<PathBuf>) -> Handle {
+    fn handle(tx: mpsc::Sender<(PathBuf, bool)>) -> Handle {
         watcher(move |e: notify::Result<Event>| {
             if let Ok(e) = e {
+                let rescan = e.need_rescan();
                 for p in e.paths {
-                    let _ = tx.send(p);
+                    let _ = tx.send((p, rescan));
                 }
             }
         })
@@ -532,8 +535,8 @@ mod tests {
         let nested = a_dir.join("deep").join("g.txt");
         std::fs::write(&nested, "x").unwrap();
         assert!(seen(&rx2, &nested), "the recursive watch missed a nested file");
-        assert!(!rx1.try_iter().any(|p| p == nested), "the flat watch got a nested file");
-        assert!(!rx3.try_iter().any(|p| p.starts_with(&a_dir)), "b's handle got a's events");
+        assert!(!rx1.try_iter().any(|(p, _)| p == nested), "the flat watch got a nested file");
+        assert!(!rx3.try_iter().any(|(p, _)| p.starts_with(&a_dir)), "b's handle got a's events");
 
         drop(two);
         assert_eq!(hub().lock().unwrap().counts.get(&a_dir), Some(&1));

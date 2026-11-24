@@ -1730,6 +1730,12 @@ mod follow_tests {
             .unwrap()
             .insert("p1".into(), vec![watch]);
 
+        // The first read runs on a blocking thread; wait for it before checking it is the only one.
+        let first = tokio::time::Instant::now() + Duration::from_secs(5);
+        while reads.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < first {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the entry was not read to start with");
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::time::resume();
