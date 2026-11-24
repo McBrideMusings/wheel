@@ -15,11 +15,17 @@ struct Daemon {
 }
 
 async fn daemon() -> Daemon {
-    daemon_in(std::env::temp_dir()).await
+    daemon_with(Some(std::env::temp_dir()), None, None).await
 }
 
-/// A daemon whose instance directory is `support`, where a machine-wide `wheel.toml` lands.
-async fn daemon_in(support: PathBuf) -> Daemon {
+/// A daemon whose instance directory is `support`, or its own temp directory when `None` (where a machine-wide `wheel.toml` lands), whose
+/// agent panes run the scripted fake agent when `agent` is set, and which reads usage from `usage`
+/// when given.
+async fn daemon_with(
+    support: Option<PathBuf>,
+    agent: Option<&str>,
+    usage: Option<Arc<dyn wheeld::usage::UsageSource>>,
+) -> Daemon {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let dir = std::env::temp_dir().join(format!(
@@ -30,15 +36,22 @@ async fn daemon_in(support: PathBuf) -> Daemon {
     std::fs::create_dir_all(&dir).unwrap();
     let token_file = dir.join("token");
     std::fs::write(&token_file, TOKEN).unwrap();
-    tokio::spawn(wheeld::serve(
-        listener,
-        wheeld::AppState::new(
-            "/dev/null".into(),
-            TOKEN.into(),
-            support,
-            "/usr/bin/false".into(),
-        ),
-    ));
+    let state = wheeld::AppState::new(
+        "/dev/null".into(),
+        TOKEN.into(),
+        support.unwrap_or_else(|| dir.clone()),
+        "/usr/bin/false".into(),
+    );
+    if let Some(agent) = agent {
+        state
+            .setting_set("agent.claude.command", agent, None, true)
+            .unwrap();
+        state.set_control(format!("ws://{addr}/ws"), token_file.clone(), None);
+    }
+    if let Some(usage) = usage {
+        state.set_usage_source(usage);
+    }
+    tokio::spawn(wheeld::serve(listener, state));
     Daemon {
         url: format!("ws://{addr}/ws"),
         token_file,
@@ -301,23 +314,6 @@ async fn space_and_pane_commands_print_ids_and_change_the_layout() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bad_direction_or_kind_exits_2() {
-    let d = daemon().await;
-    for args in [
-        ["pane", "split", "p1", "sideways"],
-        ["pane", "kind", "p1", "hologram"],
-    ] {
-        let o = wheel(&d, &args).await;
-        assert_eq!(
-            o.status.code(),
-            Some(2),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&o.stderr)
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn an_unknown_id_or_a_ratio_out_of_range_exits_6() {
     let d = daemon().await;
     let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap();
@@ -431,69 +427,6 @@ async fn term_send_and_read_accept_a_pane_id() {
     assert!(stdout(&read).contains("pane-42"));
 }
 
-/// The scripted fake agent, which belongs to the `wheeld` package, so `cargo test -p wheel-cli`
-/// does not build it. The first caller of each run builds it with the profile and target
-/// directory this test binary was built with, so a test never runs a binary from an earlier build.
-fn fake_agent() -> &'static Path {
-    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    FAKE.get_or_init(|| {
-        let wheel = Path::new(env!("CARGO_BIN_EXE_wheel"));
-        let profile = wheel
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
-        let mut build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-        // This process carries the variables Cargo sets for a crate it runs. Passed on, they reach
-        // this build's build scripts, and ring's watches CARGO_MANIFEST_DIR: ring and every crate
-        // above it would recompile here, and again in the next plain `cargo build`. With them
-        // removed, the build is a no-op once the agent is built; every other variable passes on.
-        for (key, _) in std::env::vars_os() {
-            if key.to_str().is_some_and(set_by_cargo_for_a_crate) {
-                build.env_remove(key);
-            }
-        }
-        build.current_dir(env!("CARGO_MANIFEST_DIR")).args([
-            "build",
-            "-p",
-            "wheeld",
-            "--bin",
-            "wheel-fake-agent",
-        ]);
-        match profile {
-            "debug" => {}
-            "release" => {
-                build.arg("--release");
-            }
-            other => {
-                build.args(["--profile", other]);
-            }
-        }
-        let status = build.status().expect("run cargo to build wheel-fake-agent");
-        assert!(status.success(), "building wheel-fake-agent failed");
-        wheel.with_file_name("wheel-fake-agent")
-    })
-}
-
-/// The variables Cargo sets for a crate it compiles or runs, as the Cargo reference lists them
-/// ("Environment variables Cargo sets for crates"), as opposed to ones a person or config set.
-fn set_by_cargo_for_a_crate(key: &str) -> bool {
-    matches!(
-        key,
-        "CARGO_MANIFEST_DIR"
-            | "CARGO_MANIFEST_PATH"
-            | "CARGO_MANIFEST_LINKS"
-            | "CARGO_CRATE_NAME"
-            | "CARGO_BIN_NAME"
-            | "CARGO_PRIMARY_PACKAGE"
-            | "CARGO_TARGET_TMPDIR"
-            | "CARGO_RUSTC_CURRENT_DIR"
-    ) || key.starts_with("CARGO_PKG_")
-        || key.starts_with("CARGO_BIN_EXE_")
-}
-
 /// A daemon whose agent panes run the scripted fake agent.
 async fn daemon_with_agents() -> Daemon {
     daemon_with_agents_reading(None).await
@@ -501,35 +434,7 @@ async fn daemon_with_agents() -> Daemon {
 
 /// Like `daemon_with_agents`, reading usage from `usage` when given.
 async fn daemon_with_agents_reading(usage: Option<Arc<dyn wheeld::usage::UsageSource>>) -> Daemon {
-    let fake = fake_agent();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "wheel-cli-agent-test-{}-{}",
-        std::process::id(),
-        addr.port()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let token_file = dir.join("token");
-    std::fs::write(&token_file, TOKEN).unwrap();
-    let state = wheeld::AppState::new(
-        "/dev/null".into(),
-        TOKEN.into(),
-        dir.clone(),
-        "/usr/bin/false".into(),
-    );
-    state
-        .setting_set("agent.claude.command", fake.to_str().unwrap(), None, true)
-        .unwrap();
-    state.set_control(format!("ws://{addr}/ws"), token_file.clone(), None);
-    if let Some(usage) = usage {
-        state.set_usage_source(usage);
-    }
-    tokio::spawn(wheeld::serve(listener, state));
-    Daemon {
-        url: format!("ws://{addr}/ws"),
-        token_file,
-    }
+    daemon_with(None, Some(env!("CARGO_BIN_EXE_wheel-fake-agent")), usage).await
 }
 
 /// An agent pane in a space for the temp directory, with `message` as its first message once it
@@ -1004,7 +909,7 @@ async fn config_watch_prints_each_kind_of_settings_broadcast_and_times_out_witho
     let _ = std::fs::remove_dir_all(&support);
     let project = support.join("proj");
     std::fs::create_dir_all(&project).unwrap();
-    let d = daemon_in(support.clone()).await;
+    let d = daemon_with(Some(support.clone()), None, None).await;
 
     // With no space open, a machine write is resolved against none.
     let machine = watch_during(
@@ -1248,8 +1153,29 @@ async fn artifact_new_outside_a_pane_without_space_fails_naming_space() {
     assert!(err.contains("--space"), "{err}");
 }
 
-/// Every artifact is offered to a pane, so neither `artifact new` nor `artifact ls` takes `--pane`:
-/// clap refuses it as an unknown flag (exit 2) before anything reaches wheeld.
+/// Arguments clap refuses exit 2 before the CLI connects, so no daemon is needed. Every artifact is
+/// offered to a pane, so neither `artifact new` nor `artifact ls` takes `--pane`.
+#[test]
+fn clap_refuses_bad_arguments_with_exit_2() {
+    for (args, expect) in [
+        (&["pane", "split", "p1", "sideways"][..], ""),
+        (&["pane", "kind", "p1", "hologram"][..], ""),
+        (&["artifact", "new", "x", "--pane"][..], "unexpected argument '--pane'"),
+        (&["artifact", "ls", "--pane"][..], "unexpected argument '--pane'"),
+    ] {
+        let o = Command::new(env!("CARGO_BIN_EXE_wheel"))
+            .args(["--url", "ws://127.0.0.1:1/ws", "--token-file", "/nonexistent"])
+            .args(args)
+            .env_remove("WHEEL_SPACE")
+            .env_remove("WHEEL_PANE")
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {err}");
+        assert!(err.contains(expect), "{args:?}: {err}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn artifact_new_and_ls_refuse_pane() {
     let d = daemon().await;

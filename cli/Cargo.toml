@@ -7,6 +7,11 @@ edition.workspace = true
 name = "wheel"
 path = "src/main.rs"
 
+# The scripted agent the daemon tests drive, built here so `cargo test -p wheel-cli` has it.
+[[bin]]
+name = "wheel-fake-agent"
+path = "../daemon/src/bin/wheel-fake-agent.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
