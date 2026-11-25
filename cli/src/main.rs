@@ -2135,6 +2135,7 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
         port,
         fingerprint,
         problem,
+        server,
         ..
     } = conn
         .call(ClientMsg::RemoteInfo { req: Some(req) }, req)
@@ -2142,6 +2143,9 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
     else {
         return Err(Fail::Other("unexpected reply to remote_info".into()));
     };
+    if !server.is_empty() {
+        println!("server: {server}");
+    }
     let Some(listen) = listen else {
         println!("remote access is off");
         return Ok(());

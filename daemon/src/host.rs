@@ -162,6 +162,7 @@ impl Probe {
                 .unwrap_or_default(),
             source: env!("WHEELD_SOURCE_HASH").to_string(),
             folders,
+            ..Default::default()
         }
     }
 }

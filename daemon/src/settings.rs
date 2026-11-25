@@ -57,6 +57,8 @@ enum Accepts {
     /// A font family name of letters, digits, spaces and `-_.,+&'()`, or nothing for the
     /// terminal's own font.
     Font,
+    /// A name for people: at most 80 characters with no control characters, or nothing.
+    Name,
     /// `usage.meters` entries: `<agent>:<window>:<meter|full>`, comma separated, or nothing.
     Meters,
     /// `usage.labels` entries: `billing`, `folder`, `email`, comma separated, or nothing.
@@ -99,6 +101,7 @@ impl Accepts {
             Accepts::Roots => roots(value),
             Accepts::Keybind => crate::keybind::take(value),
             Accepts::Font => font(value),
+            Accepts::Name => name(value),
             Accepts::Meters => crate::usage::meters_in(value).map(|_| list_trimmed(value)),
             Accepts::Labels => crate::usage::labels_in(value).map(|l| l.join(",")),
             Accepts::Choice(words) => choice(value, words),
@@ -272,6 +275,15 @@ fn font(value: &str) -> Result<String, String> {
     }
 }
 
+/// A name for people, or nothing.
+fn name(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    match value.chars().count() <= 80 && !value.chars().any(char::is_control) {
+        true => Ok(value.to_string()),
+        false => Err("a name is at most 80 characters with no control characters".into()),
+    }
+}
+
 /// A non-empty command line.
 fn command(value: &str) -> Result<String, String> {
     let value = value.trim();
@@ -432,6 +444,12 @@ pub(crate) const AGENT_DEFAULT: &str = "agent.default";
 /// The key naming the address the remote (TLS) listener binds.
 pub(crate) const REMOTE_LISTEN: &str = "remote.listen";
 
+/// The key holding the server's name for people; empty means the hostname.
+pub(crate) const SERVER_NAME: &str = "server.name";
+
+/// The key holding the system colour of the server's mark; empty means one picked by its id.
+pub(crate) const SERVER_COLOR: &str = "server.color";
+
 /// The key naming the Loki push endpoint the daemon ships its log lines to.
 pub(crate) const LOGS_PUSH_URL: &str = "logs.push_url";
 
@@ -466,6 +484,7 @@ fn machine_only(id: &str) -> bool {
         || id.starts_with("usage.")
         || id.starts_with("agent.")
         || id.starts_with("remote.")
+        || id.starts_with("server.")
         || id.starts_with("status.")
         || id.starts_with("logs.")
         || id.starts_with("push.")
@@ -478,7 +497,7 @@ fn machine_only(id: &str) -> bool {
 /// refused, naming the keys that do exist. A key in a `wheel.toml` that is not one of these is a
 /// key wheel never reads, which `wheel config ls` cannot report because it reports settings, not
 /// file contents — so a typo in a hand-written file is silent, and finding it is reading the file.
-const KEYS: [Key; 69] = [
+const KEYS: [Key; 71] = [
     Key {
         id: HOMEPAGE,
         accepts: Accepts::Page,
@@ -568,6 +587,18 @@ const KEYS: [Key; 69] = [
         accepts: Accepts::Listen,
         default: "",
         help: "The address wheeld also listens on for remote clients over TLS with a self-signed certificate, such as 0.0.0.0:7430; empty means no remote access. Read when wheeld starts, from this machine's file only, by the default instance; another instance (the dev build) reads `remote.<instance>.listen` instead, so it never takes this port; `wheel remote info` shows the certificate fingerprint a client pins.",
+    },
+    Key {
+        id: SERVER_NAME,
+        accepts: Accepts::Name,
+        default: "",
+        help: "This server's name as every paired client shows it, at most 80 characters; empty means the hostname. Read from this machine's file only.",
+    },
+    Key {
+        id: SERVER_COLOR,
+        accepts: Accepts::Choice(&crate::identity::COLOR_SETTING),
+        default: "",
+        help: "The macOS system colour of this server's mark in every paired client (red, orange, yellow, green, mint, teal, cyan, blue, indigo, purple, pink, brown, gray); empty picks one from the server's id. Read from this machine's file only.",
     },
     Key {
         id: STATUS_DOTS,

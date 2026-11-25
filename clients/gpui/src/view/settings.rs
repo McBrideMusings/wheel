@@ -482,7 +482,7 @@ impl Client {
                 }
                 true
             }
-            ServerMsg::Remote { req, listen, addresses, port, fingerprint, problem } => {
+            ServerMsg::Remote { req, listen, addresses, port, fingerprint, problem, .. } => {
                 self.settings.devices.info = Some(model::Remote { listen: listen.clone(), addresses: addresses.clone(), port: *port, fingerprint: fingerprint.clone(), problem: problem.clone() });
                 if self.settings_reqs.pairing_remote == Some(*req) {
                     self.settings_reqs.pairing_remote = None;

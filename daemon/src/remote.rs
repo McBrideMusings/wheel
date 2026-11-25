@@ -143,7 +143,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: `buf` is 256 writable bytes and the length passed is 256.
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
@@ -569,6 +569,7 @@ pub(crate) fn info(state: &AppState, req: u64) -> wheel_proto::ServerMsg {
         port,
         fingerprint,
         problem,
+        server: state.server_id.clone(),
     }
 }
 
