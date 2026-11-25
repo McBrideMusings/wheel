@@ -1158,10 +1158,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case .terminal: return AnyView(EmbeddedTerminal(native: self, hostPane: hostPane, pane: embed.pane))
         case .agentChat: return AnyView(EmbeddedAgentChat(native: self, hostPane: hostPane, pane: embed.pane))
         case .artifact:
-            guard let ws = pluginURL, let client = pages(ws) else { return nil }
+            guard let ws = pluginURL, pages(ws) != nil else { return nil }
             daemonAddress(ws)
-            let embeds = artifactEmbeds ?? ArtifactEmbeds(daemon: pageDaemon, send: { [weak client] in client?.send($0) },
-                                                          nextReq: { [weak client] in client?.req() ?? 0 })
+            // Through `pageClient`, not the client at hand: `disconnect` replaces it, and a held one would swallow every send.
+            let embeds = artifactEmbeds ?? ArtifactEmbeds(daemon: pageDaemon, send: { [weak self] in self?.pageClient?.send($0) },
+                                                          nextReq: { [weak self] in self?.pageClient?.req() ?? 0 })
             artifactEmbeds = embeds
             var cwd = ""
             if case let .string(dir)? = panes[hostPane]?.plugin?.context["cwd"] { cwd = dir }
@@ -1170,8 +1171,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     /// Video stream `stream` inside plugin pane `hostPane`'s page (ADR-0053), asked for over the page connection.
     func streamView(_ stream: String, input: Bool, hostPane: String) -> AnyView? {
-        guard let ws = pluginURL, let client = pages(ws) else { return nil }
-        let streams = videoStreams ?? VideoStreams(send: { [weak client] in client?.send($0) }, nextReq: { [weak client] in client?.req() ?? 0 })
+        guard let ws = pluginURL, pages(ws) != nil else { return nil }
+        // Through `pageClient`, not the client at hand: `disconnect` replaces it, and a held one would swallow every request.
+        let streams = videoStreams ?? VideoStreams(send: { [weak self] in self?.pageClient?.send($0) }, nextReq: { [weak self] in self?.pageClient?.req() ?? 0 })
         videoStreams = streams
         return streams.view(pane: hostPane, stream: stream, input: input)
     }
