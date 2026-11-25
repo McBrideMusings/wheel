@@ -253,7 +253,20 @@ impl Client {
                         let Some(id) = q("id") else { return refuse(BAD, "id= is required") };
                         self.select_settings_project(&id);
                     }
-                    _ => return refuse(BAD, "action must be open, close, tab or project"),
+                    Some("speech") => {
+                        use crate::speech::Cmd;
+                        let model = q("model").and_then(|f| crate::speech_models::named(&f)).map(|m| m.folder);
+                        let cmd = match (q("do").as_deref(), model) {
+                            (Some("cancel"), _) => Cmd::ModelCancel,
+                            (Some("download"), Some(f)) => Cmd::ModelDownload(f),
+                            (Some("remove"), Some(f)) => Cmd::ModelRemove(f),
+                            (Some("choose"), Some(f)) => Cmd::ModelChoose(f),
+                            _ => return refuse(BAD, "do= must be download, remove, choose (with model= a catalogue folder) or cancel"),
+                        };
+                        self.press(format!("speech {cmd:?}"));
+                        crate::speech::send(cmd);
+                    }
+                    _ => return refuse(BAD, "action must be open, close, tab, project or speech"),
                 }
                 None
             }
@@ -779,7 +792,11 @@ impl Client {
             "session": self.voice.as_ref().map(|s| json!({"agent": s.agent, "pane": s.pane, "pill": s.pill, "holder": s.holder, "sent": s.sent})), "last_user": last_user});
         out["dictation"] = json!({"phase": d.phase.name(), "owner": d.owner, "window": d.window, "problem": d.problem, "problem_owner": d.problem_owner,
             "heard": d.heard.as_ref().map(|h| json!({"owner": h.owner, "window": h.window, "text": h.text, "id": h.id})),
-            "model_on_disk": crate::speech_models::PARAKEET.on_disk(&crate::speech_models::root())});
+            "model_on_disk": self.speech.manage.chosen.on_disk(&crate::speech_models::root())});
+        let (m, root) = (&self.speech.manage, crate::speech_models::root());
+        out["speech_models"] = json!({"chosen": m.chosen.folder, "offered": m.offered.map(|o| o.folder), "problem": m.problem,
+            "downloading": m.downloading.map(|(d, f)| json!({"model": d.folder, "fraction": f})),
+            "models": crate::speech_models::ALL.iter().map(|x| json!({"folder": x.folder, "name": x.name, "size": x.size(), "source": x.source, "dir": x.dir(&root), "on_disk": x.on_disk(&root)})).collect::<Vec<_>>()});
         out
     }
 }

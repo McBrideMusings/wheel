@@ -542,6 +542,16 @@ struct SpaceCarousel: View {
             Log.info("open settings \(tab.rawValue)")
             openSettings(tab)
         }
+        // Settings › Speech actions for a check: "download:<id>" or "remove:<id>", ids v3, v2, vad.
+        if let spec = env["WHEEL_SPEECH_DO"], let colon = spec.firstIndex(of: ":"),
+           let model = SpeechModels.all.first(where: { $0.id == String(spec[spec.index(after: colon)...]) }) {
+            Log.info("speech do \(spec)")
+            switch spec[..<colon] {
+            case "download": SpeechModels.shared.download(model)
+            case "remove": SpeechModels.shared.remove(model)
+            default: break
+            }
+        }
         if let spec = env["WHEEL_SET"], let colon = spec.firstIndex(of: ":"), let eq = spec.firstIndex(of: "="), colon < eq,
            let layer = SettingField.Layer(rawValue: String(spec[..<colon])) {
             if !model.settingsLoaded { model.askSettings(for: model.activeSpace?.id) }

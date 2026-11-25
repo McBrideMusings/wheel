@@ -1,16 +1,18 @@
 import SwiftUI
 import WheelKit
+import WheelUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case global = "Global"
     case project = "Project"
+    case speech = "Speech"
 
     var id: String { rawValue }
 }
 
 /// The phone's Settings: the two `wheel.toml` layers the Mac's Settings window edits, written
-/// through the same `setting_set` and `setting_unset` ops, on the wheeld of the session shown. The
-/// title names that server, in its mark with several (ADR-0057).
+/// through the same `setting_set` and `setting_unset` ops, on the wheeld of the session shown, and
+/// the phone's own speech models. The title names that server, in its mark with several (ADR-0057).
 struct SettingsView: View {
     let model: PhoneModel
     let servers: ServerList
@@ -30,6 +32,7 @@ struct SettingsView: View {
                 switch tab {
                 case .global: SettingsList(model: model, layer: .global)
                 case .project: projectTab
+                case .speech: SpeechList()
                 }
             }
             .navigationTitle("Settings")
@@ -136,5 +139,97 @@ private struct SettingRow: View {
         case .global: stored == nil ? "\(setting.help) Not set: wheel's default." : "\(setting.help) Default: \(setting.default)."
         case .project: stored == nil ? "\(setting.help) Not set here: the global value." : "\(setting.help) Global: \(setting.global)."
         }
+    }
+}
+
+/// Settings › Speech: the Parakeet dictation and voice mode use on this phone, and every model with
+/// its size, source, folder and whether it is here, each with Download or Redownload and Remove.
+/// It runs on the phone alone, so it works with the Mac out of reach.
+private struct SpeechList: View {
+    @State private var models = SpeechModels.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Button("Hear the voice") { models.hearVoice() }
+                    .disabled(Voice.shared.phase != .off)
+                    .accessibilityIdentifier("speech-hear-voice")
+            } header: {
+                Text("Voice")
+            } footer: {
+                Text("Voice mode speaks replies with the iPhone’s default voice for your language (Settings › Accessibility › Spoken Content).")
+            }
+            Section {
+                Picker("Model", selection: Binding(get: { models.chosen.id },
+                                                            set: { id in models.choose(SpeechModels.speechToText.first { $0.id == id } ?? SpeechModels.v3) })) {
+                    ForEach(SpeechModels.speechToText) { Text($0.name).tag($0.id) }
+                }
+                .disabled(models.inUse(models.chosen) != nil || models.busy)
+                .accessibilityIdentifier("speech-choice")
+            } header: {
+                Text("Speech to text")
+            } footer: {
+                Text(models.inUse(models.chosen).map { "The model cannot change now: \($0)" }
+                     ?? "v3 is multilingual. v2 hears English only, returns text sooner (58 ms against 92 ms after you stop) and gets fewer developer terms right (87% against 92%) in Wheel’s benchmark.")
+            }
+            Section("Models") {
+                ForEach(SpeechModels.all) { SpeechRow(models: models, model: $0) }
+            }
+            if let problem = models.problem {
+                Section { Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+            }
+        }
+        .confirmationDialog("Download \(models.offered?.name ?? "")?", isPresented: Binding(get: { models.offered != nil && models.downloading == nil },
+                                                                                            set: { if !$0 && models.downloading == nil { models.cancel() } }),
+                            titleVisibility: .visible) {
+            Button("Download") { if let offered = models.offered { models.download(offered) } }
+            Button("Cancel", role: .cancel) { models.cancel() }
+        } message: {
+            if let offered = models.offered {
+                Text("\(offered.name) is not on this iPhone. Wheel downloads it (\(offered.size)) once from \(offered.source) into \(SpeechModels.folder(of: offered).path), then uses it.")
+            }
+        }
+    }
+}
+
+private struct SpeechRow: View {
+    let models: SpeechModels
+    let model: SpeechModel
+
+    var body: some View {
+        let here = models.onDisk(model)
+        let loading = models.downloading == model
+        let held = models.inUse(model)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(model.name).font(.headline)
+                Spacer()
+                Text(model.size).font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Text(model.role + (model == models.chosen ? ", in use" : "")).font(.caption).foregroundStyle(.secondary)
+            Text("From \(model.source)").font(.caption).foregroundStyle(.secondary)
+            Text(SpeechModels.folder(of: model).path).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+            if loading {
+                ProgressView(value: models.progress) { Text("Downloading, \(Int(models.progress * 100))%").font(.caption) }
+            } else {
+                Text(here ? "On this iPhone" : "Not downloaded").font(.caption).foregroundStyle(here ? .green : .secondary)
+            }
+            HStack {
+                if loading {
+                    Button("Cancel") { models.cancel() }
+                } else {
+                    Button(here ? "Redownload" : "Download") { models.download(model) }
+                        .disabled(models.busy || held != nil)
+                    if here {
+                        Button("Remove", role: .destructive) { models.remove(model) }
+                            .disabled(held != nil)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            if let held { Text(held).font(.caption).foregroundStyle(.secondary) }
+        }
+        .accessibilityIdentifier("speech-model-\(model.id)")
     }
 }

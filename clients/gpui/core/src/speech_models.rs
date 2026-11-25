@@ -62,6 +62,23 @@ pub const PARAKEET: Model = Model {
     ],
 };
 
+/// Speech to text in English only: Parakeet TDT 0.6b v2, faster than v3 and with lower term recall
+/// (`docs/voice-mode/stt-engines.md`).
+pub const PARAKEET_V2: Model = Model {
+    name: "Parakeet TDT 0.6b v2",
+    source: "huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
+    folder: "parakeet-v2",
+    files: &[
+        File { name: "encoder.int8.onnx", url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/encoder.int8.onnx", bytes: 652_282_309, sha256: "92a10bd9c23936ea0566c29f963bc57c2a5df4261b6a8921c39abea66557ca8b" },
+        File { name: "decoder.int8.onnx", url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/decoder.int8.onnx", bytes: 7_257_753, sha256: "4d097bae3bac5c96018d5293ba39f1b657296102b142affda40378f38b020f41" },
+        File { name: "joiner.int8.onnx", url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/joiner.int8.onnx", bytes: 1_739_080, sha256: "77a29f3e5ac7d37074e0af465391b80f314015d5b97f0f90c6c7767f1d56f428" },
+        File { name: "tokens.txt", url: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/tokens.txt", bytes: 9_384, sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d" },
+    ],
+};
+
+/// The speech-to-text models the person picks between, the first being the one used until they pick.
+pub const SPEECH_TO_TEXT: [Model; 2] = [PARAKEET, PARAKEET_V2];
+
 /// When the person has stopped speaking: Silero VAD.
 pub const SILERO_VAD: Model = Model {
     name: "Silero VAD",
@@ -74,6 +91,38 @@ pub const SILERO_VAD: Model = Model {
         sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
     }],
 };
+
+/// Every model Settings › Speech lists, in its order.
+pub const ALL: [Model; 3] = [PARAKEET, PARAKEET_V2, SILERO_VAD];
+
+/// The catalogue's model kept in `folder`.
+pub fn named(folder: &str) -> Option<Model> {
+    ALL.into_iter().find(|m| m.folder == folder)
+}
+
+/// The file under the speech folder that holds the chosen speech-to-text model's folder name.
+const CHOICE: &str = "speech-to-text";
+
+/// The speech-to-text model dictation and voice mode use: the one last chosen, else v3.
+pub fn chosen(root: &Path) -> Model {
+    let folder = std::fs::read_to_string(root.join(CHOICE)).unwrap_or_default();
+    SPEECH_TO_TEXT.into_iter().find(|m| m.folder == folder.trim()).unwrap_or(PARAKEET)
+}
+
+/// Keep `model` as the chosen speech-to-text model across launches.
+pub fn choose(root: &Path, model: &Model) -> Result<(), String> {
+    std::fs::create_dir_all(root).map_err(|e| format!("could not make {}: {e}", root.display()))?;
+    std::fs::write(root.join(CHOICE), model.folder).map_err(|e| format!("could not save the choice in {}: {e}", root.display()))
+}
+
+/// Delete `model`'s folder, and any download of it a crash left half done.
+pub fn remove(root: &Path, model: &Model) -> Result<(), String> {
+    let _ = std::fs::remove_dir_all(root.join(format!(".{}.partial", model.folder)));
+    match std::fs::remove_dir_all(model.dir(root)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not remove {}: {e}", model.dir(root).display())),
+        _ => Ok(()),
+    }
+}
 
 /// The speech folder: `WHEEL_SPEECH_MODELS` when set (a check's), else
 /// `~/Library/Application Support/Wheel/Speech`.
@@ -183,6 +232,24 @@ mod tests {
         assert_eq!(SILERO_VAD.size(), "0.6 MB");
         assert!(PARAKEET.files.iter().all(|f| f.url.ends_with(f.name) && f.url.starts_with("https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/")));
         assert!(PARAKEET.described().contains("huggingface.co/csukuangfj"));
+    }
+
+    #[test]
+    fn v2_is_pinned_and_the_choice_persists_and_remove_frees_the_folder() {
+        assert_eq!(PARAKEET_V2.bytes(), 661_288_526);
+        assert!(PARAKEET_V2.files.iter().all(|f| f.url.ends_with(f.name) && f.url.contains("parakeet-tdt-0.6b-v2-int8/resolve/main/") && f.sha256.len() == 64));
+        assert_eq!(ALL.map(|m| m.folder), ["parakeet", "parakeet-v2", "silero-vad"]);
+        let root = scratch("choice");
+        assert_eq!(chosen(&root), PARAKEET);
+        choose(&root, &PARAKEET_V2).unwrap();
+        assert_eq!(chosen(&root), PARAKEET_V2);
+        std::fs::write(root.join(CHOICE), "silero-vad").unwrap();
+        assert_eq!(chosen(&root), PARAKEET, "the VAD is never the speech-to-text model");
+        install(&root, &TINY, &mut |_| Ok(Box::new(&b"hello"[..])), &mut |_| {}, &AtomicBool::new(false)).unwrap();
+        remove(&root, &TINY).unwrap();
+        assert!(!TINY.on_disk(&root) && !root.join("tiny").exists());
+        remove(&root, &TINY).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

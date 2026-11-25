@@ -414,3 +414,23 @@ fn feed(heard: Vec<f32>, session: u64, stop: Arc<AtomicBool>, muted: Arc<AtomicB
         })
         .expect("the voice stand-in thread starts");
 }
+
+/// What a voice-mode reply sounds like, from Settings › Speech: the same synthesizer and default
+/// utterance voice mode writes its replies with, played straight out, with no microphone open.
+pub struct Preview(Retained<AVSpeechSynthesizer>);
+
+impl Preview {
+    pub fn new() -> Self {
+        // SAFETY: on the main thread.
+        Preview(unsafe { AVSpeechSynthesizer::new() })
+    }
+
+    /// Speak `text`, cutting off a sample still playing.
+    pub fn speak(&self, text: &str) {
+        // SAFETY: on the main thread.
+        unsafe {
+            self.0.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate);
+            self.0.speakUtterance(&AVSpeechUtterance::speechUtteranceWithString(&NSString::from_str(text)));
+        }
+    }
+}

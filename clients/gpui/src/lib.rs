@@ -1,5 +1,5 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
-pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, speech_models, spoken, strip, toasts, topic, transcript, tray, voice, windows};
+pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, speech_models, speech_settings, spoken, strip, toasts, topic, transcript, tray, voice, windows};
 pub mod actions;
 pub mod browser;
 pub mod edit_menu;
@@ -194,7 +194,7 @@ pub fn create_window(
                 if let Some(speech) = &speech {
                     cx.observe(speech, |client: &mut view::Client, speech, cx| {
                         let s = speech.read(cx);
-                        if client.on_speech(&s.dictation, &s.voice) {
+                        if client.on_speech(&s.dictation, &s.voice, &s.manage) {
                             cx.notify();
                         }
                     })
@@ -202,6 +202,11 @@ pub fn create_window(
                 }
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
+                // A window opened after a choice in Settings › Speech starts with that choice.
+                if let Some(speech) = &speech {
+                    let s = speech.read(cx);
+                    client.on_speech(&s.dictation, &s.voice, &s.manage);
+                }
                 client.publish();
                 client
             })

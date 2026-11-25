@@ -31,6 +31,7 @@ pub mod server;
 pub mod settings;
 pub mod sidebar;
 pub mod speech_models;
+pub mod speech_settings;
 pub mod spoken;
 pub mod status;
 pub mod strip;
