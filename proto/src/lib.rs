@@ -10,6 +10,8 @@
 
 mod finder;
 mod ops;
+#[cfg(feature = "tls")]
+pub mod tls;
 pub use finder::TextFinder;
 pub use ops::{op_of, ops, Mismatch, Offer, Refused, BREAKS, COMPAT};
 

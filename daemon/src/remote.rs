@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
@@ -56,13 +55,7 @@ struct Identity {
     key: PrivateKeyDer<'static>,
 }
 
-/// SHA-256 of a DER certificate, lowercase hex: what a client pins.
-pub fn fingerprint(cert: &[u8]) -> String {
-    Sha256::digest(cert)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
+pub use wheel_proto::tls::fingerprint;
 
 /// The identity saved in `dir`, made first if either file is missing.
 fn identity(dir: &Path) -> anyhow::Result<Identity> {
