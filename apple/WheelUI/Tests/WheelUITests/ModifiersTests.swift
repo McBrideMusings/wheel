@@ -40,4 +40,12 @@ import WheelKit
         #expect(paneDefaultHighlight("Button", try props(#"{}"#)) == nil)
         #expect(paneDefaultHighlight("Text", try props(#"{"variant": "borderless"}"#)) == nil)
     }
+
+    @Test func anAnimationIsACurveDurationAndDelay() throws {
+        #expect(paneAnimation(try value(#"{"curve": "easeOut", "duration": 0.4, "delay": 3, "value": false}"#)) == .easeOut(duration: 0.4).delay(3))
+        #expect(paneAnimation(try value(#"{"duration": 0.2, "delay": 0}"#)) == .easeInOut(duration: 0.2))
+        #expect(paneAnimation(try value(#"{}"#)) == .easeInOut(duration: 0.35))
+        #expect(paneAnimation(try value(#"{"curve": "bouncy"}"#)) == nil)
+        #expect(paneAnimation(try value("1")) == nil)
+    }
 }
