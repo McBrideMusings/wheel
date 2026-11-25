@@ -68,6 +68,7 @@ impl Router {
     /// A new socket opened: what the last one held is gone.
     pub fn reset(&mut self) {
         self.held = Held::default();
+        self.back.clear();
     }
 
     pub fn join(&mut self, n: u32, events: fmpsc::UnboundedSender<Event>) {
@@ -105,6 +106,13 @@ impl Router {
             out.extend(self.refused(id, n, "not shown"));
         }
         out
+    }
+
+    /// Subscriber `n`'s events closed without a leave (a window dropped without shutting down): it
+    /// leaves all the same, and the frames that undo what only it held wait in [`Router::take_back`].
+    pub fn gone(&mut self, n: u32) {
+        let undo = self.leave(n);
+        self.back.extend(undo);
     }
 
     fn procs_change(&mut self) -> Option<String> {
@@ -374,6 +382,22 @@ mod tests {
         assert_eq!(sent(r.outgoing(1, r#"{"op":"procs_watch","space":"s1"}"#))["space"], "s1");
         assert_eq!(sent(r.outgoing(2, r#"{"op":"procs_watch","space":"s2"}"#))["space"], "s2");
         assert_eq!(r.leave(2), vec![json!({"op":"procs_watch","space":"s1"}).to_string()]);
+    }
+
+    #[test]
+    fn a_window_dropped_without_leaving_lets_go_of_what_only_it_held() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
+        sent(r.outgoing(2, r#"{"op":"feed_subscribe","req":3,"pane":"p","feed":"q","params":{}}"#));
+        r.gone(2);
+        assert!(!r.subscribers.contains_key(&2));
+        let back: Vec<Value> = r.take_back().iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(back, [json!({"op":"agent_detach","agent":"a"}), json!({"op":"feed_unsubscribe","pane":"p","feed":"q","params":{}})]);
+        // Frames owed on a socket that closed are not sent on the next one.
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"b"}"#));
+        r.gone(1);
+        r.reset();
+        assert!(r.take_back().is_empty());
     }
 
     #[test]

@@ -276,15 +276,20 @@ struct Hub {
     outage: Option<Event>,
 }
 impl Hub {
+    /// A subscriber whose events are gone leaves through the router, so wheeld lets go of what
+    /// only it held ([`crate::route::Router::gone`]).
     fn tell(&mut self, n: u32, event: Event) {
         if let Some(events) = self.router.subscribers.get(&n)
             && events.unbounded_send(event).is_err()
         {
-            self.router.subscribers.remove(&n);
+            self.router.gone(n);
         }
     }
     fn broadcast(&mut self, event: impl Fn() -> Event) {
-        self.router.subscribers.retain(|_, events| events.unbounded_send(event()).is_ok());
+        let gone: Vec<u32> = self.router.subscribers.iter().filter(|(_, events)| events.unbounded_send(event()).is_err()).map(|(n, _)| *n).collect();
+        for n in gone {
+            self.router.gone(n);
+        }
     }
     fn outage_again(&self) -> Option<Event> {
         match &self.outage {
@@ -350,6 +355,14 @@ fn write(ws: &mut Socket, unsent: &mut bool, text: String) -> Result<(), Ended> 
         }
         Err(_) => Err(Ended::Lost { was_up: true, reason: Event::Down("wheeld closed the socket".into()) }),
     }
+}
+
+/// Send what the router owes wheeld: answers it gave itself, and what a dropped subscriber held.
+fn owed(hub: &mut Hub, ws: &mut Socket, unsent: &mut bool) -> Result<(), Ended> {
+    for text in hub.router.take_back() {
+        write(ws, unsent, text)?;
+    }
+    Ok(())
 }
 
 fn would_block(e: &tungstenite::Error) -> bool {
@@ -474,6 +487,11 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<Out>, woken: &std::os:
                     if let Err(ended) = take(hub, out, live) {
                         return ended;
                     }
+                    if offer.is_some()
+                        && let Err(ended) = owed(hub, &mut ws, &mut unsent)
+                    {
+                        return ended;
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return Ended::ClientGone,
@@ -514,10 +532,8 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<Out>, woken: &std::os:
                     for (n, message) in hub.router.incoming(message, &t) {
                         hub.tell(n, Event::Message(Box::new(message)));
                     }
-                    for text in hub.router.take_back() {
-                        if let Err(ended) = write(&mut ws, &mut unsent, text) {
-                            return ended;
-                        }
+                    if let Err(ended) = owed(hub, &mut ws, &mut unsent) {
+                        return ended;
                     }
                 }
                 Ok(Message::Close(_)) => return lost(offer.is_some(), "wheeld closed the socket".into()),
@@ -653,6 +669,37 @@ pub(crate) mod tests {
         assert!(text.contains(&format!("\"req\":{}", crate::route::join(1, 9))), "the first subscriber's req goes out rewritten: {text}");
         // Inside the 30 ms read timeout this replaced, with room for a loaded machine.
         assert!(at.duration_since(sent) < Duration::from_millis(25), "the frame waited {:?}", at.duration_since(sent));
+    }
+
+    #[test]
+    fn a_subscriber_dropped_without_leaving_detaches_its_agent_on_wheeld() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (heard, heard_rx) = mpsc::channel::<String>();
+        let (poke, poked) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            ws.read().unwrap();
+            ws.send(Message::text(status_frame(COMPAT))).unwrap();
+            let Ok(Message::Text(t)) = ws.read() else { return };
+            let _ = heard.send(t.to_string());
+            // The subscriber is gone now: a broadcast is what finds it gone.
+            poked.recv().unwrap();
+            ws.send(Message::text(marker_frame(7))).unwrap();
+            while let Ok(Message::Text(t)) = ws.read() {
+                let _ = heard.send(t.to_string());
+            }
+        });
+        let (endpoint, _) = endpoint(port, "t");
+        let (_held, out, mut events) = open(endpoint);
+        assert!(matches!(next(&mut events), Event::Up(_)));
+        out.send(r#"{"op":"agent_attach","agent":"a"}"#.to_owned()).unwrap();
+        assert!(heard_rx.recv_timeout(Duration::from_secs(5)).unwrap().contains("agent_attach"));
+        drop(events);
+        poke.send(()).unwrap();
+        let detach: serde_json::Value = serde_json::from_str(&heard_rx.recv_timeout(Duration::from_secs(5)).expect("no agent_detach reached wheeld")).unwrap();
+        assert_eq!(detach, json!({"op":"agent_detach","agent":"a"}));
     }
 
     #[test]
