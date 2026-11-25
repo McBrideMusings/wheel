@@ -11,8 +11,7 @@ final class PushMenuUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
     func testPushToggle() throws {
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
+        app = .paired(try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON"))
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))

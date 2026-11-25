@@ -15,8 +15,7 @@ final class ModeUITests: XCTestCase {
 
     func testModeMenu() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         // The ⋯, not the mode menu, so a base build from before the mode menu passes this too.

@@ -17,8 +17,7 @@ final class TitleMenuUITests: XCTestCase {
 
     func testTitleMenu() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         let title = app.buttons["space switcher"]
@@ -68,9 +67,7 @@ final class TitleMenuUITests: XCTestCase {
         expectTitle("wheel", session: "wheel")
         app.swipeLeft()
         sync("second-pane")
-        app.terminate()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = nil
-        app.launch()
+        app.relaunchFromKeychain()
         XCTAssertTrue(title.waitForExistence(timeout: 40))
         expectTitle("wheel", session: "wheel")
         sync("relaunched")

@@ -30,6 +30,11 @@ final class ServerList {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
         if let marks = env["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
+        // A UI test starts from no paired server: the simulator's Keychain outlives an uninstall.
+        if env["WHEEL_FORGET_SERVERS"] != nil {
+            for pairing in PairingStore.all() { PairingStore.remove(pairing) }
+            Log.info("servers: forgot every pairing (WHEEL_FORGET_SERVERS)")
+        }
         #endif
         for pairing in PairingStore.all() where !servers.contains(where: { $0.pairing?.url == pairing.url }) {
             let model = make()

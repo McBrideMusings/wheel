@@ -12,8 +12,7 @@ final class OrchestratorUITests: XCTestCase {
 
     func testOrchestratorMode() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))

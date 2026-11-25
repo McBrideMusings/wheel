@@ -18,8 +18,7 @@ final class CarouselUITests: XCTestCase {
     func testCarousel() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
         let tray = try XCTUnwrap(env["WHEEL_TRAY"], "WHEEL_TRAY").split(separator: ",").map(String.init)
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")

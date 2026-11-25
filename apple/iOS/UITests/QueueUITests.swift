@@ -17,8 +17,7 @@ final class QueueUITests: XCTestCase {
         let ids = try String(contentsOfFile: "\(syncDir)/ids", encoding: .utf8).split(separator: " ").map(String.init)
         XCTAssertEqual(ids.count, 3, "the script wrote three item ids")
         let (bug, question, done) = (ids[0], ids[1], ids[2])
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))

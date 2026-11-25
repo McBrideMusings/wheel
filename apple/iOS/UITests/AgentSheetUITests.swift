@@ -21,8 +21,7 @@ final class AgentSheetUITests: XCTestCase {
         let names = try XCTUnwrap(env["WHEEL_AGENTS"], "WHEEL_AGENTS").split(separator: ",").map(String.init)
         XCTAssertEqual(names.count, 5)
         let (replied, working, popped, backgrounded, alpha) = (names[0], names[1], names[2], names[3], names[4])
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")

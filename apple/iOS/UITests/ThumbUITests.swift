@@ -12,10 +12,17 @@ final class ThumbUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Rects match to half a point: XCUI frames carry float noise from the screen scale.
+    private func assertSameRects(_ a: [CGRect], _ b: [CGRect], _ message: String, line: UInt = #line) {
+        let close = a.count == b.count && zip(a, b).allSatisfy { x, y in
+            abs(x.minX - y.minX) < 0.5 && abs(x.minY - y.minY) < 0.5 && abs(x.width - y.width) < 0.5 && abs(x.height - y.height) < 0.5
+        }
+        XCTAssertTrue(close, "\(message): \(a) vs \(b)", line: line)
+    }
+
     func testThumb() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         let title = app.buttons["space switcher"]
@@ -57,16 +64,16 @@ final class ThumbUITests: XCTestCase {
         app.buttons["session Mobile"].tap()
         XCTAssertTrue(app.buttons["space app"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["space wheel"].exists, "Main's spaces leave the list")
-        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move in Mobile")
+        assertSameRects(controls.map(rect), mainRects, "the controls do not move in Mobile")
         let bar = app.descendants(matching: .any).matching(identifier: "session bar").firstMatch
         // A swipe along the bar goes on to Games, and back.
         bar.swipeLeft()
         XCTAssertEqual(app.buttons["session Games"].value as? String, "shown", "a swipe along the bar shows Games")
-        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move in Games")
+        assertSameRects(controls.map(rect), mainRects, "the controls do not move in Games")
         bar.swipeRight()
         bar.swipeRight()
         XCTAssertEqual(app.buttons["session Main"].value as? String, "shown", "swipes along the bar return to Main")
-        XCTAssertEqual(controls.map(rect), mainRects, "the controls do not move back in Main")
+        assertSameRects(controls.map(rect), mainRects, "the controls do not move back in Main")
 
         // Search filters the shown session.
         let search = app.textFields["space search"]
@@ -99,9 +106,9 @@ final class ThumbUITests: XCTestCase {
         XCTAssertEqual(allows.count, 3, "each waiting agent has Allow inline")
         XCTAssertEqual(list.buttons.matching(identifier: "tile deny").count, 3, "each waiting agent has Deny inline")
         shot("agents")
-        XCTAssertEqual(["tab spaces", "tab agents", "session Main", "session Mobile", "session Games"].map(rect), Array(mainRects[1...]),
+        assertSameRects(["tab spaces", "tab agents", "session Main", "session Mobile", "session Games"].map(rect), Array(mainRects[1...]),
                        "the tab control and the session bar keep their rects in the Agents tab")
-        XCTAssertEqual(rect("agent scope").minY, mainRects[0].minY, accuracy: 4, "the filter takes the search field's slot")
+        XCTAssertEqual(rect("agent scope").midY, mainRects[0].midY, accuracy: 1, "the filter takes the search field's slot (same centre; the two differ in height)")
 
         app.buttons["This space"].tap()
         XCTAssertTrue(waitUntil { agentRows.count == 2 }, "This space lists beta's two agents, has \(agentRows.count)")

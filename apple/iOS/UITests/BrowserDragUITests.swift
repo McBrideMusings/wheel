@@ -17,8 +17,7 @@ final class BrowserDragUITests: XCTestCase {
 
     func testBrowserKeepsSidewaysDrags() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launchEnvironment["WHEEL_NOTIFICATIONS"] = "off"
         app.launch()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")

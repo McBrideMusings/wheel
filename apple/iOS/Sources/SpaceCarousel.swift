@@ -15,6 +15,8 @@ struct SpaceCarousel: View {
     @State private var keyboardUp = false
     @State private var sheetTab = ThumbTab.spaces
     @State private var sheetScope = AgentScope.all
+    /// The Thumb sheet's first detent: as tall as its spaces and controls (TitleMenu measures it).
+    @State private var sheetFit: CGFloat = 420
     @State private var paletteOpen = false
     /// The eye button's sheet: every agent of the shown session.
     @State private var agentsOpen = false
@@ -311,11 +313,11 @@ struct SpaceCarousel: View {
                 // The space switcher is a sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
-                    TitleMenu(model: model, servers: servers, tab: $sheetTab, scope: $sheetScope) { request in
+                    TitleMenu(model: model, servers: servers, tab: $sheetTab, scope: $sheetScope, fit: $sheetFit) { request in
                         queued = request
                         titleOpen = false
                     }
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.height(sheetFit), .large])
                     .presentationDragIndicator(.visible)
                 }
                 // Leaves the bar's buttons on the right uncovered.
