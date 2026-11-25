@@ -2329,6 +2329,9 @@ pub enum ServerMsg {
         /// Why the listener is not running although `listen` is set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         problem: Option<String>,
+        /// This wheeld's id (`status.host.id`), which a client pairing with it records.
+        #[serde(default)]
+        server: String,
     },
     /// A pairing token, in reply to `pairing_issue`. It works once and stops working at
     /// `expires_ms` (unix ms).
@@ -2352,6 +2355,9 @@ pub enum ServerMsg {
     Paired {
         device: String,
         credential: String,
+        /// This wheeld's id (`status.host.id`), which the device records beside its credential.
+        #[serde(default)]
+        server: String,
     },
     /// A remote client connected, whether it paired just now or presented its credential. Sent
     /// to every connection.
@@ -4317,6 +4323,20 @@ pub struct HostAccess {
     /// An app compares it with the bundled wheeld's to tell whether a restart changes the server.
     #[serde(default)]
     pub source: String,
+    /// This wheeld's id: a random UUID written to `server-id` in its support directory on first
+    /// start, never changed after (ADR-0057). Clients key a server by it.
+    #[serde(default)]
+    pub id: String,
+    /// The server's name for people: the `server.name` setting, or the hostname when it is empty.
+    #[serde(default)]
+    pub name: String,
+    /// The macOS system colour of the server's mark: the `server.color` setting, or one picked by
+    /// the id when it is empty.
+    #[serde(default)]
+    pub color: String,
+    /// `<os>_<arch>` in Go's words, such as `darwin_arm64` or `linux_amd64`.
+    #[serde(default)]
+    pub platform: String,
     /// One row per folder, in a fixed order.
     pub folders: Vec<FolderAccess>,
 }

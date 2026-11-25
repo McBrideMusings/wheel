@@ -126,6 +126,9 @@ const KEPT_AGENT_RETRY_MOST: Duration = Duration::from_secs(300);
 
 pub struct AppState {
     started: Instant,
+    /// This wheeld's id (`identity::load_or_create`); empty only when the support directory
+    /// cannot be written, which `main` refuses to run with.
+    pub(crate) server_id: String,
     /// The paired devices and the pairing tokens waiting to be used.
     pub(crate) devices: crate::devices::Devices,
     /// The signing token for Apple's push service.
@@ -378,9 +381,14 @@ impl AppState {
         let (revoked, _) = broadcast::channel(16);
         let (stopping, _) = broadcast::channel(1);
         let logship = crate::logship::Logship::new(&instance_dir, &log_path);
+        let server_id = crate::identity::load_or_create(&instance_dir).unwrap_or_else(|e| {
+            tracing::error!(dir = %instance_dir.display(), error = %e, "cannot write server-id");
+            String::new()
+        });
         Arc::new_cyclic(|me| AppState {
             logship,
             started: Instant::now(),
+            server_id,
             devices,
             revoked,
             stopping,
@@ -1046,9 +1054,10 @@ impl AppState {
             .unwrap_or_default();
         // The reply waits at most 300 ms for a guarded folder that has not answered (host.rs); keep
         // even that off the async threads.
-        let host = tokio::task::spawn_blocking(crate::host::access)
+        let mut host = tokio::task::spawn_blocking(crate::host::access)
             .await
             .unwrap_or_default();
+        self.identify(&mut host);
         let requests = self.requests.lock().unwrap().clone();
         let voice = self.voiced.lock().unwrap().as_ref().map(|(_, a)| a.name.clone());
         ServerMsg::Status {
@@ -1077,6 +1086,30 @@ impl AppState {
             host: Box::new(host),
             streams: self.streams.statuses(),
         }
+    }
+
+    /// This wheeld's id, `status.host.id`.
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// Fill in who this wheeld is: its id, its name and colour from this machine's settings, and
+    /// its platform (ADR-0057).
+    fn identify(&self, host: &mut wheel_proto::HostAccess) {
+        use crate::settings::{SERVER_COLOR, SERVER_NAME};
+        host.id = self.server_id.clone();
+        host.name = self
+            .setting(SERVER_NAME, None)
+            .ok()
+            .filter(|n| !n.is_empty())
+            .or_else(crate::remote::hostname)
+            .unwrap_or_default();
+        host.color = self
+            .setting(SERVER_COLOR, None)
+            .ok()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| crate::identity::default_color(&self.server_id).to_string());
+        host.platform = crate::identity::platform();
     }
 
     /// The log store's push URL from this machine's settings; empty when none is set.
@@ -1250,6 +1283,7 @@ async fn connection(
                 .send(ServerMsg::Paired {
                     device: id.clone(),
                     credential,
+                    server: state.server_id.clone(),
                 })
                 .await;
         }

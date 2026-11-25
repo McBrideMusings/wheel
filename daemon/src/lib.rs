@@ -22,6 +22,7 @@ mod files;
 mod guidance;
 mod homes;
 pub mod host;
+pub mod identity;
 mod keybind;
 mod leases;
 mod link_patterns;
