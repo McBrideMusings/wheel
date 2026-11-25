@@ -41,12 +41,42 @@ struct State {
     roots: HashMap<(PathBuf, bool), usize>,
     /// Folders watched only to see a missing watched folder come back.
     anchors: HashSet<PathBuf>,
+    /// Rescans found under the hub's lock, which cannot route them, handed over with the next event.
+    pending: Vec<Out>,
+    /// Why inotify stopped reading, after which no watch can be made.
+    dead: Option<String>,
 }
 
 /// One event for the hub: its path, its kind and whether it is a rescan.
 type Out = (PathBuf, EventKind, bool);
 
 impl State {
+    fn new(watches: Watches) -> State {
+        State {
+            watches,
+            dirs: HashMap::new(),
+            paths: HashMap::new(),
+            roots: HashMap::new(),
+            anchors: HashSet::new(),
+            pending: Vec::new(),
+            dead: None,
+        }
+    }
+
+    /// End one of the hub's watches of `real`, and stop watching what no watch covers now. A watched
+    /// folder this finds back is watched again, and its rescan waits in `pending`.
+    fn drop_root(&mut self, real: &Path, deep: bool) {
+        let key = (real.to_path_buf(), deep);
+        let Some(count) = self.roots.get_mut(&key) else { return };
+        *count -= 1;
+        if *count == 0 {
+            self.roots.remove(&key);
+            self.uncover(real);
+            let rescans = self.repair();
+            self.pending.extend(rescans);
+        }
+    }
+
     /// Whether some watch needs `dir` watched: it is a watched folder, or lies under a recursive one.
     fn covered(&self, dir: &Path) -> bool {
         self.roots.keys().any(|(root, deep)| dir == root || (*deep && dir.starts_with(root)))
@@ -189,8 +219,9 @@ impl State {
 }
 
 /// The shared inotify instance, held under the hub's lock; its reader thread takes only `state`.
+/// `Err` holds why inotify would not start, and every watch fails with it.
 pub(super) struct Streams {
-    state: Arc<Mutex<State>>,
+    state: Result<Arc<Mutex<State>>, String>,
 }
 
 fn kind(mask: EventMask) -> EventKind {
@@ -210,22 +241,25 @@ fn kind(mask: EventMask) -> EventKind {
 }
 
 /// What one inotify event means: the events to hand the hub, after the watched directories are
-/// brought up to date with it.
+/// brought up to date with it, after the rescans waiting since the last event.
 fn read(state: &Mutex<State>, wd: &WatchDescriptor, mask: EventMask, name: Option<&OsStr>) -> Vec<Out> {
     let mut state = state.lock().unwrap();
+    let mut out = std::mem::take(&mut state.pending);
     if mask.contains(EventMask::Q_OVERFLOW) {
         // The kernel dropped events: every watch rescans, named as the folder it watches.
         state.recover();
-        return vec![(PathBuf::from("/"), EventKind::Other, true)];
+        out.push((PathBuf::from("/"), EventKind::Other, true));
+        return out;
     }
-    let Some(dir) = state.paths.get(wd).cloned() else { return Vec::new() };
+    let Some(dir) = state.paths.get(wd).cloned() else { return out };
     if mask.contains(EventMask::IGNORED) {
         // The kernel ended the watch: the directory is gone, or this removed it.
         state.forget(&dir, false);
-        return state.repair();
+        out.extend(state.repair());
+        return out;
     }
     let path = name.map_or_else(|| dir.clone(), |n| dir.join(n));
-    let mut out = vec![(path.clone(), kind(mask), false)];
+    out.push((path.clone(), kind(mask), false));
     if mask.contains(EventMask::MOVE_SELF) {
         state.forget_tree(&dir);
     } else if mask.contains(EventMask::ISDIR) {
@@ -244,74 +278,119 @@ fn read(state: &Mutex<State>, wd: &WatchDescriptor, mask: EventMask, name: Optio
     out
 }
 
+/// The reader thread: hand every event to the hub until inotify fails to read, then mark the
+/// state dead so every later watch fails rather than watching nothing.
+fn route_events(mut inotify: Inotify, state: &Mutex<State>) {
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let events = match inotify.read_events_blocking(&mut buffer) {
+            Ok(events) => events,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                tracing::error!(error = %e, "inotify stopped; files are no longer watched");
+                state.lock().unwrap().dead = Some(format!("inotify stopped: {e}"));
+                return;
+            }
+        };
+        for event in events {
+            // Handed over outside the state's lock: a handler may watch or unwatch.
+            for (path, kind, rescan) in read(state, &event.wd, event.mask, event.name) {
+                super::route(path, kind, rescan);
+            }
+        }
+    }
+}
+
 impl Streams {
     pub(super) fn new() -> Streams {
-        let mut inotify = Inotify::init().expect("inotify would not start");
-        let state = Arc::new(Mutex::new(State {
-            watches: inotify.watches(),
-            dirs: HashMap::new(),
-            paths: HashMap::new(),
-            roots: HashMap::new(),
-            anchors: HashSet::new(),
-        }));
-        let reader = state.clone();
-        std::thread::Builder::new()
-            .name("wheel inotify route".into())
-            .spawn(move || {
-                let mut buffer = vec![0u8; 64 * 1024];
-                loop {
-                    let events = match inotify.read_events_blocking(&mut buffer) {
-                        Ok(events) => events,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => {
-                            tracing::error!(error = %e, "inotify stopped; files are no longer watched");
-                            return;
-                        }
-                    };
-                    for event in events {
-                        // Handed over outside the state's lock: a handler may watch or unwatch.
-                        for (path, kind, rescan) in read(&reader, &event.wd, event.mask, event.name) {
-                            super::route(path, kind, rescan);
-                        }
-                    }
-                }
-            })
-            .expect("could not start the file-event router");
-        Streams { state }
+        let started = Inotify::init().map_err(|e| format!("inotify would not start: {e}")).and_then(|inotify| {
+            let state = Arc::new(Mutex::new(State::new(inotify.watches())));
+            let reader = state.clone();
+            std::thread::Builder::new()
+                .name("wheel inotify route".into())
+                .spawn(move || route_events(inotify, &reader))
+                .map_err(|e| format!("the file-event router would not start: {e}"))?;
+            Ok(state)
+        });
+        if let Err(e) = &started {
+            tracing::error!(error = %e, "files cannot be watched");
+        }
+        Streams { state: started }
     }
 
     pub(super) fn add(&mut self, real: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        let fail = |why: &str| notify::Error::generic(why).add_path(real.to_path_buf());
         let deep = mode == RecursiveMode::Recursive;
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.as_ref().map_err(|e| fail(e))?.lock().unwrap();
+        if let Some(why) = &state.dead {
+            return Err(fail(why));
+        }
         *state.roots.entry((real.to_path_buf(), deep)).or_default() += 1;
         if let Err(e) = state.cover(real, deep) {
-            self.drop_root(&mut state, real, deep);
+            state.drop_root(real, deep);
             return Err(notify::Error::io(e).add_path(real.to_path_buf()));
         }
         Ok(())
     }
 
     pub(super) fn remove(&mut self, real: &Path, mode: RecursiveMode) {
-        let mut state = self.state.lock().unwrap();
-        self.drop_root(&mut state, real, mode == RecursiveMode::Recursive);
-    }
-
-    fn drop_root(&self, state: &mut State, real: &Path, deep: bool) {
-        let key = (real.to_path_buf(), deep);
-        let Some(count) = state.roots.get_mut(&key) else { return };
-        *count -= 1;
-        if *count == 0 {
-            state.roots.remove(&key);
-            state.uncover(real);
-            // Drops the anchors no watch needs now. A watched folder it finds back is watched again
-            // without a rescan, which cannot be routed under the hub's lock this runs under.
-            state.repair();
+        if let Ok(state) = &self.state {
+            state.lock().unwrap().drop_root(real, mode == RecursiveMode::Recursive);
         }
     }
 
     /// Whether inotify is watching `real` for the hub.
     #[cfg(test)]
     pub(super) fn watching(&self, real: &Path) -> bool {
-        self.state.lock().unwrap().dirs.contains_key(real)
+        self.state.as_ref().is_ok_and(|s| s.lock().unwrap().dirs.contains_key(real))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_found_back_by_an_unwatch_rescans_with_the_next_event() {
+        let root = std::env::temp_dir().join(format!("wheel-inotify-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let inotify = Inotify::init().unwrap();
+        let mut state = State::new(inotify.watches());
+        for dir in [&a, &b] {
+            state.roots.insert((dir.clone(), false), 1);
+            state.cover(dir, false).unwrap();
+        }
+        let b_wd = state.dirs[&b].clone();
+
+        // `a` goes and its loss is read; it comes back before its anchor's event is read.
+        std::fs::remove_dir(&a).unwrap();
+        state.forget(&a, true);
+        state.repair();
+        std::fs::create_dir(&a).unwrap();
+        state.drop_root(&b, false);
+        assert!(state.dirs.contains_key(&a), "the unwatch did not watch the folder that came back");
+
+        let state = Mutex::new(state);
+        let out = read(&state, &b_wd, EventMask::MODIFY, None);
+        assert_eq!(out, vec![(a.clone(), EventKind::Other, true)]);
+        assert!(read(&state, &b_wd, EventMask::MODIFY, None).is_empty(), "the rescan was handed over twice");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn every_watch_fails_when_inotify_cannot_start_or_has_stopped() {
+        let dir = std::env::temp_dir();
+        let mut never = Streams { state: Err("inotify would not start: EMFILE".into()) };
+        assert!(never.add(&dir, RecursiveMode::NonRecursive).is_err());
+        never.remove(&dir, RecursiveMode::NonRecursive);
+
+        let mut state = State::new(Inotify::init().unwrap().watches());
+        state.dead = Some("inotify stopped".into());
+        let mut stopped = Streams { state: Ok(Arc::new(Mutex::new(state))) };
+        assert!(stopped.add(&dir, RecursiveMode::NonRecursive).is_err());
+        assert!(!stopped.watching(&dir));
     }
 }
