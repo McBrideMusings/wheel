@@ -78,8 +78,6 @@ final class Slot: NSView {
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
-    /// An agent pane shown as the `agent/view` plugin: the agent its pane holds, for the host-drawn permission card under the view.
-    var agentTarget: HostAgentTarget?
     /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
     /// GPUI view draws the chrome from the state the bridge emits on every change.
     var browser: BrowserPane?
@@ -310,7 +308,7 @@ struct EmbeddedAgentBody: View {
     }
 }
 
-/// A waiting permission request as the agent pane and the plugin agent view draw it: why, the command, the choices.
+/// A waiting permission request as an agent chat embed draws it: why, the command, the choices.
 struct PermissionCard: View {
     let native: Native
     let perm: PermInfo
@@ -329,28 +327,6 @@ struct PermissionCard: View {
         .padding(8)
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.orange.opacity(0.6)))
         .padding([.horizontal, .top], 8)
-    }
-}
-
-/// The agent an agent pane shown as the plugin view holds, as `pane_targets` last said.
-@MainActor final class HostAgentTarget: ObservableObject {
-    @Published var agent: String?
-    init(agent: String?) { self.agent = agent }
-}
-
-/// The first request waiting on the agent of the pane under an `agent/view` plugin pane. It lies outside the script's
-/// surface, so the script can neither draw nor hide it; it takes no height while nothing waits.
-struct HostPermissionCard: View {
-    let native: Native
-    @ObservedObject var target: HostAgentTarget
-    @ObservedObject var perms: EmbedPermissions
-    var body: some View {
-        if let agent = target.agent, let perm = perms.list.first(where: { $0.agent == agent }) {
-            // Opaque, since it lies over the script's surface.
-            PermissionCard(native: native, perm: perm)
-                .padding(.bottom, 8)
-                .background(.background)
-        }
     }
 }
 
@@ -889,20 +865,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let surface = PluginPaneView(pane: plugin)
                 .environment(\.paneEmbed, { [weak self] embed in self?.embedView(embed, hostPane: id) })
                 .environment(\.paneVideoStream, { [weak self] stream, input in self?.streamView(stream, input: input, hostPane: id) })
-            let view: NSHostingView<AnyView>
-            if value["agent"] as? Bool == true {
-                let target = HostAgentTarget(agent: paneTargets[id]?["agent"])
-                host.agentTarget = target
-                // Over the top of the surface, so the script's layout (its composer at the bottom) never moves when a
-                // request arrives or is answered.
-                view = NSHostingView(rootView: AnyView(surface.overlay(alignment: .top) {
-                    HostPermissionCard(native: self, target: target, perms: embedPerms)
-                }))
-                // The waiting requests arrive over the page connection, which no AgentChat embed may have started.
-                if let ws = value["ws"] as? String { _ = pages(ws) }
-            } else {
-                view = NSHostingView(rootView: AnyView(surface))
-            }
+            let view = NSHostingView(rootView: AnyView(surface))
             host.plugin = plugin
             host.pluginView = view
             host.slot.addSubview(view)
@@ -1217,11 +1180,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         agentRequest(chat.name) { .agentSend(req: $0, agent: chat.name, text: text) }
         chat.draft = ""
     }
-    /// The first waiting request of the agent under an `agent/view` plugin pane.
-    func waitingPermission(for host: PaneHost?) -> PermInfo? {
-        guard let agent = host?.agentTarget?.agent else { return nil }
-        return embedPerms.list.first { $0.agent == agent }
-    }
     /// Allow or deny a waiting request; the card goes when wheeld broadcasts the answer.
     func answer(_ perm: PermInfo, _ choice: String) {
         agentRequest(perm.agent) { .permAnswer(req: $0, id: perm.id, choice: choice) }
@@ -1493,7 +1451,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             targetsKnown = true
             for embed in embeds.values { embed.resolve() }
             for embed in agentEmbeds.values { embed.resolve() }
-            for host in panes.values { host.agentTarget?.agent = targets[host.id]?["agent"] }
         case "plugin":
             // A plugin pane's state, or one of its controls used as a pointer would: `press` a component, `set` a control's value
             // to any JSON value, `raise` the action at `key` of a component (a Table's `rowAction`, a Canvas hit's `hits.0.action`) with `context`,
@@ -1516,12 +1473,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 if let dy = value["dy"] as? Double { plugin.scroll(.by(dy)) }
                 else if let to = value["to"] as? String, to == "top" || to == "bottom" { plugin.scroll(to == "top" ? .top : .bottom) }
                 else { ok = false }
-            case "answer":
-                // The card's own answer for the pane's waiting request: `value` is an option id, `allow` or `deny`.
-                if let perm = waitingPermission(for: panes[pane]), let choice = value["value"] as? String {
-                    let option = perm.options.first { $0.id == choice } ?? (choice == "allow" ? PermissionKey.allow.option(in: perm) : choice == "deny" ? PermissionKey.deny.option(in: perm) : nil)
-                    if let option { answer(perm, option.id) } else { ok = false }
-                } else { ok = false }
             case "agent_send":
                 // The embedded agent chat of pane `component` sends `value` as its composer's Send would.
                 let embed = agentEmbeds.values.first { $0.hostPane == pane && $0.pane == value["component"] as? String }
@@ -1537,8 +1488,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 "perf": ["update_ms": plugin.perf.updateMs, "view_ms": plugin.perf.viewMs, "reconcile_ms": plugin.perf.reconcileMs,
                          "nodes": plugin.perf.nodes, "renders": plugin.perf.renders, "bodies": ViewPerf.bodies, "cells": ViewPerf.cells] as [String: Any],
                 "scroll": (plugin.fillsPane ? nil : plugin.scrollMetrics).map { ["offset": $0.offset, "content": $0.content, "visible": $0.visible] as [String: Any] } ?? NSNull(),
-                "agent_view": panes[pane]?.agentTarget != nil,
-                "permission": waitingPermission(for: panes[pane]).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(),
                 "embeds": embeds.values.filter { $0.hostPane == pane }.map { ["pane": $0.pane, "term": $0.termID ?? NSNull(), "bytes": $0.bytes] as [String: Any] }
                     + agentEmbeds.values.filter { $0.hostPane == pane }.map { embed in
                         ["pane": embed.pane, "agent": embed.chat?.name ?? NSNull(), "note": embed.note, "state": embed.chat?.state.map { "\($0)" } ?? NSNull(),
@@ -1717,7 +1666,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
                 entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
             } else if let p = host.plugin {
-                entry["plugin"] = ["agent_view": host.agentTarget != nil, "permission": waitingPermission(for: host).map { ["id": $0.id, "title": $0.title, "options": $0.options.map(\.id)] as [String: Any] } ?? NSNull(), "state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "restarts": p.restarts, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
+                entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "restarts": p.restarts, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }
             else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
                    entry["pixels"] = host.terminal?.layer?.contents != nil
