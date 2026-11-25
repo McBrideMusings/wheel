@@ -756,28 +756,69 @@ pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpo
     opened
 }
 
+/// What launch does with a saved window, by its wheeld.
+enum Reach {
+    Open(daemon::Endpoint),
+    Hold,
+    Drop,
+}
+
 /// Open the windows `saved` says launch opens.
 pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, saved: &saved::Saved) -> Result<Vec<view::ClientWindow>> {
     let plan = saved.launch_plan();
     eprintln!("wheel-gpui: launch opens {} window(s), restore windows at launch {}", plan.len(), if saved.restore { "on" } else { "off" });
-    let paired = servers::load(&servers::default_file());
-    // A window saved on a paired wheeld opens on it again; one whose wheeld is no longer paired,
-    // is turned off or has no credential stays closed.
-    let on = |server: &Option<String>| -> Option<daemon::Endpoint> {
-        let Some(id) = server else { return Some(endpoint.clone()) };
-        let found = paired.iter().find(|s| &s.id == id && s.enabled).map(servers::endpoint);
-        match found {
-            Some(Ok(endpoint)) => Some(endpoint),
-            Some(Err(e)) => { eprintln!("wheel-gpui: a saved window on {id} stays closed: {e:#}"); None }
-            None => { eprintln!("wheel-gpui: a saved window on {id} stays closed: that wheeld is not paired or is turned off"); None }
+    // A window saved on a paired wheeld opens on it again. One whose wheeld is turned off or has
+    // no readable credential, or when the list itself cannot be read, stays closed and stays in
+    // the file; one whose wheeld is no longer paired stays closed and leaves it.
+    let paired = servers::read(&servers::default_file());
+    let on = |server: &Option<String>| -> Reach {
+        let Some(id) = server else { return Reach::Open(endpoint.clone()) };
+        let paired = match &paired {
+            Ok(paired) => paired,
+            Err(e) => {
+                eprintln!("wheel-gpui: a saved window on {id} stays closed: {e:#}");
+                return Reach::Hold;
+            }
+        };
+        match paired.iter().find(|s| &s.id == id) {
+            None => {
+                eprintln!("wheel-gpui: a saved window on {id} is dropped: that wheeld is not paired");
+                Reach::Drop
+            }
+            Some(s) if !s.enabled => {
+                eprintln!("wheel-gpui: a saved window on {id} stays closed: that wheeld is turned off");
+                Reach::Hold
+            }
+            Some(s) => match servers::endpoint(s) {
+                Ok(endpoint) => Reach::Open(endpoint),
+                Err(e) => {
+                    eprintln!("wheel-gpui: a saved window on {id} stays closed: {e:#}");
+                    Reach::Hold
+                }
+            },
         }
     };
+    // Held before any window opens, so no write in between drops them.
+    let mut held = saved::Held::default();
+    let mut opening = vec![];
+    for launch in plan {
+        let server = match &launch {
+            saved::Launch::Main(w) => &w.server,
+            saved::Launch::Little(l) => &l.server,
+        };
+        match (on(server), launch) {
+            (Reach::Open(endpoint), launch) => opening.push((endpoint, launch)),
+            (Reach::Hold, saved::Launch::Main(w)) => held.windows.push(w),
+            (Reach::Hold, saved::Launch::Little(l)) => held.littles.push(l),
+            (Reach::Drop, _) => {}
+        }
+    }
+    saved::hold(held);
     let mut handles = vec![];
     let mut space = space;
-    for launch in plan {
+    for (endpoint, launch) in opening {
         let handle = match launch {
             saved::Launch::Main(w) => {
-                let Some(endpoint) = on(&w.server) else { continue };
                 // `--space` names a space of this Mac's wheeld.
                 let shown = if w.server.is_none() { space.take().or(w.active) } else { w.active };
                 let handle = open_window_as(cx, bridge, endpoint, w.session, shown, hidden, Opening::Main, w.frame)?;
@@ -790,7 +831,6 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
                 handle
             }
             saved::Launch::Little(l) => {
-                let Some(endpoint) = on(&l.server) else { continue };
                 let handle = open_window_as(cx, bridge, endpoint, None, Some(l.space), hidden, Opening::Little, l.frame)?;
                 let _ = handle.update(cx, |client, _, cx| {
                     client.set_pinned(l.pinned);

@@ -45,7 +45,16 @@ pub fn default_file() -> PathBuf {
 }
 
 pub fn load(file: &std::path::Path) -> Vec<Server> {
-    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    read(file).unwrap_or_default()
+}
+
+/// The list in `file`: empty when there is no file, an error when it cannot be read or parsed.
+pub fn read(file: &std::path::Path) -> Result<Vec<Server>> {
+    match std::fs::read(file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", file.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+        Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
+    }
 }
 
 pub fn save(file: &std::path::Path, list: &[Server]) -> Result<()> {
@@ -152,6 +161,18 @@ pub fn pair(file: &std::path::Path, code: &str, device_name: &str) -> Result<Ser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_tells_no_list_from_an_unreadable_one() {
+        let dir = std::env::temp_dir().join(format!("wheel-gpui-servers-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read(&dir.join("missing.json")).unwrap().is_empty());
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, b"{not json").unwrap();
+        assert!(read(&bad).is_err());
+        assert!(load(&bad).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_code_that_is_not_wss_or_has_a_bad_fingerprint_is_refused_before_it_is_spent() {
