@@ -25,6 +25,12 @@ public enum ClientMsg: Sendable, Equatable {
     /// Take back every message still waiting in the queue.
     case agentSendNow(req: UInt64?, agent: String, turn: UInt64)
     case agentClearQueue(req: UInt64?, agent: String)
+    /// Take the lease `key` (`voice`: the one client talking to an agent); the daemon answers `leaseClaimed`.
+    case leaseClaim(req: UInt64?, key: String)
+    /// Give up the lease `key`.
+    case leaseRelease(req: UInt64?, key: String)
+    /// Name the agent voice mode talks to, or none to clear it; refused unless this connection holds `voice`.
+    case agentVoice(req: UInt64?, agent: String?)
     case permAnswer(req: UInt64?, id: String, choice: String)
     /// `session` names the session the space joins (id or name); with none, wheeld picks it.
     case spaceCreate(req: UInt64?, cwd: String, focus: Bool, session: String? = nil)
@@ -278,6 +284,13 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "agent_unsend", "agent": agent, "turn": turn]; put(req)
         case let .agentSendNow(req, agent, turn):
             o = ["op": "agent_send_now", "agent": agent, "turn": turn]; put(req)
+        case let .leaseClaim(req, key):
+            o = ["op": "lease_claim", "key": key]; put(req)
+        case let .leaseRelease(req, key):
+            o = ["op": "lease_release", "key": key]; put(req)
+        case let .agentVoice(req, agent):
+            o = ["op": "agent_voice"]; put(req)
+            if let agent { o["agent"] = agent }
         case let .agentClearQueue(req, agent):
             o = ["op": "agent_clear_queue", "agent": agent]; put(req)
         case let .permAnswer(req, id, choice):
@@ -667,6 +680,8 @@ public enum AgentEvent: Sendable, Equatable {
     /// The agent changed its own mode (`mode` is the new mode's id) and offers no `mode` option to show it in.
     case mode(String)
     case turnEnd(turn: UInt64, stopReason: String)
+    /// The agent put a card in its transcript (`wheel agent card`): `title` names the pane or artifact.
+    case card(title: String)
     /// The message of `turn` was taken back before the agent answered it.
     case retract(turn: UInt64)
     /// A reload of the pane's agent waiting in its queue as `turn`; `text` says what it sets.
@@ -676,7 +691,7 @@ public enum AgentEvent: Sendable, Equatable {
 }
 
 extension AgentEvent: Decodable {
-    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail, streamed }
+    private enum K: String, CodingKey { case kind, turn, text, mode, id, title, tool_kind, status, content, entries, stop_reason, message, detail, streamed, card, type, pane, name }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .kind) {
@@ -699,6 +714,10 @@ extension AgentEvent: Decodable {
         case "plan": self = .plan(try c.decode([PlanEntry].self, forKey: .entries))
         case "mode": self = .mode(try c.decode(String.self, forKey: .mode))
         case "turn_end": self = .turnEnd(turn: try c.decode(UInt64.self, forKey: .turn), stopReason: try c.decode(String.self, forKey: .stop_reason))
+        case "card":
+            let card = try c.nestedContainer(keyedBy: K.self, forKey: .card)
+            let kind = try card.decode(String.self, forKey: .type)
+            self = .card(title: kind == "pane" ? "Pane \(try card.decode(String.self, forKey: .pane))" : try card.decode(String.self, forKey: .name))
         case "retract": self = .retract(turn: try c.decode(UInt64.self, forKey: .turn))
         case "reload": self = .reload(turn: try c.decode(UInt64.self, forKey: .turn), text: try c.decode(String.self, forKey: .text))
         case "error": self = .error(turn: try c.decodeIfPresent(UInt64.self, forKey: .turn), message: try c.decode(String.self, forKey: .message))
@@ -1425,6 +1444,10 @@ public enum ServerMsg: Sendable {
     /// Run `command` on the windows this client owns and answer with `windowAnswer` naming `id`.
     /// Sent only to a connection that sent `windowOffer`.
     case windowRequest(id: UInt64, command: WindowCommand)
+    /// The reply to `leaseClaim`: `owner` is this connection's id, as `lease` names a holder.
+    case leaseClaimed(req: UInt64, key: String, owner: String)
+    /// The lease `key` changed hands: its holder's connection id, or nil once released or closed.
+    case lease(key: String, owner: String?)
     case ok(req: UInt64)
     /// A request failed; `term` names the terminal when it was a terminal op.
     case error(req: UInt64?, term: String?, message: String)
@@ -1438,7 +1461,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact, png, width, height, tasks
+        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact, png, width, height, tasks, key, owner
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1500,6 +1523,10 @@ extension ServerMsg: Decodable {
                           text: try c.decode(String.self, forKey: .text), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "toast_clear":
             self = .toastClear(id: try c.decode(String.self, forKey: .id))
+        case "lease_claimed":
+            self = .leaseClaimed(req: try c.decode(UInt64.self, forKey: .req), key: try c.decode(String.self, forKey: .key), owner: try c.decode(String.self, forKey: .owner))
+        case "lease":
+            self = .lease(key: try c.decode(String.self, forKey: .key), owner: try c.decodeIfPresent(String.self, forKey: .owner))
         case "stopping":
             self = .stopping
         case "agent_title":

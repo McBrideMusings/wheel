@@ -1,6 +1,6 @@
 # Voice mode
 
-Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Nothing here is built yet.
+Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Built so far: composer dictation (§5.8) and voice mode (§5.9 for the Mac; on the iPhone, WheelUI's `Voice` and `VoiceSession` under the same round button).
 
 ## 1. What it is
 
@@ -75,6 +75,10 @@ A Spaces agent pane (W11482 in llama-broker) in voice mode. The layout is the sa
 | Speaking | Bright, moving with the output level |
 | Muted | Dimmed; the mute button is lit |
 
+## 5.8 Composer dictation (built)
+
+The microphone in an agent's composer, on the Mac (GPUI, in the row under the draft, left of the round button) and the iPhone (left of send). Press it, speak, press again: the recording becomes text added to the draft of the window that pressed, and the person sends it as typed text with `agent_send`. Parakeet TDT 0.6b v3 runs on the device: on the iPhone through FluidAudio (WheelUI's `Dictation`, `docs/voice-mode/stt-engines.md`), on the Mac through sherpa-onnx in the GPUI client's own Rust (§5.9). The first press with no model on the device shows what the download fetches with Download and Cancel: on the iPhone 469 MB from `huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml` into FluidAudio's cache, on the Mac 670.6 MB from `huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` into `~/Library/Application Support/Wheel/Speech/parakeet`. Nothing in it talks to wheeld, so it works with wheeld out of reach until the send.
+
 ## 6. Where things run
 
 | Part | Where |
@@ -92,9 +96,24 @@ These sit under Settings in the orchestrator doc:
 - **Voice:** the transcription model (download size, keep on device), the system voice and speed, hold-to-talk vs automatic turn-taking, and whether to speak replies.
 - **Approvals by voice:** off / reversible only / all with a spoken yes for irreversible.
 
+## 5.9 Voice mode on the Mac (built)
+
+The round button at the right end of the composer's lower row is voice mode while the draft is empty and the agent idle, Send while there is a draft or a file, and Stop while the agent works; with a wheeld that lacks `lease_claim` or `agent_voice` the empty state is a dimmed Send. Voice mode covers the agent pane whose button opened it; the rest of the grid stays as it was.
+
+- **Audio, in Rust (ADR-0056):** `clients/gpui/src/speech/`, one app-wide GPUI entity every window observes, with its state and rules in `clients/gpui/core/src/dictation.rs` and `voice.rs`. The microphone and the speaker go through AVFoundation by objc2: one `AVAudioEngine` whose input node has voice processing on, an input tap converted by `AVAudioConverter` to 16 kHz mono, and the reply written by `AVSpeechSynthesizer` (`writeUtterance:toBufferCallback:`) and played by an `AVAudioPlayerNode` on the same engine, so the echo canceller hears what it plays and the person can talk over it. Dictation records through its own engine without voice processing. A worker thread holds the models through sherpa-onnx (`sherpa-rs`, linked statically): Silero VAD (0.6 MB from `github.com/k2-fsa/sherpa-onnx`; a turn ends after 0.6 s of silence, at most 30 s long) and Parakeet TDT 0.6b v3 int8 on ONNX Runtime's CPU provider (two threads, which beat one and four on this Mac). Its Core ML provider runs this int8 model and gives the same text, but loaded in 8.3 to 9.3 s against 2.8 to 4.3 s and transcribed a 1.8 s clip in 0.41 to 1.58 s against 0.32 to 0.50 s, so the Mac stays on the CPU. FluidAudio, the iPhone's engine, is an iOS-only dependency of WheelUI and never reaches the Mac. A turn keeps the 0.4 s before the VAD heard speech start, which would otherwise lose the first word, and is padded to a second before Parakeet reads it. When the agent's turn ends, its reply (Markdown made speakable, `core/src/spoken.rs`) is spoken and captioned. Speaking over the reply, or pressing the orb, stops the speech; the chat keeps the whole reply. The orb's level changes at most 15 times a second.
+- **Models (ADR-0013):** `~/Library/Application Support/Wheel/Speech/`, one folder per model (`parakeet`, `silero-vad`; `WHEEL_SPEECH_MODELS` moves it for a check). Before the first download the composer or the layer names each model, its size, its source and the folder, with Download and Cancel. A download fills a staging folder beside the model's, checks each file's pinned SHA-256 and renames the folder into place, so a model is whole or absent; Cancel stops it and leaves nothing.
+- **Measured on this Mac** (Apple silicon, other builds running): in the app Parakeet loads in 2.8 to 3.6 s with two threads, a 1.8 s dictated clip transcribes in 270 to 420 ms, and a 1.6 s voice turn in 210 ms to 1.4 s. Standalone, two threads transcribed a 1.8 s clip in 0.4 to 1 s against 0.8 to 1.5 s with one, and an 8.3 s clip in 4.3 to 10.6 s against 6.8 to 8.4 s with one; four threads were slower again under load.
+- **Microphone permission:** the app asks macOS the first time a press needs the microphone (`AVAudioApplication`); the Info.plist's `NSMicrophoneUsageDescription` says why. Refused, the composer or the layer says where to allow it.
+- **Several windows:** the app has one recorder and one voice audio. Only the window that pressed the microphone takes its text; only the window holding the voice session sends what the person said; a stop names its window and agent, so one window's X never ends another's voice, and voice opened in another window ends this one's layer.
+- **wheeld:** opening claims the `voice` lease, then names the agent with `agent_voice`; X or Esc clears both. Another client taking the lease closes voice mode here, and the composer says "Voice mode moved to another device."
+- **Layer:** the pane's label and "space · harness" at the top with the panes button on the right (no badge: the Mac grid shows its panes); the orb and its state word in the middle; at the bottom +, "Type instead…", mute and X. The first start with a model missing names both downloads with a Download button.
+- **Pill:** the panes button, "Type instead…" and a card's chip shrink the layer to a pill over the transcript's foot (orb, state, caption, mute, X), and pressing its orb brings the layer back. A card the agent shows during voice is a chip above the orb, which shrinks; pressing it shows the card in the transcript under the pill.
+- **Ends with its pane:** closing the window, closing the pane, or showing another space in that window ends voice mode, since nothing on screen would say the microphone is open. A reply that arrives while the person is still speaking waits until their turn is sent.
+- **Not yet:** hold-to-talk, the Voice settings of §7, and approvals by voice (§4).
+
 ## 8. Open items
 
-1. Pick the transcription model and library (WhisperKit or whisper.cpp); measure delay and battery on the phone.
+1. Measure battery on the phone over a 10-minute voice session.
 2. Wheeld lock for one active voice client.
 3. Live Activity and audio session background on iOS.
 4. The part shared by every agent view: the orb, captions, the pill, and the approval card.

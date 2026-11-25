@@ -82,9 +82,22 @@ struct AgentPane: View {
                 stop: { model.cancel(chat) },
                 takeBack: { chat.takeBack() },
                 readAloud: $chat.readsAloud,
-                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) })
+                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) }),
+                dictation: chat.name,
+                voice: model.voiceOffered
+                    ? { model.openVoice(chat, pane: pane, harness: harness, orchestrator: orchestrator) }
+                    : nil
             )
             .padding(10)
+        }
+        // Voice mode covers the pane it was opened in; a pane swiped away from, or a button, leaves the pill.
+        .overlay {
+            if model.voice.agent == chat.name, model.voice.stage != .off, model.voice.layout == .layer {
+                VoiceLayer(model: model, pane: pane, chat: chat, tray: tray, harness: harness, orchestrator: orchestrator)
+            }
+        }
+        .onDisappear {
+            if model.voice.agent == chat.name, model.voice.layout == .layer { model.voice.shrink() }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(orchestrator ? "orchestrator chat" : "agent pane \(pane)")

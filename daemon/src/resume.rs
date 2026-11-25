@@ -103,6 +103,11 @@ pub struct Sample {
     pub agent: Option<TermAgent>,
 }
 
+/// The coding agent process `pid` runs, if it runs one.
+pub fn harness_of(pid: u32) -> Option<Harness> {
+    detect(&process_args(pid)?.0).map(|(harness, _)| harness)
+}
+
 /// The agent a command line starts, and the conversation id it names, if it names one.
 pub fn detect(argv: &[String]) -> Option<(Harness, Option<String>)> {
     let base = |arg: &String| {
@@ -943,11 +948,6 @@ pub fn sample(
                     .map(String::from);
                 let conversation = reported_conversation.or(named).or_else(|| {
                     let (home, cwd) = (search.as_ref()?, cwd.as_deref()?);
-                    let conversations = match kind {
-                        Harness::Claude => claude_sessions(home, cwd),
-                        Harness::Codex => codex_sessions(home, cwd),
-                        Harness::Pi => pi_sessions(home, cwd, pi_sessions_dir.as_deref()),
-                    };
                     let previous = previous
                         .filter(|p| p.name == kind.name())
                         .map(|p| p.conversation.as_str());
@@ -959,7 +959,30 @@ pub fn sample(
                         }
                         return None;
                     };
-                    choose_conversation(&conversations, started, previous, claimed)
+                    let folder = match kind {
+                        Harness::Claude => claude_project_dir(home, cwd),
+                        Harness::Codex => home.join("sessions"),
+                        Harness::Pi => pi_session_dir(home, cwd, pi_sessions_dir.as_deref()),
+                    };
+                    let mut taken: Vec<String> = claimed.iter().cloned().collect();
+                    taken.sort();
+                    let key = GuessKey {
+                        pid: fg,
+                        started,
+                        kind,
+                        folder: folder.clone(),
+                        cwd: cwd.to_string(),
+                        previous: previous.map(String::from),
+                        claimed: taken,
+                    };
+                    kept_guess(key, kind, &folder, || {
+                        let conversations = match kind {
+                            Harness::Claude => claude_sessions(home, cwd),
+                            Harness::Codex => codex_sessions(home, cwd),
+                            Harness::Pi => pi_sessions(home, cwd, pi_sessions_dir.as_deref()),
+                        };
+                        choose_conversation(&conversations, started, previous, claimed)
+                    })
                 });
                 if let Some(conversation) = conversation {
                     // Codex states its window in its rollout; Claude and pi say theirs through
@@ -984,6 +1007,113 @@ pub fn sample(
         sample.cwd = shell.and_then(process_cwd);
     }
     sample
+}
+
+/// What a guess of a terminal agent's conversation depends on: the process (its pid and start, so a
+/// reused pid is a new process), the folder its harness keeps conversations in, its directory, the
+/// conversation it was in before, and those other panes hold.
+#[derive(Clone, PartialEq)]
+struct GuessKey {
+    pid: u32,
+    started: std::time::SystemTime,
+    kind: Harness,
+    folder: PathBuf,
+    cwd: String,
+    previous: Option<String>,
+    claimed: Vec<String>,
+}
+
+struct Guess {
+    key: GuessKey,
+    conversation: Option<String>,
+    fresh: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _watch: crate::fswatch::Handle,
+}
+
+/// The guessed conversations, by foreground pid.
+static GUESSES: std::sync::Mutex<Vec<Guess>> = std::sync::Mutex::new(Vec::new());
+
+/// `guess()`, kept for `key` until what it read in `folder` changes: the sampler asks every 2 s,
+/// and the answer rarely changes between two of them.
+///
+/// What counts as a change follows what each harness's guess reads. Claude Code's guess reads the
+/// folder's own `.jsonl` files by when each was made, so only one appearing or going changes it, and
+/// the files Claude keeps in folders below (subagents, tool results) change nothing. Pi's reads the
+/// same files by when each was last written, so a write to one changes it too. Codex's reads its
+/// dated folders below by when each file was last written, so anything under the folder does.
+fn kept_guess(
+    key: GuessKey,
+    kind: Harness,
+    folder: &Path,
+    guess: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    {
+        let guesses = GUESSES.lock().unwrap();
+        if let Some(g) = guesses.iter().find(|g| g.key == key && g.fresh.load(Ordering::SeqCst)) {
+            return g.conversation.clone();
+        }
+    }
+    let fresh = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let existed = folder.is_dir();
+    let real = folder.canonicalize().unwrap_or_else(|_| folder.to_path_buf());
+    // The conversation files there when the guess was made. FSEvents gathers a path's flags, so a
+    // transcript being rewritten can read as made: for Claude a change is told by whether its file
+    // was already there.
+    let known: std::sync::Arc<std::sync::Mutex<Option<std::collections::HashSet<PathBuf>>>> =
+        Default::default();
+    let watch = {
+        let (fresh, known, real) = (fresh.clone(), known.clone(), real.clone());
+        crate::fswatch::watcher(move |event: notify::Result<notify::Event>| {
+            let Ok(e) = event else { return };
+            let conversation_file = |p: &Path| {
+                p.extension().is_some_and(|x| x == "jsonl") && p.parent() == Some(real.as_path())
+            };
+            let changes = !existed
+                || e.need_rescan()
+                || match kind {
+                    Harness::Codex => !matches!(e.kind, notify::EventKind::Access(_)),
+                    Harness::Pi => e.paths.iter().any(|p| conversation_file(p)),
+                    Harness::Claude => {
+                        let known = known.lock().unwrap();
+                        e.paths.iter().any(|p| {
+                            conversation_file(p)
+                                && (!known.as_ref().is_some_and(|k| k.contains(p)) || !p.exists())
+                        })
+                    }
+                };
+            if changes {
+                fresh.store(false, Ordering::SeqCst);
+            }
+        })
+        .ok()
+        .and_then(|mut w| {
+            let mode = match kind {
+                Harness::Codex => notify::RecursiveMode::Recursive,
+                Harness::Claude | Harness::Pi => notify::RecursiveMode::NonRecursive,
+            };
+            crate::fswatch::watch_folder(&mut w, folder, mode).ok().map(|()| w)
+        })
+    };
+    // Watched before the guess reads, so a file made while it reads drops the result.
+    let conversation = guess();
+    if kind == Harness::Claude {
+        let files = std::fs::read_dir(&real).into_iter().flatten().flatten().map(|e| e.path());
+        *known.lock().unwrap() = Some(files.collect());
+    }
+    if let Some(watch) = watch {
+        let mut guesses = GUESSES.lock().unwrap();
+        // One guess per process; a process that has gone keeps none.
+        // SAFETY: kill with signal 0 only asks whether the pid exists.
+        guesses.retain(|g| g.key.pid != key.pid && unsafe { libc::kill(g.key.pid as libc::pid_t, 0) } == 0);
+        guesses.push(Guess {
+            key,
+            conversation: conversation.clone(),
+            fresh,
+            _watch: watch,
+        });
+    }
+    conversation
 }
 
 /// When process `pid` started.
@@ -1148,6 +1278,79 @@ mod tests {
     use super::*;
 
     const ID: &str = "11111111-2222-3333-4444-555555555555";
+
+    #[test]
+    fn a_guess_is_kept_through_transcript_writes_and_redone_when_a_conversation_is_made() {
+        let scratch = crate::test_support::scratch();
+        let folder = scratch.canonicalize().unwrap();
+        std::fs::write(folder.join("old.jsonl"), "{}\n").unwrap();
+        let key = GuessKey {
+            pid: std::process::id(),
+            started: std::time::SystemTime::UNIX_EPOCH,
+            kind: Harness::Claude,
+            folder: folder.clone(),
+            cwd: "/x".into(),
+            previous: None,
+            claimed: vec![],
+        };
+        let guesses = std::cell::Cell::new(0);
+        let kind = std::cell::Cell::new(Harness::Claude);
+        let ask = || {
+            let key = GuessKey { kind: kind.get(), ..key.clone() };
+            kept_guess(key, kind.get(), &folder, || {
+                guesses.set(guesses.get() + 1);
+                Some(format!("c{}", guesses.get()))
+            })
+        };
+        let fresh = || {
+            GUESSES.lock().unwrap().iter().find(|g| g.key.pid == key.pid).map(|g| g.fresh.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        // Folder events from the setup may still arrive; once quiet, the guess is kept.
+        let quiet = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < quiet {
+            ask();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if fresh() == Some(true) {
+                break;
+            }
+        }
+        let made = guesses.get();
+        assert_eq!(ask(), Some(format!("c{made}")));
+        assert_eq!(guesses.get(), made, "a kept guess was made again");
+
+        // Claude writing its transcript, or a subagent's file in a folder below, is no new
+        // conversation: Claude's guess goes by which of the folder's own files were made when.
+        std::fs::write(folder.join("old.jsonl"), "{}\n{}\n").unwrap();
+        std::fs::create_dir_all(folder.join("old/subagents")).unwrap();
+        std::fs::write(folder.join("old/subagents/agent-1.jsonl"), "{}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(ask(), Some(format!("c{made}")), "a transcript write or a subagent file dropped the guess");
+
+        std::fs::write(folder.join("new.jsonl"), "{}\n").unwrap();
+        let wait_dropped = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while fresh() == Some(true) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        wait_dropped();
+        assert_eq!(ask(), Some(format!("c{}", made + 1)), "a new conversation file kept the old guess");
+
+        // Pi's guess goes by when each file was last written, so a write to one drops it.
+        kind.set(Harness::Pi);
+        let quiet = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < quiet {
+            ask();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if fresh() == Some(true) {
+                break;
+            }
+        }
+        let made = guesses.get();
+        std::fs::write(folder.join("old.jsonl"), "{}\n{}\n{}\n").unwrap();
+        wait_dropped();
+        assert_eq!(ask(), Some(format!("c{}", made + 1)), "a write to a pi session kept the old guess");
+    }
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()

@@ -360,7 +360,7 @@ local function mrow(name, args, ex)
     }), stacked({ txt(name, nil, { modifiers = { { fontWeight = "semibold" } } }), secondary(args, "caption"), ex }))
 end
 
-local function modifiers_class()
+local function modifiers_class(state)
     local head = {}
     for i, t in ipairs({ "Modifier", "Arguments", "Example" }) do
         table.insert(head, mcell(secondary(t, "caption", { modifiers = { { fontWeight = "semibold" } } }), i - 1))
@@ -397,6 +397,10 @@ local function modifiers_class()
         mrow("overlay", "{stroke: colour, cornerRadius}", mod("outlined, radius 8", { padding = 10 }, { overlay = { stroke = "separator", cornerRadius = 8 } })),
         mrow("clipShape", "{cornerRadius}", mod("clipped, radius 12", { padding = 10 }, { background = "controlBackground" }, { clipShape = { cornerRadius = 12 } })),
         mrow("opacity", "0 to 1", mod("faded", { opacity = 0.4 })),
+        mrow("offset", "{x, y}: points to move the view from where layout put it", mod("moved 20 right, 4 down", { offset = { x = 20, y = 4 } })),
+        mrow("dragGesture", "a table raised on release with x, y (points moved); the view follows the pointer until the script answers",
+            mod("drag me", { padding = 8 }, { background = "controlBackground" }, { clipShape = { cornerRadius = 6 } },
+                { offset = { x = (state.moved or {}).x or 0, y = (state.moved or {}).y or 0 } }, { dragGesture = { type = "moved" } })),
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
@@ -656,6 +660,10 @@ local function own_class(data)
         { "VideoStream", "VideoStream", {
             { "stream: <plugin>.<name>, a live H.264 or HEVC stream the plugin's backend serves (ADR-0053), height: points tall, as wide as it is offered, the picture fitted to it; with no height it fills the height the rest of the pane leaves, as a frame-less Table does (put it in a ZStack to float controls over it). input (default true): a click focuses it, and its keys, pointer and game controller events go to the backend; audio plays. The gallery's backend serves gallery.demo, a 320x180 test pattern at 30 fps with a 440 Hz tone. The phone draws a note in its place",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 200 }) },
+            { "fit = \"cover\": the picture fills the frame and what overflows is cropped, as Image's fit does; any other value fits the whole picture inside",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 120, fit = "cover" }) },
+            { "volume: the audio's gain, 0 (silent) to 1 (default), as AVPlayer's volume; muted = true silences it and keeps volume",
+                put("VideoStream", nil, { stream = "gallery.demo", height = 120, volume = 0.25 }) },
             { "input = false: the picture and sound only; nothing is sent",
                 put("VideoStream", nil, { stream = "gallery.demo", height = 120, input = false }) },
             { "what the backend got: its gallery.input feed", secondary(last) },
@@ -670,7 +678,10 @@ local function init(previous)
 end
 
 local function update(state, msg)
-    if msg.type == "reverse" then
+    if msg.type == "moved" then
+        local m = state.moved or { x = 0, y = 0 }
+        state.moved = { x = m.x + msg.x, y = m.y + msg.y }
+    elseif msg.type == "reverse" then
         local flipped = {}
         local order = state.order or { "a", "b", "c" }
         for i = #order, 1, -1 do table.insert(flipped, order[i]) end
@@ -691,7 +702,7 @@ local function view(state, data)
         nav_class(),
         system_class(),
         table_class(),
-        modifiers_class(),
+        modifiers_class(state),
         own_class(data),
     }, { align = "start", modifiers = { { padding = 28 } } })
     return ui.Column{ align = "stretch", page }

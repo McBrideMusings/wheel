@@ -67,6 +67,10 @@ struct SpaceCarousel: View {
                         }
                     }
                     .overlay { floatButton(pages: pages, landscape: landscape) }
+                    // Voice mode shrunk floats over whichever pane is showing.
+                    .overlay(alignment: .top) {
+                        if model.voice.stage != .off, model.voice.layout == .pill { VoicePill(model: model).padding(.top, 6) }
+                    }
                     .padding(.bottom, spacesMode && !orchestratorMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
                     if spacesMode, !orchestratorMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
                        let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
@@ -555,6 +559,27 @@ struct SpaceCarousel: View {
                 if let agent = firstAgent(), let chat = model.chats[agent.agent] {
                     chat.draft = text
                     model.send(chat, attachments: model.trays[agent.pane])
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        // `WHEEL_DRAFT=<text>` puts the text in the first agent pane's composer without sending it.
+        if let text = env["WHEEL_DRAFT"] {
+            for _ in 0 ..< 30 {
+                if let agent = firstAgent(), let chat = model.chats[agent.agent] {
+                    chat.draft = text
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+        // `WHEEL_VOICE_SHOT=listening|hearing|speaking|thinking|muted|card|pill|asking` shows voice mode in that state over the
+        // first agent pane with no lease and no microphone; `WHEEL_DICTATE_SHOT=1` shows the composer's mic recording.
+        if let shot = env["WHEEL_VOICE_SHOT"] ?? env["WHEEL_DICTATE_SHOT"].map({ _ in "dictate" }) {
+            for _ in 0 ..< 30 {
+                if let agent = firstAgent(), let chat = model.chats[agent.agent], model.voiceOffered {
+                    model.demoVoice(chat, pane: agent.pane, shot: shot)
                     break
                 }
                 try? await Task.sleep(for: .seconds(1))

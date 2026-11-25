@@ -121,6 +121,7 @@ with tempfile.TemporaryDirectory() as tmp:
     CFBundleInfoDictionaryVersion='6.0', CFBundleIconFile='AppIcon', CFBundleSupportedPlatforms=['MacOSX'],
     LSApplicationCategoryType='public.app-category.developer-tools', LSMinimumSystemVersion='15.0',
     NSHighResolutionCapable=True,
+    NSMicrophoneUsageDescription='Wheel turns what you say into the text of a message, on this Mac. Your voice never leaves it.',
     # A browser pane opens whatever address it is given, plain http on a Tailscale or LAN host included.
     NSAppTransportSecurity=dict(NSAllowsArbitraryLoadsInWebContent=True))))
 subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, env=dict(os.environ,

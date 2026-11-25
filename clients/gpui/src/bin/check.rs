@@ -326,6 +326,10 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let target = terms[1];
     let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
+    let (run, dictation_report) = dictation(run, agent_name.clone(), cx).await?;
+    let (run, voice_report) = voice_mode(run, agent_pane.clone(), agent_name.clone(), cx).await?;
+    // In the log too, since a later step's failure leaves no report.json.
+    eprintln!("check: composer.dictation {dictation_report}\ncheck: composer.voice {voice_report}");
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, image_report) = inline_image(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, mermaid_report) = mermaid_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -449,6 +453,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     report["composer"] = composer_report;
     report["composer"]["attachment_path_in_message"] = attachments_report["attachment_path_in_message"].clone();
     report["composer"]["attachments"] = attachments_report;
+    report["composer"]["dictation"] = dictation_report;
+    report["composer"]["voice"] = voice_report;
     report["conversations"] = conversations_report;
     report["conversations"]["fork_rows"] = json!(fork_rows);
     report["conversations"]["fork"] = fork_report;
@@ -2393,6 +2399,295 @@ async fn composer_and_queue(run: Run, agent_pane: String, agent_name: String, cl
         erase(&native, typed.len(), cx).await;
     }
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped))
+}
+
+/// Where the speech models are for the dictation and voice steps (`WHEEL_CHECK_SPEECH_MODELS`, laid
+/// out as `crate::speech_models` keeps them), or None when the run has none: those steps then
+/// check only the prompts that ask for them.
+fn check_models() -> Option<PathBuf> {
+    std::env::var_os("WHEEL_CHECK_SPEECH_MODELS").map(PathBuf::from).filter(|p| wheel_gpui::speech_models::PARAKEET.on_disk(p) && wheel_gpui::speech_models::SILERO_VAD.on_disk(p))
+}
+
+/// A `say` clip of `words`, 16 kHz, standing in for the microphone.
+fn spoken_clip(path: &std::path::Path, words: &str) -> Result<()> {
+    let said = std::process::Command::new("/usr/bin/say").arg("-o").arg(path).args(["--data-format=LEI16@16000", words]).status()?;
+    ensure!(said.success() && path.exists(), "say wrote no clip");
+    Ok(())
+}
+
+/// Removes a step's scratch folder and the stand-ins it set, whether the step passes or fails.
+struct SpeechCleanup(PathBuf);
+impl Drop for SpeechCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        // SAFETY: speech reads these on this thread, when a press asks it to.
+        unsafe {
+            for var in ["WHEEL_SPEECH_MODELS", "WHEEL_DICTATION_FILE", "WHEEL_VOICE_FILE", "WHEEL_VOICE_SILENT"] {
+                std::env::remove_var(var);
+            }
+        }
+    }
+}
+
+/// Dictation (wheel-e1xk.2): with no model on the Mac the microphone shows what the download
+/// fetches, with Download and Cancel, and Cancel closes it. With the model, a press records, a
+/// second press transcribes with Parakeet, and the text goes into the draft. A spoken clip (`say`)
+/// stands in for the microphone through `WHEEL_DICTATION_FILE`; the presses are real mouse events.
+async fn dictation(run: Run, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let state = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["dictation"].clone())?) };
+    let drawn = |name: &str, cx: &mut AsyncApp| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, name))?.is_some()) };
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-dictation-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("no-models"))?;
+    let _cleanup = SpeechCleanup(dir.clone());
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("dictate", cx)?, "the composer drew no microphone");
+
+    // No model: the press asks, naming what the download fetches.
+    // SAFETY: as in SpeechCleanup.
+    unsafe { std::env::set_var("WHEEL_SPEECH_MODELS", dir.join("no-models")) };
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let mut asked = Value::Null;
+    for _ in 0..50 {
+        draw(window, None, cx)?;
+        asked = state(cx)?;
+        if asked["phase"] == "asking" && drawn("dictation download", cx)? {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    ensure!(asked["phase"] == "asking" && asked["owner"] == agent_name.as_str() && drawn("dictation cancel", cx)?, "with no model the microphone asked nothing: {asked}");
+    let prompt = window.update(cx, |c, _, _| c.dictation_prompt_text())?;
+    for named in ["Parakeet TDT 0.6b v3", "670.6 MB", "huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", "no-models/parakeet"] {
+        ensure!(prompt.contains(named), "the prompt does not name {named:?}: {prompt:?}");
+    }
+    draw(window, Some(output.join("dictation-prompt.png")), cx)?;
+    press_named(&native, window, &agent_name, "dictation cancel", cx).await?;
+    for _ in 0..50 {
+        if state(cx)?["phase"] == "idle" {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    draw(window, None, cx)?;
+    ensure!(state(cx)?["phase"] == "idle" && !drawn("dictation download", cx)?, "Cancel left the prompt: {}", state(cx)?);
+    let Some(models) = check_models() else {
+        let report = json!({"asked": asked["phase"], "prompt": prompt, "transcribed": "not run: WHEEL_CHECK_SPEECH_MODELS names no folder holding the models"});
+        return Ok((Run { bridge, connection, layouts, window, native, markers, output }, report));
+    };
+
+    // The model on the Mac: record, stop, and the words land in the draft.
+    let clip = dir.join("clip.wav");
+    spoken_clip(&clip, "Run cargo test in the daemon.")?;
+    // SAFETY: as in SpeechCleanup.
+    unsafe {
+        std::env::set_var("WHEEL_SPEECH_MODELS", &models);
+        std::env::set_var("WHEEL_DICTATION_FILE", &clip);
+    }
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, "Then".into()))?;
+    draw(window, None, cx)?;
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let mut recording = Value::Null;
+    for _ in 0..50 {
+        recording = state(cx)?;
+        if recording["phase"] == "recording" {
+            break;
+        }
+        tick(cx, 50).await;
+    }
+    ensure!(recording["phase"] == "recording" && recording["model_on_disk"] == true, "the press started no recording: {recording}");
+    draw(window, None, cx)?;
+    let listening = window.update(cx, |c, _, _| c.dictation_note(&agent_name))?;
+    ensure!(listening.as_deref() == Some("Listening…"), "while recording the composer said {listening:?}");
+    draw(window, Some(output.join("composer-dictating.png")), cx)?;
+    tick(cx, 400).await;
+    press_named(&native, window, &agent_name, "dictate", cx).await?;
+    let started = std::time::Instant::now();
+    let mut heard = Value::Null;
+    // The first press loads Parakeet: several seconds.
+    while started.elapsed() < Duration::from_secs(120) {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        heard = state(cx)?;
+        if heard["phase"] == "idle" {
+            break;
+        }
+    }
+    let draft = window.update(cx, |c, _, _| c.draft(&agent_name))?;
+    ensure!(heard["heard"]["owner"] == agent_name.as_str() && draft.starts_with("Then ") && draft.to_lowercase().contains("cargo test"), "dictation left the draft {draft:?}; state {heard}");
+    draw(window, None, cx)?;
+    draw(window, Some(output.join("dictation-done.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    let report = json!({"asked": asked["phase"], "prompt": prompt, "listening_note": listening, "draft": draft, "transcribed_ms": started.elapsed().as_millis() as u64});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
+}
+
+/// The round button at the composer's end (wheel-eg4e.19.31) and voice mode behind it
+/// (wheel-e1xk.11): voice with nothing typed, Send with a draft, Stop while the agent works; with no
+/// models voice names the download; with them it opens a layer over the pane, hears a spoken turn
+/// (a `say` clip standing in for the microphone), sends it, speaks the reply (silently), mutes,
+/// shrinks to the pill and back, and X closes it and gives the lease back.
+async fn voice_mode(run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    #[allow(unused_variables, unused_mut)]
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let state = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["voice"].clone())?) };
+    let drawn = |name: &str, cx: &mut AsyncApp| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, name))?.is_some()) };
+    let bounds = |name: &str, cx: &mut AsyncApp| -> Result<Option<(f32, f32, f32, f32)>> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, name))?.map(|b| (b.0, b.1, b.2, b.3))) };
+    let busy = |cx: &mut AsyncApp| -> Result<bool> { Ok(window.update(cx, |c, _, _| c.transcripts.get(&agent_name).is_some_and(|t| t.busy()))?) };
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-voice-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("no-models"))?;
+    let _cleanup = SpeechCleanup(dir.clone());
+
+    // Empty and idle: the round button is voice mode; with a draft it is Send; while the agent
+    // works, Stop; each in the same place and size.
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice", cx)? && !drawn("send", cx)? && !drawn("stop", cx)? && drawn("dictate", cx)?, "an empty composer drew no voice button beside the microphone");
+    let voice_at = bounds("voice", cx)?;
+    draw(window, Some(output.join("composer-empty.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, "hello there".into()))?;
+    draw(window, None, cx)?;
+    ensure!(drawn("send", cx)? && !drawn("voice", cx)?, "a draft drew no Send");
+    let send_at = bounds("send", cx)?;
+    draw(window, Some(output.join("composer-text.png")), cx)?;
+    window.update(cx, |c, _, _| c.set_draft(&agent_name, String::new()))?;
+    draw(window, None, cx)?;
+    // A slow turn, sent through the CLI so the composer stays empty: the round button is Stop.
+    let mut slow = std::process::Command::new(std::env::var("WHEEL_CLIENT_CLI")?)
+        .args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "agent", "send", "--timeout", "60", &agent_pane, "work slowly 3"])
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+    let mut stop_at = None;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if busy(cx)? && drawn("stop", cx)? {
+            stop_at = bounds("stop", cx)?;
+            draw(window, Some(output.join("composer-working.png")), cx)?;
+            break;
+        }
+    }
+    ensure!(stop_at.is_some(), "the round button drew no Stop while the agent worked");
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if slow.try_wait()?.is_some() && !busy(cx)? {
+            break;
+        }
+    }
+    let _ = slow.kill();
+    let _ = slow.wait();
+    ensure!(voice_at == send_at && send_at == stop_at, "the round button moved between states: voice {voice_at:?}, send {send_at:?}, stop {stop_at:?}");
+    ensure!(!busy(cx)?, "the slow turn never ended");
+    draw(window, None, cx)?;
+
+    // The layer covers the pane: zoomed, as the full view of a short grid pane is.
+    let mut run = Run { bridge, connection, layouts, window, native, markers, output };
+    zoom_pane(&mut run, &agent_pane, true, cx).await?;
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    draw(window, None, cx)?;
+
+    // No models: voice names what it would download and waits.
+    // SAFETY: as in SpeechCleanup.
+    unsafe { std::env::set_var("WHEEL_SPEECH_MODELS", dir.join("no-models")) };
+    press_named(&native, window, &agent_name, "voice", cx).await?;
+    let mut asking = Value::Null;
+    for _ in 0..50 {
+        pump(&mut connection, 50, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        asking = state(cx)?;
+        if asking["phase"] == "asking" && drawn("voice-download", cx)? {
+            break;
+        }
+    }
+    ensure!(asking["phase"] == "asking" && drawn("voice-download", cx)? && drawn("voice-layer", cx)?, "with no models voice asked nothing: {asking}");
+    draw(window, Some(output.join("voice-asking.png")), cx)?;
+    press_named(&native, window, &agent_name, "voice-end", cx).await?;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if state(cx)?["phase"] == "off" && state(cx)?["session"].is_null() {
+            break;
+        }
+    }
+    ensure!(state(cx)?["phase"] == "off" && !drawn("voice-layer", cx)?, "X left the asking layer open: {}", state(cx)?);
+    let Some(models) = check_models() else {
+        let report = json!({"asked": asking["phase"], "turn": "not run: WHEEL_CHECK_SPEECH_MODELS names no folder holding the models"});
+        let mut run = Run { bridge, connection, layouts, window, native, markers, output };
+        zoom_pane(&mut run, &agent_pane, false, cx).await?;
+        return Ok((run, report));
+    };
+
+    let clip = dir.join("turn.wav");
+    spoken_clip(&clip, "Please run the tests in the daemon.")?;
+    // SAFETY: as in SpeechCleanup.
+    unsafe {
+        std::env::set_var("WHEEL_SPEECH_MODELS", &models);
+        std::env::set_var("WHEEL_VOICE_FILE", &clip);
+        std::env::set_var("WHEEL_VOICE_SILENT", "1");
+    }
+    press_named(&native, window, &agent_name, "voice", cx).await?;
+    let started = std::time::Instant::now();
+    let mut seen: Vec<String> = vec![];
+    let mut v = Value::Null;
+    while started.elapsed() < Duration::from_secs(120) {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        v = state(cx)?;
+        let phase = v["phase"].as_str().unwrap_or("").to_owned();
+        if seen.last() != Some(&phase) {
+            if phase == "listening" && !seen.contains(&phase) {
+                draw(window, None, cx)?;
+                draw(window, Some(output.join("voice-listening.png")), cx)?;
+            }
+            if phase == "speaking" {
+                draw(window, None, cx)?;
+                draw(window, Some(output.join("voice-speaking.png")), cx)?;
+            }
+            seen.push(phase.clone());
+        }
+        if seen.iter().any(|p| p == "speaking") && phase == "listening" {
+            break;
+        }
+    }
+    let seconds = started.elapsed().as_secs_f32();
+    ensure!(v["session"]["holder"].is_string(), "voice mode holds no lease: {v}");
+    let spoken = v["last_user"].as_str().unwrap_or("").to_lowercase();
+    ensure!(spoken.contains("run the tests"), "voice sent {spoken:?}, not the clip's words; phases {seen:?}; {v}");
+    ensure!(seen.iter().any(|p| p == "speaking") && v["caption"].as_str().is_some_and(|c| c.contains("echo")), "the reply was not spoken: phases {seen:?}; {v}");
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-layer", cx)? && drawn("voice-mute", cx)? && drawn("voice-end", cx)? && drawn("voice-type", cx)? && drawn("voice-panes", cx)?, "the layer lacks its controls");
+
+    press_named(&native, window, &agent_name, "voice-mute", cx).await?;
+    for _ in 0..20 {
+        pump(&mut connection, 50, &mut layouts, window, cx).await?;
+        if state(cx)?["muted"] == true {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    ensure!(state(cx)?["muted"] == true, "mute did not mute: {}", state(cx)?);
+    draw(window, Some(output.join("voice-muted.png")), cx)?;
+    press_named(&native, window, &agent_name, "voice-mute", cx).await?;
+    press_named(&native, window, &agent_name, "voice-panes", cx).await?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-pill", cx)? && !drawn("voice-layer", cx)?, "the panes button left no pill");
+    draw(window, Some(output.join("voice-pill.png")), cx)?;
+    press_named(&native, window, &agent_name, "voice-orb", cx).await?;
+    draw(window, None, cx)?;
+    ensure!(drawn("voice-layer", cx)?, "the pill's orb did not bring the layer back");
+    let holder = v["session"]["holder"].clone();
+    press_named(&native, window, &agent_name, "voice-end", cx).await?;
+    for _ in 0..30 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        if state(cx)?["phase"] == "off" {
+            break;
+        }
+    }
+    draw(window, None, cx)?;
+    let closed = state(cx)?;
+    ensure!(closed["phase"] == "off" && closed["session"].is_null() && !drawn("voice-layer", cx)? && drawn("voice", cx)?, "X left voice mode open: {closed}");
+    let report = json!({"asked": asking["phase"], "phases": seen, "sent": spoken, "caption": v["caption"], "lease_holder": holder, "seconds": seconds});
+    let mut run = Run { bridge, connection, layouts, window, native, markers, output };
+    zoom_pane(&mut run, &agent_pane, false, cx).await?;
+    Ok((run, report))
 }
 
 /// Attachments: a dropped file and a pasted image become chips and go out as paths.
@@ -5260,10 +5555,10 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             for _ in 0..200 {
                 pump(&mut connection, 100, &mut layouts, window, cx).await?;
                 streams = demo(&state(&native));
-                if streams.len() == 2 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
+                if streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
             }
-            ensure!(streams.len() == 2 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
-                "the gallery's two VideoStreams decoded no picture: {streams:?}; bridge errors {}", native.status()["errors"]);
+            ensure!(streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
+                "the gallery's four VideoStreams decoded no picture: {streams:?}; bridge errors {}", native.status()["errors"]);
             let typed = native.call(json!({"op":"plugin","pane":pane,"action":"stream_key","component":"gallery.demo","value":"q"}));
             ensure!(typed["ok"] == true, "stream_key on gallery.demo: {typed}");
             let mut last = Vec::new();

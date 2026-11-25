@@ -81,6 +81,7 @@ targets:
         INFOPLIST_FILE: iOS/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Wheel
         INFOPLIST_KEY_NSCameraUsageDescription: Wheel scans the pairing code your Mac shows in Settings > Devices, and takes the photos you attach to a message for an agent.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Wheel turns what you say into text on this iPhone, to dictate a message or talk to an agent in voice mode. Your voice never leaves it.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight

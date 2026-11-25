@@ -245,6 +245,12 @@ final class PhoneModel {
     @ObservationIgnored private var artifactEmbeds: ArtifactEmbeds?
     /// One conversation per agent pane in the layout, keyed by agent name.
     private(set) var chats: [String: AgentChat] = [:]
+    /// Voice mode over one agent pane (`docs/voice-mode/index.md`); the lease and agent calls it makes go through `voiceTransport`.
+    let voice = VoiceSession()
+    @ObservationIgnored private var voiceClaimReq: UInt64?
+    @ObservationIgnored private var voiceNameReqs: Set<UInt64> = []
+    /// The pane voice mode was opened in, where the pill's orb returns to.
+    @ObservationIgnored private var voicePane: String?
     /// The files each agent pane's composer holds for its next message, keyed by pane id.
     private(set) var trays: [String: AttachmentTray] = [:]
     /// Each agent pane's earlier conversations, drawn dimmed above its transcript, keyed by pane
@@ -520,7 +526,12 @@ final class PhoneModel {
                 }
             }
             if wasConnected, state != .connected { for link in pluginPanes.values { link.dropped() } }
-            if state != .connected { links.forget(); consoleReqs = [:] }
+            if state != .connected {
+                links.forget()
+                consoleReqs = [:]
+                voiceClaimReq = nil
+                voice.end("Voice mode ended: the connection to the Mac dropped.")
+            }
             if case .connected = state {
                 settingListReq = nil
                 settingChangeReqs = [:]
@@ -658,6 +669,21 @@ final class PhoneModel {
             chats[agent]?.notice = notice
         case let .agent(agent, event):
             chats[agent]?.apply(event)
+            switch event.event {
+            case let .turnEnd(_, reason) where reason == "end_turn":
+                if let chat = chats[agent] { voice.turnEnded(agent: agent, reply: chat.transcript.lastReply) }
+            case let .card(title):
+                voice.cardShown(agent: agent, title: title)
+            default:
+                break
+            }
+        case let .leaseClaimed(req, key, owner):
+            if req == voiceClaimReq, key == VoiceSession.leaseKey {
+                voiceClaimReq = nil
+                voice.claimed(owner: owner)
+            }
+        case let .lease(key, owner):
+            voice.lease(key: key, owner: owner)
         case let .agentQueued(req, _, _):
             agentReqs[req] = nil
         case let .permRequested(perm):
@@ -740,6 +766,7 @@ final class PhoneModel {
                 Log.info("artifacts: \(list.count) listed")
             }
         case let .ok(req):
+            voiceNameReqs.remove(req)
             consoleAnswered(req)
             menuReqs.remove(req)
             spaceReqs.remove(req)
@@ -772,6 +799,11 @@ final class PhoneModel {
             case nil: break
             }
         case let .error(req, _, message):
+            if let req, req == voiceClaimReq {
+                voiceClaimReq = nil
+                voice.refused(message)
+            }
+            if let req, voiceNameReqs.remove(req) != nil { voice.end(message) }
             if let req { taskOutputAsks[req] = nil }
             if let req, let pane = consoleAnswered(req) {
                 Log.info("browser pane \(pane) console report refused: \(message)")
@@ -1073,6 +1105,7 @@ final class PhoneModel {
         for name in chats.keys where !agents.contains(name) {
             client.send(.agentDetach(agent: name))
             chats[name] = nil
+            if voice.agent == name { voice.end("Voice mode ended: its pane closed.") }
             Log.info("agent \(name) left the layout; detached")
         }
         for name in agents where chats[name] == nil {
@@ -1214,6 +1247,88 @@ final class PhoneModel {
         client.send(.agentSend(req: req, agent: chat.name, text: text))
         chat.draft = ""
         tray?.sent()
+    }
+
+    /// Whether the composer offers voice mode: wheeld takes the `voice` lease and `agent_voice`.
+    var voiceOffered: Bool { isConnected && VoiceSession.offered(by: serverOffer.ops) }
+
+    /// The composer's round button with an empty field: voice mode over `pane`'s agent. The microphone and the
+    /// speaker are voice mode's alone, so this conversation's read-aloud steps aside.
+    func openVoice(_ chat: AgentChat, pane: String, harness: String, orchestrator: Bool) {
+        if voice.transport == nil { voice.transport = voiceTransport }
+        chat.readsAloud = false
+        voicePane = pane
+        let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.name
+        voice.open(agent: chat.name,
+                   title: orchestrator ? "Orchestrator" : AgentInfo.title(of: chat.name),
+                   subtitle: orchestrator ? harness : [space, harness].compactMap { $0 }.joined(separator: " · "),
+                   heard: Voice.shared.said?.id ?? 0)
+        Log.info("voice mode: opening for \(chat.name)")
+    }
+
+    #if DEBUG
+    /// `WHEEL_VOICE_SHOT` and `WHEEL_DICTATE_SHOT`: a state of voice mode or of dictation drawn with no audio.
+    func demoVoice(_ chat: AgentChat, pane: String, shot: String) {
+        voicePane = pane
+        if shot == "dictate" {
+            Dictation.shared.demoRecording(for: chat.name)
+            return
+        }
+        let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.name
+        voice.transport = voiceTransport
+        voice.demoOn(agent: chat.name, title: AgentInfo.title(of: chat.name), subtitle: [space, "claude"].compactMap { $0 }.joined(separator: " · "),
+                     card: shot == "card" ? "Diff of src/lib.rs" : nil, pill: shot == "pill")
+        let reply = "The tests pass. I changed the parser to read the lease key first, and nothing else needed to move."
+        switch shot {
+        case "asking": Voice.shared.start(for: chat.name)
+        case "hearing": Voice.shared.demo(phase: .hearing, owner: chat.name, level: 0.7)
+        case "speaking": Voice.shared.demo(phase: .speaking, owner: chat.name, level: 0.6, caption: reply)
+        case "pill": Voice.shared.demo(phase: .speaking, owner: chat.name, level: 0.5, caption: reply)
+        case "thinking": Voice.shared.demo(phase: .thinking, owner: chat.name)
+        case "muted": Voice.shared.demo(phase: .listening, owner: chat.name, muted: true)
+        default: Voice.shared.demo(phase: .listening, owner: chat.name, level: 0.4)
+        }
+    }
+    #endif
+
+    /// The pill's orb: the layer comes back on the agent's pane.
+    func restoreVoice() {
+        voice.restore()
+        if let pane = voicePane, let space = spaces.first(where: { $0.allPanes.contains { $0.id == pane } }) {
+            focus(space: space.id, pane: pane)
+        }
+    }
+
+    private var voiceTransport: VoiceTransport {
+        VoiceTransport(
+            claim: { [weak self] in
+                guard let self else { return }
+                guard case .connected = connection, let client else { voice.refused("Not connected to the Mac."); return }
+                let req = client.req()
+                voiceClaimReq = req
+                client.send(.leaseClaim(req: req, key: VoiceSession.leaseKey))
+            },
+            release: { [weak self] in
+                guard let client = self?.client else { return }
+                client.send(.leaseRelease(req: client.req(), key: VoiceSession.leaseKey))
+            },
+            name: { [weak self] agent in
+                guard let self, let client else { return }
+                let req = client.req()
+                // Only a refusal to name an agent is news; clearing one cannot fail the person's way.
+                if agent != nil { voiceNameReqs.insert(req) }
+                client.send(.agentVoice(req: req, agent: agent))
+            },
+            send: { [weak self] agent, text in
+                guard let self, let client, let chat = chats[agent] else { return }
+                chat.error = nil
+                chat.pinned = true
+                let req = client.req()
+                agentReqs[req] = agent
+                Log.info("voice: send to \(agent), \(text.count) chars")
+                client.send(.agentSend(req: req, agent: agent, text: text))
+            }
+        )
     }
 
     func cancel(_ chat: AgentChat) {

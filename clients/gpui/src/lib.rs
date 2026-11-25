@@ -1,10 +1,11 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
-pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, strip, toasts, topic, transcript, tray, windows};
+pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, speech_models, spoken, strip, toasts, topic, transcript, tray, voice, windows};
 pub mod actions;
 pub mod browser;
 pub mod edit_menu;
 pub mod keymap;
 pub mod saved;
+pub mod speech;
 pub mod status;
 pub mod tooltip;
 pub mod view;
@@ -70,6 +71,9 @@ pub fn refresh_windows(cx: &mut App) {
 /// draw from it) in the client's palette, and the hook that gives the composer's keys to the
 /// client before the input's own bindings.
 pub fn init(cx: &mut App) {
+    // The view tests run on GPUI's deterministic scheduler, which the speech threads would wake.
+    #[cfg(not(test))]
+    speech::init(cx);
     gpui_component::init(cx);
     let colors = &mut gpui_component::Theme::global_mut(cx).colors;
     colors.foreground = rgb(0xd9e8e1).into();
@@ -141,7 +145,7 @@ pub enum Opening {
 pub fn create_window(
     cx: &mut App,
     bridge: &Rc<native::Bridge>,
-    connection_out: std::sync::mpsc::Sender<String>,
+    connection_out: crate::daemon::Outbox,
     endpoint: daemon::Endpoint,
     prefer_session: Option<String>,
     prefer_space: Option<String>,
@@ -175,6 +179,7 @@ pub fn create_window(
     if let Some([x, y, w, h]) = frame {
         bounds = Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) };
     }
+    let speech = speech::entity(cx);
     let window = view::ClientWindow::open(
         cx,
         WindowOptions {
@@ -199,6 +204,16 @@ pub fn create_window(
                 // Anything that notifies the client may change what a pane body shows, so every body
                 // draws again; a notify that reaches only a body (its working arc, its scroll) does not.
                 cx.observe_self(|client: &mut view::Client, cx| client.invalidate_bodies(cx)).detach();
+                // Speech is the app's: every window hears what it does, and redraws when it shows it.
+                if let Some(speech) = &speech {
+                    cx.observe(speech, |client: &mut view::Client, speech, cx| {
+                        let s = speech.read(cx);
+                        if client.on_speech(&s.dictation, &s.voice) {
+                            cx.notify();
+                        }
+                    })
+                    .detach();
+                }
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
                 client.publish();

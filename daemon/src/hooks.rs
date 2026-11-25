@@ -296,11 +296,12 @@ impl AppState {
     }
 
     /// Queue `job` behind the jobs its hook has waiting, so each hook runs its events in order.
-    /// Every decide job shares one queue, so the hooks deciding a request run in file order and the
-    /// first that answers it wins, never waiting behind a hook's other events.
+    /// The decide jobs for one permission request share a queue, so the hooks deciding it run in
+    /// file order and the first that answers it wins; different requests have different queues,
+    /// so a slow hook holds up only the request it is deciding. A queue ends once it is empty.
     fn hook_queue(&self, job: Job) {
-        let key = match job.perm {
-            Some(_) => "decide".to_string(),
+        let key = match &job.perm {
+            Some(perm) => format!("decide\n{perm}"),
             None => format!("{}\n{}\n{:?}", job.hook.file.display(), job.hook.run, job.hook.inbox),
         };
         let mut runs = self.hook_runs.lock().unwrap();
@@ -314,10 +315,16 @@ impl AppState {
         let Some(state) = self.me.upgrade() else { return };
         let (queue, mut queued) = tokio::sync::mpsc::unbounded_channel::<Job>();
         let _ = queue.send(job);
-        runs.insert(key, queue);
+        runs.insert(key.clone(), queue);
         tokio::spawn(async move {
             while let Some(job) = queued.recv().await {
                 state.hook_run(job).await;
+                // Empty under the lock jobs are queued under, so none is sent to a queue that ends.
+                let mut runs = state.hook_runs.lock().unwrap();
+                if queued.is_empty() {
+                    runs.remove(&key);
+                    return;
+                }
             }
         });
     }

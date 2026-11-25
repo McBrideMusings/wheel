@@ -1307,11 +1307,16 @@ enum PaneCommand {
 enum AgentCommand {
     /// Send an agent a message and print its reply as it streams.
     ///
+    /// The target can also be a terminal pane running Claude Code, Codex or pi: the daemon pastes the
+    /// message into its composer and submits it with the key that agent takes, queued behind a
+    /// running turn, and the command returns once it is in; the reply shows in that pane. This is
+    /// how one agent messages another. `wheel term send` is for raw keystrokes.
+    ///
     /// When the turn ends for any reason but a normal finish, stderr gets one line with the raw
     /// protocol token, `[turn ended: max_tokens]`. The token is deliberate: scripts match on it,
     /// where the apps word the same reason for a person.
     Send {
-        /// An agent pane's id or its agent name.
+        /// An agent pane's id, its agent name, or a terminal pane running a coding agent.
         agent: String,
         text: String,
         /// Seconds to wait for the reply to finish (0 to 3600).
@@ -1379,9 +1384,10 @@ enum AgentCommand {
         agent: String,
     },
     /// Wait until an agent is ready (no turn running or queued) and print its pane, agent and
-    /// state. Exits 3 when the time runs out first, 6 when the agent gave up.
+    /// state. Exits 3 when the time runs out first, 6 when the agent gave up. For a terminal pane
+    /// running a coding agent, ready means its hooks last reported it idle.
     Wait {
-        /// An agent pane's id or its agent name.
+        /// An agent pane's id, its agent name, or a terminal pane running a coding agent.
         agent: String,
         /// Seconds to wait (0 to 3600).
         #[arg(long, default_value_t = 60.0, value_parser = parse_timeout)]
@@ -1790,10 +1796,11 @@ impl Conn {
         // the kernel completes the TCP handshake whether or not wheeld ever reads.
         let (ws, _) = tokio::time::timeout(
             LINK_WAIT,
+            // `true` disables Nagle: requests are small frames each answered before the next.
             tokio_tungstenite::connect_async_with_config(
                 format!("{url}?token={}", token.trim()),
                 Some(config),
-                false,
+                true,
             ),
         )
         .await
@@ -2664,7 +2671,7 @@ async fn agent_send(
 ) -> Result<(), Fail> {
     let req = conn.req();
     // The daemon resolves a pane id to its agent, and events carry the agent's name.
-    let ServerMsg::AgentAttached { agent, .. } = conn
+    let agent = match conn
         .call(
             ClientMsg::AgentAttach {
                 req: Some(req),
@@ -2673,8 +2680,23 @@ async fn agent_send(
             req,
         )
         .await?
-    else {
-        return Err(Fail::Other("unexpected reply to agent_attach".into()));
+    {
+        ServerMsg::AgentAttached { agent, .. } => agent,
+        // An agent's TUI in a terminal pane: the daemon types the message in and submits it, and
+        // the reply shows in that pane, never here.
+        ServerMsg::AgentInTerminal { pane, .. } => {
+            let req = conn.req();
+            let ServerMsg::AgentTyped { pane, agent, queued, .. } = conn
+                .call(ClientMsg::AgentSend { req: Some(req), agent: pane, text }, req)
+                .await?
+            else {
+                return Err(Fail::Other("unexpected reply to agent_send".into()));
+            };
+            let when = if queued { "queued behind its running turn" } else { "submitted" };
+            eprintln!("[sent to {agent} in terminal pane {pane}, {when}; its reply shows in that pane: `wheel agent wait {pane}` waits for it, `wheel term read {pane}` shows it]");
+            return Ok(());
+        }
+        _ => return Err(Fail::Other("unexpected reply to agent_attach".into())),
     };
     let req = conn.req();
     let ServerMsg::AgentQueued { turn, .. } = conn
@@ -2876,9 +2898,7 @@ async fn context_of(
     agent: String,
 ) -> Result<(String, Option<wheel_proto::ContextUse>), Fail> {
     let req = conn.req();
-    let ServerMsg::AgentAttached {
-        agent, context, ..
-    } = conn
+    match conn
         .call(
             ClientMsg::AgentAttach {
                 req: Some(req),
@@ -2887,17 +2907,29 @@ async fn context_of(
             req,
         )
         .await?
-    else {
-        return Err(Fail::Other("unexpected reply to agent_attach".into()));
-    };
-    Ok((agent, context))
+    {
+        ServerMsg::AgentAttached { agent, context, .. } => Ok((agent, context)),
+        ServerMsg::AgentInTerminal { pane, agent, context, .. } => Ok((format!("{agent} in {pane}"), context)),
+        _ => Err(Fail::Other("unexpected reply to agent_attach".into())),
+    }
+}
+
+/// An `agent_attach` reply for a verb that needs a Wheel agent: an agent's TUI in a terminal
+/// pane is refused, naming what reaches it instead.
+fn attached(reply: ServerMsg) -> Result<ServerMsg, Fail> {
+    match reply {
+        ServerMsg::AgentInTerminal { pane, agent, .. } => Err(Fail::Daemon(format!(
+            "{agent} runs in terminal pane {pane}, so Wheel has no transcript, queue or controls of it: `wheel agent send` and `wheel agent wait` reach it, and `wheel term read {pane}` shows its screen"
+        ))),
+        other => Ok(other),
+    }
 }
 
 /// Print the slash commands an agent reported. The daemon sends them right after the attach reply,
 /// when it holds them.
 async fn agent_commands(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::AgentAttached { agent, .. } = conn
+    let ServerMsg::AgentAttached { agent, .. } = attached(conn
         .call(
             ClientMsg::AgentAttach {
                 req: Some(req),
@@ -2905,7 +2937,7 @@ async fn agent_commands(conn: &mut Conn, agent: String, json: bool) -> Result<()
             },
             req,
         )
-        .await?
+        .await?)?
     else {
         return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
@@ -3005,7 +3037,7 @@ async fn agent_config(
         .await;
     }
     let req = conn.req();
-    let ServerMsg::AgentAttached { config, state, .. } = conn
+    let ServerMsg::AgentAttached { config, state, .. } = attached(conn
         .call(
             ClientMsg::AgentAttach {
                 req: Some(req),
@@ -3013,7 +3045,7 @@ async fn agent_config(
             },
             req,
         )
-        .await?
+        .await?)?
     else {
         return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
@@ -3183,12 +3215,7 @@ async fn agent_switch(
 
 async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fail> {
     let req = conn.req();
-    let ServerMsg::AgentAttached {
-        agent,
-        state,
-        events,
-        ..
-    } = conn
+    let (agent, state, events) = match conn
         .call(
             ClientMsg::AgentAttach {
                 req: Some(req),
@@ -3197,8 +3224,10 @@ async fn agent_read(conn: &mut Conn, agent: String, json: bool) -> Result<(), Fa
             req,
         )
         .await?
-    else {
-        return Err(Fail::Other("unexpected reply to agent_attach".into()));
+    {
+        ServerMsg::AgentAttached { agent, state, events, .. } => (agent, state, events),
+        reply @ ServerMsg::AgentInTerminal { .. } => return attached(reply).map(|_| ()),
+        _ => return Err(Fail::Other("unexpected reply to agent_attach".into())),
     };
     if json {
         let all = serde_json::json!({ "state": state, "events": events });

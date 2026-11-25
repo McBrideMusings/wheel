@@ -12,6 +12,9 @@ use_fake_agent
 start_daemon
 
 w space new "$PROJ" >/dev/null
+sleep 1
+nthreads() { ps -M -p "$DPID" | tail -n +2 | wc -l | tr -d ' '; }
+before="$(nthreads)"
 P="$(w space ls --json | plutil -extract 0.panes.0 raw -o - -- -)"
 w pane kind "$P" web --artifact site >/dev/null
 panes=("$P")
@@ -24,11 +27,11 @@ A="$(w pane split "$P" down)"
 w pane start "$A" agent --message hi >/dev/null
 sleep 2
 
-threads() { sample "$DPID" 1 2>/dev/null | grep -cE "Thread_[0-9]+: $1"; }
-streams="$(threads 'wheel fsevents$')"
-old="$(threads 'notify-rs fsevents loop')"
-[ "$streams" = 1 ] && ok "six web panes and an agent share one FSEvents stream thread" \
-  || fail "FSEvents stream threads: $streams, want 1"
+after="$(nthreads)"
+old="$(sample "$DPID" 1 2>/dev/null | grep -cE 'Thread_[0-9]+: notify-rs fsevents loop')"
+# Each pane used to bring 3-5 watcher threads of its own; now its folders join the shared queue.
+[ $((after - before)) -le 4 ] && ok "six web panes and an agent added $((after - before)) threads ($before -> $after)" \
+  || fail "six web panes and an agent added $((after - before)) threads ($before -> $after), want at most 4"
 [ "$old" = 0 ] && ok "no per-watch notify-rs fsevents threads" || fail "notify-rs fsevents threads: $old, want 0"
 
 before="$(grep -c 'pane reload' "$(LOG)")"

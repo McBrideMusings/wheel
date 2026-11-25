@@ -1,19 +1,18 @@
-//! One file-system event stream for the whole daemon. A `notify::RecommendedWatcher` on macOS
-//! owns an OS thread and an FSEvents stream, and wheeld watched per pane, per agent and per file,
-//! so threads grew with every pane. [`watcher`] hands out a [`Handle`] that implements
-//! [`notify::Watcher`] like the watcher it replaces, but every handle shares one FSEvents stream:
-//! a folder two handles watch is in the stream once, and each event goes only to the handles whose
-//! folders hold it.
+//! One place the whole daemon watches files from. A `notify::RecommendedWatcher` on macOS owns an
+//! OS thread and an FSEvents stream, and wheeld watched per pane, per agent and per file, so threads
+//! grew with every pane. [`watcher`] hands out a [`Handle`] that implements [`notify::Watcher`]
+//! like the watcher it replaces, but every handle shares the same streams: a folder any number of
+//! handles watch has one FSEvents stream, and each event goes only to the handles whose folders hold
+//! it. Every stream delivers on one serial dispatch queue, so the daemon spends one queue thread
+//! and one router thread on files however many folders it watches.
 //!
-//! FSEvents cannot add a path to a running stream, so a new folder means a new stream. notify
-//! starts each new stream from "now", which drops whatever happened while it swapped streams; this
-//! one starts each new stream from the last event id it saw, so FSEvents replays the gap, and a
-//! handle ignores events from before it began watching.
+//! A folder's stream starts when it is first watched and stops when the last watch of it ends; no
+//! stream is ever restarted to take in another folder, so watching a new folder never interrupts
+//! the ones already watched.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use fsevent_sys as fs;
@@ -30,9 +29,6 @@ struct Watched {
     given: PathBuf,
     real: PathBuf,
     mode: RecursiveMode,
-    /// The event id when the watch began; earlier events, which a restarted stream replays, are
-    /// not this watch's.
-    since: fs::FSEventStreamEventId,
 }
 
 struct Sub {
@@ -40,100 +36,75 @@ struct Sub {
     watched: Vec<Watched>,
 }
 
-/// The running stream: its run loop, to stop it, the thread that runs it, and whether it has
-/// delivered all the history it was started with.
-struct Stream {
-    runloop: SendRef,
-    thread: std::thread::JoinHandle<()>,
-    caught_up: Arc<AtomicBool>,
-}
-
-struct SendRef(cf::CFRef);
-// SAFETY: Core Foundation documents CFRunLoop and CFArray references as safe to pass between
-// threads; this one is only stopped from another thread.
+struct SendRef(*mut std::ffi::c_void);
+// SAFETY: FSEvents streams and dispatch queues are documented as usable from any thread; these are
+// only started, stopped and released through the hub's lock.
 unsafe impl Send for SendRef {}
+unsafe impl Sync for SendRef {}
+
+/// One watched folder: how many watches name it, and its stream.
+struct Folder {
+    count: usize,
+    stream: SendRef,
+}
 
 struct Hub {
     subs: HashMap<u64, Sub>,
-    /// How many watches name each folder, as the file system names it.
-    counts: HashMap<PathBuf, usize>,
-    /// Asks [`rebuilder`] to rebuild the stream over `counts`.
-    rebuild: mpsc::Sender<()>,
-    /// The folders the running stream covers.
-    streamed: std::collections::HashSet<PathBuf>,
+    /// Every watched folder, as the file system names it.
+    folders: HashMap<PathBuf, Folder>,
+    /// Where every stream's callback sends what it saw, for the router.
+    events: mpsc::Sender<Vec<Raw>>,
     next: u64,
 }
 
-impl Hub {
-    /// The earliest moment a watch the running stream does not cover yet began: the next stream
-    /// has to start at or before it, or that watch's first changes go unseen.
-    fn pending(&self) -> Option<fs::FSEventStreamEventId> {
-        self.subs
-            .values()
-            .flat_map(|s| &s.watched)
-            .filter(|w| !self.streamed.contains(&w.real))
-            .map(|w| w.since)
-            .min()
-    }
-}
-
-/// Where the next stream starts: the floor, or the start of a watch it is the first to cover when
-/// that is earlier.
-fn start_point(floor: fs::FSEventStreamEventId, pending: Option<fs::FSEventStreamEventId>) -> fs::FSEventStreamEventId {
-    pending.map_or(floor, |p| p.min(floor))
-}
-
-/// How many handed-out event ids the router holds before it drops those no stream can replay.
+/// How many delivered event ids the router keeps, to drop the copy a second stream sends when a
+/// watched folder lies inside another watched folder.
 const KEPT: usize = 4096;
+
+extern "C" {
+    fn FSEventStreamSetDispatchQueue(stream: fs::FSEventStreamRef, queue: *mut std::ffi::c_void);
+    fn dispatch_queue_create(label: *const std::ffi::c_char, attr: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
+/// The serial queue every stream delivers on.
+fn queue() -> *mut std::ffi::c_void {
+    static QUEUE: OnceLock<SendRef> = OnceLock::new();
+    QUEUE
+        .get_or_init(|| {
+            // SAFETY: a static C string label and no attributes, which makes a serial queue.
+            SendRef(unsafe { dispatch_queue_create(c"wheel.fsevents".as_ptr(), std::ptr::null_mut()) })
+        })
+        .0
+}
 
 fn hub() -> &'static Mutex<Hub> {
     static HUB: OnceLock<Mutex<Hub>> = OnceLock::new();
     HUB.get_or_init(|| {
         let (events, rx) = mpsc::channel::<Vec<Raw>>();
-        // SAFETY: a plain query of the system's current event id.
-        let now = unsafe { fs::FSEventsGetCurrentEventId() };
-        // Where the next stream starts: every event up to it was delivered. FSEvents hands a new
-        // stream's history back in no set order, so it moves up to `last`, the newest id seen,
-        // only once the stream started from it has delivered all of it.
-        let floor = Arc::new(AtomicU64::new(now));
-        let last = Arc::new(AtomicU64::new(now));
-        let newest = last.clone();
-        let (rebuild, asks) = mpsc::channel::<()>();
-        std::thread::Builder::new()
-            .name("wheel fsevents rebuild".into())
-            .spawn({
-                let (events, floor, last) = (events.clone(), floor.clone(), last);
-                move || rebuilder(asks, events, floor, last)
-            })
-            .expect("could not start the file-event rebuilder");
         std::thread::Builder::new()
             .name("wheel fsevents route".into())
             .spawn(move || {
-                let mut delivered = std::collections::HashSet::new();
+                let (mut seen, mut order) = (HashSet::new(), VecDeque::new());
                 for batch in rx {
                     for raw in batch {
-                        if delivered.insert(raw.2) {
-                            route(raw);
+                        if !seen.insert(raw.2) {
+                            continue;
                         }
-                    }
-                    // A later stream starts no earlier than the newest id seen or the start of a
-                    // watch it does not cover yet, so ids below both are never handed out again.
-                    if delivered.len() > KEPT {
-                        let replayable = hub()
-                            .lock()
-                            .unwrap()
-                            .pending()
-                            .map_or(newest.load(Ordering::SeqCst), |p| p.min(newest.load(Ordering::SeqCst)));
-                        delivered.retain(|id| *id >= replayable);
+                        order.push_back(raw.2);
+                        if order.len() > KEPT {
+                            if let Some(old) = order.pop_front() {
+                                seen.remove(&old);
+                            }
+                        }
+                        route(raw);
                     }
                 }
             })
             .expect("could not start the file-event router");
         Mutex::new(Hub {
             subs: HashMap::new(),
-            counts: HashMap::new(),
-            rebuild,
-            streamed: Default::default(),
+            folders: HashMap::new(),
+            events,
             next: 0,
         })
     })
@@ -165,22 +136,22 @@ fn kind(flags: fs::FSEventStreamEventFlags) -> EventKind {
     }
 }
 
-/// Hand one event to each handle whose folders hold its path and that was watching when it
-/// happened. Handlers run outside the hub's lock, so one may watch or unwatch.
-fn route((path, flags, id): Raw) {
+/// Hand one event to each handle whose folders hold its path. Handlers run outside the hub's lock,
+/// so one may watch or unwatch.
+fn route((path, flags, _id): Raw) {
     if flags & fs::kFSEventStreamEventFlagHistoryDone != 0 {
         return;
     }
     // An event naming no change to an item is FSEvents saying something under a folder changed
-    // without saying what, as it does when it replays across a stream swap: a rescan. Its folder
-    // may be one above a watched folder, so it reaches that watch too, named as the watched folder.
+    // without saying what (it dropped events, say): a rescan. Its folder may be one above a watched
+    // folder, so it reaches that watch too, named as the watched folder.
     let rescan = kind(flags) == EventKind::Other;
     let deliveries: Vec<(Handler, PathBuf)> = {
         let hub = hub().lock().unwrap();
         hub.subs
             .values()
             .filter_map(|sub| {
-                sub.watched.iter().filter(|w| id > w.since).find_map(|w| {
+                sub.watched.iter().find_map(|w| {
                     if holds(&w.real, w.mode, &path) || holds(&w.given, w.mode, &path) {
                         Some((sub.handler.clone(), path.clone()))
                     } else if rescan && w.real.starts_with(&path) {
@@ -201,17 +172,10 @@ fn route((path, flags, id): Raw) {
     }
 }
 
-/// What the stream's callback is given: where to send events, and the newest id to keep.
-struct Context {
-    events: mpsc::Sender<Vec<Raw>>,
-    last: Arc<AtomicU64>,
-    caught_up: Arc<AtomicBool>,
-}
-
 extern "C" fn release_context(info: *const std::ffi::c_void) {
     // SAFETY: `info` is the Box this module leaked into the stream's context; the stream calls
     // release once, as it is freed.
-    unsafe { drop(Box::from_raw(info as *mut Context)) };
+    unsafe { drop(Box::from_raw(info as *mut mpsc::Sender<Vec<Raw>>)) };
 }
 
 extern "C" fn callback(
@@ -222,8 +186,8 @@ extern "C" fn callback(
     flags: *const fs::FSEventStreamEventFlags,
     ids: *const fs::FSEventStreamEventId,
 ) {
-    // SAFETY: FSEvents passes `count` C strings, flags and ids, and `info` is the live Context.
-    let (context, batch) = unsafe {
+    // SAFETY: FSEvents passes `count` C strings, flags and ids, and `info` is the live sender.
+    let (events, batch) = unsafe {
         let paths = paths as *const *const std::ffi::c_char;
         let batch: Vec<Raw> = (0..count)
             .map(|i| {
@@ -231,67 +195,26 @@ extern "C" fn callback(
                 (PathBuf::from(path), *flags.add(i), *ids.add(i))
             })
             .collect();
-        (&*(info as *const Context), batch)
+        (&*(info as *const mpsc::Sender<Vec<Raw>>), batch)
     };
-    if let Some(newest) = batch.iter().map(|r| r.2).max() {
-        context.last.fetch_max(newest, Ordering::SeqCst);
-    }
-    let done = batch.iter().any(|r| r.1 & fs::kFSEventStreamEventFlagHistoryDone != 0);
-    let _ = context.events.send(batch);
-    if done {
-        context.caught_up.store(true, Ordering::SeqCst);
-    }
+    let _ = events.send(batch);
 }
 
-extern "C" {
-    fn CFRunLoopIsWaiting(runloop: cf::CFRunLoopRef) -> cf::Boolean;
-}
-
-
-/// Stop `old` and wait for its thread. Once it delivered all the history it was started with,
-/// everything up to the newest id seen was delivered, so the floor moves up to it.
-fn stop(old: Stream, floor: &AtomicU64, last: &AtomicU64) {
-    // SAFETY: the run loop is live until its thread returns, which the join below waits for.
+/// A stream over `dir` from now, delivering on the shared queue; running when this returns.
+fn start(dir: &Path, events: &mpsc::Sender<Vec<Raw>>) -> notify::Result<SendRef> {
+    // SAFETY: Core Foundation and FSEvents calls on objects made here; the path and array are
+    // released once the stream, which retains them, is made.
     unsafe {
-        while CFRunLoopIsWaiting(old.runloop.0) == 0 {
-            std::thread::yield_now();
+        let mut err: cf::CFErrorRef = std::ptr::null_mut();
+        let path = cf::str_path_to_cfstring_ref(&dir.to_string_lossy(), &mut err);
+        if path.is_null() {
+            cf::CFRelease(err as cf::CFRef);
+            return Err(notify::Error::path_not_found().add_path(dir.to_path_buf()));
         }
-        cf::CFRunLoopStop(old.runloop.0);
-    }
-    let _ = old.thread.join();
-    if old.caught_up.load(Ordering::SeqCst) {
-        floor.fetch_max(last.load(Ordering::SeqCst), Ordering::SeqCst);
-    }
-}
-
-/// A stream over `dirs` from `since`, sending what it sees on `events`.
-fn start(
-    dirs: &[PathBuf],
-    since: fs::FSEventStreamEventId,
-    events: &mpsc::Sender<Vec<Raw>>,
-    last: &Arc<AtomicU64>,
-) -> Option<Stream> {
-    let caught_up = Arc::new(AtomicBool::new(false));
-    // SAFETY: Core Foundation calls on objects made here; the array is released once the stream,
-    // which retains it, is made.
-    let stream = unsafe {
         let paths = cf::CFArrayCreateMutable(cf::kCFAllocatorDefault, 0, &cf::kCFTypeArrayCallBacks);
-        for dir in dirs {
-            let mut err: cf::CFErrorRef = std::ptr::null_mut();
-            let text = dir.to_string_lossy();
-            let path = cf::str_path_to_cfstring_ref(&text, &mut err);
-            if path.is_null() {
-                cf::CFRelease(err as cf::CFRef);
-                continue;
-            }
-            cf::CFArrayAppendValue(paths, path);
-            cf::CFRelease(path);
-        }
-        let context = Box::into_raw(Box::new(Context {
-            events: events.clone(),
-            last: last.clone(),
-            caught_up: caught_up.clone(),
-        }));
+        cf::CFArrayAppendValue(paths, path);
+        cf::CFRelease(path);
+        let context = Box::into_raw(Box::new(events.clone()));
         let stream_context = fs::FSEventStreamContext {
             version: 0,
             info: context as *mut std::ffi::c_void,
@@ -304,94 +227,76 @@ fn start(
             callback,
             &stream_context,
             paths,
-            since,
+            fs::kFSEventStreamEventIdSinceNow,
             0.0,
             fs::kFSEventStreamCreateFlagFileEvents | fs::kFSEventStreamCreateFlagNoDefer,
         );
         cf::CFRelease(paths);
-        SendRef(stream)
-    };
-    let (tx, rx) = mpsc::channel::<SendRef>();
-    let thread = std::thread::Builder::new()
-        .name("wheel fsevents".into())
-        .spawn(move || {
-            let stream = stream;
-            // SAFETY: the stream made above, scheduled, run and freed on this one thread.
-            unsafe {
-                let runloop = cf::CFRunLoopGetCurrent();
-                fs::FSEventStreamScheduleWithRunLoop(stream.0, runloop, cf::kCFRunLoopDefaultMode);
-                fs::FSEventStreamStart(stream.0);
-                let _ = tx.send(SendRef(runloop));
-                cf::CFRunLoopRun();
-                fs::FSEventStreamStop(stream.0);
-                fs::FSEventStreamInvalidate(stream.0);
-                fs::FSEventStreamRelease(stream.0);
-            }
-        })
-        .inspect_err(|e| tracing::error!(error = %e, "could not start the file-event stream; file changes go unseen"))
-        .ok()?;
-    let runloop = rx.recv().ok()?;
-    Some(Stream { runloop, thread, caught_up })
+        if stream.is_null() {
+            return Err(notify::Error::generic(&format!("FSEvents made no stream for {}", dir.display())));
+        }
+        FSEventStreamSetDispatchQueue(stream, queue());
+        if fs::FSEventStreamStart(stream) == 0 {
+            fs::FSEventStreamInvalidate(stream);
+            fs::FSEventStreamRelease(stream);
+            return Err(notify::Error::generic(&format!("FSEvents would not start a stream for {}", dir.display())));
+        }
+        Ok(SendRef(stream))
+    }
 }
 
-/// Keep one stream over the folders the hub's watches name, rebuilding it each time it is asked
-/// to. Asks that arrive while a rebuild runs are folded into the next one. A watch never waits
-/// for a rebuild: the new stream starts at the floor, or earlier when a watch it is the first to
-/// cover began before the floor, so FSEvents replays that watch's changes from its start.
-fn rebuilder(
-    asks: mpsc::Receiver<()>,
-    events: mpsc::Sender<Vec<Raw>>,
-    floor: Arc<AtomicU64>,
-    last: Arc<AtomicU64>,
-) {
-    let mut stream: Option<Stream> = None;
-    while asks.recv().is_ok() {
-        while asks.try_recv().is_ok() {}
-        if let Some(old) = stream.take() {
-            stop(old, &floor, &last);
-        }
-        let (dirs, pending) = {
-            let hub = hub().lock().unwrap();
-            (hub.counts.keys().cloned().collect::<Vec<_>>(), hub.pending())
-        };
-        let from = start_point(floor.load(Ordering::SeqCst), pending);
-        if !dirs.is_empty() {
-            stream = start(&dirs, from, &events, &last);
-        }
-        hub().lock().unwrap().streamed = match stream {
-            Some(_) => dirs.into_iter().collect(),
-            None => Default::default(),
-        };
+/// Stop a stream, delivering what FSEvents still holds for it first.
+fn stop(stream: SendRef) {
+    // SAFETY: a stream `start` made and started, stopped and freed once.
+    unsafe {
+        fs::FSEventStreamFlushSync(stream.0);
+        fs::FSEventStreamStop(stream.0);
+        fs::FSEventStreamInvalidate(stream.0);
+        fs::FSEventStreamRelease(stream.0);
     }
 }
 
 impl Hub {
-    fn add(&mut self, real: &Path) {
-        let count = self.counts.entry(real.to_path_buf()).or_insert(0);
-        *count += 1;
-        if *count == 1 {
-            let _ = self.rebuild.send(());
+    fn add(&mut self, real: &Path) -> notify::Result<()> {
+        if let Some(folder) = self.folders.get_mut(real) {
+            folder.count += 1;
+            return Ok(());
         }
+        let stream = start(real, &self.events)?;
+        self.folders.insert(real.to_path_buf(), Folder { count: 1, stream });
+        Ok(())
     }
 
     fn remove(&mut self, real: &Path) {
-        let Some(count) = self.counts.get_mut(real) else { return };
-        *count -= 1;
-        if *count == 0 {
-            self.counts.remove(real);
-            let _ = self.rebuild.send(());
+        let Some(folder) = self.folders.get_mut(real) else { return };
+        folder.count -= 1;
+        if folder.count == 0 {
+            if let Some(folder) = self.folders.remove(real) {
+                stop(folder.stream);
+            }
         }
     }
 }
 
+/// Watch `dir` with `mode`, or, while it does not exist, the nearest folder above it that does,
+/// so the folder being made is seen. A cache that reads `dir` drops what it kept on either.
+pub(crate) fn watch_folder(watch: &mut Handle, dir: &Path, mode: RecursiveMode) -> notify::Result<()> {
+    match dir.is_dir() {
+        true => watch.watch(dir, mode),
+        false => match dir.ancestors().skip(1).find(|a| a.is_dir()) {
+            Some(above) => watch.watch(above, RecursiveMode::NonRecursive),
+            None => Ok(()),
+        },
+    }
+}
 
-/// A watcher on the daemon's one shared stream. Dropping it stops its watches.
+/// A watcher on the daemon's shared streams. Dropping it stops its watches.
 pub struct Handle {
     id: u64,
 }
 
 /// A watcher that calls `handler` for events under the folders it is given, as
-/// `notify::recommended_watcher` does, on the daemon's one shared stream.
+/// `notify::recommended_watcher` does, on the daemon's shared streams.
 pub fn watcher<F: EventHandler>(handler: F) -> notify::Result<Handle> {
     let mut hub = hub().lock().unwrap();
     hub.next += 1;
@@ -417,15 +322,12 @@ impl Watcher for Handle {
         }
         let real = path.canonicalize().map_err(notify::Error::io)?;
         let mut hub = hub().lock().unwrap();
-        // SAFETY: a plain query of the system's current event id.
-        let since = unsafe { fs::FSEventsGetCurrentEventId() };
-        hub.add(&real);
+        hub.add(&real)?;
         if let Some(sub) = hub.subs.get_mut(&self.id) {
             sub.watched.push(Watched {
                 given: path.to_path_buf(),
                 real,
                 mode,
-                since,
             });
         }
         Ok(())
@@ -476,8 +378,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// Whether `want` changed: named itself, or covered by a rescan of a folder above it, which is
-    /// how FSEvents reports a change it replays across a stream rebuild.
+    /// Whether `want` changed: named itself, or covered by a rescan of a folder above it.
     fn seen(rx: &mpsc::Receiver<(PathBuf, bool)>, want: &Path) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
@@ -525,7 +426,7 @@ mod tests {
         one.watch(&a_dir, RecursiveMode::NonRecursive).unwrap();
         two.watch(&a_dir, RecursiveMode::Recursive).unwrap();
         three.watch(&b_dir, RecursiveMode::NonRecursive).unwrap();
-        assert_eq!(hub().lock().unwrap().counts.get(&a_dir), Some(&2));
+        assert_eq!(hub().lock().unwrap().folders.get(&a_dir).map(|f| f.count), Some(2));
 
         let flat = a_dir.join("f.txt");
         std::fs::write(&flat, "x").unwrap();
@@ -539,44 +440,15 @@ mod tests {
         assert!(!rx3.try_iter().any(|(p, _)| p.starts_with(&a_dir)), "b's handle got a's events");
 
         drop(two);
-        assert_eq!(hub().lock().unwrap().counts.get(&a_dir), Some(&1));
+        assert_eq!(hub().lock().unwrap().folders.get(&a_dir).map(|f| f.count), Some(1));
         let again = a_dir.join("h.txt");
         std::fs::write(&again, "x").unwrap();
         assert!(seen(&rx1, &again), "the flat watch stopped when the other handle dropped");
 
         drop(one);
         drop(three);
-        assert!(!hub().lock().unwrap().counts.contains_key(&a_dir));
+        assert!(!hub().lock().unwrap().folders.contains_key(&a_dir));
         std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn the_next_stream_starts_where_a_folder_it_newly_covers_began_watching() {
-        let (rebuild, _asks) = mpsc::channel();
-        let (covered, fresh_dir) = (PathBuf::from("/covered"), PathBuf::from("/new"));
-        let watch = |dir: &PathBuf, since| Watched {
-            given: dir.clone(),
-            real: dir.clone(),
-            mode: RecursiveMode::NonRecursive,
-            since,
-        };
-        let sub = |w: Watched| Sub {
-            handler: Arc::new(Mutex::new(Box::new(|_: notify::Result<Event>| {}))),
-            watched: vec![w],
-        };
-        let mut hub = Hub {
-            subs: HashMap::from([(1, sub(watch(&covered, 10))), (2, sub(watch(&fresh_dir, 50)))]),
-            counts: HashMap::from([(covered.clone(), 1), (fresh_dir.clone(), 1)]),
-            rebuild,
-            streamed: [covered.clone()].into_iter().collect(),
-            next: 2,
-        };
-        // The covered folder's events moved the floor to 200 while /new was waiting to be added.
-        assert_eq!(hub.pending(), Some(50));
-        assert_eq!(start_point(200, hub.pending()), 50, "the new folder's changes from 50 to 200 would be lost");
-        hub.streamed.insert(fresh_dir);
-        assert_eq!(hub.pending(), None);
-        assert_eq!(start_point(200, hub.pending()), 200);
     }
 
     #[test]
@@ -585,24 +457,28 @@ mod tests {
         let (watched, other) = (root.join("watched"), root.join("other"));
         std::fs::create_dir_all(&watched).unwrap();
         let (tx, rx) = mpsc::channel::<(PathBuf, bool)>();
-        let mut kept = watcher(move |e: notify::Result<Event>| {
-            if let Ok(e) = e {
-                let rescan = e.need_rescan();
-                for p in e.paths {
-                    let _ = tx.send((p, rescan));
-                }
-            }
-        })
-        .unwrap();
+        let mut kept = handle(tx);
         kept.watch(&watched, RecursiveMode::NonRecursive).unwrap();
 
-        // Each new folder restarts the stream; writes land while the streams swap.
+        // Each new folder starts a new stream while a writer keeps changing the watched folder.
+        let writing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let writer = {
+            let (watched, writing) = (watched.clone(), writing.clone());
+            std::thread::spawn(move || {
+                let mut written = Vec::new();
+                let mut i = 0;
+                while writing.load(std::sync::atomic::Ordering::SeqCst) {
+                    let file = watched.join(format!("f{i}.txt"));
+                    std::fs::write(&file, "x").unwrap();
+                    written.push(file);
+                    i += 1;
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                written
+            })
+        };
         let mut handles = Vec::new();
-        let mut written = Vec::new();
         for i in 0..20 {
-            let file = watched.join(format!("f{i}.txt"));
-            std::fs::write(&file, "x").unwrap();
-            written.push(file);
             let dir = other.join(format!("d{i}"));
             std::fs::create_dir_all(&dir).unwrap();
             let (tx, _rx) = mpsc::channel();
@@ -610,14 +486,12 @@ mod tests {
             h.watch(&dir, RecursiveMode::NonRecursive).unwrap();
             handles.push(h);
         }
-        // A change is delivered when its file is named, or when its folder is named as a rescan,
-        // which is how FSEvents reports what it replays across a stream swap.
-        let (mut got, mut rescanned) = (std::collections::HashSet::new(), false);
+        writing.store(false, std::sync::atomic::Ordering::SeqCst);
+        let written = writer.join().unwrap();
+
+        let (mut got, mut rescanned) = (HashSet::new(), false);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let covered = |got: &std::collections::HashSet<PathBuf>, rescanned: bool| {
-            written.iter().all(|f| got.contains(f) || rescanned)
-        };
-        while !covered(&got, rescanned) {
+        while !rescanned && !written.iter().all(|f| got.contains(f)) {
             let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else { break };
             match rx.recv_timeout(left) {
                 Ok((p, rescan)) if rescan && p == watched => rescanned = true,
@@ -628,7 +502,7 @@ mod tests {
             }
         }
         let missed: Vec<_> = written.iter().filter(|f| !got.contains(*f) && !rescanned).collect();
-        assert!(missed.is_empty(), "changes lost while streams swapped: {missed:?}");
+        assert!(missed.is_empty(), "{} of {} changes lost while streams swapped: {missed:?}", missed.len(), written.len());
         drop(handles);
         drop(kept);
         std::fs::remove_dir_all(&root).unwrap();

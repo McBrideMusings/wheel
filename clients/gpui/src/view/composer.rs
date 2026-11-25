@@ -20,14 +20,17 @@ pub(super) fn chips_height(tray: Option<&Tray>) -> f32 {
 const COMPOSER_LINES: usize = 10;
 /// The composer box around its lines: `py_1` above and below, and the 1 px border.
 const COMPOSER_INSET: f32 = 10.;
-/// The + at the start of the button row and the stop button at its end, each this wide and tall.
+/// The + at the start of the button row, and the microphone and the round button at its end, each this wide and tall.
 pub(super) const ROW_BUTTON: f32 = 18.;
 /// The room across the composer box that is neither draft nor button: the pane's 1 px border and
 /// `p_2`, the box's border and `px_2`.
 const COMPOSER_CHROME: f32 = 2. + 16. + 2. + 16.;
-/// The button row's room that its extras cannot take: the chrome, then the + and the stop
-/// button, each with its gap.
-pub(super) const BUTTON_ROW_CHROME: f32 = COMPOSER_CHROME + 2. * (ROW_BUTTON + 8.);
+/// The button row's room that its extras cannot take: the chrome, then the +, the microphone and
+/// the round button, each with its gap.
+pub(super) const BUTTON_ROW_CHROME: f32 = COMPOSER_CHROME + 3. * (ROW_BUTTON + 8.);
+/// The prompt above the composer that names the model before dictation downloads it: five lines
+/// of `text_xs` and its padding, so the source and the folder show in a split pane.
+const DICTATION_PROMPT: f32 = 84.;
 /// The gap between the draft's last line and the button row under it.
 pub(super) const BUTTON_ROW_GAP: f32 = 4.;
 /// The draft's text size, `text_sm`'s 0.875 rem.
@@ -135,7 +138,7 @@ impl Client {
     /// The client changes `agent`'s draft (a picked command, a restored message, a send, a debug
     /// request): `drafts` takes it now and the input takes it, caret at the end, when its
     /// composer is next drawn (`composer_input`).
-    pub(super) fn set_draft(&mut self, agent: &str, text: String) {
+    pub fn set_draft(&mut self, agent: &str, text: String) {
         self.drafts.insert(agent.to_owned(), text);
         self.stale_inputs.insert(agent.to_owned());
         self.draft_edited(agent);
@@ -163,6 +166,8 @@ impl Client {
                 .detach();
                 self.inputs.insert(agent.to_owned(), input.clone());
                 self.stale_inputs.insert(agent.to_owned());
+                // Load the speech model while the person reads, not after the first press.
+                crate::speech::send(crate::speech::Cmd::DictationPrepare);
                 input
             }
         };
@@ -215,8 +220,9 @@ impl Client {
     /// `composer_fit` for the composer of `agent` in `pane`, `pane_w` wide.
     pub(super) fn composer_fit_for(&self, window: &Window, agent: Option<&str>, pane_w: f32) -> ComposerFit {
         let draft = agent.and_then(|a| self.drafts.get(a)).map(String::as_str).unwrap_or("");
-        let error = agent.and_then(|a| self.composer_errors.get(a)).map(String::as_str);
-        composer_fit(window, draft, error, pane_w)
+        // The refusal, else dictation's note: whichever the row draws beside the text.
+        let error = agent.and_then(|a| self.composer_errors.get(a).cloned().or_else(|| self.dictation_note(a)));
+        composer_fit(window, draft, error.as_deref(), pane_w)
     }
 
     /// A key while the focused composer's list is open: Up and Down move the highlight, Tab takes
@@ -496,7 +502,7 @@ impl Client {
 
     /// The + menu's Add files…: the Mac's file picker, directories and several files allowed;
     /// what it returns attaches to `agent`'s next message.
-    fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
+    pub(super) fn pick_files(&mut self, agent: &str, cx: &mut Context<Self>) {
         self.press(format!("attach {agent}"));
         let chosen = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: true, multiple: true, prompt: None });
         let agent = agent.to_owned();
@@ -629,24 +635,104 @@ pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusActio
     button
 }
 
-/// The stop button at the end of the composer row, `icon` the SF Symbol the bridge drew ("■"
-/// until it has). It stops the running turn, as Esc and Control-C do. Its slot is there while no
-/// turn runs too, empty, so the text never rewraps when a turn starts or ends.
-pub(super) fn stop_button(agent: &str, busy: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
-    let slot = div().id(gpui::ElementId::Name(format!("stop-{agent}").into())).relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON));
-    if !busy {
-        return slot;
-    }
+/// The microphone before the round button: it starts dictating into `agent`'s draft and, while
+/// that records, stops and transcribes. Dimmed while the model downloads or the recording is
+/// transcribed. `icon` is the SF Symbol drawn for the state.
+pub(super) fn mic_button(agent: &str, d: &crate::dictation::Dictation, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    let recording = d.recording_for(agent);
+    let busy = d.busy_for(agent);
     let a = agent.to_owned();
-    slot.tooltip(crate::tooltip::tip("Stop (Esc or ⌃C)")).flex().items_center().justify_center().rounded_sm().cursor_pointer()
-        .bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
-        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-            this.stop_turn(&a);
+    let tip = if recording { "Stop dictating and put the text in the message" } else { "Dictate: speak, then press again" };
+    div().id(gpui::ElementId::Name(format!("dictate-{agent}").into())).tooltip(crate::tooltip::tip(tip))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().rounded_sm()
+        .when(!busy, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            this.toggle_dictation(&a);
             cx.stop_propagation();
             cx.notify();
-        }))
-        .child(icon.unwrap_or_else(|| div().text_xs().child("■").into_any_element()))
-        .child(recorded(agent, "stop", controls))
+        })))
+        .when(busy, |d| d.opacity(0.4))
+        .child(icon.unwrap_or_else(|| div().text_xs().child(if recording { "■" } else { "mic" }).into_any_element()))
+        .child(recorded(agent, "dictate", controls))
+}
+
+/// The symbol and colour the microphone draws for `agent`: a red stop while it records.
+pub(super) fn mic_symbol(d: &crate::dictation::Dictation, agent: &str) -> (&'static str, u32) {
+    if d.recording_for(agent) { ("stop.circle.fill", 0xe07070) } else { ("mic", 0x8fa89b) }
+}
+
+/// The prompt's height above `agent`'s composer: there while it asks or downloads.
+pub(super) fn dictation_prompt_height(d: &crate::dictation::Dictation, agent: Option<&str>) -> f32 {
+    // With the `mt_1` above it, as `command_list_height` counts its own.
+    if agent.is_some_and(|a| d.prompt_for(a)) { DICTATION_PROMPT + 4. } else { 0. }
+}
+
+/// What the model download fetches, how big, where from and where it is kept, with Download and
+/// Cancel (ADR-0013): shown above the composer the first time the microphone is pressed with no
+/// model on the Mac. While it downloads, its progress and Cancel.
+pub(super) fn dictation_prompt(agent: &str, d: &crate::dictation::Dictation, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
+    let button = |label: &'static str, id: &'static str, run: fn(&mut Client), cx: &mut Context<Client>| {
+        div().id(gpui::ElementId::Name(format!("dictation-{id}-{agent}").into())).relative().px_2().rounded_sm().cursor_pointer().bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                run(this);
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(label)
+            .child(recorded(agent, &format!("dictation {id}"), controls))
+    };
+    let model = crate::speech_models::PARAKEET;
+    let text = match d.phase {
+        crate::dictation::Phase::Downloading(p) => format!("Downloading {} ({}), {}%", model.name, model.size(), (p * 100.).floor() as u32),
+        _ => crate::dictation::prompt(&model, &crate::speech_models::root()),
+    };
+    let asking = d.phase == crate::dictation::Phase::Asking;
+    div().flex_none().h(px(DICTATION_PROMPT)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x1f2b26)).border_1().border_color(rgb(0x2c3d34))
+        .flex().gap_2().text_xs().text_color(rgb(0xd9e8e1)).overflow_hidden()
+        // The text wraps beside the buttons, so however long the folder is it never pushes them out of the box.
+        .child(div().flex_1().min_w_0().h_full().overflow_hidden().child(text))
+        .child(div().flex_none().flex().flex_col().gap_1()
+            .when(asking, |b| b.child(button("Download", "download", Client::download_dictation_model, cx)))
+            .child(button("Cancel", "cancel", Client::cancel_dictation, cx)))
+}
+
+/// The round button at the end of the composer row (wheel-eg4e.19.31): Stop while the agent
+/// works (as Esc and Control-C do), Send with a draft or files, voice mode with nothing typed, a
+/// dimmed Send when wheeld lacks voice mode's ops. Same size and place in every state. `icon` is
+/// the SF Symbol drawn for the state. Recorded as `stop`, `send` or `voice`.
+pub(super) fn right_button(agent: &str, pane: &str, state: crate::composer::RightButton, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+    use crate::composer::RightButton::*;
+    let (name, tip, fallback, bg) = match state {
+        Stop => ("stop", "Stop (Esc or ⌃C)", "■", 0x31483e),
+        Send => ("send", "Send (Return)", "↑", 0x7fb89a),
+        Voice => ("voice", "Voice mode: talk to the agent and hear it", "◉", 0xd9e8e1),
+        Idle => ("send", "Type a message to send", "↑", 0x31483e),
+    };
+    let (a, p) = (agent.to_owned(), pane.to_owned());
+    div().id(gpui::ElementId::Name(format!("right-{agent}").into())).tooltip(crate::tooltip::tip(tip))
+        .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().rounded_full().bg(rgb(bg))
+        .when(state == Idle, |d| d.opacity(0.5))
+        .when(state != Idle, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            match state {
+                Stop => this.stop_turn(&a),
+                Send => this.send_draft(&a, false),
+                Voice => this.open_voice(&a, &p),
+                Idle => {}
+            }
+            cx.notify();
+        })))
+        .child(icon.unwrap_or_else(|| div().text_xs().child(fallback).into_any_element()))
+        .child(recorded(agent, name, controls))
+}
+
+/// The SF Symbol and its colour for the round button in `state`.
+pub(super) fn right_symbol(state: crate::composer::RightButton) -> (&'static str, u32) {
+    use crate::composer::RightButton::*;
+    match state {
+        Stop => ("stop.fill", 0xd9e8e1),
+        Send | Idle => ("arrow.up", 0x0e1311),
+        Voice => ("waveform", 0x0e1311),
+    }
 }
 
 /// The chips above the composer's text (`AttachmentChips`): a thumbnail for an image or the
