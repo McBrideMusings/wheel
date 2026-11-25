@@ -91,6 +91,31 @@ fn family(look: &Look) -> String {
 }
 
 impl Client {
+    /// A terminal pane for the debug state: what it shows, its grids, and the look it draws in.
+    pub(super) fn term_json(&self, pane: &str) -> serde_json::Value {
+        let Some(p) = self.terms.panes.get(pane) else { return serde_json::Value::Null };
+        let look = self.terms.look(p.space.as_deref());
+        serde_json::json!({
+            "term": p.term,
+            "space": p.space,
+            "viewport": self.terms.texts.get(&p.term),
+            "cols": p.grid.0, "rows": p.grid.1,
+            "grids": p.grids.iter().map(|g| [g.0, g.1]).collect::<Vec<_>>(),
+            "sent_grids": self.terms.sent_grids.get(&p.term).map(|g| g.iter().map(|g| [g.0, g.1]).collect::<Vec<_>>()).unwrap_or_default(),
+            "body": p.body,
+            "cell": [p.cell.width, p.cell.height],
+            "focused": self.terms.focused.as_deref() == Some(pane),
+            "font_family": family(&look),
+            "font_size": p.font_size.unwrap_or(look.font_size),
+            "theme": format!("{:?}", look.theme).to_lowercase(),
+            "cursor": format!("{:?}", look.cursor).to_lowercase(),
+            "cursor_blink": look.cursor_blink,
+            "dark": self.terms.dark,
+            "attached": self.terms.models.contains_key(&p.term),
+            "marked": self.terms.marked.as_ref().filter(|(m, _)| m == pane).map(|(_, t)| t),
+        })
+    }
+
     /// A term's stream from wheeld: fed to the model showing it, and the terminal's answers to the
     /// program's queries sent back. True when it was a term's.
     pub(super) fn term_message(&mut self, message: &ServerMsg) -> bool {

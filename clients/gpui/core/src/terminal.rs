@@ -245,6 +245,9 @@ impl ResizeHold {
     pub fn held(&self) -> bool {
         self.moving || self.live_resize
     }
+    pub fn live_resize(&self) -> bool {
+        self.live_resize
+    }
     /// The grid animates or a divider is under the pointer; true when this released the hold.
     pub fn set_moving(&mut self, on: bool) -> bool {
         let was = self.held();

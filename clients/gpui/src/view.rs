@@ -675,7 +675,10 @@ impl Client {
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
                         ServerMsg::RenderPane { id, pane, full } => {
-                            if self.opened.contains_key(pane) {
+                            if self.terms.panes.contains_key(pane) {
+                                // GPUI draws a terminal: its rectangle is cut from the window's next frame.
+                                self.pane_images.render_for_wheeld(*id, pane);
+                            } else if self.opened.contains_key(pane) {
                                 self.native.render(*id, pane, *full);
                             } else {
                                 self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
