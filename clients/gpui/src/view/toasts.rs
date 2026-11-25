@@ -322,7 +322,7 @@ impl Client {
             && let Some(json) = self.settings.devices.pairing_json(now_ms())
         {
             // A new copy replaces the old one, whose minute no longer runs.
-            let (old, answer) = super::pairing_copy::copy(&self.native, token, &json);
+            let (old, answer) = super::pairing_copy::copy(token, &json);
             if let Some(old) = old {
                 self.send(&ClientMsg::PairingCancel { req: None, token: old });
             }
@@ -331,8 +331,8 @@ impl Client {
     }
     pub fn copy_pairing_image(&mut self) {
         if let Some(json) = self.settings.devices.pairing_json(now_ms()) {
-            let answer = self.native.call(serde_json::json!({"op": "qr", "text": json, "copy": true}));
-            self.log(format!("pairing code image copied to the clipboard: {}", answer["copied"]));
+            let copied = crate::appkit::images::copy_qr_image(&json);
+            self.log(format!("pairing code image copied to the clipboard: {copied}"));
         }
     }
     /// What the pairing window and the copied code do on a timer: a new code every four minutes,

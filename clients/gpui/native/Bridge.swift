@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import CoreImage
 import WebKit
 import IOSurface
 import QuartzCore
@@ -487,8 +486,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var liveResizeObservers: [Any] = []
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
-    /// The pasteboard's items a check saved (`pasteboard` op) to put back when it is done.
-    var savedPasteboard: [[NSPasteboard.PasteboardType: Data]]?
 
     /// Test mode: the window is never ordered front (`float`, `grow_window`).
     var testMode = false
@@ -1669,29 +1666,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             guard let item = Self.menuItem(NSApp.mainMenu, key: key, modifiers: .command), let action = item.action else { return ["sent": false, "item": NSNull()] }
             guard let target = Self.target(for: action, from: root.window), Self.validates(target, item) else { return ["sent": false, "item": item.title] }
             return ["sent": NSApp.sendAction(action, to: target, from: item), "item": item.title, "target": String(describing: type(of: target))]
-        case "pasteboard":
-            // The general pasteboard's text, for the check: `save` keeps every item it holds and
-            // `restore` puts them back, so a check leaves the person's pasteboard as it found it.
-            let board = NSPasteboard.general
-            if value["save"] as? Bool == true {
-                savedPasteboard = (board.pasteboardItems ?? []).map { item in
-                    Dictionary(item.types.compactMap { t in item.data(forType: t).map { (t, $0) } }, uniquingKeysWith: { a, _ in a })
-                }
-            }
-            if value["restore"] as? Bool == true, let saved = savedPasteboard {
-                board.clearContents()
-                board.writeObjects(saved.map { types in
-                    let item = NSPasteboardItem()
-                    for (t, data) in types { item.setData(data, forType: t) }
-                    return item
-                })
-                savedPasteboard = nil
-            }
-            if let set = value["set"] as? String {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(set, forType: .string)
-            }
-            return ["text": NSPasteboard.general.string(forType: .string) as Any? ?? NSNull()]
         case "post_mouse":
             let kind = value["kind"] as! String
             let a = value["point"] as! [Double]
@@ -1813,32 +1787,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let hit = root.hitTest(root.convert(point, to: root.superview))
             let host = owner(of: hit)
             return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": host?.id ?? NSNull()]
-        case "qr":
-            // The modules of a QR code for `text`, one row per line of "1"s (dark) and "0"s, with
-            // CoreImage's one-module quiet zone; what the Devices page draws as cells. With
-            // `copy`, the code goes on the clipboard as an image instead (the pairing window's Copy image).
-            let text = value["text"] as? String ?? ""
-            if value["copy"] as? Bool == true {
-                let copied = PairingClipboard.copyImage(text)
-                log("pairing code image \(copied ? "copied to the clipboard" : "could not be drawn")")
-                return ["copied": copied]
-            }
-            guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return ["rows": []] }
-            filter.setValue(Data(text.utf8), forKey: "inputMessage")
-            filter.setValue("M", forKey: "inputCorrectionLevel")
-            guard let image = filter.outputImage, let cg = CIContext().createCGImage(image, from: image.extent) else { return ["rows": []] }
-            let (w, h) = (cg.width, cg.height)
-            var pixels = [UInt8](repeating: 0, count: w * h)
-            guard let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return ["rows": []] }
-            context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-            // CoreGraphics draws with its origin at the bottom: the first row in memory is the last line.
-            let rows: [String] = (0..<h).reversed().map { y in String((0..<w).map { pixels[y * w + $0] < 128 ? "1" : "0" }) }
-            return ["rows": rows]
-        case "clipboard_concealed":
-            return writeConcealed(value, log: log)
-        case "symbol":
-            // An SF Symbol drawn to PNG pixels for the GPUI view, which has no symbol font of its own.
-            return symbolPNG(value, scale: Double(root.window?.backingScaleFactor ?? 2))
         case "pin":
             // The title row's pin: the window floats over every other while it is on (`setPinned`).
             let on = value["on"] as? Bool == true
@@ -1916,43 +1864,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 }
 
-/// `name` at `size` points in `color` (sRGB 0...1 and alpha), at `scale` unless the value names
-/// one: the PNG's bytes as hex and its size in points. The Swift app draws the same symbols through
-/// SwiftUI's Image(systemName:).
-@MainActor func symbolPNG(_ value: [String: Any], scale fallback: Double) -> [String: Any] {
-    let name = value["name"] as? String ?? ""
-    let size = value["size"] as? Double ?? 13
-    var rgba = value["color"] as? [Double] ?? []
-    if rgba.count < 3 { rgba = [1, 1, 1, 1] }
-    let scale = value["scale"] as? Double ?? fallback
-    let color = NSColor(srgbRed: rgba[0], green: rgba[1], blue: rgba[2], alpha: rgba.count > 3 ? rgba[3] : 1)
-    let weight: NSFont.Weight = switch value["weight"] as? String {
-    case "medium": .medium
-    case "semibold": .semibold
-    case "bold": .bold
-    default: .regular
-    }
-    let configuration = NSImage.SymbolConfiguration(pointSize: size, weight: weight).applying(NSImage.SymbolConfiguration(paletteColors: [color]))
-    guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil), let image = base.withSymbolConfiguration(configuration) else {
-        return ["missing": true]
-    }
-    let points = image.size
-    let (w, h) = (Int((points.width * scale).rounded(.up)), Int((points.height * scale).rounded(.up)))
-    guard w > 0, h > 0, let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
-                                                     hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
-        return ["missing": true]
-    }
-    rep.size = points
-    NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    image.draw(in: NSRect(origin: .zero, size: points), from: .zero, operation: .sourceOver, fraction: 1)
-    NSGraphicsContext.restoreGraphicsState()
-    guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
-    return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
-}
-
-/// What the app holds outside every window (window id -1): the images the menu bar's popover
-/// draws. The menu bar item, its menus and alerts are Rust's (clients/gpui/src/appkit).
+/// What the app holds outside every window (window id -1): the popover window's size and frame.
+/// The menu bar item, its menus, alerts, images and the clipboard are Rust's (clients/gpui/src/appkit).
 @MainActor final class AppNative: NSObject {
     let emitter: Emit
     let hidden: Bool
@@ -1993,29 +1906,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return ["frame": topLeftFrame(view)]
     }
 
-    /// The app's icon as a PNG, `size` points square at the screen's scale (ServerHeader's icon).
-    func appIcon(_ value: [String: Any]) -> [String: Any] {
-        let size = value["size"] as? Double ?? 36
-        let scale = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        let pixels = Int((size * scale).rounded(.up))
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4,
-                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return ["missing": true] }
-        rep.size = NSSize(width: size, height: size)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        NSApp.applicationIconImage.draw(in: NSRect(x: 0, y: 0, width: size, height: size), from: .zero, operation: .sourceOver, fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
-        guard let data = rep.representation(using: .png, properties: [:]) else { return ["missing": true] }
-        return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": size, "height": size]
-    }
-
     func command(_ value: [String: Any]) -> [String: Any] {
         switch value["op"] as? String {
         case "fit_window": return fitWindow(value)
         case "view_frame": return viewFrame(value)
-        case "app_icon": return appIcon(value)
-        case "clipboard_concealed": return writeConcealed(value) { FileHandle.standardError.write(Data(("wheel-gpui native: " + $0 + "\n").utf8)) }
-        case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
         default: return [:]
         }
     }
@@ -2030,22 +1924,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     return [Double(r.minX), mainScreenTop() - Double(r.maxY), Double(r.width), Double(r.height)]
 }
 @MainActor private var app: AppNative?
-/// The clear of the last concealed clipboard copy, until its minute runs out. One for the app:
-/// a copy from a window or from the menu bar replaces the other's, and a window closing leaves it.
-@MainActor private var concealedClear: Task<Void, Never>?
-/// The pairing code's concealed clipboard item, cleared after `clear_after_ms` if nothing else
-/// was copied (PairingWindow.swift's writeConcealed).
-@MainActor func writeConcealed(_ value: [String: Any], log: @escaping (String) -> Void) -> [String: Any] {
-    let text = value["text"] as? String ?? ""
-    let ms = value["clear_after_ms"] as? Int ?? 60_000
-    concealedClear?.cancel()
-    concealedClear = PairingClipboard.writeConcealed(text, life: .milliseconds(ms)) { cleared in
-        log(cleared ? "pairing code cleared from the clipboard after \(ms) ms" : "clipboard holds something else now; left alone")
-        concealedClear = nil
-    }
-    log("pairing code copied to the clipboard as a concealed item; clearing it in \(ms) ms")
-    return ["copied": true, "clear_after_ms": ms]
-}
 /// The check's stand-in for the system's Reduce Motion (`reduce_motion` with `set`); nil reads the system's.
 @MainActor private var reduceMotionOverride: Bool?
 @MainActor func reduceMotion() -> Bool { reduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }

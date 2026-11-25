@@ -602,14 +602,14 @@ impl Client {
         }
     }
 
-    /// The QR modules for `text`, drawn by the bridge's CoreImage and kept while the text holds.
+    /// The QR modules for `text`, drawn by CoreImage and kept while the text holds.
     pub fn qr_rows(&mut self, text: &str) -> Vec<String> {
         if let Some((t, rows)) = &self.qr_cache
             && t == text
         {
             return rows.clone();
         }
-        let rows: Vec<String> = self.native.call(serde_json::json!({"op": "qr", "text": text}))["rows"].as_array().map(|r| r.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+        let rows = crate::appkit::images::qr_rows(text);
         if !rows.is_empty() {
             self.qr_cache = Some((text.to_owned(), rows.clone()));
         }

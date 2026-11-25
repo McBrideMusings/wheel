@@ -2320,20 +2320,20 @@ impl Client {
         let tasks = self.task_parts(&p.leaf.id, agent, cx);
         let footer = FooterRow { items, more, harness: harness.to_owned() };
         let chips_h = composer::chips_height(agent.and_then(|a| self.attachments.get(a)));
-        let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.native, &self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
+        let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
         let plus = agent.map(|a| {
             let items = self.plus_items(a);
-            composer::plus_button(a, menu.as_deref() == Some(composer::PLUS_MENU), self.menu_at, &items, self.reads_aloud.contains(a), title::symbol(&self.native, &self.symbols, "plus", 13., 0x8fa89b), &self.controls, cx)
+            composer::plus_button(a, menu.as_deref() == Some(composer::PLUS_MENU), self.menu_at, &items, self.reads_aloud.contains(a), title::symbol(&self.symbols, "plus", 13., 0x8fa89b), &self.controls, cx)
         });
         let busy = t.is_some_and(Transcript::busy);
         let stop = agent.map(|a| {
             let state = crate::composer::right_button(busy, self.holds_message(a), self.voice_offered());
             let (symbol, color) = composer::right_symbol(state);
-            composer::right_button(a, &p.leaf.id, state, title::symbol(&self.native, &self.symbols, symbol, 10., color), &self.controls, cx)
+            composer::right_button(a, &p.leaf.id, state, title::symbol(&self.symbols, symbol, 10., color), &self.controls, cx)
         });
         let mic = agent.map(|a| {
             let (symbol, color) = composer::mic_symbol(&self.speech.dictation, a);
-            composer::mic_button(a, &self.speech.dictation, title::symbol(&self.native, &self.symbols, symbol, 13., color), &self.controls, cx)
+            composer::mic_button(a, &self.speech.dictation, title::symbol(&self.symbols, symbol, 13., color), &self.controls, cx)
         });
         let voice = agent.and_then(|a| self.voice_layer(a, &p.leaf.label, harness, fit.height, body, cx));
         // As tall as the row's buttons.

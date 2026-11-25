@@ -276,7 +276,7 @@ impl MenuBar {
                 let Some(json) = devices.pairing_json(super::settings::now_ms()) else {
                     return self.log(format!("popover: pairing code not copied: {}", devices.unavailable()));
                 };
-                let (old, answer) = super::pairing_copy::copy(&self.native, token, &json);
+                let (old, answer) = super::pairing_copy::copy(token, &json);
                 if let Some(old) = old {
                     self.cancel_pairing(old);
                 }
@@ -579,14 +579,11 @@ impl MenuBar {
         self.dialogs.state()
     }
 
-    /// The app's icon as the bridge drew it, `size` points square, cached.
+    /// The app's icon as AppKit drew it, `size` points square, cached.
     fn app_icon(&self, size: f32) -> Option<gpui::AnyElement> {
         let mut cache = self.app_icon.borrow_mut();
         if cache.is_none() {
-            let answer = self.native.call(json!({"op": "app_icon", "size": size}));
-            let Some(hex) = answer["png_hex"].as_str() else { return None };
-            let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()).collect();
-            *cache = Some(Some((Arc::new(Image::from_bytes(ImageFormat::Png, bytes)), size)));
+            *cache = Some(crate::appkit::images::app_icon(f64::from(size)).map(|png| (Arc::new(Image::from_bytes(ImageFormat::Png, png)), size)));
         }
         cache.as_ref().and_then(|c| c.as_ref()).map(|(image, s)| img(ImageSource::Image(image.clone())).w(px(*s)).h(px(*s)).flex_none().into_any_element())
     }
@@ -768,7 +765,7 @@ impl MenuBar {
     }
 
     fn symbol(&self, name: &str, size: f32, colour: u32) -> Option<gpui::AnyElement> {
-        symbol(&self.native, &self.symbols, name, size, colour)
+        symbol(&self.symbols, name, size, colour)
     }
 
     /// One line of the popover (PopoverRow): an icon, a title, trailing text.

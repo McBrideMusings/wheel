@@ -1,6 +1,8 @@
 //! AppKit from Rust through objc2 (ADR-0056): what the app holds outside every GPUI window. Each
 //! piece is a typed Rust call on the main thread, never an op of the Swift bridge's JSON ABI.
+pub mod clipboard;
 pub mod dialogs;
+pub mod images;
 pub mod status_item;
 
 pub use dialogs::{Alert, Answer, Dialogs, MenuItem};
@@ -8,7 +10,7 @@ pub use status_item::{ItemEvent, MenuEntry, StatusItem};
 
 use objc2::{AnyThread as _, MainThreadMarker, rc::Retained};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage};
-use objc2_foundation::{NSDictionary, NSPoint, NSRect};
+use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
 
 /// The main thread's marker. Every caller runs on GPUI's main thread, where AppKit lives.
 pub fn main_thread() -> MainThreadMarker {
@@ -17,7 +19,11 @@ pub fn main_thread() -> MainThreadMarker {
 
 /// `image` drawn into a bitmap `scale` pixels per point, as a PNG.
 pub fn png(image: &NSImage, scale: f64) -> Option<Vec<u8>> {
-    let size = image.size();
+    png_in(image, image.size(), scale)
+}
+
+/// `image` drawn to fill `size` points at `scale` pixels per point, as a PNG.
+pub fn png_in(image: &NSImage, size: NSSize, scale: f64) -> Option<Vec<u8>> {
     let (w, h) = ((size.width * scale).ceil() as isize, (size.height * scale).ceil() as isize);
     if w <= 0 || h <= 0 {
         return None;

@@ -5432,22 +5432,22 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     let arrows_report = json!({"value": arrow_value, "events": arrow_events, "caret": caret_after.iter().map(|(k, c)| json!([k, c])).collect::<Vec<_>>()});
     // Cut, copy and paste in the same textarea: ⌘C, ⌘X and ⌘V fire the page's copy, cut and paste
     // events and move the text through the pasteboard (wheel-dxzg). The pasteboard's items are put back.
-    native.call(json!({"op":"pasteboard","save":true}));
+    let saved_pasteboard = wheel_gpui::appkit::clipboard::save();
     let clip_setup = "(() => { const t = document.getElementById('arrows'); t.value = 'hello world'; window.clipEvents = [];
         for (const k of ['copy', 'cut', 'paste']) t.addEventListener(k, () => clipEvents.push(k));
         t.focus(); t.setSelectionRange(0, 5); return document.activeElement.id; })()";
     let (_, clip_focused, _) = run_pumped(&["pane", "eval", &browser_pane, clip_setup], &mut connection, &mut layouts, window, cx).await?;
-    let pasteboard = |native: &wheel_gpui::native::Native| native.call(json!({"op":"pasteboard"}))["text"].as_str().map(str::to_owned);
-    native.call(json!({"op":"pasteboard","set":""}));
+    let pasteboard = wheel_gpui::appkit::clipboard::text;
+    wheel_gpui::appkit::clipboard::set_text("");
     let copy_claim = native.call(json!({"op":"post_key","text":"c","code":8,"command":true}))["claimed_by"].clone();
     let copy_path = native.call(json!({"op":"menu_key","key":"c"}));
     tick(cx, 200).await;
-    let after_copy = pasteboard(&native);
+    let after_copy = pasteboard();
     run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').setSelectionRange(6, 11)"], &mut connection, &mut layouts, window, cx).await?;
     let cut_claim = native.call(json!({"op":"post_key","text":"x","code":7,"command":true}))["claimed_by"].clone();
     let cut_path = native.call(json!({"op":"menu_key","key":"x"}));
     tick(cx, 200).await;
-    let after_cut = pasteboard(&native);
+    let after_cut = pasteboard();
     let (_, value_after_cut, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
     run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').setSelectionRange(6, 6)"], &mut connection, &mut layouts, window, cx).await?;
     let paste_claim = native.call(json!({"op":"post_key","text":"v","code":9,"command":true}))["claimed_by"].clone();
@@ -5455,7 +5455,7 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     tick(cx, 200).await;
     let (_, value_after_paste, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
     let (_, clip_events, _) = run_pumped(&["pane", "eval", &browser_pane, "clipEvents.join(' ')"], &mut connection, &mut layouts, window, cx).await?;
-    native.call(json!({"op":"pasteboard","restore":true}));
+    wheel_gpui::appkit::clipboard::restore(saved_pasteboard);
     let clipboard_report = json!({"claimed_by": [copy_claim, cut_claim, paste_claim], "menu": [copy_path, cut_path, paste_path], "focused": clip_focused, "after_copy": after_copy, "after_cut": after_cut, "value_after_cut": value_after_cut, "value_after_paste": value_after_paste, "events": clip_events});
     eprintln!("keys report: arrows {arrows_report} clipboard {clipboard_report}");
     ensure!(arrow_value == "\"abc\"", "arrow keys typed into the textarea: value {arrow_value}, events {arrow_events}");
@@ -6434,8 +6434,8 @@ async fn settings_window(run: Run, cli_path: String, cx: &mut AsyncApp) -> Resul
         }
     }
     ensure!(devices_known, "the Devices tab never heard remote_info");
-    let qr_rows = window.update(cx, |c, _, _| c.native().call(json!({"op":"qr","text":"{\"url\":\"wss://127.0.0.1:7430/ws\"}"}))["rows"].as_array().map(|r| r.len()).unwrap_or(0))?;
-    ensure!(qr_rows >= 21, "the bridge's qr op drew {qr_rows} rows");
+    let qr_rows = wheel_gpui::appkit::images::qr_rows("{\"url\":\"wss://127.0.0.1:7430/ws\"}").len();
+    ensure!(qr_rows >= 21, "CoreImage drew {qr_rows} QR rows");
     let devices_state = window.update(cx, |c, _, _| json!({"listen": c.settings.devices.info.as_ref().and_then(|i| i.listen.clone()), "unavailable": c.settings.devices.unavailable(), "paired": c.settings.devices.paired.len(), "qr_rows": qr_rows}))?;
     draw(window, Some(output.join("client-settings-devices.png")), cx)?;
     // Esc closes the window and the keyboard goes back.
@@ -6543,7 +6543,9 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     ensure!(window_tokens == 1, "the window holds {window_tokens} codes");
     window.update(cx, |c, _, _| c.pairing.details_open = true)?;
     draw(window, Some(output.join("client-pairing.png")), cx)?;
-    // Copy code: the bridge writes a concealed item that clears itself after a minute.
+    // Copy code: AppKit writes a concealed item that clears itself after a minute. The person's
+    // pasteboard is put back afterwards.
+    let saved_pasteboard = wheel_gpui::appkit::clipboard::save();
     window.update(cx, |c, _, _| c.copy_pairing_code())?;
     let mut copied = false;
     for _ in 0..50 {
@@ -6555,7 +6557,22 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     }
     ensure!(copied, "Copy code left nothing on the clipboard");
     let copy_answer = window.update(cx, |c, _, _| c.toast_log.iter().rev().find(|l| l.starts_with("pairing code copied")).cloned())?;
-    ensure!(copy_answer.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_answer:?}");
+    ensure!(copy_answer.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the concealed item was not written: {copy_answer:?}");
+    // The item carries the concealed marker; the clear removes it while the pasteboard holds it,
+    // and leaves the pasteboard alone once something else was copied.
+    let copied_text = wheel_gpui::appkit::clipboard::text();
+    let concealed = wheel_gpui::appkit::clipboard::concealed();
+    let cleared = wheel_gpui::appkit::clipboard::clear_concealed();
+    let after_clear = wheel_gpui::appkit::clipboard::text();
+    wheel_gpui::appkit::clipboard::write_concealed("check code");
+    wheel_gpui::appkit::clipboard::set_text("copied since");
+    let left = wheel_gpui::appkit::clipboard::clear_concealed();
+    let after_left = wheel_gpui::appkit::clipboard::text();
+    wheel_gpui::appkit::clipboard::restore(saved_pasteboard);
+    eprintln!("concealed copy: text {copied_text:?} concealed {concealed} cleared {cleared:?} then {after_clear:?}; left {left:?} then {after_left:?}");
+    ensure!(copied_text.as_deref().is_some_and(|t| t.contains("\"token\"")) && concealed, "the pasteboard held {copied_text:?}, concealed {concealed}");
+    ensure!(cleared == Some(true) && after_clear.is_none(), "the clear left {after_clear:?} ({cleared:?})");
+    ensure!(left == Some(false) && after_left.as_deref() == Some("copied since"), "the clear took what was copied since: {after_left:?} ({left:?})");
     let device = ServerMsg::DeviceConnected { device: "d1".into(), name: "Check phone".into(), address: "127.0.0.1:5".into(), paired: true };
     window.update(cx, |c, _, _| c.on_event(Event::Message(Box::new(device))))?;
     let (connected, close_at) = window.update(cx, |c, _, _| (c.pairing.connected.clone(), c.pairing.close_at))?;
@@ -8301,7 +8318,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
         ensure!(copied.is_some() && copied != copied_before, "Copy pairing code in the popover copied nothing (had a code before: {})", copied_before.is_some());
         ensure!(wheel_gpui::windows::with(|r| r.windows.len()) == windows_before_copy, "Copy pairing code opened a window");
         let copy_line = menu_log_line(&menu, "pairing code copied", cx);
-        ensure!(copy_line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {copy_line:?}");
+        ensure!(copy_line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the concealed item was not written: {copy_line:?}");
         let after_copy = popover_settle(popover, &menu, cx, |s| s["popover"]["controls"]["settings"].is_array()).await;
         ensure!(after_copy["popover"]["open"] == true, "the popover closed after Copy");
         let settings_before = target.update(cx, |c, _, _| c.settings_open)?;
@@ -8423,7 +8440,7 @@ fn menu_log_count(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, prefix: &str, 
 }
 
 /// Copy pairing code with every window closed (wheel-ynjo.7.4.6): the popover's button copies
-/// through the menu bar's own connection, no window opens, and the bridge writes the concealed item.
+/// through the menu bar's own connection, no window opens, and AppKit writes the concealed item.
 async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &mut AsyncApp) -> Result<Value> {
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
     ensure!(wheel_gpui::windows::with(|r| r.windows.len()) == 0, "a window is open before the copy");
@@ -8458,7 +8475,7 @@ async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &
     ensure!(windows == 0, "Copy pairing code with no window opened {windows} window(s)");
     tick(cx, 500).await;
     let line = menu_log_line(menu, "pairing code copied", cx);
-    ensure!(line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the bridge did not write the concealed item: {line:?}");
+    ensure!(line.as_deref().is_some_and(|l| l.contains("\"copied\":true")), "the concealed item was not written: {line:?}");
     let copies = menu_log_count(menu, "pairing code copied", cx) - copies_before;
     let ignored = menu_log_count(menu, "popover: pairing copy already in flight", cx);
     ensure!(copies == 1 && ignored >= 1, "two quick presses made {copies} copies and {ignored} ignored line(s); the menu logged {:?}", menu.update(cx, |m, cx| m.state_json(cx))["log"]);

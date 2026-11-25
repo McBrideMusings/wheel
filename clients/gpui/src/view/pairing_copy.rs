@@ -1,7 +1,8 @@
 //! The copied pairing code (PairingWindow.swift's writeConcealed): one per app, whichever window
 //! or the menu bar copied it, so the copy works with no window open. The concealed clipboard item
-//! is written through a bridge half, and a minute later the code is cancelled unless a pairing
-//! window shows it, from the app's own task rather than a window's redraw.
+//! is written through AppKit, and a minute later, from the app's own task rather than a window's
+//! redraw, it is cleared unless something else was copied, and the code is cancelled unless a
+//! pairing window shows it.
 use super::*;
 use super::settings::now_ms;
 use serde_json::Value;
@@ -42,19 +43,24 @@ pub fn ensure(cx: &mut App) {
     .detach();
 }
 
-/// Put `json` on the clipboard as a concealed item through `native`, cleared after a minute if
-/// nothing else is copied. Returns the code this copy replaced, which the caller cancels on its
-/// connection, and the bridge's answer.
-pub fn copy(native: &Native, token: &str, json: &str) -> (Option<String>, Value) {
+/// Put `json` on the clipboard as a concealed item, cleared after a minute if nothing else is
+/// copied. Returns the code this copy replaced, which the caller cancels on its connection, and
+/// what was written, for the log.
+pub fn copy(token: &str, json: &str) -> (Option<String>, Value) {
     let old = COPIED.with(|c| c.borrow_mut().replace(token, now_ms() + pairing::CLIPBOARD_LIFE_MS));
-    let answer = native.call(serde_json::json!({"op": "clipboard_concealed", "text": json, "clear_after_ms": pairing::CLIPBOARD_LIFE_MS}));
+    crate::appkit::clipboard::write_concealed(json);
     WAKE.with(|w| w.borrow().as_ref().map(|w| w.unbounded_send(())));
-    (old, answer)
+    (old, serde_json::json!({"copied": true, "clear_after_ms": pairing::CLIPBOARD_LIFE_MS}))
 }
 
-/// The copied code's minute ran out: cancel it on the menu bar's connection (the app's one that
-/// outlives every window), unless a window's pairing window shows it.
+/// The copied code's minute ran out: clear it from the clipboard unless something else was copied
+/// since, and cancel it on the menu bar's connection (the app's one that outlives every window),
+/// unless a window's pairing window shows it.
 fn expire(cx: &mut App) {
+    if let Some(cleared) = crate::appkit::clipboard::clear_concealed() {
+        let ms = pairing::CLIPBOARD_LIFE_MS;
+        eprintln!("wheel-gpui: {}", if cleared { format!("pairing code cleared from the clipboard after {ms} ms") } else { "clipboard holds something else now; left alone".to_owned() });
+    }
     let shown = |token: &str| crate::window_handles().iter().any(|(_, h)| h.read(cx).is_ok_and(|c| c.pairing.open && c.pairing.window_tokens.iter().any(|t| t == token)));
     let Some(token) = COPIED.with(|c| c.borrow_mut().expired(now_ms(), shown)) else { return };
     if let Some(menu) = menu_bar() {

@@ -137,7 +137,7 @@ impl Client {
     /// The copy button on reply `ix`, with RowView.swift's glyph and tooltip.
     pub(super) fn copy_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let a = agent.to_owned();
-        let glyph = title::symbol(&self.native, &self.symbols, "doc.on.doc", 11., 0x8fa89b).unwrap_or_else(|| "copy".into_any_element());
+        let glyph = title::symbol(&self.symbols, "doc.on.doc", 11., 0x8fa89b).unwrap_or_else(|| "copy".into_any_element());
         div().id(gpui::ElementId::Name(format!("copy-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
             .tooltip(tip("Copy this reply"))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
@@ -154,7 +154,7 @@ impl Client {
         let a = agent.to_owned();
         let speaking = self.read_aloud.as_deref() == Some(format!("{agent}#{id}").as_str());
         let (name, label, help) = if speaking { ("stop.fill", "stop", "Stop reading this reply") } else { ("speaker.wave.2", "play", "Read this reply aloud") };
-        let glyph = title::symbol(&self.native, &self.symbols, name, 11., 0x8fa89b).unwrap_or_else(|| label.into_any_element());
+        let glyph = title::symbol(&self.symbols, name, 11., 0x8fa89b).unwrap_or_else(|| label.into_any_element());
         div().id(gpui::ElementId::Name(format!("play-{agent}-{ix}").into())).relative().w(px(18.)).flex().justify_center().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
             .tooltip(tip(help))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
@@ -168,7 +168,7 @@ impl Client {
     /// The branch button under or over reply `ix`, with RowView.swift's tooltip.
     pub(super) fn fork_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let a = agent.to_owned();
-        let glyph = title::symbol(&self.native, &self.symbols, "arrow.triangle.branch", 11., 0x8fa89b).unwrap_or_else(|| "fork".into_any_element());
+        let glyph = title::symbol(&self.symbols, "arrow.triangle.branch", 11., 0x8fa89b).unwrap_or_else(|| "fork".into_any_element());
         div().id(gpui::ElementId::Name(format!("fork-{agent}-{ix}").into())).relative().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
             .tooltip(tip("Fork the conversation through this turn into a new pane"))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
