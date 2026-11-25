@@ -6750,6 +6750,35 @@ async fn hook_logged(path: &std::path::Path, event: &str, agent: &str) -> serde_
     panic!("no {event} event for {agent} in {}: {:?}", path.display(), hook_log(path));
 }
 
+/// `agent_events_follow` (wheel-2aln.7): a connection with no pane hears every agent's
+/// turn_start and turn_end as the JSON a hook reads, each within a second of the state change.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pane_less_connection_follows_every_agent_event() {
+    let (url, _, _daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), None).await;
+    let mut ws = connect(&url).await;
+    let ok = client_op(&mut ws, 1, ClientMsg::AgentEventsFollow { req: Some(1) }).await;
+    assert!(matches!(ok, ServerMsg::Ok { req: 1 }), "{ok:?}");
+    let (space_id, pane) = space(&url, "/tmp").await;
+    let agent = start_agent(&url, &pane, Some("hello")).await;
+    let mut changed: Option<std::time::Instant> = None;
+    let mut seen = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while seen.len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "no turn_start and turn_end for {agent}: {seen:?}");
+        match recv(&mut ws).await {
+            ServerMsg::AgentStateChanged { agent: a, .. } if a == agent => changed = Some(std::time::Instant::now()),
+            ServerMsg::AgentEventsLine { req: 1, event } if event["agent"] == agent.as_str() => {
+                let since = changed.map(|t| t.elapsed()).unwrap_or_default();
+                assert!(since < Duration::from_secs(1), "{} came {since:?} after the state change", event["event"]);
+                assert_eq!((event["pane"].as_str(), event["space"].as_str()), (Some(pane.as_str()), Some(space_id.as_str())), "{event}");
+                seen.push(event["event"].as_str().unwrap_or_default().to_string());
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seen, ["turn_start", "turn_end"]);
+}
+
 /// Decide hooks for different permission requests run at the same time (wheel-qdrj.9): one hook
 /// that takes 6 s on one request leaves another request's answer unheld.
 #[tokio::test(flavor = "multi_thread")]

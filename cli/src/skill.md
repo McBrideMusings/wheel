@@ -51,6 +51,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel agent send <pane> "message"`: send a chat agent a message and print its reply as it ends. This is how one agent messages another: it needs no keystrokes and works on a backgrounded pane. It also reaches Claude Code, Codex or pi running in a terminal pane: wheeld pastes the message into its composer and submits it, queued behind a running turn, with no key to press; it returns once the message is in, the reply shows in that pane, `wheel agent wait <pane>` waits until the agent's hooks report it idle and `wheel term read <pane>` shows its screen. It refuses while that agent waits on a permission prompt, which typed text would answer.
   `agent read`, `agent wait`, `agent cancel`, `agent conversations`, `agent new`, `agent resume`,
   `agent context`, `agent config`: follow and steer a chat agent. `wheel agent watch` prints every agent pane as one JSON line (`space`, `cwd`, `pane`, `agent`, `harness`, `model`, `status`: idle, working, needs_you or stopped), then again whenever the list changes, until the daemon goes away.
+  `wheel agent events --follow` prints every agent event as one JSON line as it happens (the JSON a `[[hook]]` reads: `turn_start`, `turn_end`, `fail`, `permission`, `answered`, `over_time`, `build_failed`), needing no pane; with `--server <s>` it follows that wheeld's agents.
 - `wheel agent card --pane <id>` or `wheel agent card --artifact <name>` puts a card in your own transcript (`--agent <pane|name>` names another agent's): the client draws that pane or artifact live at that point in the conversation, so you show the person a running pane or a page instead of describing it. An artifact is looked for in your space's project, then the machine's. `wheel agent read` prints it as `[card] pane <id>` or `[card] artifact <name> (<scope>)`.
 - The orchestrator is an ordinary agent pane in a space whose directory is the orchestrator folder: the machine's `orchestrator.dir` setting, or `orchestrator` beside the machine's wheel.toml when it is empty. Orchestrator mode on the Mac and the phone shows that space; open it with `wheel space new <folder>` and `wheel pane start <pane> agent`. Agent events reach it only through `[[hook]]` commands.
 - `wheel perm list | wait | answer`: permission requests agents are waiting on.
@@ -81,7 +82,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
   The `runner` built-in shows them as buttons (`wheel artifact builtin install runner`, then
   `wheel pane kind <pane> web --artifact runner --scope machine`), and the command palette lists
   each as `Run <name>`.
-- `[[hook]]` in wheel.toml runs a shell command on agent events: `on` names any of `turn_end`, `fail`,
+- `[[hook]]` in wheel.toml runs a shell command on agent events: `on` names any of `turn_start`, `turn_end`, `fail`,
   `permission`, `answered`, `over_time` (a turn past 30 minutes) and `build_failed`; `run` is the command,
   run in the folder of the wheel.toml naming it, with the event's JSON (`event`, `agent`, `pane`, `space`,
   `text`, `at_ms`, `perm`, and `request` for a permission) on stdin. The machine's hooks take every

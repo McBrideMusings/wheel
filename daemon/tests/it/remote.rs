@@ -1065,6 +1065,12 @@ async fn a_phone_with_a_token_is_pushed_when_an_agent_needs_the_person() {
 
     // An agent waiting on a permission pushes the request's own words, once.
     let status = local_req(&mut cli, serde_json::json!({"op":"status","req":6})).await;
+    // The push names this wheeld, so the same pane id on another server stays its own notification.
+    let server = status["host"]["id"].as_str().unwrap().to_string();
+    assert!(!server.is_empty(), "{status}");
+    assert_eq!(push.body["server"], server.as_str(), "{}", push.body);
+    assert_eq!(push.body["aps"]["thread-id"], format!("{server}-{}", push.body["space"].as_str().unwrap()));
+    assert_eq!(push.headers["apns-collapse-id"], format!("{server}-{}-needs_you", push.body["pane"].as_str().unwrap()));
     let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
     let wheel_proto::ServerMsg::Status { spaces, .. } = status else { panic!("expected status") };
     let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();

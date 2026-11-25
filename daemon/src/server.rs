@@ -184,6 +184,9 @@ pub struct AppState {
     /// A pane agent's failed build or test command, as (agent, command), for the event hooks
     /// (`crate::agent::build_command`).
     pub(crate) build_failures: broadcast::Sender<(String, String)>,
+    /// Every agent event the hooks are told about, as the JSON a hook reads, for the
+    /// `agent_events_follow` streams (`crate::hooks`).
+    pub(crate) agent_events: broadcast::Sender<Arc<serde_json::Value>>,
     /// Panes whose `start_agent` is still running, so a second agent start on one of them is
     /// refused instead of replacing the agent that is coming up. Other kind changes are not held.
     pub(crate) agent_starts: Mutex<HashSet<String>>,
@@ -416,6 +419,7 @@ impl AppState {
             voiced: Mutex::new(None),
             hook_runs: Default::default(),
             build_failures: broadcast::channel(64).0,
+            agent_events: broadcast::channel(256).0,
             agent_starts: Mutex::new(HashSet::new()),
             view_options: Mutex::new(HashMap::new()),
             spaces: Mutex::new(Spaces::default()),
@@ -2926,6 +2930,36 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
+        ClientMsg::AgentEventsFollow { req } => {
+            let Some(req) = req else {
+                return Some(failed(None, "agent_events_follow needs a req to send its events under".into()));
+            };
+            // Subscribed before the reply, so no event after the `ok` is missed.
+            let mut events = state.agent_events.subscribe();
+            let out = out.clone();
+            let task = tokio::spawn(async move {
+                if out.send(ServerMsg::Ok { req }).await.is_err() {
+                    return;
+                }
+                loop {
+                    let msg = match events.recv().await {
+                        Ok(event) => ServerMsg::AgentEventsLine { req, event: (*event).clone() },
+                        Err(broadcast::error::RecvError::Lagged(missed)) => {
+                            tracing::warn!(%peer, missed, "an agent event stream fell behind and dropped events");
+                            ServerMsg::AgentEventsMissed { req, missed }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    };
+                    if out.send(msg).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            if let Some(old) = forwards.insert(format!("agent-events:{req}"), task) {
+                old.abort();
+            }
+            None
+        }
         ClientMsg::Run {
             req,
             name,

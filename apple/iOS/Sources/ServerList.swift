@@ -77,25 +77,30 @@ final class ServerList {
         model.selectSession(session)
     }
 
-    /// A tapped notification's space and pane: shown on the server holding that space. At a cold
-    /// start no server has listed its spaces yet, so the tap waits for the layout that names it.
-    func focus(space: String, pane: String) {
-        guard let model = servers.first(where: { $0.spaces.contains { $0.id == space } }) else {
-            Log.info("notification for \(space)/\(pane): no server lists the space yet; waiting for a layout")
-            pendingFocus = (space, pane)
-            return
+    /// A tapped notification's pane, shown on the server that sent it. A server whose id is not known
+    /// yet (a pairing from before server ids, not yet connected) may be it, so the tap waits for the
+    /// next layout; a server this phone is not paired with opens nothing.
+    func focus(_ target: PushTarget) {
+        switch PushRoute.route(server: target.server, among: servers.map(\.serverId)) {
+        case .open(let i):
+            pendingFocus = nil
+            show(servers[i])
+            servers[i].focus(space: target.space, pane: target.pane)
+        case .wait:
+            Log.info("notification from server \(target.server): not every server has said its id; waiting for a layout")
+            pendingFocus = target
+        case .none:
+            Log.info("notification from server \(target.server): not paired with this phone; opening nothing")
+            pendingFocus = nil
         }
-        pendingFocus = nil
-        show(model)
-        model.focus(space: space, pane: pane)
     }
 
-    /// A notification's space and pane whose server has not listed the space yet.
-    @ObservationIgnored private var pendingFocus: (space: String, pane: String)?
+    /// A tapped notification whose server had not said its id yet.
+    @ObservationIgnored private var pendingFocus: PushTarget?
 
+    /// A layout came with the server's `status.host`: a waiting tap opens, waits on or drops again.
     private func layoutArrived(on model: PhoneModel) {
-        guard let pending = pendingFocus, model.spaces.contains(where: { $0.id == pending.space }) else { return }
-        focus(space: pending.space, pane: pending.pane)
+        if let pending = pendingFocus { focus(pending) }
     }
 
     func pushToken(_ token: String) {

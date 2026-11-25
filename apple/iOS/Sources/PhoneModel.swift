@@ -431,6 +431,13 @@ final class PhoneModel {
     /// Who this wheeld says it is (`status.host`): its id, name, colour and platform (ADR-0057).
     private(set) var host: HostAccess?
 
+    /// The wheeld's id: what it said in `status.host`, else what its pairing code carried; nil until
+    /// a pairing from before server ids connects.
+    var serverId: String? {
+        if let id = host?.id, !id.isEmpty { return id }
+        return pairing?.server
+    }
+
     /// The server's name for people: its `server.name`, else the host its pairing reaches.
     var serverName: String {
         if let name = host?.name, !name.isEmpty { return name }
