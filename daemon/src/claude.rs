@@ -1165,14 +1165,24 @@ fn initial_options(answer: &Value, requested: Option<&str>) -> Vec<ConfigOption>
             choices: modes,
         },
     }];
-    let mut models: Vec<ConfigChoice> = answer["models"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let offered: Vec<&Value> = answer["models"].as_array().into_iter().flatten().collect();
+    let mut models: Vec<ConfigChoice> = offered
+        .iter()
         .filter_map(|m| {
+            let value = m["value"].as_str()?;
+            let mut name = m["displayName"].as_str().unwrap_or_default().to_string();
+            // "Default (recommended)" names no model; the other choice resolving to the same id does.
+            if value == "default" {
+                let resolved = m["resolvedModel"].as_str().unwrap_or_default();
+                if let Some(same) = offered.iter().find(|o| {
+                    o["value"] != "default" && !resolved.is_empty() && o["resolvedModel"] == resolved
+                }) {
+                    name = format!("Default ({})", same["displayName"].as_str().unwrap_or(resolved));
+                }
+            }
             Some(ConfigChoice {
-                value: m["value"].as_str()?.to_string(),
-                name: m["displayName"].as_str().unwrap_or_default().to_string(),
+                value: value.to_string(),
+                name,
                 description: m["description"].as_str().map(String::from),
             })
         })
@@ -1923,6 +1933,24 @@ mod tests {
         assert_eq!(all, Ok(None));
         assert!(past.unwrap_err().contains("has 2 turn(s)"));
         assert!(none.is_err());
+    }
+
+    #[test]
+    fn the_default_model_choice_names_the_model_it_resolves_to() {
+        let answer = json!({"models": [
+            {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)"},
+            {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5"},
+            {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku 5.5"},
+        ]});
+        let names = |answer: &serde_json::Value| -> Vec<String> {
+            let options = super::initial_options(answer, None);
+            let model = options.iter().find(|o| o.id == "model").unwrap();
+            let wheel_proto::ConfigKind::Select { choices, .. } = &model.kind else { panic!() };
+            choices.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names(&answer), ["Default (Opus 5.5)", "Opus 5.5", "Haiku 5.5"]);
+        let alone = json!({"models": [{"value": "default", "resolvedModel": "claude-x", "displayName": "Default (recommended)"}]});
+        assert_eq!(names(&alone), ["Default (recommended)"]);
     }
 
     #[test]
