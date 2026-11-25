@@ -35,4 +35,18 @@ import Testing
         #expect(tree.panes.map(\.id) == ["tl", "bl", "tr", "br"])
         #expect(tree.readingOrder.map(\.id) == ["tl", "tr", "bl", "br"])
     }
+
+    /// The phone's list of paired wheelds: a second server is added, pairing one again replaces it
+    /// by its id even at a new address, and one with no id yet is matched by address.
+    @Test func keepsOneEntryPerServer() {
+        let fp = String(repeating: "a", count: 64)
+        let mac = Pairing(url: URL(string: "wss://10.0.0.1:7433/ws")!, token: "c1", certSha256: fp, server: "mac")
+        let dev = Pairing(url: URL(string: "wss://10.0.0.2:7433/ws")!, token: "c2", certSha256: fp, server: "dev")
+        let list = [mac].keeping(dev)
+        #expect(list.map(\.server) == ["mac", "dev"])
+        let moved = Pairing(url: URL(string: "wss://100.64.0.9:7433/ws")!, token: "c3", certSha256: fp, server: "mac")
+        #expect(list.keeping(moved) == [moved, dev])
+        let unnamed = Pairing(url: dev.url, token: "c4", certSha256: fp)
+        #expect(list.keeping(unnamed) == [mac, unnamed])
+    }
 }

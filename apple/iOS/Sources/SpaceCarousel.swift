@@ -5,6 +5,7 @@ import WheelUI
 /// The paired phone's screen: the title menu on top, and the shown space's panes as swipeable pages.
 struct SpaceCarousel: View {
     let model: PhoneModel
+    let servers: ServerList
     @State private var page: String?
     /// The backgrounded pane the last page shows in place; none shows the list.
     @State private var openTray: String?
@@ -25,6 +26,10 @@ struct SpaceCarousel: View {
     @State private var closing: (space: String, question: String)?
     @State private var newSessionOpen = false
     @State private var newSessionName = ""
+    /// The server New Session makes the session on.
+    @State private var newSessionServer: PhoneModel?
+    @State private var addServerOpen = false
+    @State private var forgetting: PhoneModel?
     @State private var settingsOpen = false
     @State private var settingsTab: SettingsTab = .global
     @State private var settingsProject: String?
@@ -118,8 +123,9 @@ struct SpaceCarousel: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
         .sheet(isPresented: $settingsOpen) {
-            SettingsView(model: model, tab: $settingsTab, project: $settingsProject)
+            SettingsView(model: model, servers: servers, tab: $settingsTab, project: $settingsProject)
         }
+        .modifier(ServerPrompts(servers: servers, adding: $addServerOpen, forgetting: $forgetting))
         .alert("Could not change the pane", isPresented: Binding(get: { model.menuError != nil }, set: { if !$0 { model.menuError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -149,7 +155,11 @@ struct SpaceCarousel: View {
         .alert("New session", isPresented: $newSessionOpen) {
             TextField("Name", text: $newSessionName).accessibilityIdentifier("session name field")
             Button("Cancel", role: .cancel) {}
-            Button("Create") { model.newSession(named: newSessionName) }
+            Button("Create") {
+                let server = newSessionServer ?? model
+                servers.show(server)
+                server.newSession(named: newSessionName)
+            }
         }
         .alert("Could not change the space", isPresented: Binding(get: { model.spaceError != nil }, set: { if !$0 { model.spaceError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -184,9 +194,12 @@ struct SpaceCarousel: View {
         switch request {
         case let .rename(space, name): renaming = (space, name)
         case let .close(space, question): closing = (space, question)
-        case .newSession:
+        case let .newSession(server):
+            newSessionServer = servers.servers.first { $0.id == server }
             newSessionName = ""
             newSessionOpen = true
+        case .addServer: addServerOpen = true
+        case let .forget(server): forgetting = servers.servers.first { $0.id == server }
         case .newSpace: newSpaceOpen = true
         }
     }
@@ -298,7 +311,7 @@ struct SpaceCarousel: View {
                 // The space switcher is a sheet, not a popover: a popover is as tall as its content and clips it, so a
                 // long list of spaces could not be scrolled or reached.
                 .sheet(isPresented: $titleOpen) {
-                    TitleMenu(model: model, tab: $sheetTab, scope: $sheetScope) { request in
+                    TitleMenu(model: model, servers: servers, tab: $sheetTab, scope: $sheetScope) { request in
                         queued = request
                         titleOpen = false
                     }
@@ -460,7 +473,7 @@ struct SpaceCarousel: View {
     }
 
     /// Checks drive the app through launch environment: `WHEEL_START_PAGE=<n>` focuses the n-th
-    /// pane (1-based; `tray` for the last page, with `WHEEL_TRAY_OPEN=<pane>` opening that backgrounded pane in it) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_SETTINGS=<global|project|devices>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_NEW_SPACE=<1|search:<text>|browse:<path>[,<path>]|create:<path>>` opens the New Space sheet and drives it (`NewSpaceSheet.drive`), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
+    /// pane (1-based; `tray` for the last page, with `WHEEL_TRAY_OPEN=<pane>` opening that backgrounded pane in it) as a swipe would, `WHEEL_MENU=<item>,…` runs pane-menu items on the current page (`PaneMenu.drive`), `WHEEL_SETTINGS=<global|project>` opens Settings on that tab, `WHEEL_SET=<global|project>:<key>=<value>` writes a setting as a field's Return does (a blank value clears it), `WHEEL_NEW_SPACE=<1|search:<text>|browse:<path>[,<path>]|create:<path>>` opens the New Space sheet and drives it (`NewSpaceSheet.drive`), `WHEEL_START_SPACE=<name>` picks that space and `WHEEL_START_ORIENTATION=landscape` rotates; `WHEEL_TYPE`, `WHEEL_SEND` and `WHEEL_ANSWER` are below.
     private func driveFromEnvironment() async {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
@@ -505,6 +518,25 @@ struct SpaceCarousel: View {
         if env["WHEEL_NEW_SPACE"] != nil {
             Log.info("open new space sheet")
             newSpaceOpen = true
+        }
+        // `WHEEL_SHOW_SESSION=<server>/<session>` taps that session's chip in the session bar, by names.
+        if let spec = env["WHEEL_SHOW_SESSION"], let slash = spec.firstIndex(of: "/") {
+            let (serverName, sessionName) = (String(spec[..<slash]), String(spec[spec.index(after: slash)...]))
+            for _ in 0 ..< 30 where !servers.servers.contains(where: { $0.serverName == serverName && $0.sessions.contains { $0.name == sessionName } }) {
+                try? await Task.sleep(for: .seconds(1))
+            }
+            if let server = servers.servers.first(where: { $0.serverName == serverName }), let session = server.sessions.first(where: { $0.name == sessionName }) {
+                Log.info("session bar: tap \(serverName)/\(sessionName)")
+                servers.show(session: session.id, of: server)
+            } else {
+                Log.info("session bar: no session \(spec)")
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        // `WHEEL_SESSIONS_OPEN=1` opens the spaces sheet, whose foot is the session bar, as a swipe up does.
+        if env["WHEEL_SESSIONS_OPEN"] == "1" {
+            Log.info("open the spaces sheet")
+            titleOpen = true
         }
         if let tab = env["WHEEL_SETTINGS"].flatMap({ SettingsTab(rawValue: $0.capitalized) }) {
             Log.info("open settings \(tab.rawValue)")
@@ -944,4 +976,26 @@ private struct Dots: View {
 /// horizontal scrollers cannot be told from the rest of it.
 enum SwipeArea {
     static let tint = Color.primary.opacity(0.08)
+}
+
+/// The session menu's server prompts: Add Server…'s pairing sheet and Forget Server's question.
+private struct ServerPrompts: ViewModifier {
+    let servers: ServerList
+    @Binding var adding: Bool
+    @Binding var forgetting: PhoneModel?
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $adding, onDismiss: { servers.cancelAdding() }) {
+                PairView(model: servers.adding, adding: true)
+            }
+            // A server paired from Add Server… is shown; its sheet is done.
+            .onChange(of: servers.servers.count) { _, _ in adding = false }
+            .alert("Forget \(forgetting?.serverName ?? "")?", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } })) {
+                Button("Forget", role: .destructive) { if let forgetting { servers.remove(forgetting) } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The phone stops connecting to it. Pairing again takes a new code from that server.")
+            }
+    }
 }

@@ -2,9 +2,12 @@ import AVFoundation
 import SwiftUI
 import WheelKit
 
-/// First run: scan the pairing code the Mac's Settings › Devices shows, or paste the same JSON.
+/// First run, and Add Server… in the session menu: scan the pairing code a wheeld shows (the Mac's
+/// Settings › Devices, `wheel remote pair` on a server), or paste the same JSON.
 struct PairView: View {
     let model: PhoneModel
+    /// Opened from Add Server…, beside the servers already paired.
+    var adding = false
     @State private var pasted = ""
     @State private var problem: String?
     @State private var scanning = false
@@ -15,7 +18,7 @@ struct PairView: View {
                 Section {
                     Button("Scan the code on your Mac", systemImage: "qrcode.viewfinder") { scanning = true }
                 } footer: {
-                    Text("On the Mac, open Settings › Devices.")
+                    Text("On the Mac, open Settings › Devices. On a server with no screen, run wheel remote pair.")
                 }
                 Section("Or paste the pairing code") {
                     TextEditor(text: $pasted)
@@ -30,7 +33,7 @@ struct PairView: View {
                     Section { Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                 }
             }
-            .navigationTitle("Pair with a Mac")
+            .navigationTitle(adding ? "Add Server" : "Pair with a Mac")
             .sheet(isPresented: $scanning) {
                 QRScanner { code in
                     scanning = false

@@ -1093,11 +1093,22 @@ public struct HostAccess: Sendable, Equatable, Decodable {
     public var exe: String
     /// The hash of the source the server was built from; nil from a server that predates it.
     public var source: String?
+    /// The server's id (`server-id`, ADR-0057), its name for people, its mark's system colour and
+    /// `<os>_<arch>`; each nil from a server that predates it.
+    public var id: String?
+    public var name: String?
+    public var color: String?
+    public var platform: String?
     public var folders: [FolderAccess]
 
-    public init(exe: String, source: String? = nil, folders: [FolderAccess]) {
+    public init(exe: String, source: String? = nil, id: String? = nil, name: String? = nil, color: String? = nil,
+                platform: String? = nil, folders: [FolderAccess]) {
         self.exe = exe
         self.source = source
+        self.id = id
+        self.name = name
+        self.color = color
+        self.platform = platform
         self.folders = folders
     }
 }
@@ -1356,7 +1367,7 @@ public enum ServerMsg: Sendable {
     /// The paired devices changed; sent to every connection.
     case devicesChanged(devices: [DeviceInfo])
     /// The first frame of a connection that paired: the credential this device uses from now on.
-    case paired(device: String, credential: String)
+    case paired(device: String, credential: String, server: String?)
     /// A remote client connected, whether it paired just now or presented its credential.
     case deviceConnected(device: String, name: String, address: String, paired: Bool)
     /// The whole layout, after any change to spaces, panes or sessions.
@@ -1461,7 +1472,7 @@ public enum ServerMsg: Sendable {
 
 extension ServerMsg: Decodable {
     private enum K: String, CodingKey {
-        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact, png, width, height, tasks, key, owner
+        case ev, buttons, req, stream, socket, notice, title, fields, kind, version, log_path, uptime_secs, `protocol`, compat, ops, terms, perms, id, pid, replay_bytes, data, mime, code, turn, state, events, event, agent, perm, choice, message, spaces, clients, pane, term, config, options, url, space, settings, now, board, conversations, more, commands, artifacts, context, footer, view, conversation, agents, shell_integration, login_path, logs, host, dirs, listen, addresses, port, fingerprint, problem, token, expires_ms, devices, device, credential, tools, result, contents, name, address, paired, command, window, to, status, space_status, sessions, path, error, roots, scope, cwd, builtins, edited, runners, homes, checked, found, start, lines, action, arg, procs, login, full, level, text, brief, given, files, truncated, chunk, source, modules, feed, params, value, patch, stale, plugin, plugin_pane, origin, session, artifact, png, width, height, tasks, key, owner, server
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -1568,7 +1579,8 @@ extension ServerMsg: Decodable {
                             expiresMs: try c.decode(UInt64.self, forKey: .expires_ms))
         case "devices": self = .devices(req: try c.decode(UInt64.self, forKey: .req), devices: try c.decode([DeviceInfo].self, forKey: .devices))
         case "devices_changed": self = .devicesChanged(devices: try c.decode([DeviceInfo].self, forKey: .devices))
-        case "paired": self = .paired(device: try c.decode(String.self, forKey: .device), credential: try c.decode(String.self, forKey: .credential))
+        case "paired": self = .paired(device: try c.decode(String.self, forKey: .device), credential: try c.decode(String.self, forKey: .credential),
+                                       server: try c.decodeIfPresent(String.self, forKey: .server).flatMap { $0.isEmpty ? nil : $0 })
         case "device_connected":
             self = .deviceConnected(device: try c.decode(String.self, forKey: .device), name: try c.decode(String.self, forKey: .name),
                                     address: try c.decode(String.self, forKey: .address), paired: try c.decode(Bool.self, forKey: .paired))

@@ -15,8 +15,11 @@ extension VerticalAlignment {
 enum TitleMenuRequest: Equatable {
     case rename(space: String, name: String)
     case close(space: String, question: String)
-    case newSession
+    /// New session on that server (`ObjectIdentifier` of its model); nil: the shown one.
+    case newSession(server: ObjectIdentifier?)
     case newSpace
+    case addServer
+    case forget(server: ObjectIdentifier)
 }
 
 /// The phone's title, at the bar's left: the mode menu ("Spaces ⌄"), which only switches modes, and the context line
@@ -121,6 +124,7 @@ private struct ModeMenu: View {
 /// Rename, New pane, Move to session… and Close space.
 struct TitleMenu: View {
     let model: PhoneModel
+    let servers: ServerList
     @Binding var tab: ThumbTab
     @Binding var scope: AgentScope
     /// Closes the sheet, then asks the carousel for what comes next (nil: nothing).
@@ -230,40 +234,104 @@ struct TitleMenu: View {
     }
 
     /// Main · Mobile · Games: a tap on one, or a swipe along the bar, shows that session; the lists
-    /// above reload in place and the bar never moves. The + makes a new session.
-    private var sessionBar: some View {
-        HStack(spacing: 8) {
-            ForEach(model.sessions) { session in
-                let shown = session.id == model.view.session
-                let label = HStack(spacing: 4) {
-                    Text(session.name).lineLimit(1).minimumScaleFactor(0.7)
-                    Text("\(session.spaces.count)").monospacedDigit().opacity(0.7)
+    /// above reload in place and the bar never moves. With several servers every server's sessions
+    /// are here, each server's run led by its mark, chips of one width scrolling sideways, and a down
+    /// server's chips dimmed (ADR-0057). The + makes a new session or adds a server.
+    @ViewBuilder private var sessionBar: some View {
+        if servers.several {
+            HStack(spacing: 8) {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(servers.servers) { server in
+                                ServerMark(model: server).font(.footnote.weight(.semibold))
+                                ForEach(server.sessions) { session in
+                                    chip(session, of: server, width: Self.chipWidth).id(Self.chipID(session.id, of: server))
+                                }
+                            }
+                        }
+                    }
+                    // The shown session's chip is in view whichever server holds it.
+                    .onAppear { proxy.scrollTo(shownChip, anchor: .center) }
+                    .onChange(of: shownChip) { _, id in withAnimation { proxy.scrollTo(id, anchor: .center) } }
                 }
-                .font(.subheadline)
-                .frame(maxWidth: .infinity, minHeight: 32)
-                Group {
-                    if shown {
-                        Button { model.selectSession(session.id) } label: { label }.buttonStyle(.borderedProminent)
-                    } else {
-                        Button { model.selectSession(session.id) } label: { label }.buttonStyle(.bordered)
+                plusMenu
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("session bar")
+        } else {
+            HStack(spacing: 8) {
+                ForEach(model.sessions) { session in chip(session, of: model, width: nil) }
+                plusMenu
+            }
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("session bar")
+            .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { drag in
+                guard abs(drag.translation.width) > abs(drag.translation.height) else { return }
+                stepSession(drag.translation.width < 0 ? 1 : -1)
+            })
+        }
+    }
+
+    private static func chipID(_ session: String, of server: PhoneModel) -> String { "\(ObjectIdentifier(server).hashValue)/\(session)" }
+    private var shownChip: String { Self.chipID(model.view.session ?? "", of: model) }
+
+    /// A session's chip: its name and space count; `width` nil shares the bar's width.
+    private func chip(_ session: SessionInfo, of server: PhoneModel, width: CGFloat?) -> some View {
+        let shown = server === model && session.id == model.view.session
+        let label = HStack(spacing: 4) {
+            Text(session.name).lineLimit(1).minimumScaleFactor(0.7)
+            Text("\(session.spaces.count)").monospacedDigit().opacity(0.7)
+        }
+        .font(.subheadline)
+        .frame(width: width)
+        .frame(minHeight: 32)
+        .frame(maxWidth: width == nil ? .infinity : nil)
+        let tap = { servers.show(session: session.id, of: server) }
+        return Group {
+            if shown {
+                Button(action: tap) { label }.buttonStyle(.borderedProminent)
+            } else {
+                Button(action: tap) { label }.buttonStyle(.bordered)
+            }
+        }
+        .opacity(server.isConnected ? 1 : 0.4)
+        .accessibilityIdentifier("session \(session.name)")
+        .accessibilityValue(shown ? "shown" : server.isConnected ? "" : "not connected")
+    }
+
+    /// New Session (on which server, with several), Add Server… and Forget Server.
+    private var plusMenu: some View {
+        Menu {
+            if servers.several {
+                Section("New Session") {
+                    ForEach(servers.servers) { server in
+                        Button(server.serverName, systemImage: ServerMark.symbol(platform: server.host?.platform)) {
+                            done(.newSession(server: server.id))
+                        }
                     }
                 }
-                .accessibilityIdentifier("session \(session.name)")
-                .accessibilityValue(shown ? "shown" : "")
+            } else {
+                Button("New Session", systemImage: "plus") { done(.newSession(server: nil)) }
             }
-            Button { done(.newSession) } label: { Image(systemName: "plus").frame(width: 32, height: 32) }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("New session")
-                .accessibilityIdentifier("new session")
+            Divider()
+            Button("Add Server…", systemImage: "qrcode.viewfinder") { done(.addServer) }
+            Menu("Forget Server", systemImage: "xmark") {
+                ForEach(servers.servers) { server in
+                    Button(server.serverName, role: .destructive) { done(.forget(server: server.id)) }
+                }
+            }
+        } label: {
+            Image(systemName: "plus").frame(width: 32, height: 32)
         }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("session bar")
-        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { drag in
-            guard abs(drag.translation.width) > abs(drag.translation.height) else { return }
-            stepSession(drag.translation.width < 0 ? 1 : -1)
-        })
+        .buttonStyle(.bordered)
+        .accessibilityLabel("New session")
+        .accessibilityIdentifier("new session")
     }
+
+    /// A chip's label width with several servers: one width for every chip, so the bar scrolls instead of squeezing.
+    private static let chipWidth: CGFloat = 84
 
     private func stepSession(_ delta: Int) {
         guard let current = model.sessions.firstIndex(where: { $0.id == model.view.session }) else { return }

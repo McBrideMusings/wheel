@@ -404,20 +404,44 @@ final class PhoneModel {
         client.send(.pushRegister(req: client.req(), token: token))
     }
 
-    func start() {
+    /// Connect with a pairing the Keychain kept.
+    func resume(_ saved: Pairing) {
         #if DEBUG
-        if let marks = ProcessInfo.processInfo.environment["WHEEL_LOG_MARKS"] { Log.file.writeMarks(marks) }
         watchToolbarPresses()
-        if let json = ProcessInfo.processInfo.environment["WHEEL_PAIR_JSON"], pairing == nil {
-            Log.info("pairing from WHEEL_PAIR_JSON")
-            pair(json: json)
-            return
-        }
         #endif
-        if let saved = PairingStore.load(), client == nil {
-            pairing = saved
-            open(saved)
+        guard client == nil else { return }
+        pairing = saved
+        open(saved)
+    }
+
+    /// Called once a pairing code this model tried is kept: the server list takes the model in.
+    @ObservationIgnored var onPaired: ((PhoneModel) -> Void)?
+
+    /// Who this wheeld says it is (`status.host`): its id, name, colour and platform (ADR-0057).
+    private(set) var host: HostAccess?
+
+    /// The server's name for people: its `server.name`, else the host its pairing reaches.
+    var serverName: String {
+        if let name = host?.name, !name.isEmpty { return name }
+        return (pairing ?? trying)?.url.host() ?? "Server"
+    }
+
+    /// Whether the phone shows this server now. A server not shown streams no terminal and holds
+    /// no view on its wheeld (`client_ls` lists the phone only on the server it shows).
+    private(set) var onScreen = true
+
+    func setOnScreen(_ shown: Bool) {
+        guard shown != onScreen else { return }
+        onScreen = shown
+        Log.info("server \(serverName) \(shown ? "shown" : "hidden")")
+        reportedView = nil
+        if shown {
+            reportView()
+        } else {
+            client?.send(.view(req: nil, window: "phone", space: nil, pane: nil, session: nil))
+            voice.end()
         }
+        syncAttachments()
     }
 
     /// Tries `json` (a pairing code's text). Returns why it is not one; otherwise connects and, on
@@ -440,8 +464,9 @@ final class PhoneModel {
 
     func unpair() {
         close()
-        PairingStore.clear()
+        if let pairing { PairingStore.remove(pairing) }
         pairing = nil
+        host = nil
         trying = nil
         spaces = []
         sessions = []
@@ -485,6 +510,9 @@ final class PhoneModel {
         settingRefusals = [:]
         Log.info("unpaired")
     }
+
+    /// Drop the connection and keep the pairing: another model holds this server now.
+    func disconnect() { close() }
 
     private func close() {
         generation += 1
@@ -538,10 +566,11 @@ final class PhoneModel {
             }
             if case .connected = state, let trying {
                 self.trying = nil
-                let status = PairingStore.save(trying)
+                let status = PairingStore.keep(trying)
                 if status == errSecSuccess {
                     pairing = trying
-                    Log.info("paired with \(trying.url.absoluteString)")
+                    Log.info("paired with \(trying.url.absoluteString) (server \(trying.server ?? "unnamed"))")
+                    onPaired?(self)
                 } else {
                     Log.info("keychain refused the pairing: status \(status)")
                     pairProblem = "Could not keep the pairing in the Keychain (status \(status))."
@@ -575,6 +604,20 @@ final class PhoneModel {
         client.start()
     }
 
+    /// Keep who the wheeld says it is, and record its id with a pairing kept before it said one.
+    private func named(_ host: HostAccess) {
+        if self.host != host {
+            self.host = host
+            Log.info("server \(host.name ?? "unnamed") id \(host.id ?? "none") colour \(host.color ?? "none") platform \(host.platform ?? "none")")
+        }
+        guard let id = host.id, !id.isEmpty, var held = pairing, held.server != id else { return }
+        held.server = id
+        if PairingStore.keep(held) == errSecSuccess {
+            pairing = held
+            Log.info("pairing \(held.url.absoluteString) is server \(id)")
+        }
+    }
+
     private func pinFailed() {
         Log.info("certificate does not match the pinned fingerprint")
         certificateMismatch = true
@@ -587,7 +630,8 @@ final class PhoneModel {
         if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
         if artifactEmbeds?.handle(msg) == true { return }
         switch msg {
-        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, _, offer, sessions):
+        case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, host, offer, sessions):
+            if let host { named(host) }
             if serverOffer != offer {
                 Log.info("server protocol \(offer.protocolVersion), level \(offer.compat), this app's \(ServerOffer.clientCompat); attachments \(offer.has("agent_send") ? "offered" : "hidden")")
             }
@@ -611,9 +655,9 @@ final class PhoneModel {
             syncAttachments()
             // The attaches below replace each held transcript with the daemon's current one.
             for chat in known where chats[chat.name] === chat { attach(chat) }
-        case let .paired(device, credential):
+        case let .paired(device, credential, server):
             guard let code = trying else { break }
-            let credentialed = Pairing(url: code.url, token: credential, certSha256: code.certSha256)
+            let credentialed = Pairing(url: code.url, token: credential, certSha256: code.certSha256, server: server)
             trying = credentialed
             client?.endpoint = DaemonEndpoint(url: code.url, token: DaemonEndpoint.token(credential))
             pageDaemon.token = credential
@@ -1478,6 +1522,7 @@ final class PhoneModel {
 
     /// Tell the daemon what this phone shows (`client_ls` lists it); only a change is sent.
     private func reportView() {
+        guard onScreen else { return }
         let space = activeSpace
         let key = "\(view.session ?? "-")/\(space?.id ?? "-")/\(space?.focus ?? "-")"
         guard key != reportedView else { return }
@@ -1649,9 +1694,11 @@ final class PhoneModel {
     /// Attach the terms the shown page needs (its own, or the embeds of a plugin page) and detach the rest.
     private func syncAttachments() {
         var wanted = Set<String>()
-        if let shownTerm { wanted.insert(shownTerm) }
-        if let sheetTerm { wanted.insert(sheetTerm) }
-        for embed in embeds where embed.host == shownPane || (embed.host != nil && embed.host == sheetPane) { wanted.insert(embed.term) }
+        if onScreen {
+            if let shownTerm { wanted.insert(shownTerm) }
+            if let sheetTerm { wanted.insert(sheetTerm) }
+            for embed in embeds where embed.host == shownPane || (embed.host != nil && embed.host == sheetPane) { wanted.insert(embed.term) }
+        }
         for old in attachedTerms.subtracting(wanted) {
             client?.send(.termDetach(id: old))
             for terminal in surfaces(of: old) { terminal.attached = false }
@@ -1735,7 +1782,7 @@ final class PhoneModel {
         Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                guard let self, let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                guard let self, onScreen, let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
                 try? FileManager.default.removeItem(at: file)
                 let words = text.split(separator: " ", maxSplits: 2).map(String.init)
                 guard words.count >= 2, let browser = browsers[words[0]] else { continue }

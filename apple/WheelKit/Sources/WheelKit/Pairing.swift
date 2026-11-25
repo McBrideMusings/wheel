@@ -1,15 +1,18 @@
 import CryptoKit
 import Foundation
 
-/// What a pairing code carries: where the Mac's remote listener is, the token that opens it, and
+/// What a pairing code carries, and the Keychain keeps per paired wheeld: where the remote listener is, the token that opens it, and
 /// the SHA-256 of the certificate it must present. `RemoteInfo.pairing` builds the JSON.
 public struct Pairing: Codable, Sendable, Equatable {
     public let url: URL
     public let token: String
     public let certSha256: String
+    /// The wheeld's id (`status.host.id`, ADR-0057) once it has said it; nil from a pairing code,
+    /// or from a wheeld that predates server ids.
+    public var server: String?
 
     private enum CodingKeys: String, CodingKey {
-        case url, token
+        case url, token, server
         case certSha256 = "cert_sha256"
     }
 
@@ -29,10 +32,11 @@ public struct Pairing: Codable, Sendable, Equatable {
         }
     }
 
-    public init(url: URL, token: String, certSha256: String) {
+    public init(url: URL, token: String, certSha256: String, server: String? = nil) {
         self.url = url
         self.token = token
         self.certSha256 = certSha256.lowercased()
+        self.server = server
     }
 
     /// Reads the JSON a pairing code or the Mac's Devices tab shows.
@@ -42,7 +46,7 @@ public struct Pairing: Codable, Sendable, Equatable {
         guard raw.url.scheme == "wss", raw.url.host() != nil else { throw Invalid.notSecure }
         guard !raw.token.isEmpty else { throw Invalid.noToken }
         guard raw.certSha256.count == 64, raw.certSha256.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw Invalid.badFingerprint }
-        return Pairing(url: raw.url, token: raw.token, certSha256: raw.certSha256)
+        return Pairing(url: raw.url, token: raw.token, certSha256: raw.certSha256, server: raw.server)
     }
 
     /// Whether `certificate` (DER) is the one this pairing pins.
@@ -114,5 +118,25 @@ extension Node {
         return GridLayout(self, in: CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
             .sorted { ($0.frame.minY.rounded(), $0.frame.minX) < ($1.frame.minY.rounded(), $1.frame.minX) }
             .map { ($0.id, $0.kind) }
+    }
+}
+
+extension Array where Element == Pairing {
+    /// The list with `pairing` kept: it takes the place of the entry for the same wheeld (the same
+    /// server id, else the same address), so pairing a server again never lists it twice; a new
+    /// wheeld goes last.
+    public func keeping(_ pairing: Pairing) -> [Pairing] {
+        var list = self
+        let same: (Pairing) -> Bool = { held in
+            if let id = pairing.server, let heldId = held.server { return id == heldId }
+            return held.url == pairing.url
+        }
+        if let i = list.firstIndex(where: same) {
+            list[i] = pairing
+            list.removeAll { $0 != pairing && same($0) }
+        } else {
+            list.append(pairing)
+        }
+        return list
     }
 }
