@@ -6574,7 +6574,7 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     ensure!(cleared == Some(true) && after_clear.is_none(), "the clear left {after_clear:?} ({cleared:?})");
     ensure!(left == Some(false) && after_left.as_deref() == Some("copied since"), "the clear took what was copied since: {after_left:?} ({left:?})");
     let device = ServerMsg::DeviceConnected { device: "d1".into(), name: "Check phone".into(), address: "127.0.0.1:5".into(), paired: true };
-    window.update(cx, |c, _, _| c.on_event(Event::Message(Box::new(device))))?;
+    window.update(cx, |c, _, cx| c.on_event(Event::Message(Box::new(device)), cx))?;
     let (connected, close_at) = window.update(cx, |c, _, _| (c.pairing.connected.clone(), c.pairing.close_at))?;
     ensure!(connected.as_deref() == Some("Check phone") && close_at.is_some(), "the window did not take the connection: {connected:?} {close_at:?}");
     let mut pairing_closed = false;

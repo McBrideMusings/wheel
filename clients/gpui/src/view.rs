@@ -566,7 +566,7 @@ impl Client {
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
-    pub fn on_event(&mut self, event: Event) -> bool {
+    pub fn on_event(&mut self, event: Event, cx: &mut App) -> bool {
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
@@ -765,7 +765,7 @@ impl Client {
                     }
                     if let ServerMsg::Agent { agent, event } = &*message {
                         if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") && !self.voice_turn_ended(agent) && self.reads_aloud.contains(agent) {
-                            self.speak_last_reply(agent);
+                            self.speak_last_reply(agent, cx);
                         }
                     }
                     false
@@ -1458,6 +1458,12 @@ impl Client {
         }
         self.reduce_motion = on;
     }
+    /// The reply the app's synthesizer reads now (`appkit::read_aloud`); whether that changed.
+    pub fn set_read_aloud(&mut self, playing: Option<String>) -> bool {
+        let changed = self.read_aloud != playing;
+        self.read_aloud = playing;
+        changed
+    }
     /// A frame the bridge sent on its own: a browser pane's state is kept for its chrome, its
     /// reports go to wheeld as this connection's requests, and an answer to a relayed daemon
     /// request goes back as the reply wheeld waits for.
@@ -1491,7 +1497,6 @@ impl Client {
                 self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None });
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
-            Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
             // A press in a terminal or page view closes the open popovers, as one on GPUI's drawing does.
             Frame::Event(BrowserEvent::Pressed { pane, point: [x, y] }) => {
                 if self.press_away(x, y) {

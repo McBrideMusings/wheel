@@ -531,7 +531,7 @@ impl Client {
             PlusAction::AddFiles => self.pick_files(agent, cx),
             // Asked first, as the phone's AttachMenu asks: the conversation cannot be taken back here.
             PlusAction::Clear => self.confirm("Clear this chat?", "The agent starts a new conversation.".into(), "Clear Chat".into(), Pending::ClearChat(agent.to_owned())),
-            PlusAction::ReadAloud => self.toggle_reads_aloud(agent),
+            PlusAction::ReadAloud => self.toggle_reads_aloud(agent, cx),
         }
     }
 

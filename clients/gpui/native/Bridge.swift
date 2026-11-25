@@ -1585,20 +1585,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         case "keymap":
             routed = Set((value["chords"] as? [String]) ?? [])
-        case "read_aloud":
-            // The play button on a reply: the Swift app's one synthesizer speaks it or stops it.
-            watchReadAloud()
-            ReadAloud.shared.toggle(value["text"] as? String ?? "", for: value["owner"] as? String ?? "", key: value["key"] as? String ?? "")
-            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
-        case "read_aloud_speak":
-            // A finished reply of a conversation whose read-aloud is on (`AgentChat.readsAloud`).
-            watchReadAloud()
-            ReadAloud.shared.speak(value["text"] as? String ?? "", for: value["owner"] as? String ?? "", key: value["key"] as? String)
-            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
-        case "read_aloud_stop":
-            // That conversation's read-aloud turned off: its speech stops at once, nobody else's.
-            ReadAloud.shared.stop(for: value["owner"] as? String ?? "")
-            return ["playing": ReadAloud.shared.playing as Any? ?? NSNull()]
         case "terminal_look": restyle(value)
         case "term_drop":
             // What a drop of these files does, for the check: the drag itself needs a real pointer.
@@ -1752,23 +1738,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
 /// One Native per GPUI window, by the id `attach` hands back.
 @MainActor private var natives: [Int32: Native] = [:]
-@MainActor private var watchingReadAloud = false
-/// Tell every window which reply the synthesizer reads whenever that changes (one starts, is
-/// stopped, or ends), so each window's play button turns back.
-@MainActor func watchReadAloud() {
-    guard !watchingReadAloud else { return }
-    watchingReadAloud = true
-    observeReadAloud()
-}
-@MainActor private func observeReadAloud() {
-    withObservationTracking { _ = ReadAloud.shared.playing } onChange: {
-        Task { @MainActor in
-            let playing: Any = ReadAloud.shared.playing ?? NSNull()
-            for native in natives.values { native.emit(["event": "read_aloud", "playing": playing]) }
-            observeReadAloud()
-        }
-    }
-}
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor
 public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: @escaping Emit) -> Int32 {
@@ -1776,8 +1745,6 @@ public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: 
     nextWindow += 1
     let native = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), window: id, hidden: hidden != 0, emit: emit)
     natives[id] = native
-    // A window that opens while a reply is read draws that reply's stop button.
-    if let playing = ReadAloud.shared.playing { native.emit(["event": "read_aloud", "playing": playing]) }
     return id
 }
 @_cdecl("wheel_native_command") @MainActor
