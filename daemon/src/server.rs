@@ -3309,6 +3309,33 @@ async fn handle(
                 req.map(|req| ServerMsg::Ok { req })
             }
         },
+        ClientMsg::PageWatch { req, pane } => {
+            // A mirror shows its source's page, as its `.wheel/events` path is sent to the source's.
+            let source = {
+                let spaces = state.spaces.lock().unwrap();
+                wheel_proto::shown_pane(&spaces.spaces, &pane).map(|(source, _)| source.to_owned())
+            }
+            .unwrap_or_else(|| pane.clone());
+            match state.page(&source) {
+                Err(message) => {
+                    tracing::warn!(%peer, %pane, %message, "page watch refused");
+                    Some(failed(req, message))
+                }
+                Ok(page) => {
+                    let task = tokio::spawn(forward_page(page, pane.clone(), out.clone()));
+                    if let Some(old) = forwards.insert(format!("page:{pane}"), task) {
+                        old.abort();
+                    }
+                    req.map(|req| ServerMsg::Ok { req })
+                }
+            }
+        }
+        ClientMsg::PageUnwatch { req, pane } => {
+            if let Some(task) = forwards.remove(&format!("page:{pane}")) {
+                task.abort();
+            }
+            req.map(|req| ServerMsg::Ok { req })
+        }
         ClientMsg::TermAttach { req, id, whole_lines } => match state.term(&id) {
             Some(term) => {
                 if let Some(old) = forwards.insert(
@@ -3528,6 +3555,26 @@ async fn forward_feed(
             Err(broadcast::error::RecvError::Closed) => return,
         };
         if out.send(next).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Send each value pushed into `page` to `out` as `page_data` for `pane`, the latest one first, as
+/// its `.wheel/events` stream does; ends when the connection's outbox closes.
+async fn forward_page(page: Arc<crate::page::Page>, pane: String, out: mpsc::Sender<ServerMsg>) {
+    let mut rx = page.subscribe();
+    let mut seen = 0;
+    loop {
+        if let Some((seq, value)) = page.data_after(seen) {
+            seen = seq;
+            let msg = ServerMsg::PageData { pane: pane.clone(), data: value.to_string() };
+            if out.send(msg).await.is_err() {
+                return;
+            }
+            continue;
+        }
+        if rx.changed().await.is_err() {
             return;
         }
     }
