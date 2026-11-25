@@ -25,7 +25,7 @@ struct PhoneApp: App {
             .onDisappear { servers.shown?.voice.end() }
             .task {
                 servers.start()
-                PushCenter.shared.listen(onOpen: { space, pane in servers.focus(space: space, pane: pane) })
+                PushCenter.shared.listen(onOpen: { servers.focus($0) })
                 PushCenter.shared.onToken = { servers.pushToken($0) }
                 // Debug builds launched with `WHEEL_NOTIFICATIONS=off` never ask, so a check's
                 // screenshots carry no permission alert.

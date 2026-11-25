@@ -30,6 +30,8 @@ use crate::spaces::space_panes;
 const REQUEST_LIFE: Duration = Duration::from_secs(20);
 /// Apple wants a token refreshed no more often than every 20 minutes and no older than an hour.
 const JWT_LIFE: Duration = Duration::from_secs(40 * 60);
+/// The longest `apns-collapse-id` Apple takes.
+const COLLAPSE_BYTES: usize = 64;
 
 /// What a notification is about.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -69,25 +71,29 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// The request body Apple takes. `pane` and `space` ride beside `aps` so a tap opens the pane.
-    pub fn payload(&self) -> String {
+    /// The request body Apple takes, from the wheeld `server` names (`status.host.id`). `server`,
+    /// `space` and `pane` ride beside `aps` so a tap opens that server's pane; the thread groups by
+    /// server and space, since space ids repeat across wheelds.
+    pub fn payload(&self, server: &str) -> String {
         serde_json::json!({
             "aps": {
                 "alert": {"title": self.title, "body": self.body},
                 "sound": "default",
-                "thread-id": self.space,
+                "thread-id": format!("{server}-{}", self.space),
                 "category": self.event.name(),
             },
             "event": self.event.name(),
+            "server": server,
             "space": self.space,
             "pane": self.pane,
         })
         .to_string()
     }
 
-    /// Notifications with one collapse id replace each other on the phone: one per pane and event.
-    pub fn collapse(&self) -> String {
-        format!("{}-{}", self.pane, self.event.name())
+    /// Notifications with one collapse id replace each other on the phone: one per server, pane and
+    /// event. None when it would pass Apple's 64 bytes, so the notification is sent uncollapsed.
+    pub fn collapse(&self, server: &str) -> Option<String> {
+        Some(format!("{server}-{}-{}", self.pane, self.event.name())).filter(|c| c.len() <= COLLAPSE_BYTES)
     }
 }
 
@@ -204,12 +210,12 @@ impl AppState {
             return Err("no phone has registered a push token; open the phone app, allow notifications and connect it".into());
         }
         let jwt = self.push_jwt(&config)?;
-        let payload = notice.payload();
-        let collapse = notice.collapse();
+        let payload = notice.payload(self.server_id());
+        let collapse = notice.collapse(self.server_id());
         let mut sent = 0;
         let mut errors = Vec::new();
         for (device, token) in targets {
-            let outcome = deliver(&config, &jwt, &token, &payload, &collapse).await;
+            let outcome = deliver(&config, &jwt, &token, &payload, collapse.as_deref()).await;
             match outcome {
                 Outcome::Sent => {
                     sent += 1;
@@ -329,17 +335,19 @@ impl AppState {
 }
 
 /// POST one notification to Apple's push service over HTTP/2.
-async fn deliver(config: &Config, jwt: &str, token: &str, payload: &str, collapse: &str) -> Outcome {
-    let request = http::Request::builder()
+async fn deliver(config: &Config, jwt: &str, token: &str, payload: &str, collapse: Option<&str>) -> Outcome {
+    let mut request = http::Request::builder()
         .method("POST")
         .uri(format!("{}/3/device/{token}", config.server.trim_end_matches('/')))
         .header("authorization", format!("bearer {jwt}"))
         .header("apns-topic", &config.topic)
         .header("apns-push-type", "alert")
         .header("apns-priority", "10")
-        .header("apns-collapse-id", collapse)
-        .header("content-type", "application/json")
-        .body(());
+        .header("content-type", "application/json");
+    if let Some(collapse) = collapse {
+        request = request.header("apns-collapse-id", collapse);
+    }
+    let request = request.body(());
     let request = match request {
         Ok(r) => r,
         Err(e) => return Outcome::Failed(format!("bad request: {e}")),
@@ -562,7 +570,8 @@ mod tests {
     }
 
     #[test]
-    fn the_payload_carries_the_pane_a_tap_opens() {
+    fn the_payload_carries_the_server_and_pane_a_tap_opens() {
+        let server = "0d6f2c3e-8a1b-4c5d-9e7f-1a2b3c4d5e6f";
         let notice = Notice {
             event: Event::NeedsYou,
             space: "s1".into(),
@@ -570,11 +579,30 @@ mod tests {
             title: "wheel needs you".into(),
             body: "Allow Bash: ls".into(),
         };
-        let v: serde_json::Value = serde_json::from_str(&notice.payload()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&notice.payload(server)).unwrap();
+        assert_eq!(v["server"], server);
         assert_eq!(v["pane"], "p7");
         assert_eq!(v["space"], "s1");
+        assert_eq!(v["aps"]["thread-id"], format!("{server}-s1"));
         assert_eq!(v["aps"]["alert"]["title"], "wheel needs you");
         assert_eq!(v["aps"]["alert"]["body"], "Allow Bash: ls");
-        assert_eq!(notice.collapse(), "p7-needs_you");
+        assert_eq!(notice.collapse(server).as_deref(), Some(format!("{server}-p7-needs_you").as_str()));
+        // The same pane on another wheeld collapses apart.
+        assert_ne!(notice.collapse(server), notice.collapse("1d6f2c3e-8a1b-4c5d-9e7f-1a2b3c4d5e6f"));
+    }
+
+    #[test]
+    fn a_collapse_id_past_apples_64_bytes_is_left_off() {
+        let server = "0d6f2c3e-8a1b-4c5d-9e7f-1a2b3c4d5e6f";
+        let mut notice = Notice {
+            event: Event::NeedsYou,
+            space: "s1".into(),
+            pane: "p1234567890123456".into(),
+            title: String::new(),
+            body: String::new(),
+        };
+        assert_eq!(notice.collapse(server).map(|c| c.len()), Some(COLLAPSE_BYTES));
+        notice.pane.push('7');
+        assert_eq!(notice.collapse(server), None);
     }
 }
