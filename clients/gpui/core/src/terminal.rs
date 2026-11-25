@@ -213,6 +213,50 @@ pub fn grid_for(width: f64, height: f64, cell: CellMetrics) -> (u16, u16) {
     (fit(width - 2.0 * PADDING_X, cell.width), fit(height - 2.0 * PADDING_Y, cell.height))
 }
 
+/// `path` with a backslash before each character a shell reads as syntax (Ghostty's `shellEscape` set).
+pub fn shell_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '\\' | ' ' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\'' | '`' | '!' | '#' | '$' | '&' | ';' | '|' | '*' | '?' | '\t') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What dropping `paths` on a terminal types: each path shell-escaped, separated by spaces.
+pub fn drop_text<S: AsRef<str>>(paths: &[S]) -> String {
+    paths.iter().map(|p| shell_escape(p.as_ref())).collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the terminals' resizes wait: while the grid animates, a divider is dragged or a
+/// window edge is dragged, a term's grid changes go to wheeld only once the move ends, as the
+/// grid it ended at.
+#[derive(Debug, Default)]
+pub struct ResizeHold {
+    moving: bool,
+    live_resize: bool,
+}
+
+impl ResizeHold {
+    pub fn held(&self) -> bool {
+        self.moving || self.live_resize
+    }
+    /// The grid animates or a divider is under the pointer; true when this released the hold.
+    pub fn set_moving(&mut self, on: bool) -> bool {
+        let was = self.held();
+        self.moving = on;
+        was && !self.held()
+    }
+    /// A window edge is being dragged; true when this released the hold.
+    pub fn set_live_resize(&mut self, on: bool) -> bool {
+        let was = self.held();
+        self.live_resize = on;
+        was && !self.held()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
     Narrow,
@@ -918,6 +962,25 @@ mod tests {
         assert_eq!(grid_for(5.0, 5.0, jetbrains(13.0)), (1, 1));
         // A line height of 1.5 stretches each row half again.
         assert_eq!(CellMetrics::from_face(15.6, 34.32, 2.0, 1.5).height, 25.5);
+    }
+
+    #[test]
+    fn dropped_paths_type_shell_escaped_and_space_separated() {
+        assert_eq!(drop_text(&["/tmp/a b(1).txt", "/tmp/c"]), r"/tmp/a\ b\(1\).txt /tmp/c");
+        assert_eq!(shell_escape("x$y;z|w*?!#&<>[]{}`'\"\\\tq"), "x\\$y\\;z\\|w\\*\\?\\!\\#\\&\\<\\>\\[\\]\\{\\}\\`\\'\\\"\\\\\\\tq");
+    }
+
+    #[test]
+    fn a_resize_hold_releases_only_when_every_move_ended() {
+        let mut hold = ResizeHold::default();
+        assert!(!hold.held());
+        assert!(!hold.set_moving(true));
+        assert!(!hold.set_live_resize(true));
+        assert!(!hold.set_moving(false), "the window edge still holds");
+        assert!(hold.held());
+        assert!(hold.set_live_resize(false));
+        assert!(!hold.held());
+        assert!(!hold.set_moving(false), "nothing was held");
     }
 
     #[test]
