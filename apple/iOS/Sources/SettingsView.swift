@@ -6,15 +6,16 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case global = "Global"
     case project = "Project"
     case speech = "Speech"
-    case devices = "Devices"
 
     var id: String { rawValue }
 }
 
 /// The phone's Settings: the two `wheel.toml` layers the Mac's Settings window edits, written
-/// through the same `setting_set` and `setting_unset` ops, the phone's speech models, and the paired Mac.
+/// through the same `setting_set` and `setting_unset` ops, on the wheeld of the session shown, and
+/// the phone's own speech models. The title names that server, in its mark with several (ADR-0057).
 struct SettingsView: View {
     let model: PhoneModel
+    let servers: ServerList
     @Binding var tab: SettingsTab
     @Binding var project: String?
     @Environment(\.dismiss) private var dismiss
@@ -32,12 +33,24 @@ struct SettingsView: View {
                 case .global: SettingsList(model: model, layer: .global)
                 case .project: projectTab
                 case .speech: SpeechList()
-                case .devices: DevicesList(model: model)
                 }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 0) {
+                        Text("Settings").font(.headline)
+                        Group {
+                            if servers.several { ServerMark(model: model) } else { Text(model.serverName) }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings server")
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
         .task(id: project) { model.askSettings(for: project) }
     }
@@ -125,28 +138,6 @@ private struct SettingRow: View {
         switch field.layer {
         case .global: stored == nil ? "\(setting.help) Not set: wheel's default." : "\(setting.help) Default: \(setting.default)."
         case .project: stored == nil ? "\(setting.help) Not set here: the global value." : "\(setting.help) Global: \(setting.global)."
-        }
-    }
-}
-
-/// The paired Mac's address, and the way to forget it.
-private struct DevicesList: View {
-    let model: PhoneModel
-
-    var body: some View {
-        Form {
-            Section("Paired Mac") {
-                Text(model.pairing?.url.absoluteString ?? "Not paired")
-                    .textSelection(.enabled)
-                    .accessibilityIdentifier("paired-url")
-                Text(model.isConnected ? "Connected" : "Not connected").foregroundStyle(.secondary)
-            }
-            Section {
-                Button("Forget this Mac", role: .destructive) { model.unpair() }
-                    .accessibilityIdentifier("forget-mac")
-            } footer: {
-                Text("The phone returns to pairing. Pair again from Settings › Devices on the Mac.")
-            }
         }
     }
 }

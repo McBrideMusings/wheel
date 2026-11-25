@@ -20,7 +20,7 @@ fn rig(cx: &mut TestAppContext) -> Rig {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("token"), "t").unwrap();
     let endpoint = Endpoint::new("ws://127.0.0.1:1/ws", &dir.join("token")).unwrap();
-    let (out, sent) = mpsc::channel();
+    let (out, sent) = crate::daemon::Outbox::detached();
     let window = cx.update(|cx| {
         crate::init(cx);
         let bridge = Bridge::stub();

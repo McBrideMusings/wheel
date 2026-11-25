@@ -131,7 +131,7 @@ pub enum Opening {
 pub fn create_window(
     cx: &mut App,
     bridge: &Rc<native::Bridge>,
-    connection_out: std::sync::mpsc::Sender<String>,
+    connection_out: crate::daemon::Outbox,
     endpoint: daemon::Endpoint,
     prefer_session: Option<String>,
     prefer_space: Option<String>,

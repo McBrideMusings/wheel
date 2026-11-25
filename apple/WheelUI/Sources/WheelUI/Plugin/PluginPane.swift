@@ -437,7 +437,8 @@ public struct PluginPaneView: View {
         let palette = WheelPalette(dark: scheme == .dark)
         GeometryReader { geo in
             Group {
-                // A frame-less Table or vertical List takes the pane's height and scrolls itself; any other view scrolls as a whole.
+                // A view asking for the pane's height (a maxHeight "infinity" frame, a frame-less Table or vertical List) takes
+                // it; any other view scrolls as a whole.
                 if pane.tree.fillsPane {
                     PaneTreeView(tree: pane.tree)
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .top)

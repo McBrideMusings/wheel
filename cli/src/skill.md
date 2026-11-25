@@ -93,6 +93,7 @@ terminal or agent, a pane id showing it works too. `wheel <command> --help` list
 - `wheel usage`: Claude account usage.
 - `wheel notify "text" [--level notice|warning|error] [--id <id>] [--pane <pane>]`: show a toast (green, orange or red) on every Mac client attached now (the phone shows none), and print its id. The text can be selected and copied; `--pane` adds Focus pane and Close pane buttons. The same `--id` replaces the toast; `wheel notify --clear <id>` takes it down. The daemon keeps nothing, so a client that attaches later does not see it. Use it for what the person should read now, not for progress.
 - `wheel remote info`: the remote listener's addresses, port and certificate fingerprint (the `remote.listen` setting turns it on).
+- `wheel server list|status|add <code> [--label L]|rename <s> <label>|remove <s>|enable <s>|disable <s>`: the other wheelds this `wheel` is paired with, kept in `~/.wheel/servers.toml` with each credential in the Keychain; `add` takes the code `wheel remote pair` prints on that server. `wheel --server <label-or-id> <command>` sends any command to one of them (`local` is this machine's). Pane, space and agent ids belong to the server that made them, so with `--server` name them from that server's own listing; `$WHEEL_PANE` and `$WHEEL_SPACE` are not used.
 
 ## Showing a document or a result with pictures: the `markdown` built-in
 

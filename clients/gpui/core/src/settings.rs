@@ -1111,7 +1111,7 @@ mod tests {
         let host = HostAccess { exe: "/x".into(), source: String::new(), folders: vec![
             wheel_proto::FolderAccess { path: "/Users/me/Desktop".into(), allowed: true, waiting: false, error: None },
             wheel_proto::FolderAccess { path: "/Users/me/Documents".into(), allowed: false, waiting: false, error: Some("denied".into()) },
-        ] };
+        ], ..Default::default() };
         assert_eq!(folder_access_title(&host), "Wheel Server cannot open Documents.");
     }
 }

@@ -48,7 +48,7 @@ pub struct MenuBar {
     endpoint: Endpoint,
     hidden: bool,
     /// The connection's sender; dropping it closes the socket.
-    send: mpsc::Sender<String>,
+    send: crate::daemon::Outbox,
     up: bool,
     /// The link as the server line reads it, and why it is down.
     link: LinkKind,

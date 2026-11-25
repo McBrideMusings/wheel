@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::Message;
@@ -74,71 +72,11 @@ fn start_as(dir: &Path, local: u16, instance: &str) -> Daemon {
     daemon
 }
 
-/// Accepts the one certificate whose fingerprint it was given, and nothing else.
-#[derive(Debug)]
-struct Pinned(String);
-
-impl ServerCertVerifier for Pinned {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        _: &[CertificateDer<'_>],
-        _: &ServerName<'_>,
-        _: &[u8],
-        _: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        match wheeld::remote::fingerprint(end_entity) == self.0 {
-            true => Ok(ServerCertVerified::assertion()),
-            false => Err(rustls::Error::General("fingerprint does not match".into())),
-        }
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
-    }
-}
-
 type Remote = tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
 
 /// Connect over TLS pinning `fingerprint` and upgrade to a WebSocket at `/ws?<query>`.
 async fn remote_ws(port: u16, fingerprint: &str, query: &str) -> anyhow::Result<Remote> {
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(Pinned(fingerprint.to_string())))
-    .with_no_client_auth();
+    let config = wheel_proto::tls::pinned(fingerprint)?;
     let tcp = TcpStream::connect(("127.0.0.1", port)).await?;
     let tls = TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from("localhost")?, tcp)
@@ -1213,14 +1151,7 @@ async fn remote_get_with(
     extra: &str,
 ) -> (String, String, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .dangerous()
-    .with_custom_certificate_verifier(Arc::new(Pinned(fingerprint.to_string())))
-    .with_no_client_auth();
+    let config = wheel_proto::tls::pinned(fingerprint).unwrap();
     let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let mut tls = TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from("localhost").unwrap(), tcp)

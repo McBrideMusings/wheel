@@ -12,6 +12,14 @@ private let clip = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().appendingPathComponent("plugins/gallery/demo.h264")
 
 struct VideoStreamTests {
+    @Test func volumeIsTheGainClampedAndMutedIsSilence() {
+        #expect(PaneVideoStreamView.gain(volume: nil, muted: nil) == 1)
+        #expect(PaneVideoStreamView.gain(volume: 0.25, muted: false) == 0.25)
+        #expect(PaneVideoStreamView.gain(volume: 0.25, muted: true) == 0)
+        #expect(PaneVideoStreamView.gain(volume: 3, muted: nil) == 1)
+        #expect(PaneVideoStreamView.gain(volume: -1, muted: nil) == 0)
+    }
+
     @Test func aFittedPictureLetterboxesAndAFillingOneCrops() {
         let video = CGSize(width: 1920, height: 1080)
         let wide = CGRect(x: 0, y: 0, width: 400, height: 100)

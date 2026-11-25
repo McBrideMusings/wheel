@@ -149,6 +149,11 @@ async fn run(args: Args) -> anyhow::Result<()> {
         machine_file,
         warden,
     );
+    anyhow::ensure!(
+        !state.server_id().is_empty(),
+        "cannot write {}: this server needs an id clients can know it by",
+        support.join("server-id").display()
+    );
     let state_file = args
         .state_file
         .unwrap_or_else(|| support.join("spaces.json"));

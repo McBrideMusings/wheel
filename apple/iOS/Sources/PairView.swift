@@ -2,9 +2,15 @@ import AVFoundation
 import SwiftUI
 import WheelKit
 
-/// First run: scan the pairing code the Mac's Settings › Devices shows, or paste the same JSON.
+/// First run, and Add Server… in the session menu: scan the pairing code a wheeld shows (the Mac's
+/// Settings › Devices, `wheel remote pair` on a server), or paste the same JSON.
 struct PairView: View {
     let model: PhoneModel
+    /// Opened from Add Server…, beside the servers already paired.
+    var adding = false
+    /// Set when `model` is a paired server that refuses this phone: the other servers stay reachable,
+    /// and this one can be forgotten instead of paired again.
+    var servers: ServerList?
     @State private var pasted = ""
     @State private var problem: String?
     @State private var scanning = false
@@ -15,7 +21,7 @@ struct PairView: View {
                 Section {
                     Button("Scan the code on your Mac", systemImage: "qrcode.viewfinder") { scanning = true }
                 } footer: {
-                    Text("On the Mac, open Settings › Devices.")
+                    Text("On the Mac, open Settings › Devices. On a server with no screen, run wheel remote pair.")
                 }
                 Section("Or paste the pairing code") {
                     TextEditor(text: $pasted)
@@ -29,8 +35,18 @@ struct PairView: View {
                 if let message {
                     Section { Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                 }
+                if let servers, servers.servers.contains(where: { $0 === model }) {
+                    Section {
+                        ForEach(servers.servers.filter { $0 !== model }) { other in
+                            Button { servers.show(other) } label: { ServerMark(model: other) }
+                                .accessibilityIdentifier("show server \(other.serverName)")
+                        }
+                        Button("Forget \(model.serverName)", role: .destructive) { servers.remove(model) }
+                            .accessibilityIdentifier("forget server")
+                    }
+                }
             }
-            .navigationTitle("Pair with a Mac")
+            .navigationTitle(adding ? "Add Server" : "Pair with a Mac")
             .sheet(isPresented: $scanning) {
                 QRScanner { code in
                     scanning = false

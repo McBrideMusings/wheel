@@ -5622,10 +5622,10 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             for _ in 0..200 {
                 pump(&mut connection, 100, &mut layouts, window, cx).await?;
                 streams = demo(&state(&native));
-                if streams.len() == 3 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
+                if streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
             }
-            ensure!(streams.len() == 3 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
-                "the gallery's three VideoStreams decoded no picture: {streams:?}; bridge errors {}", native.status()["errors"]);
+            ensure!(streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
+                "the gallery's four VideoStreams decoded no picture: {streams:?}; bridge errors {}", native.status()["errors"]);
             let typed = native.call(json!({"op":"plugin","pane":pane,"action":"stream_key","component":"gallery.demo","value":"q"}));
             ensure!(typed["ok"] == true, "stream_key on gallery.demo: {typed}");
             let mut last = Vec::new();

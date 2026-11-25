@@ -470,9 +470,14 @@ mod tests {
             let got = tokio::time::timeout(deadline, rx.recv()).await.expect("no sample").unwrap();
             assert!(matches!(got, ServerMsg::ProcsSample { ref space, .. } if space == want), "{got:?}");
         }
-        // Three watchers, two spaces: each round is one scan.
-        let scans = state.procs_scans.load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(scans, 1, "three watchers made {scans} scans in the first round");
+        // Three watchers, two spaces: the next round brings each its sample from one scan. (The
+        // first round may have run before the last watcher joined, so it is not the one counted.)
+        let before = state.procs_scans.load(std::sync::atomic::Ordering::SeqCst);
+        for rx in [&mut a_rx, &mut b_rx, &mut c_rx] {
+            tokio::time::timeout(deadline, rx.recv()).await.expect("no second sample").unwrap();
+        }
+        let scans = state.procs_scans.load(std::sync::atomic::Ordering::SeqCst) - before;
+        assert_eq!(scans, 1, "three watchers made {scans} scans in one round");
 
         // A watcher moving to another space replaces its watch; none listed twice.
         state.watch_procs(&a, Some("s2".into()));

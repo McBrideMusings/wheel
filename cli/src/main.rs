@@ -7,6 +7,7 @@
 //! already have taken effect), 1 anything else.
 
 mod hook;
+mod servers;
 mod statusline;
 
 use std::io::Write as _;
@@ -18,7 +19,7 @@ use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 use wheel_proto::{
     decode_bytes, encode_bytes, ArtifactScope, ClientMsg, ConfigKind, Dir, DirEntry, NewPaneKind,
     PaneView, ServerMsg, AgentEvent, AgentState, SettingInfo, SettingOrigin, StartKind,
@@ -39,6 +40,10 @@ struct Cli {
     /// File holding the daemon's client token. Defaults to ~/Library/Application Support/wheel/token.
     #[arg(long, global = true, env = "WHEEL_TOKEN_FILE")]
     token_file: Option<PathBuf>,
+    /// Send the command to this paired server, by label or id (`wheel server list`); `local` is
+    /// this machine's wheeld. Ids of panes, spaces and agents belong to the server that made them.
+    #[arg(long, global = true)]
+    server: Option<String>,
     /// Print the guide to driving Wheel with this command, for an AI agent to read, and exit.
     #[arg(long)]
     skill: bool,
@@ -93,6 +98,10 @@ enum Command {
     /// Remote access to the daemon.
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// The servers this `wheel` is paired with, kept in ~/.wheel/servers.toml with each credential
+    /// in the Keychain. Needs no daemon but the ones it pairs with or checks.
+    #[command(subcommand)]
+    Server(ServerCommand),
     /// Push notifications to the paired phone.
     #[command(subcommand)]
     Push(PushCommand),
@@ -293,6 +302,40 @@ enum RemoteCommand {
     },
     /// Forget a paired device: its credential stops working and its connections close.
     Revoke { id: String },
+}
+
+#[derive(Subcommand)]
+enum ServerCommand {
+    /// The servers: label, id, address and whether each is enabled; `local` first.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Connect to every enabled server and say whether it answers as the wheeld it paired with,
+    /// with its name and platform. Exits 5 when any enabled server does not.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pair with a server: take the pairing code `wheel remote pair` prints on it, exchange it for
+    /// a credential, pin its certificate and record its id. Pairing again with a server already
+    /// listed keeps its label and replaces its address, certificate and credential.
+    Add {
+        /// The pairing code, `{url, token, cert_sha256}` as JSON; `-` reads it from stdin.
+        code: String,
+        /// What to call it; defaults to its name in lowercase, made of letters, digits and `-`.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Give a server a new label; its id still names it.
+    Rename { server: String, label: String },
+    /// Forget a server and its credential. The server still lists this device until
+    /// `wheel remote revoke <device>` runs on it.
+    Remove { server: String },
+    /// Let commands and `status` reach a server again.
+    Enable { server: String },
+    /// Keep a server listed but refuse `--server` to it and skip it in `status`.
+    Disable { server: String },
 }
 
 #[derive(Subcommand)]
@@ -1763,10 +1806,70 @@ fn lost(e: impl std::fmt::Display) -> Fail {
     Fail::Lost(e.to_string())
 }
 
-type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// The socket under a connection: plain TCP to the local wheeld, TLS to a paired server's.
+trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+type Ws = WebSocketStream<Box<dyn Io>>;
 
 /// How long the daemon has to take a connection, read a request, or answer one it answers by itself.
 const LINK_WAIT: Duration = Duration::from_secs(10);
+
+/// Open a WebSocket to `url` (its query included), over TLS pinning `pin` when given. A wheeld
+/// too busy to take the connection would otherwise hold this command forever: the kernel
+/// completes the TCP handshake whether or not wheeld ever reads, so the whole dial has a deadline.
+async fn dial(url: &str, pin: Option<&str>) -> Result<Ws, Fail> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    // Strip the query from what an error names: it carries the token.
+    let shown = url.split('?').next().unwrap_or(url).to_string();
+    let request = url
+        .into_client_request()
+        .map_err(|e| Fail::Connect(format!("{shown} is not a WebSocket URL: {e}")))?;
+    let host = request
+        .uri()
+        .host()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_string();
+    let port = request
+        .uri()
+        .port_u16()
+        .unwrap_or(if pin.is_some() { 443 } else { 80 });
+    // An image the daemon sends is up to 20 MB, a third more as base64: past the 16 MiB default.
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(64 << 20))
+        .max_frame_size(Some(64 << 20));
+    let open = async {
+        let tcp = TcpStream::connect((host.as_str(), port))
+            .await
+            .map_err(|e| Fail::Connect(format!("connect to {shown}: {e}")))?;
+        // Requests are small frames each answered before the next: Nagle would only hold them.
+        let _ = tcp.set_nodelay(true);
+        let io: Box<dyn Io> = match pin {
+            None => Box::new(tcp),
+            Some(pin) => {
+                let config = wheel_proto::tls::pinned(pin).map_err(other)?;
+                let name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.clone())
+                    .map_err(|e| Fail::Connect(format!("{shown}: {e}")))?;
+                let tls = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+                    .connect(name, tcp)
+                    .await
+                    .map_err(|e| Fail::Connect(format!("connect to {shown}: {e}")))?;
+                Box::new(tls)
+            }
+        };
+        let (ws, _) = tokio_tungstenite::client_async_with_config(request, io, Some(config))
+            .await
+            .map_err(|e| Fail::Connect(format!("connect to {shown}: {e}")))?;
+        Ok(ws)
+    };
+    tokio::time::timeout(LINK_WAIT, open).await.map_err(|_| {
+        Fail::Timeout(format!(
+            "wheeld at {shown} took no connection within {}s",
+            LINK_WAIT.as_secs()
+        ))
+    })?
+}
 
 struct Conn {
     ws: Ws,
@@ -1788,23 +1891,20 @@ impl Conn {
         };
         let token = std::fs::read_to_string(&path)
             .map_err(|e| Fail::Connect(format!("read token from {}: {e}", path.display())))?;
-        // An image the daemon sends is up to 20 MB, a third more as base64: past the 16 MiB default.
-        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-            .max_message_size(Some(64 << 20))
-            .max_frame_size(Some(64 << 20));
-        // A wheeld too busy to take the connection would otherwise hold this command forever:
-        // the kernel completes the TCP handshake whether or not wheeld ever reads.
-        let (ws, _) = tokio::time::timeout(
-            LINK_WAIT,
-            tokio_tungstenite::connect_async_with_config(
-                format!("{url}?token={}", token.trim()),
-                Some(config),
-                false,
-            ),
-        )
-        .await
-        .map_err(|_| Fail::Timeout(format!("wheeld at {url} took no connection within {}s", LINK_WAIT.as_secs())))?
-        .map_err(|e| Fail::Connect(format!("connect to {url}: {e}")))?;
+        let ws = dial(&format!("{url}?token={}", token.trim()), None).await?;
+        Ok(Conn {
+            ws,
+            next_req: 0,
+            events: Default::default(),
+            offer: None,
+        })
+    }
+
+    /// A connection to a paired server's remote listener at `url` presenting `query`
+    /// (`token=<credential>`, or `pair=<token>` while pairing), over TLS that trusts only the
+    /// certificate whose SHA-256 is `fingerprint`.
+    async fn open_remote(url: &str, fingerprint: &str, query: &str) -> Result<Conn, Fail> {
+        let ws = dial(&format!("{url}?{query}"), Some(fingerprint)).await?;
         Ok(Conn {
             ws,
             next_req: 0,
@@ -2125,6 +2225,360 @@ async fn stream(conn: &mut Conn, command: StreamCommand) -> Result<(), Fail> {
     }
 }
 
+/// Where the server list lives, and the list.
+fn server_list() -> Result<(PathBuf, Vec<servers::Server>), Fail> {
+    let path = servers::path().map_err(Fail::Other)?;
+    let list = servers::load(&path).map_err(Fail::Other)?;
+    Ok((path, list))
+}
+
+/// The listed server `selector` names, by label or id.
+fn server_named<'a>(list: &'a [servers::Server], selector: &str) -> Result<&'a servers::Server, Fail> {
+    servers::find(list, selector).ok_or_else(|| {
+        Fail::Other(format!(
+            "no server {selector}; `wheel server list` names the paired ones"
+        ))
+    })
+}
+
+/// A connection to a paired server, refused when its address now leads to another wheeld.
+async fn open_server(list: &std::path::Path, server: &servers::Server) -> Result<Conn, Fail> {
+    let credential = servers::credential_get(list, &server.id).map_err(Fail::Connect)?;
+    let mut conn = Conn::open_remote(
+        &server.url,
+        &server.fingerprint,
+        &format!("token={credential}"),
+    )
+    .await?;
+    let found = server_id(&mut conn).await?;
+    if found != server.id {
+        return Err(Fail::Connect(format!(
+            "{} now leads to another wheeld: {} paired with {}, this one is {}; pair again with `wheel server add`",
+            server.url,
+            server.label,
+            server.id,
+            if found.is_empty() { "a wheeld that reports no id" } else { &found }
+        )));
+    }
+    Ok(conn)
+}
+
+/// The `host.id` the wheeld on `conn` reports; empty from one older than ids.
+async fn server_id(conn: &mut Conn) -> Result<String, Fail> {
+    let req = conn.req();
+    match conn.call(ClientMsg::RemoteInfo { req: Some(req) }, req).await? {
+        ServerMsg::Remote { server, .. } => Ok(server),
+        _ => Err(Fail::Other("unexpected reply to remote_info".into())),
+    }
+}
+
+/// This machine's name, for the device name a server lists this `wheel` under.
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length, and gethostname writes at most that.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    match rc {
+        0 => String::from_utf8_lossy(&buf[..end]).into_owned(),
+        _ => String::new(),
+    }
+}
+
+/// `wheel server`: the paired-server list, edited and checked without the local wheeld.
+async fn server_command(
+    command: ServerCommand,
+    url: &str,
+    token_file: Option<PathBuf>,
+) -> Result<(), Fail> {
+    let (path, mut list) = server_list()?;
+    match command {
+        ServerCommand::List { json } => {
+            if json {
+                let value = serde_json::json!({ "local": true, "servers": list });
+                println!("{}", serde_json::to_string_pretty(&value).map_err(other)?);
+                return Ok(());
+            }
+            println!("{:<16} {:<36} {:<8} URL", "LABEL", "ID", "ENABLED");
+            println!("{:<16} {:<36} {:<8} this machine", servers::LOCAL, "-", "yes");
+            for s in &list {
+                let on = if s.enabled { "yes" } else { "no" };
+                println!("{:<16} {:<36} {:<8} {}", s.label, s.id, on, s.url);
+            }
+            Ok(())
+        }
+        ServerCommand::Status { json } => {
+            server_status(&path, &list, url, token_file, json).await
+        }
+        ServerCommand::Add { code, label } => server_add(&path, &mut list, code, label).await,
+        ServerCommand::Rename { server, label } => {
+            let id = server_named(&list, &server)?.id.clone();
+            servers::check_label(&list, &label, &id).map_err(Fail::Other)?;
+            let entry = list.iter_mut().find(|s| s.id == id).expect("found above");
+            let old = std::mem::replace(&mut entry.label, label.clone());
+            servers::save(&path, &list).map_err(Fail::Other)?;
+            println!("renamed {old} to {label} ({id})");
+            Ok(())
+        }
+        ServerCommand::Remove { server } => {
+            let gone = server_named(&list, &server)?.clone();
+            servers::credential_delete(&path, &gone.id).map_err(Fail::Other)?;
+            list.retain(|s| s.id != gone.id);
+            servers::save(&path, &list).map_err(Fail::Other)?;
+            println!("removed {} ({})", gone.label, gone.id);
+            if !gone.device.is_empty() {
+                println!(
+                    "it still lists this device as {}: run `wheel remote revoke {}` on it to end the credential",
+                    gone.device, gone.device
+                );
+            }
+            Ok(())
+        }
+        ServerCommand::Enable { server } => server_enable(&path, &mut list, &server, true),
+        ServerCommand::Disable { server } => server_enable(&path, &mut list, &server, false),
+    }
+}
+
+/// Turn a server on or off for `--server` and `status`.
+fn server_enable(
+    path: &std::path::Path,
+    list: &mut [servers::Server],
+    selector: &str,
+    enabled: bool,
+) -> Result<(), Fail> {
+    let id = server_named(list, selector)?.id.clone();
+    let entry = list.iter_mut().find(|s| s.id == id).expect("found above");
+    entry.enabled = enabled;
+    let label = entry.label.clone();
+    servers::save(path, list).map_err(Fail::Other)?;
+    println!("{} {label}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+/// The pairing code `wheel remote pair` prints.
+#[derive(serde::Deserialize)]
+struct PairingCode {
+    url: String,
+    token: String,
+    cert_sha256: String,
+}
+
+/// Pair with the server whose code is `code` and list it, or refresh it when it is listed.
+async fn server_add(
+    path: &std::path::Path,
+    list: &mut Vec<servers::Server>,
+    code: String,
+    label: Option<String>,
+) -> Result<(), Fail> {
+    let code = match code.as_str() {
+        "-" => {
+            use std::io::Read as _;
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text).map_err(other)?;
+            text
+        }
+        _ => code,
+    };
+    let code: PairingCode = serde_json::from_str(code.trim())
+        .map_err(|e| Fail::Other(format!("that is not a pairing code: {e}")))?;
+    if !code.url.starts_with("wss://") {
+        return Err(Fail::Other("the pairing code's address must start with wss://".into()));
+    }
+    if code.cert_sha256.len() != 64 || !code.cert_sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(Fail::Other(
+            "the pairing code's certificate fingerprint is not 64 hex digits".into(),
+        ));
+    }
+    let fingerprint = code.cert_sha256.to_ascii_lowercase();
+    // A label that can never be taken is refused before the code is spent.
+    if let Some(label) = &label {
+        servers::check_label(&[], label, "").map_err(Fail::Other)?;
+    }
+    let name = format!("wheel CLI on {}", hostname());
+    let escape = |text: &str| -> String {
+        text.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    let query = format!("pair={}&name={}", escape(&code.token), escape(&name));
+    let mut conn = Conn::open_remote(&code.url, &fingerprint, &query).await?;
+    // The server spends the token and sends the credential as the connection's first frame.
+    let (device, credential, id) = loop {
+        match conn.recv(LINK_WAIT).await? {
+            Some(ServerMsg::Paired {
+                device,
+                credential,
+                server,
+            }) => break (device, credential, server),
+            Some(_) => {}
+            None => return Err(Fail::Timeout("the server sent no credential".into())),
+        }
+    };
+    // The code is spent now: from here every failure leaves a device on the server, so says which.
+    let orphan = |why: String| {
+        Fail::Other(format!(
+            "{why}; the server lists this device as {device}: run `wheel remote revoke {device}` there"
+        ))
+    };
+    if id.is_empty() {
+        return Err(orphan(format!(
+            "the wheeld at {} reports no id, so it cannot be told apart from another; restart it to update, then pair again",
+            code.url
+        )));
+    }
+    servers::check_id(&id).map_err(orphan)?;
+    let req = conn.req();
+    let host = match conn.call(ClientMsg::Status { req: Some(req) }, req).await {
+        Ok(ServerMsg::Status { host, .. }) => host,
+        Ok(_) => return Err(orphan("unexpected reply to status".into())),
+        Err(fail) => return Err(orphan(fail.to_string())),
+    };
+    let listed = list.iter().position(|s| s.id == id);
+    let label = match (label, listed) {
+        (Some(label), _) => label,
+        (None, Some(at)) => list[at].label.clone(),
+        // The name's label, else the id's first part; `-2`, `-3`... when another server has it.
+        (None, None) => {
+            let base = match servers::label_of(&host.name) {
+                l if l.is_empty() || l == servers::LOCAL => {
+                    format!("server-{}", id.split('-').next().unwrap_or(&id))
+                }
+                l => l,
+            };
+            (1..)
+                .map(|n| match n {
+                    1 => base.clone(),
+                    n => format!("{base}-{n}"),
+                })
+                .find(|l| servers::check_label(list, l, &id).is_ok())
+                .expect("some suffix is free")
+        }
+    };
+    servers::check_label(list, &label, &id).map_err(orphan)?;
+    servers::credential_set(path, &id, &credential).map_err(orphan)?;
+    let entry = servers::Server {
+        label: label.clone(),
+        id: id.clone(),
+        url: code.url,
+        fingerprint,
+        device: device.clone(),
+        enabled: true,
+    };
+    let before = list.clone();
+    match listed {
+        Some(at) => list[at] = entry,
+        None => list.push(entry),
+    }
+    if let Err(why) = servers::save(path, list) {
+        // The credential would sit in the Keychain with no entry naming it; a re-pair kept its old one.
+        if listed.is_none() {
+            let _ = servers::credential_delete(path, &id);
+        }
+        *list = before;
+        return Err(orphan(why));
+    }
+    let verb = if listed.is_some() { "paired again with" } else { "paired with" };
+    println!("{verb} {label} ({id}), named {}", host.name);
+    Ok(())
+}
+
+/// One server's answer to `wheel server status`.
+#[derive(serde::Serialize)]
+struct ServerState {
+    label: String,
+    id: String,
+    url: String,
+    enabled: bool,
+    /// `ok`, `disabled`, or why it did not answer as the wheeld it paired with.
+    state: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    platform: String,
+}
+
+/// Connect to the local wheeld and every enabled server at once and report each.
+async fn server_status(
+    path: &std::path::Path,
+    list: &[servers::Server],
+    local_url: &str,
+    token_file: Option<PathBuf>,
+    json: bool,
+) -> Result<(), Fail> {
+    async fn host_of(conn: &mut Conn) -> Result<wheel_proto::HostAccess, Fail> {
+        let req = conn.req();
+        match conn.call(ClientMsg::Status { req: Some(req) }, req).await? {
+            ServerMsg::Status { host, .. } => Ok(*host),
+            _ => Err(Fail::Other("unexpected reply to status".into())),
+        }
+    }
+    let local = async {
+        let host = async { host_of(&mut Conn::open(local_url, token_file).await?).await }.await;
+        (local_url.to_string(), host)
+    };
+    let remote = list.iter().map(|server| async move {
+        if !server.enabled {
+            return None;
+        }
+        Some(async { host_of(&mut open_server(path, server).await?).await }.await)
+    });
+    let ((local_url, local), remote) =
+        tokio::join!(local, futures_util::future::join_all(remote));
+    let state_of = |host: &Option<Result<wheel_proto::HostAccess, Fail>>| match host {
+        None => ("disabled".to_string(), String::new(), String::new()),
+        Some(Ok(h)) => ("ok".to_string(), h.name.clone(), h.platform.clone()),
+        Some(Err(fail)) => (fail.to_string(), String::new(), String::new()),
+    };
+    let mut rows = Vec::new();
+    let local = Some(local);
+    let (state, name, platform) = state_of(&local);
+    rows.push(ServerState {
+        label: servers::LOCAL.into(),
+        id: local.as_ref().and_then(|h| h.as_ref().ok()).map(|h| h.id.clone()).unwrap_or_default(),
+        url: local_url,
+        enabled: true,
+        state,
+        name,
+        platform,
+    });
+    for (server, host) in list.iter().zip(&remote) {
+        let (state, name, platform) = state_of(host);
+        rows.push(ServerState {
+            label: server.label.clone(),
+            id: server.id.clone(),
+            url: server.url.clone(),
+            enabled: server.enabled,
+            state,
+            name,
+            platform,
+        });
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows).map_err(other)?);
+    } else {
+        for row in &rows {
+            let what = match row.state.as_str() {
+                "ok" => format!("ok: {} ({})", row.name, row.platform),
+                other => other.to_string(),
+            };
+            println!("{:<16} {what}", row.label);
+        }
+    }
+    let down: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.state != "ok" && r.state != "disabled")
+        .map(|r| r.label.as_str())
+        .collect();
+    match down.is_empty() {
+        true => Ok(()),
+        false => Err(Fail::Connect(format!("not answering: {}", down.join(", ")))),
+    }
+}
+
 /// Print the daemon's remote listener as `key: value` lines, or say it is off.
 async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
     let req = conn.req();
@@ -2134,6 +2588,7 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
         port,
         fingerprint,
         problem,
+        server,
         ..
     } = conn
         .call(ClientMsg::RemoteInfo { req: Some(req) }, req)
@@ -2141,6 +2596,9 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
     else {
         return Err(Fail::Other("unexpected reply to remote_info".into()));
     };
+    if !server.is_empty() {
+        println!("server: {server}");
+    }
     let Some(listen) = listen else {
         println!("remote access is off");
         return Ok(());
@@ -6316,8 +6774,24 @@ async fn statusline(url: &str, token_file: Option<PathBuf>, pane: Option<String>
     ExitCode::SUCCESS
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // A command for another server must never take this machine's pane, space or wheeld as its
+    // default: ids belong to the server that made them. Cleared before clap reads the environment
+    // and before any other thread starts.
+    let args: Vec<String> = std::env::args().collect();
+    if servers::selector_in(&args).is_some_and(|s| s != servers::LOCAL) {
+        for var in ["WHEEL_PANE", "WHEEL_SPACE", "WHEEL_URL", "WHEEL_TOKEN_FILE"] {
+            std::env::remove_var(var);
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("start the async runtime")
+        .block_on(run())
+}
+
+async fn run() -> ExitCode {
     let cli = Cli::parse();
     if cli.skill {
         print!("{SKILL}");
@@ -6327,6 +6801,15 @@ async fn main() -> ExitCode {
         let _ = <Cli as clap::CommandFactory>::command().print_help();
         return ExitCode::from(2);
     };
+    if let Command::Server(command) = command {
+        return match server_command(command, &cli.url, cli.token_file).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(fail) => {
+                eprintln!("wheel: {fail}");
+                ExitCode::from(fail.code())
+            }
+        };
+    }
     if let Command::Install { status, dir } = command {
         return match install(status, dir) {
             Ok(()) => ExitCode::SUCCESS,
@@ -6350,7 +6833,20 @@ async fn main() -> ExitCode {
         return statusline(&cli.url, cli.token_file, pane).await;
     }
     let result = async {
-        let mut conn = Conn::open(&cli.url, cli.token_file).await?;
+        let mut conn = match cli.server.as_deref() {
+            None | Some(servers::LOCAL) => Conn::open(&cli.url, cli.token_file).await?,
+            Some(selector) => {
+                let (path, list) = server_list()?;
+                let server = server_named(&list, selector)?;
+                if !server.enabled {
+                    return Err(Fail::Other(format!(
+                        "server {} is disabled; `wheel server enable {}` lets commands reach it",
+                        server.label, server.label
+                    )));
+                }
+                open_server(&path, server).await?
+            }
+        };
         // `status` is how a person finds out what the server is; the reports are hooks that
         // decode only an acknowledgement.
         if !matches!(
@@ -6365,7 +6861,7 @@ async fn main() -> ExitCode {
             conn.require_compatible_server().await?;
         }
         match command {
-            Command::Install { .. } => unreachable!("handled before connecting"),
+            Command::Install { .. } | Command::Server(_) => unreachable!("handled before connecting"),
             Command::Status { .. } => status(&mut conn).await,
             Command::Usage => usage(&mut conn).await,
             Command::Notify {

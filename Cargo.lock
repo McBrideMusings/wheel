@@ -3154,8 +3154,12 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures-util",
+ "libc",
+ "security-framework",
+ "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite 0.28.0",
  "toml",
  "wheel-proto",
@@ -3190,8 +3194,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "jiff",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -3564,6 +3570,7 @@ dependencies = [
  "quote",
  "regex-automata",
  "regex-syntax",
+ "rustls",
  "serde",
  "serde_core",
  "serde_json",

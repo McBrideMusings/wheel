@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
@@ -56,13 +55,7 @@ struct Identity {
     key: PrivateKeyDer<'static>,
 }
 
-/// SHA-256 of a DER certificate, lowercase hex: what a client pins.
-pub fn fingerprint(cert: &[u8]) -> String {
-    Sha256::digest(cert)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
+pub use wheel_proto::tls::fingerprint;
 
 /// The identity saved in `dir`, made first if either file is missing.
 fn identity(dir: &Path) -> anyhow::Result<Identity> {
@@ -143,7 +136,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: `buf` is 256 writable bytes and the length passed is 256.
     let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
@@ -211,6 +204,44 @@ const MAX_FAILURES: usize = 5;
 /// How far back a peer's wrong tokens count, and how long it is refused once it reaches
 /// [`MAX_FAILURES`].
 const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+
+/// How long a remote connection may be silent before the kernel asks whether its peer is still
+/// there, how often it asks again, and how many unanswered asks end it: a peer gone without
+/// closing its sockets frees its slots within about a minute.
+const KEEPALIVE_IDLE: libc::c_int = 30;
+const KEEPALIVE_EVERY: libc::c_int = 10;
+const KEEPALIVE_MISSES: libc::c_int = 3;
+
+/// Turn on TCP keepalive for `tcp` with the times above.
+fn keep_alive(tcp: &tokio::net::TcpStream) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    let fd = tcp.as_raw_fd();
+    #[cfg(target_os = "macos")]
+    let idle = libc::TCP_KEEPALIVE;
+    #[cfg(not(target_os = "macos"))]
+    let idle = libc::TCP_KEEPIDLE;
+    for (level, name, value) in [
+        (libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1),
+        (libc::IPPROTO_TCP, idle, KEEPALIVE_IDLE),
+        (libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, KEEPALIVE_EVERY),
+        (libc::IPPROTO_TCP, libc::TCP_KEEPCNT, KEEPALIVE_MISSES),
+    ] {
+        // SAFETY: one c_int option on a socket descriptor `tcp` keeps open for the call.
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                name,
+                (&value as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if set != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 /// One connection's place under [`MAX_CONNECTIONS`] and [`MAX_PER_PEER`], given back on drop.
 struct Slot {
@@ -300,6 +331,13 @@ impl TlsListener {
                         continue;
                     }
                 };
+                // As the local listener does: small frames answered one by one go out at once.
+                let _ = tcp.set_nodelay(true);
+                // A laptop or phone that sleeps or leaves the network never closes its sockets:
+                // the kernel's keepalive finds it gone, the connection ends, and its slot is freed.
+                if let Err(e) = keep_alive(&tcp) {
+                    tracing::warn!(%peer, error = %e, "cannot set keepalive on a remote connection; a vanished peer keeps its slot");
+                }
                 let ip = peer.ip();
                 let Ok(permit) = slots.clone().try_acquire_owned() else {
                     tracing::warn!(%peer, max = MAX_CONNECTIONS, "remote connection refused: at the connection limit");
@@ -524,12 +562,38 @@ pub(crate) fn info(state: &AppState, req: u64) -> wheel_proto::ServerMsg {
         port,
         fingerprint,
         problem,
+        server: state.server_id.clone(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_remote_connection_asks_after_a_silent_peer() {
+        use std::os::fd::AsRawFd as _;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (tcp, _) = listener.accept().await.unwrap();
+        keep_alive(&tcp).unwrap();
+        let get = |level, name| {
+            let (mut value, mut len) = (0 as libc::c_int, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            // SAFETY: one c_int option read from a socket this test holds open.
+            let got = unsafe { libc::getsockopt(tcp.as_raw_fd(), level, name, (&mut value as *mut libc::c_int).cast(), &mut len) };
+            assert_eq!(got, 0, "{}", std::io::Error::last_os_error());
+            value
+        };
+        #[cfg(target_os = "macos")]
+        let idle = libc::TCP_KEEPALIVE;
+        #[cfg(not(target_os = "macos"))]
+        let idle = libc::TCP_KEEPIDLE;
+        assert_ne!(get(libc::SOL_SOCKET, libc::SO_KEEPALIVE), 0);
+        assert_eq!(get(libc::IPPROTO_TCP, idle), KEEPALIVE_IDLE);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL), KEEPALIVE_EVERY);
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPCNT), KEEPALIVE_MISSES);
+    }
 
     #[test]
     fn a_peer_is_blocked_after_five_wrong_tokens_until_the_oldest_ages_out() {
