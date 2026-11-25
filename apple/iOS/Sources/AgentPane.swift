@@ -13,6 +13,8 @@ struct AgentPane: View {
     @ObservedObject var chat: AgentChat
     var orchestrator = false
     @State private var keyboardUp = false
+    @AppStorage(ComposerButtons.dictation) private var showsDictation = true
+    @AppStorage(ComposerButtons.voice) private var showsVoice = true
 
     var body: some View {
         let mine = model.perms.filter { $0.agent == chat.name }
@@ -82,9 +84,9 @@ struct AgentPane: View {
                 stop: { model.cancel(chat) },
                 takeBack: { chat.takeBack() },
                 readAloud: $chat.readsAloud,
-                accessory: AnyView(ModelMenu(chat: chat) { model.setConfig(chat, $0, to: $1) }),
-                dictation: chat.name,
-                voice: model.voiceOffered
+                accessory: AnyView(ModelButton(model: model, pane: pane, chat: chat)),
+                dictation: showsDictation ? chat.name : nil,
+                voice: model.voiceOffered && showsVoice
                     ? { model.openVoice(chat, pane: pane, harness: harness, orchestrator: orchestrator) }
                     : nil
             )

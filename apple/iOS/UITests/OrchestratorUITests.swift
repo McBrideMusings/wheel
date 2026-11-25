@@ -59,18 +59,20 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertGreaterThan(menu.minY, chat.textViews.firstMatch.frame.maxY - 1, "the model sits under the text field")
         sync("chrome")
 
-        // The composer's keyboard button (wheel-eg4e.19.25): it shows while the keyboard is up and hides it.
-        XCTAssertFalse(app.buttons["hide keyboard"].exists, "no keyboard button while the keyboard is down")
-        // The .19.31 placeholders (wheel-eg4e.19.41): a mic, and voice mode in Send's place while the field is empty.
+        // The composer's keyboard button (wheel-eg4e.19.25, wheel-smzj): always in the row, enabled only while the
+        // keyboard is up, and it hides it.
+        XCTAssertTrue(app.buttons["hide keyboard"].exists, "the keyboard button stays in the row")
+        XCTAssertFalse(app.buttons["hide keyboard"].isEnabled, "the keyboard button is disabled while the keyboard is down")
+        // A mic and voice mode each have their own button; the round button is Send, disabled while the field is empty.
         XCTAssertTrue(chat.buttons["dictate"].exists, "the composer has the dictation button")
-        XCTAssertTrue(chat.buttons["voice mode"].exists, "an empty field shows voice mode")
-        XCTAssertFalse(chat.buttons["Send"].exists, "an empty field shows no Send")
+        XCTAssertTrue(chat.buttons["voice mode"].exists, "the composer has the voice mode button")
+        XCTAssertFalse(chat.buttons["Send"].isEnabled, "an empty field's Send is disabled")
         measure("keyboard-down")
         let chatDown = chat.frame.height
         chat.textViews.firstMatch.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
         let hide = app.buttons["hide keyboard"]
-        XCTAssertTrue(hide.waitForExistence(timeout: 5), "the composer shows the keyboard button")
+        XCTAssertTrue(waitFor { hide.isEnabled }, "the keyboard button is enabled while the keyboard is up")
         // The composer sits on the keyboard: no page handle between them. XCUITest's keyboard frame starts under the
         // suggestion bar, so the script compares the chat's bottom with the top the app's keyboard notification gave.
         Thread.sleep(forTimeInterval: 1)
@@ -81,7 +83,7 @@ final class OrchestratorUITests: XCTestCase {
         shot("keyboard")
         hide.tap()
         XCTAssertTrue(waitFor { !self.app.keyboards.firstMatch.exists }, "the button hid the keyboard")
-        XCTAssertFalse(app.buttons["hide keyboard"].exists, "the button goes with the keyboard")
+        XCTAssertFalse(app.buttons["hide keyboard"].isEnabled, "the button is disabled once the keyboard is down")
 
         // The composer's + menu (wheel-eg4e.19.35): Model picks another model, and the check follows what the agent
         // took; Clear chat asks first (wheel-eg4e.19.38), cancelling keeps the transcript, and confirming empties it.
@@ -100,7 +102,7 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "the + menu holds no Model; only the composer's")
         XCTAssertTrue(app.buttons["Clear chat"].isHittable, "Clear chat is on top, not behind the keyboard")
         XCTAssertLessThanOrEqual(app.buttons["Clear chat"].frame.maxY, keyboardTop, "the menu ends above the keyboard")
-        XCTAssertFalse(app.buttons["hide keyboard"].exists, "the composer let go of the keyboard")
+        XCTAssertFalse(app.buttons["hide keyboard"].isEnabled, "the composer let go of the keyboard")
         XCTAssertTrue(app.buttons["Clear chat"].exists, "the + menu has Clear chat")
         shot("plus-menu")
         let outsideMenu = app.otherElements["PopoverDismissRegion"]
@@ -108,6 +110,12 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(waitFor { !self.app.buttons["Clear chat"].exists }, "the + menu closed")
         let modelMenu = app.buttons["model menu"]
         modelMenu.tap()
+        // The model button opens the settings sheet (wheel-iw52); its Model picker lists the models.
+        let picker = app.buttons["model picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "the sheet has the Model picker")
+        XCTAssertTrue(app.staticTexts["Pane info"].exists, "the sheet shows the pane info under the settings")
+        shot("model-sheet")
+        picker.tap()
         // The fake agent's models, by the names its `initialize` gives them.
         let choices = app.buttons.matching(NSPredicate(format: "label IN %@", ["Default", "Sonnet", "Haiku"]))
         XCTAssertTrue(choices.firstMatch.waitForExistence(timeout: 5), "Model lists the agent's models")
@@ -119,6 +127,8 @@ final class OrchestratorUITests: XCTestCase {
         picked.tap()
         try? value.write(toFile: "\(env["WHEEL_SYNC_DIR"] ?? "")/picked-model", atomically: true, encoding: .utf8)
         Thread.sleep(forTimeInterval: 1)
+        app.buttons["settings done"].tap()
+        XCTAssertTrue(waitFor { !self.app.buttons["model picker"].exists }, "Done closes the sheet")
         XCTAssertFalse(app.keyboards.firstMatch.exists, "a Model pick leaves the keyboard down")
         chat.buttons["Attach"].tap()
         XCTAssertTrue(app.buttons["Clear chat"].waitForExistence(timeout: 5), "the + menu opens again")
@@ -290,7 +300,7 @@ final class OrchestratorUITests: XCTestCase {
     /// Close the keyboard with the composer's button and wait until it is gone.
     private func dismissKeyboard() {
         for _ in 0 ..< 3 where app.keyboards.firstMatch.exists {
-            if app.buttons["hide keyboard"].exists { app.buttons["hide keyboard"].tap() } else { chat.collectionViews.firstMatch.swipeDown() }
+            if app.buttons["hide keyboard"].isEnabled { app.buttons["hide keyboard"].tap() } else { chat.collectionViews.firstMatch.swipeDown() }
             _ = waitFor { !self.app.keyboards.firstMatch.exists }
         }
     }

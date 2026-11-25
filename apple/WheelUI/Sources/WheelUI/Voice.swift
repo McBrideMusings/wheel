@@ -139,6 +139,7 @@ public final class Voice {
         muted = on
         audio?.muted = on
         if on, phase == .hearing { phase = .listening }
+        if on, overheard { overheard = false; turn = []; audio?.duck(false) }
         level = 0
     }
 
@@ -165,19 +166,24 @@ public final class Voice {
         UILog.info("voice: speaking \(text.count) character(s)")
         audio.speak(text) { [weak self] in
             guard let self, self.phase == .speaking else { return }
-            self.phase = .listening
-            self.level = 0
+            self.stoppedSpeaking()
         }
     }
 
-    /// Tap on the orb, or speech while it speaks: silence at once, and listen. The unspoken rest is
-    /// dropped from audio only; the chat keeps the whole reply.
+    /// Tap on the orb, or words spoken over the reply: silence at once, and listen. The unspoken rest
+    /// is dropped from audio only; the chat keeps the whole reply.
     public func interrupt() {
         guard phase == .speaking else { return }
         audio?.silence()
-        phase = .listening
-        level = 0
+        stoppedSpeaking()
         UILog.info("voice: interrupted")
+    }
+
+    /// The reply's audio ended: listen, or keep hearing the sound that began over it as a turn.
+    private func stoppedSpeaking() {
+        phase = overheard ? .hearing : .listening
+        overheard = false
+        level = 0
     }
 
     private func begin(_ owner: String) async {
@@ -206,6 +212,9 @@ public final class Voice {
     @ObservationIgnored private var turn: [Float] = []
     @ObservationIgnored private var stream: VadStreamState = .initial()
     @ObservationIgnored private var judging = false
+    /// A sound began while the reply was spoken: the reply plays quieter until the sound ends and
+    /// its words show whether it was meant to stop the reply.
+    @ObservationIgnored private var overheard = false
     @ObservationIgnored private var pending: [[Float]] = []
 
     /// One `VadManager.chunkSize` chunk of 16 kHz audio from the microphone.
@@ -232,40 +241,64 @@ public final class Voice {
 
     private func judge(_ chunk: [Float], _ event: VadStreamEvent?, asr: AsrManager) async {
         if event?.isStart == true {
-            if phase == .speaking { interrupt() }
-            if phase == .listening || phase == .thinking {
+            // The chunk before the start holds the first syllable.
+            if phase == .speaking, !overheard {
+                overheard = true
+                turn = []
+                audio?.duck(true)
+                UILog.info("voice: a sound while speaking; quieter until it ends")
+            } else if phase == .listening || phase == .thinking {
                 phase = .hearing
-                // The chunk before the start holds the first syllable.
                 turn = []
             }
         }
-        guard phase == .hearing else { return }
+        guard phase == .hearing || overheard else { return }
         turn += chunk
         guard event?.isEnd == true, let owner else { return }
         let samples = turn
         turn = []
-        phase = .transcribing
+        // The reply may end while this transcribes; what the sound began over decides, not what plays now.
+        let overSpeech = overheard
+        overheard = false
+        if !overSpeech { phase = .transcribing }
+        let seconds = String(format: "%.1f", Double(samples.count) / 16_000)
+        var text = ""
         do {
             let padded = samples.count < 16_000 ? samples + [Float](repeating: 0, count: 16_000 - samples.count) : samples
             var state = TdtDecoderState.make(decoderLayers: await asr.decoderLayerCount)
-            let text = try await asr.transcribe(padded, decoderState: &state).text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard self.owner == owner, phase == .transcribing else { return }
-            UILog.info("voice: heard \(text.count) character(s) from \(String(format: "%.1f", Double(samples.count) / 16_000)) s")
-            if text.isEmpty {
-                phase = .listening
-            } else {
-                saidCount += 1
-                said = Said(owner: owner, text: text, id: saidCount)
-                phase = .thinking
-            }
+            text = try await asr.transcribe(padded, decoderState: &state).text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             UILog.info("voice: could not transcribe: \(error.localizedDescription)")
-            phase = .listening
+        }
+        guard self.owner == owner, phase != .off else { return }
+        if overSpeech {
+            if SpokenFiller.isFiller(text, whileSpeaking: true) {
+                audio?.duck(false)
+                UILog.info("voice: kept speaking over \(text.count) character(s) of filler from \(seconds) s")
+            } else {
+                if phase == .speaking { audio?.silence() }
+                UILog.info("voice: interrupted by \(text.count) character(s) from \(seconds) s")
+                heardTurn(text, owner: owner)
+            }
+        } else if phase == .transcribing {
+            if SpokenFiller.isFiller(text, whileSpeaking: false) {
+                UILog.info("voice: dropped \(text.count) character(s) of filler from \(seconds) s")
+                phase = .listening
+            } else {
+                UILog.info("voice: heard \(text.count) character(s) from \(seconds) s")
+                heardTurn(text, owner: owner)
+            }
         }
         if let reply = waiting {
             waiting = nil
             speak(reply)
         }
+    }
+
+    private func heardTurn(_ text: String, owner: String) {
+        saidCount += 1
+        said = Said(owner: owner, text: text, id: saidCount)
+        phase = .thinking
     }
 
     /// At most fifteen level changes a second, so the orb moves without flooding every window.
@@ -278,6 +311,7 @@ public final class Voice {
 
     private func stopAudio() {
         waiting = nil
+        overheard = false
         audio?.stop()
         audio = nil
         turn = []
@@ -321,7 +355,8 @@ private final class VoiceAudio: @unchecked Sendable {
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: speechFormat)
         if silent { player.volume = 0 }
-        player.installTap(onBus: 0, bufferSize: 2048, format: speechFormat) { [weak self] buffer, _ in
+        // Every callback AVFAudio runs on its own queue is @Sendable, so it is not main-actor code that traps there.
+        player.installTap(onBus: 0, bufferSize: 2048, format: speechFormat) { @Sendable [weak self] buffer, _ in
             let rms = Self.rms(buffer)
             Task { @MainActor in self?.onOutputLevel?(rms) }
         }
@@ -344,7 +379,7 @@ private final class VoiceAudio: @unchecked Sendable {
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0 else { throw DictationError("No microphone is available.") }
         let converter = AudioConverter(sampleRate: 16_000)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { @Sendable [weak self] buffer, _ in
             guard let self, !self.muted, let converted = try? converter.resampleBuffer(buffer) else { return }
             self.collect(converted)
         }
@@ -395,8 +430,10 @@ private final class VoiceAudio: @unchecked Sendable {
         silence()
         let mine = generation
         let playback = Playback(done: done)
-        synthesizer.write(AVSpeechUtterance(string: text)) { [weak self] buffer in
-            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+        synthesizer.write(AVSpeechUtterance(string: text)) { @Sendable [weak self] buffer in
+            // The synthesizer hands each buffer over once and never touches it again, so the main actor owns it from here.
+            guard let given = buffer as? AVAudioPCMBuffer else { return }
+            nonisolated(unsafe) let pcm = given
             Task { @MainActor in
                 guard let self, mine == self.generation else { return }
                 if pcm.frameLength == 0 {
@@ -406,7 +443,7 @@ private final class VoiceAudio: @unchecked Sendable {
                 }
                 guard let converted = self.convert(pcm) else { return }
                 playback.queued += 1
-                self.player.scheduleBuffer(converted) {
+                self.player.scheduleBuffer(converted) { @Sendable in
                     Task { @MainActor in
                         guard mine == self.generation else { return }
                         playback.queued -= 1
@@ -423,6 +460,13 @@ private final class VoiceAudio: @unchecked Sendable {
         generation += 1
         synthesizer.stopSpeaking(at: .immediate)
         player.stop()
+        duck(false)
+    }
+
+    /// Play the speech at a fifth of its volume while a sound that may be the person is judged.
+    @MainActor
+    func duck(_ on: Bool) {
+        player.volume = silent ? 0 : (on ? 0.2 : 1)
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {

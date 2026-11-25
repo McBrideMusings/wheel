@@ -133,7 +133,7 @@ private struct AgentGlyph: View {
 }
 
 /// A ring filled to `fraction`, orange when `hot`.
-private struct ContextRing: View {
+struct ContextRing: View {
     let fraction: Double
     let hot: Bool
 
