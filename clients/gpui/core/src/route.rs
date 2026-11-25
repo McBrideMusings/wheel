@@ -9,12 +9,15 @@
 use crate::daemon::Event;
 use futures::channel::mpsc as fmpsc;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use wheel_proto::ServerMsg;
 
 /// A request id's low bits: what the subscriber chose. The high bits name the subscriber.
 const SHIFT: u32 = 40;
 const MASK: u64 = (1 << SHIFT) - 1;
+/// The top bit of a subscriber's `req` bits, which the router sets on an `agent_attach` the
+/// subscriber sent with none, so wheeld's replay names the attach it answers.
+const ROUTED: u64 = 1 << (SHIFT - 1);
 
 /// The subscriber a rewritten `req` belongs to, and the `req` it sent.
 pub fn split(req: u64) -> (u32, u64) {
@@ -41,9 +44,13 @@ pub enum Outgoing {
 struct Held {
     /// Subscribers attached to each agent's stream.
     agents: HashMap<String, BTreeSet<u32>>,
-    /// Subscribers that attached with no `req` while another already held the agent: wheeld
-    /// replays the agent once more, and that replay is theirs alone.
-    replays: HashMap<String, VecDeque<u32>>,
+    /// Subscribers whose attach wheeld has not replayed yet, each with its attach's place in the
+    /// order sent. wheeld keeps one stream per agent per socket and restarts it on every attach,
+    /// so a later attach's replay may be the only one an earlier attacher gets: each replay also
+    /// goes to every subscriber owed one from an attach sent before it.
+    owed: HashMap<String, BTreeMap<u32, u64>>,
+    /// The last attach's place in that order, which also makes each reserved `req` unique.
+    attach_seq: u64,
     /// Each feed's holders and the `req` each subscribed with, by wheeld's own key.
     feeds: HashMap<(String, String, String), BTreeMap<u32, Option<u64>>>,
     /// Who asked to watch which space's processes, oldest first; the last one is watched.
@@ -86,8 +93,8 @@ impl Router {
             }
         }
         held.agents.retain(|_, h| !h.is_empty());
-        for q in held.replays.values_mut() {
-            q.retain(|s| *s != n);
+        for owed in held.owed.values_mut() {
+            owed.remove(&n);
         }
         for ((pane, feed, params), holders) in &mut held.feeds {
             if holders.remove(&n).is_some() && holders.is_empty() {
@@ -147,16 +154,19 @@ impl Router {
         let held = &mut self.held;
         match op.as_str() {
             "agent_attach" => {
-                let holders = held.agents.entry(s(&frame, "agent")).or_default();
-                // wheeld keeps one stream per agent per socket and would restart it, replaying to
-                // every holder; this subscriber already hears it.
+                let agent = s(&frame, "agent");
+                let holders = held.agents.entry(agent.clone()).or_default();
+                // wheeld would restart the stream and replay it; this subscriber already hears it.
                 if req.is_none() && holders.contains(&n) {
                     return Outgoing::Hold;
                 }
-                if req.is_none() && !holders.is_empty() {
-                    held.replays.entry(s(&frame, "agent")).or_default().push_back(n);
-                }
                 holders.insert(n);
+                held.attach_seq += 1;
+                held.owed.entry(agent).or_default().insert(n, held.attach_seq);
+                if req.is_none() && n > 0 {
+                    frame.insert("req".into(), json!(join(n, ROUTED | (held.attach_seq & (ROUTED - 1)))));
+                    return Outgoing::Send(Value::Object(frame).to_string());
+                }
             }
             "agent_detach" => {
                 let agent = s(&frame, "agent");
@@ -258,12 +268,43 @@ impl Router {
                 let holders = self.held.agents.get(agent).map(|h| h.iter().copied().collect()).unwrap_or_default();
                 return to(holders, message);
             }
-            ServerMsg::AgentAttached { req: None, agent, .. } => {
-                if let Some(n) = self.held.replays.get_mut(agent).and_then(VecDeque::pop_front) {
-                    return vec![(n, message)];
+            ServerMsg::AgentAttached { req, agent, .. } => {
+                // A replay with no `req` (a conversation switch, a lagged stream) is every holder's.
+                let owed = self.held.owed.entry(agent.clone()).or_default();
+                let mut out: BTreeMap<u32, Option<u64>> = match req {
+                    None => self.held.agents.get(agent).into_iter().flatten().map(|n| (*n, None)).collect(),
+                    Some(req) => match split(*req) {
+                        (n, r) if n > 0 => BTreeMap::from([(n, (r & ROUTED == 0).then_some(r))]),
+                        (_, r) => self.held.agents.get(agent).into_iter().flatten().map(|n| (*n, Some(r))).collect(),
+                    },
+                };
+                // wheeld restarted the stream for this attach, so an earlier attach still waiting
+                // for its replay gets this one instead. A replay with no `req` comes from the
+                // stream that runs now, which every attach still owed follows.
+                let through = match req {
+                    Some(_) => out.keys().filter_map(|n| owed.get(n)).max().copied().unwrap_or(0),
+                    None => u64::MAX,
+                };
+                owed.retain(|n, at| {
+                    if *at > through {
+                        return true;
+                    }
+                    out.entry(*n).or_insert(None);
+                    false
+                });
+                if owed.is_empty() {
+                    self.held.owed.remove(agent);
                 }
-                let holders = self.held.agents.get(agent).map(|h| h.iter().copied().collect()).unwrap_or_default();
-                return to(holders, message);
+                return out
+                    .into_iter()
+                    .map(|(n, r)| {
+                        let mut m = message.clone();
+                        if let ServerMsg::AgentAttached { req, .. } = &mut m {
+                            *req = r;
+                        }
+                        (n, m)
+                    })
+                    .collect();
             }
             ServerMsg::FeedUpdate { pane, feed, params, .. } => {
                 let key = (pane.clone(), feed.clone(), params.to_string());
@@ -353,18 +394,69 @@ mod tests {
         assert_eq!(r.incoming(m, &raw), vec![(1, ServerMsg::Ok { req: 1 }), (2, ServerMsg::Ok { req: 1 })]);
     }
 
+    fn attached(r: &mut Router, req: Option<u64>) -> Vec<(u32, Option<u64>)> {
+        let mut v = json!({"ev":"agent_attached","agent":"a","now":0,"state":{"phase":"ready"},"events":[]});
+        if let Some(req) = req {
+            v["req"] = json!(req);
+        }
+        let (m, raw) = msg(v);
+        r.incoming(m, &raw).into_iter().map(|(n, m)| (n, match m { ServerMsg::AgentAttached { req, .. } => req, _ => panic!("not agent_attached") })).collect()
+    }
+
     #[test]
-    fn an_agent_detaches_only_when_its_last_window_lets_go_and_a_second_attach_replays_to_it_alone() {
+    fn an_agent_detaches_only_when_its_last_window_lets_go_and_each_replay_reaches_the_window_that_attached() {
         let (mut r, _rx) = router(2);
-        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
-        sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
-        let (m, raw) = msg(json!({"ev":"agent_attached","agent":"a","now":0,"state":{"phase":"ready"},"events":[]}));
-        let to: Vec<u32> = r.incoming(m, &raw).into_iter().map(|(n, _)| n).collect();
-        assert_eq!(to, [2], "the replay is the second window's");
+        let first = sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        assert_eq!(attached(&mut r, Some(first)), [(1, None)], "the window sent no req and gets none back");
+        let second = sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        assert_eq!(attached(&mut r, Some(second)), [(2, None)], "the first window already has its replay");
+        // A replay wheeld sends on its own (a conversation switch) is every holder's.
+        assert_eq!(attached(&mut r, None), [(1, None), (2, None)]);
         let (m, raw) = msg(json!({"ev":"agent","agent":"a","event":{"kind":"text","text":"x"}}));
         assert_eq!(r.incoming(m, &raw).len(), 2);
         assert_eq!(r.outgoing(1, r#"{"op":"agent_detach","agent":"a"}"#), Outgoing::Hold);
         assert_eq!(r.leave(2), vec![json!({"op":"agent_detach","agent":"a"}).to_string()]);
+    }
+
+    #[test]
+    fn a_second_attach_before_the_first_replay_arrives_takes_nothing_from_the_first_window() {
+        let (mut r, _rx) = router(2);
+        let first = sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        let second = sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        assert_ne!(first, second);
+        // The first stream's replay made it out before wheeld restarted the stream: it is the
+        // first window's, and the second window still waits for its own.
+        assert_eq!(attached(&mut r, Some(first)), [(1, None)]);
+        assert_eq!(attached(&mut r, Some(second)), [(2, None)]);
+    }
+
+    #[test]
+    fn a_replay_wheeld_cut_off_by_a_later_attach_reaches_its_window_through_the_later_one() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+        let second = sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        // wheeld aborted the first stream before it replayed: the second replay is both windows'.
+        assert_eq!(attached(&mut r, Some(second)), [(1, None), (2, None)]);
+        assert!(r.held.owed.is_empty());
+    }
+
+    #[test]
+    fn a_replay_with_no_req_while_an_attach_waits_reaches_everyone_and_the_attach_still_gets_its_own() {
+        let (mut r, _rx) = router(2);
+        let first = sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        assert_eq!(attached(&mut r, Some(first)), [(1, None)]);
+        let second = sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        assert_eq!(attached(&mut r, None), [(1, None), (2, None)]);
+        assert_eq!(attached(&mut r, Some(second)), [(2, None)]);
+    }
+
+    #[test]
+    fn a_window_that_leaves_while_owed_a_replay_gets_none() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+        let second = sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#))["req"].as_u64().unwrap();
+        r.leave(1);
+        assert_eq!(attached(&mut r, Some(second)), [(2, None)]);
     }
 
     #[test]
@@ -374,11 +466,17 @@ mod tests {
         sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
         assert_eq!(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
         assert_eq!(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
-        // Only the second window's first attach is owed a replay of its own.
-        assert_eq!(r.held.replays["a"], [2]);
+        assert_eq!(r.held.owed["a"].keys().copied().collect::<Vec<_>>(), [1, 2]);
         // Once it lets go, attaching again is a first attach.
         assert_eq!(r.outgoing(1, r#"{"op":"agent_detach","agent":"a"}"#), Outgoing::Hold);
         sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+    }
+
+    #[test]
+    fn an_attach_with_its_own_req_gets_it_back() {
+        let (mut r, _rx) = router(1);
+        assert_eq!(sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a","req":5}"#))["req"], json!(join(1, 5)));
+        assert_eq!(attached(&mut r, Some(join(1, 5))), [(1, Some(5))]);
     }
 
     #[test]
