@@ -1,7 +1,9 @@
 //! AppKit from Rust through objc2 (ADR-0056): what the app holds outside every GPUI window. Each
 //! piece is a typed Rust call on the main thread, never an op of the Swift bridge's JSON ABI.
+pub mod dialogs;
 pub mod status_item;
 
+pub use dialogs::{Alert, Answer, Dialogs, MenuItem};
 pub use status_item::{ItemEvent, MenuEntry, StatusItem};
 
 use objc2::{AnyThread as _, MainThreadMarker, rc::Retained};

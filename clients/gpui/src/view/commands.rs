@@ -175,7 +175,7 @@ impl Client {
         match id {
             "open-folder" => {
                 self.close_command_palette();
-                self.native.call(serde_json::json!({"op": "choose_folder"}));
+                self.choose_folder(cx);
             }
             "new-window" => self.new_window(cx),
             "new-space" => self.open_new_space_palette(),
@@ -702,6 +702,25 @@ impl Client {
             Item::Target { verb: Verb::ClosePane, id, .. } => self.ask_close_pane(&id),
             Item::Target { .. } | Item::NewSpaceMode | Item::Verb(_) | Item::Missing { .. } => {}
         }
+    }
+    /// Open Folder: the system folder picker, and a space for the folder chosen, as the Swift app
+    /// makes one. A hidden app shows no picker.
+    fn choose_folder(&mut self, cx: &mut App) {
+        if self.hidden {
+            self.note_action("open-folder: no folder picker in a hidden app".into());
+            return;
+        }
+        let chosen = crate::appkit::dialogs::choose_folder();
+        let id = self.window_id.clone();
+        cx.spawn(async move |cx| {
+            let Ok(path) = chosen.await else { return };
+            let Some(window) = cx.update(|_| crate::window_handle(&id)) else { return };
+            let _ = window.update(cx, |client, _, cx| {
+                client.create_space(&path);
+                cx.notify();
+            });
+        })
+        .detach();
     }
     /// Make a space for `dir` in the session shown, and show it.
     pub fn create_space(&mut self, dir: &str) {

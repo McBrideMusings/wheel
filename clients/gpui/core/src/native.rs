@@ -256,8 +256,6 @@ pub enum BrowserEvent {
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
     /// A plugin pane drew its view or failed: `error` is the one-line message in the pane's header, or None.
     Plugin { pane: String, error: Option<String> },
-    /// The person picked a folder in Open Folder's system picker (`choose_folder`).
-    FolderChosen { path: String },
     /// The reply the app's synthesizer reads now (`read_aloud`), or None once it stops; sent to
     /// every window on every change.
     ReadAloud { playing: Option<String> },

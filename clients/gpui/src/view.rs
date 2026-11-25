@@ -1476,8 +1476,6 @@ impl Client {
                 self.send(&ClientMsg::PaneBrowserOpen { req: Some(req), pane, text, on: None });
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
-            // Open Folder's picker answered: a space for that folder, as the Swift app makes one.
-            Frame::Event(BrowserEvent::FolderChosen { path }) => self.create_space(&path),
             Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
             Frame::Event(BrowserEvent::ReduceMotion { on }) => {
                 if self.reduce_motion != on {

@@ -8512,7 +8512,7 @@ async fn space_rows_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, output
         let holds = |w: &&wheel_gpui::windows::Record| w.session.as_deref() == Some(session.as_str());
         r.focused().filter(holds).or_else(|| r.windows.iter().find(holds)).map(|w| w.id.clone())
     }).ok_or_else(|| anyhow::anyhow!("no window shows session {session}"))?;
-    cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_context_menu", "item": "rename"}))));
+    cx.update(|cx| menu.update(cx, |m, _| m.choose_context_menu("rename")));
     let holder_handle = cx.update(|_| wheel_gpui::window_handle(&holder)).ok_or_else(|| anyhow::anyhow!("no handle for window {holder}"))?;
     let mut renaming = None;
     for _ in 0..50 {
@@ -8546,14 +8546,14 @@ async fn space_rows_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, output
     let mut asked = Value::Null;
     for _ in 0..50 {
         tick(cx, 100).await;
-        asked = cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "state"}))))["alert"].clone();
+        asked = cx.update(|cx| menu.update(cx, |m, _| m.dialogs_state()))["alert"].clone();
         if asked["id"] == format!("close-session:{session}").as_str() {
             break;
         }
     }
     ensure!(asked["id"] == format!("close-session:{session}").as_str() && asked["informative"].as_str().is_some_and(|i| i.ends_with("Every window showing it closes.")),
         "the card's Close asked {asked}");
-    cx.update(|cx| menu.update(cx, |m, _| m.bridge_call(json!({"op": "answer_alert", "button": 1}))));
+    cx.update(|cx| menu.update(cx, |m, _| m.answer_alert(1)));
     let answered_line = format!("alert close-session:{session} answered with button 1");
     let cancelled = popover_settle(popover, &menu, cx, |s| s["log"].as_array().is_some_and(|l| l.iter().any(|x| x == answered_line.as_str()))).await;
     let kept = cancelled["cards"].as_array().unwrap().iter().any(|c| c["session"] == session.as_str());
@@ -8646,7 +8646,7 @@ fn popover_picture(popover: gpui::AnyWindowHandle, path: &std::path::Path, cx: &
 /// in an alert that is cancelled, and Restart Server from the menu running both commands.
 async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<wheel_gpui::view::MenuBar>, window: ClientWindow, output: &std::path::Path, closed_height: f64, cx: &mut AsyncApp) -> Result<Value> {
     let server_log = || wheel_gpui::view::server::with(|s| s.log.clone()).unwrap_or_default();
-    let bridge_state = |cx: &mut AsyncApp| menu.update(cx, |m, _| m.bridge_call(json!({"op": "state"})));
+    let dialogs_state = |cx: &mut AsyncApp| menu.update(cx, |m, _| m.dialogs_state());
     let (stop_file, start_file) = (output.join("server.stop"), output.join("server.start"));
     let closed = menu.update(cx, |m, cx| m.state_json(cx));
     let word = closed["server"]["word"].as_str().unwrap_or_default().to_owned();
@@ -8732,7 +8732,7 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let mut alert = Value::Null;
     for _ in 0..50 {
         tick(cx, 100).await;
-        alert = bridge_state(cx)["alert"].clone();
+        alert = dialogs_state(cx)["alert"].clone();
         if alert.is_object() {
             break;
         }
@@ -8740,7 +8740,7 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let spaces = menu.update(cx, |m, cx| m.state_json(cx))["spaces"].as_u64().unwrap_or(0);
     ensure!(alert["message"] == "Stop Wheel Server?" && alert["informative"] == format!("Terminals and running agents in {spaces} spaces stop.") && alert["buttons"] == json!(["Stop Server", "Cancel"]),
         "Stop Server… from the menu asked {alert}");
-    menu.update(cx, |m, _| m.bridge_call(json!({"op": "answer_alert", "button": 1})));
+    menu.update(cx, |m, _| m.answer_alert(1));
     let after_alert = popover_settle(popover, menu, cx, |s| s["log"].as_array().is_some_and(|l| l.iter().any(|l| l == "alert stop answered with button 1"))).await;
     ensure!(after_alert["server"]["stopped_by_menu"] == false && after_alert["server"]["busy"].is_null(), "cancelling the alert stopped the server: {}", after_alert["server"]);
     // Restart Server from the menu runs the stop and start commands.

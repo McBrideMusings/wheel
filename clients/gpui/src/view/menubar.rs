@@ -79,9 +79,10 @@ pub struct MenuBar {
     log: Vec<String>,
     /// The ranks the rows' agent dots show (the machine-wide `status.dots` setting).
     status_dots: HashSet<&'static str>,
-    /// The space whose row's menu is open, and the menu as the bridge built it.
+    /// The space whose row's menu is open, the context menus and alerts, and the menu as last built.
     space_menu: Option<String>,
-    context_menu: Value,
+    dialogs: crate::appkit::Dialogs,
+    context_menu: Vec<Value>,
     next_req: u64,
     /// The `session_close` the popover's alert sent and wheeld has not answered: its id and session.
     closing: Option<(u64, String)>,
@@ -92,10 +93,12 @@ pub struct MenuBar {
 /// Make the menu bar item: its own connection over `endpoint`, the status item, and the tasks
 /// that feed it wheeld's frames, its clicks and every change to the app's windows.
 pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool) -> Entity<MenuBar> {
-    let (frames, mut clicks) = futures::channel::mpsc::unbounded::<String>();
+    let (frames, _) = futures::channel::mpsc::unbounded::<String>();
     let native = Native::app(bridge, hidden, frames);
     let (presses, mut pressed) = futures::channel::mpsc::unbounded();
     let status = crate::appkit::StatusItem::new(hidden, presses);
+    let (answers, mut answered) = futures::channel::mpsc::unbounded();
+    let dialogs = crate::appkit::Dialogs::new(hidden, answers);
     server::ensure(cx, endpoint.service.clone(), hidden);
     super::pairing_copy::ensure(cx);
     let crate::daemon::Connection { send, mut incoming } = crate::daemon::Connection::open(endpoint.clone());
@@ -104,7 +107,7 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
         native, status, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
         running_source: None, lacks: 0, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
         sessions: vec![], spaces: vec![], perms: vec![], told: None, popover: None, symbols: RefCell::default(), log: vec![],
-        status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None, copying: None,
+        status_dots: crate::status::all_ranks(), space_menu: None, dialogs, context_menu: vec![], next_req: 100, closing: None, copying: None,
     });
     MENU_BAR.with(|m| *m.borrow_mut() = Some(menu.clone()));
     menu.update(cx, |m, cx| m.refresh(cx));
@@ -128,18 +131,10 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     .detach();
     let held = menu.clone();
     cx.spawn(async move |cx| {
-        while let Some(frame) = clicks.next().await {
-            let Ok(frame) = serde_json::from_str::<Value>(&frame) else { continue };
-            match frame["event"].as_str() {
-                Some("context_menu") => {
-                    let item = frame["item"].as_str().unwrap_or_default().to_owned();
-                    held.update(cx, |m, cx| m.space_menu_chosen(&item, cx));
-                }
-                Some("alert") => {
-                    let (id, button) = (frame["id"].as_str().unwrap_or_default().to_owned(), frame["button"].as_i64().unwrap_or(-1));
-                    held.update(cx, |m, cx| m.alert_answered(&id, button, cx));
-                }
-                _ => {}
+        while let Some(answer) = answered.next().await {
+            match answer {
+                crate::appkit::Answer::Menu(item) => held.update(cx, |m, cx| m.space_menu_chosen(&item, cx)),
+                crate::appkit::Answer::Alert { id, button } => held.update(cx, |m, cx| m.alert_answered(&id, button, cx)),
             }
         }
     })
@@ -256,7 +251,7 @@ impl MenuBar {
             ServerMsg::Error { req: Some(req), message, .. } if self.closing.as_ref().is_some_and(|(r, _)| r == req) => {
                 let (_, session) = self.closing.take().unwrap_or_default();
                 self.log(format!("session {session} not closed: {message}"));
-                self.native.call(json!({"op": "alert", "id": "close-session-refused", "message": "The session was not closed", "informative": message, "buttons": ["OK"], "activate": !self.hidden}));
+                self.ask(crate::appkit::Alert { id: "close-session-refused".into(), message: "The session was not closed".into(), informative: message.clone(), buttons: vec!["OK".into()] });
                 false
             }
             // Machine-wide, whichever space the list was resolved for, as a window reads it: the
@@ -383,7 +378,7 @@ impl MenuBar {
         match item {
             "stop" if self.running() => {
                 let (message, informative) = crate::server::stop_question(spaces);
-                self.native.call(json!({"op": "alert", "id": "stop", "message": message, "informative": informative, "buttons": ["Stop Server", "Cancel"], "activate": !self.hidden}));
+                self.ask(crate::appkit::Alert { id: "stop".into(), message: message.into(), informative, buttons: vec!["Stop Server".into(), "Cancel".into()] });
             }
             "stop" => server::stop(spaces),
             "start" => server::start(),
@@ -392,6 +387,11 @@ impl MenuBar {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Ask `alert`, bringing the app front unless it is hidden; the answer reaches `alert_answered`.
+    fn ask(&mut self, alert: crate::appkit::Alert) {
+        self.dialogs.alert(alert, !self.hidden);
     }
 
     /// The stop question was answered: its first button stops the server.
@@ -520,19 +520,18 @@ impl MenuBar {
         items
     }
 
-    /// A right-click on a row: the bridge opens the space's menu at the pointer; a pick comes back
-    /// as a `context_menu` event.
+    /// A right-click on a row opens the space's menu at the pointer; a pick reaches `space_menu_chosen`.
     fn open_space_menu(&mut self, space: &str) {
         let items = self.space_menu_items(space);
         let mut listed = vec![];
         for (i, item) in items.iter().enumerate() {
             if i > 0 && items[i - 1].section != item.section {
-                listed.push(json!({"id": "-"}));
+                listed.push(crate::appkit::MenuItem { id: "-", title: "", enabled: false });
             }
-            listed.push(json!({"id": item.id, "title": item.title, "enabled": item.enabled}));
+            listed.push(crate::appkit::MenuItem { id: &item.id, title: &item.title, enabled: item.enabled });
         }
         self.space_menu = Some(space.to_owned());
-        self.context_menu = self.native.call(json!({"op": "context_menu", "items": listed}));
+        self.context_menu = self.dialogs.context_menu(&listed);
         self.log(format!("popover: space menu for {space}"));
     }
 
@@ -562,13 +561,22 @@ impl MenuBar {
         let Some(name) = self.sessions.iter().find(|s| s.id == session).map(|s| s.name.clone()) else { return };
         let informative = menubar::close_warning(&self.sessions, &self.spaces, session);
         self.log(format!("popover: close session {session} asked"));
-        self.native.call(json!({"op": "alert", "id": format!("close-session:{session}"), "message": format!("Close the “{name}” session?"),
-            "informative": informative, "buttons": ["Close Session", "Cancel"], "activate": !self.hidden}));
+        self.ask(crate::appkit::Alert { id: format!("close-session:{session}"), message: format!("Close the “{name}” session?"), informative, buttons: vec!["Close Session".into(), "Cancel".into()] });
     }
 
-    /// The bridge's app half, for the check's presses and picks.
-    pub fn bridge_call(&self, value: Value) -> Value {
-        self.native.call(value)
+    /// Pick `item` from the open context menu, as its action does (the check's stand-in).
+    pub fn choose_context_menu(&self, item: &str) {
+        self.dialogs.choose(item);
+    }
+
+    /// Answer the question a hidden app kept with `button` (the check's stand-in).
+    pub fn answer_alert(&mut self, button: i64) {
+        self.dialogs.answer(button);
+    }
+
+    /// The context menu as last built and the kept question, as the check reads them.
+    pub fn dialogs_state(&self) -> Value {
+        self.dialogs.state()
     }
 
     /// The app's icon as the bridge drew it, `size` points square, cached.
@@ -752,7 +760,7 @@ impl MenuBar {
                 "rows": c.rows.iter().map(|r| json!({"space": r.space, "name": r.name, "waiting": r.waiting, "shown": r.shown, "little": r.ownerless_little, "in_little": r.in_little, "dimmed": r.dimmed()})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "height": menubar::height(&cards),
             "popover": popover.unwrap_or(json!({"open": false})),
-            "space_menu": {"space": self.space_menu, "built": self.context_menu["context_menu"]},
+            "space_menu": {"space": self.space_menu, "built": self.context_menu},
             "status_dots": crate::status::RANKS.iter().filter(|r| self.status_dots.contains(*r)).collect::<Vec<_>>(),
             "pairing": pairing,
             "log": self.log,

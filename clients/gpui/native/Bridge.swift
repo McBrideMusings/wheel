@@ -1611,16 +1611,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             }
         case "keymap":
             routed = Set((value["chords"] as? [String]) ?? [])
-        case "choose_folder":
-            // The system folder picker, as the Swift app's Open Folder: the path chosen comes back as a frame.
-            let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.allowsMultipleSelection = false
-            panel.begin { [weak self] response in
-                guard response == .OK, let url = panel.url else { return }
-                self?.emit(["event": "folder_chosen", "path": url.path])
-            }
         case "read_aloud":
             // The play button on a reply: the Swift app's one synthesizer speaks it or stops it.
             watchReadAloud()
@@ -1961,79 +1951,16 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
 }
 
-/// What the app holds outside every window (window id -1): alerts, context menus and the images
-/// the menu bar's popover draws. The menu bar item itself is Rust's (clients/gpui/src/appkit).
+/// What the app holds outside every window (window id -1): the images the menu bar's popover
+/// draws. The menu bar item, its menus and alerts are Rust's (clients/gpui/src/appkit).
 @MainActor final class AppNative: NSObject {
     let emitter: Emit
     let hidden: Bool
-    /// The context menu as last built: each item's title and whether it is enabled, "-" a separator.
-    var contextItems: [[String: Any]] = []
-    /// A question a hidden check answers itself (`answer_alert`): a hidden app shows no alert.
-    var pendingAlert: [String: Any]?
 
     init(hidden: Bool, emit: @escaping Emit) {
         self.hidden = hidden
         self.emitter = emit
         super.init()
-    }
-
-    func emit(_ value: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
-        string.withCString { emitter(-1, $0) }
-    }
-
-    /// A context menu from `items` (`id`, `title`, `enabled`; id "-" a separator), opened at the
-    /// pointer after this call returns, as SwiftUI's `.contextMenu` opens one; a pick comes back as
-    /// a `context_menu` event. A hidden app builds it and opens nothing.
-    func contextMenu(_ value: [String: Any]) -> [String: Any] {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        for entry in value["items"] as? [[String: Any]] ?? [] {
-            let id = entry["id"] as? String ?? ""
-            if id == "-" {
-                menu.addItem(.separator())
-                continue
-            }
-            let item = NSMenuItem(title: entry["title"] as? String ?? id, action: #selector(choseContext(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = id
-            item.isEnabled = entry["enabled"] as? Bool ?? true
-            menu.addItem(item)
-        }
-        contextItems = menu.items.map { $0.isSeparatorItem ? ["title": "-", "enabled": false] : ["title": $0.title, "enabled": $0.isEnabled] }
-        if !hidden {
-            DispatchQueue.main.async { menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil) }
-        }
-        return ["context_menu": contextItems]
-    }
-
-    @objc func choseContext(_ sender: NSMenuItem) {
-        emit(["event": "context_menu", "item": sender.representedObject as? String ?? ""])
-    }
-
-    /// Ask `message` with `buttons` in an alert, after this call returns; the answer comes back as
-    /// an `alert` event with the button's index. A hidden app keeps the question for the check.
-    func alert(_ value: [String: Any]) -> [String: Any] {
-        if hidden {
-            pendingAlert = value.filter { $0.key != "op" && $0.key != "window" }
-            return ["alert": pendingAlert ?? [:]]
-        }
-        let id = value["id"] as? String ?? ""
-        let message = value["message"] as? String ?? ""
-        let informative = value["informative"] as? String ?? ""
-        let buttons = value["buttons"] as? [String] ?? ["OK"]
-        let activate = value["activate"] as? Bool ?? true
-        DispatchQueue.main.async { [weak self] in
-            let alert = NSAlert()
-            alert.messageText = message
-            alert.informativeText = informative
-            alert.alertStyle = .warning
-            for title in buttons { alert.addButton(withTitle: title) }
-            if activate { NSApp.activate() }
-            let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-            self?.emit(["event": "alert", "id": id, "button": index])
-        }
-        return ["alert": "shown"]
     }
 
     /// Size the window holding `view` to `width` by `height` points of content, keeping its top
@@ -2082,30 +2009,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": size, "height": size]
     }
 
-    func state() -> [String: Any] {
-        ["context_menu": contextItems, "alert": pendingAlert ?? NSNull()]
-    }
-
     func command(_ value: [String: Any]) -> [String: Any] {
         switch value["op"] as? String {
-        case "context_menu": return contextMenu(value)
-        // The check picks a context menu item as the menu's action does.
-        case "choose_context_menu":
-            emit(["event": "context_menu", "item": value["item"] as? String ?? ""])
-            return state()
-        case "alert": return alert(value)
-        // The check answers the question a hidden app kept.
-        case "answer_alert":
-            guard let asked = pendingAlert else { return state() }
-            pendingAlert = nil
-            emit(["event": "alert", "id": asked["id"] as? String ?? "", "button": value["button"] as? Int ?? -1])
-            return state()
         case "fit_window": return fitWindow(value)
         case "view_frame": return viewFrame(value)
         case "app_icon": return appIcon(value)
         case "clipboard_concealed": return writeConcealed(value) { FileHandle.standardError.write(Data(("wheel-gpui native: " + $0 + "\n").utf8)) }
         case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
-        default: return state()
+        default: return [:]
         }
     }
 }
