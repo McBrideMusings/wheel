@@ -151,6 +151,30 @@ struct ViewTreeTests {
         #expect(pane.tree.modals.map(\.id) == expected)
     }
 
+    /// What a pointer entering and leaving raises: the script's own table with `hovering` set, and the view the script draws back.
+    @Test func onHoverRaisesItsTableWithHovering() throws {
+        let pane = load("""
+        return {
+            init = function(p) return p or {} end,
+            update = function(state, msg) if msg.type == "hover" then state.over = msg.hovering end end,
+            view = function(state)
+                return ui.Column{ ui.Text("Box"), modifiers = {
+                    { opacity = if state.over then 1 else 0.2 },
+                    { animation = { curve = "easeOut", duration = 0.4, delay = if state.over then 0 else 3, value = state.over == true } },
+                    { onHover = { type = "hover" } },
+                } }
+            end,
+        }
+        """)
+        func opacity() -> Double? { pane.tree.node("root")?.props["modifiers"]?.arrayValue?[0].dictionaryValue?["opacity"]?.numberValue }
+        let box = try #require(pane.tree.node("root"))
+        #expect(opacity() == 0.2)
+        #expect(pane.tree.raise(box, "modifiers.2.onHover", ["hovering": .bool(true)]))
+        #expect(opacity() == 1)
+        #expect(pane.tree.raise(box, "modifiers.2.onHover", ["hovering": .bool(false)]))
+        #expect(opacity() == 0.2)
+    }
+
     @Test func raiseOnADroppedNodeReturnsFalse() throws {
         let pane = load("""
         return {

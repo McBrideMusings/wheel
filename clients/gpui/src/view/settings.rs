@@ -482,7 +482,7 @@ impl Client {
                 }
                 true
             }
-            ServerMsg::Remote { req, listen, addresses, port, fingerprint, problem } => {
+            ServerMsg::Remote { req, listen, addresses, port, fingerprint, problem, .. } => {
                 self.settings.devices.info = Some(model::Remote { listen: listen.clone(), addresses: addresses.clone(), port: *port, fingerprint: fingerprint.clone(), problem: problem.clone() });
                 if self.settings_reqs.pairing_remote == Some(*req) {
                     self.settings_reqs.pairing_remote = None;
@@ -637,6 +637,7 @@ impl Client {
             Tab::Artifacts => self.builtins_page(cx),
             Tab::Guidance => self.guidance_page(cx),
             Tab::Project => self.project_page(cx),
+            Tab::Speech => self.speech_page(cx),
             Tab::Devices => self.devices_page(cx),
         };
         let mut card = div().w(px(card_w)).h(px(card_h)).flex().flex_col().rounded_md().bg(rgb(PANEL)).border_1().border_color(rgb(0x3d5247)).text_color(rgb(TEXT)).text_sm().overflow_hidden()
@@ -1214,6 +1215,97 @@ impl Client {
             rows = rows.child(row);
         }
         col.child(boxed(rows))
+    }
+
+    /// Settings › Speech (wheel-7w13): the speech-to-text model dictation and voice mode use, and
+    /// every model with its size, source, folder and whether it is on this Mac, each with Download or
+    /// Redownload and Remove. It reads the app's speech entity, so it shows with wheeld out of reach.
+    fn speech_page(&self, cx: &mut Context<Self>) -> gpui::Div {
+        use crate::speech::Cmd;
+        use crate::speech_models::{self, SPEECH_TO_TEXT};
+        let root = speech_models::root();
+        let m = &self.speech.manage;
+        let (d, v) = (&self.speech.dictation, &self.speech.voice);
+        let busy = m.downloading.is_some() || crate::speech_settings::other_download(d, v);
+        let locked = crate::speech_settings::in_use(&m.chosen, &m.chosen, d, v);
+        let chips: Vec<String> = SPEECH_TO_TEXT.iter().map(|x| x.name.trim_start_matches("Parakeet TDT 0.6b ").to_owned()).collect();
+        let picker = segmented(&chips.iter().zip(SPEECH_TO_TEXT).map(|(t, x)| (t.as_str(), x == m.chosen)).collect::<Vec<_>>(), locked.is_some() || busy, cx, |_, index| {
+            crate::speech::send(Cmd::ModelChoose(SPEECH_TO_TEXT[index].folder));
+        });
+        let mut pick = div().flex().flex_col()
+            .child(div().flex().items_center().gap_2().px_3().py_2().child(div().flex_1().child(m.chosen.name)).child(picker))
+            .child(divider())
+            .child(div().px_3().py_2().text_xs().text_color(rgb(DIM)).child("v3 is multilingual. v2 hears English only and gets fewer developer terms right: 87% against v3’s 92% in Wheel’s benchmark (docs/voice-mode/stt-engines.md)."));
+        if let Some(why) = locked {
+            pick = pick.child(div().px_3().pb_2().text_xs().text_color(rgb(DIM)).child(format!("The model cannot change now: {why}")));
+        }
+        if let Some(offered) = m.offered {
+            let downloading = m.downloading.filter(|(x, _)| *x == offered);
+            let mut row = div().flex().items_start().gap_2().px_3().py_2().bg(rgb(0x1f2b26))
+                .child(div().flex_1().min_w_0().text_xs().child(match downloading {
+                    Some((_, f)) => format!("Downloading {} ({}), {}%", offered.name, offered.size(), (f * 100.).floor() as u32),
+                    None => crate::speech_settings::offer(&offered, &root),
+                }));
+            if downloading.is_none() {
+                row = row.child(button_state("Download", busy, click(cx, move |_| {
+                    crate::speech::send(Cmd::ModelDownload(offered.folder));
+                })));
+            }
+            row = row.child(button("Cancel", click(cx, |_| crate::speech::send(Cmd::ModelCancel))));
+            pick = pick.child(divider()).child(row);
+        }
+        let mut rows = div().flex().flex_col();
+        for (index, model) in speech_models::ALL.into_iter().enumerate() {
+            if index > 0 {
+                rows = rows.child(divider());
+            }
+            let on_disk = model.on_disk(&root);
+            let downloading = m.downloading.filter(|(x, _)| *x == model).map(|(_, f)| f);
+            let in_use = crate::speech_settings::in_use(&model, &m.chosen, d, v);
+            let role = if model == speech_models::SILERO_VAD { "Hears when you stop speaking, for voice mode" } else if model == m.chosen { "Speech to text, in use" } else { "Speech to text" };
+            let status = match (downloading, on_disk) {
+                (Some(f), _) => format!("Downloading, {}%", (f * 100.).floor() as u32),
+                (None, true) => "On this Mac".to_owned(),
+                (None, false) => "Not downloaded".to_owned(),
+            };
+            let left = div().flex_1().min_w_0().flex().flex_col()
+                .child(div().flex().gap_2().child(div().font_weight(FontWeight::SEMIBOLD).child(model.name)).child(div().text_xs().text_color(rgb(DIM)).child(model.size())))
+                .child(div().text_xs().text_color(rgb(DIM)).child(role))
+                .child(div().text_xs().text_color(rgb(DIM)).overflow_hidden().whitespace_nowrap().child(format!("From {}", model.source)))
+                .child(div().text_xs().text_color(rgb(DIM)).child(model::tilde(&model.dir(&root).to_string_lossy())))
+                .child(div().text_xs().text_color(rgb(if on_disk { 0x7fb89a } else { DIM })).child(status));
+            let folder = model.folder;
+            let mut actions = div().flex_none().flex().gap_1();
+            if downloading.is_some() {
+                actions = actions.child(button("Cancel", click(cx, |_| crate::speech::send(Cmd::ModelCancel))));
+            } else {
+                actions = actions.child(button_state(if on_disk { "Redownload" } else { "Download" }, busy || in_use.is_some(), click(cx, move |_| {
+                    crate::speech::send(Cmd::ModelDownload(folder));
+                })));
+                if on_disk {
+                    actions = actions.child(button_state("Remove", in_use.is_some(), click(cx, move |_| {
+                        crate::speech::send(Cmd::ModelRemove(folder));
+                    })));
+                }
+            }
+            rows = rows.child(div().flex().items_center().gap_2().px_3().py_2().child(left).child(actions));
+        }
+        let voicing = v.phase != crate::voice::Phase::Off;
+        let hear = div().flex().items_center().gap_2().px_3().py_2()
+            .child(div().flex_1().min_w_0().text_xs().text_color(rgb(DIM)).child(if voicing { "Voice mode is on: its replies are this voice." } else { "Voice mode speaks replies with the Mac’s default voice for your language (System Settings › Accessibility › Spoken Content)." }))
+            .child(button_state("Hear the voice", voicing, click(cx, move |_| {
+                if !voicing {
+                    crate::speech::send(Cmd::VoicePreview);
+                }
+            })));
+        let mut col = div().flex().flex_col().gap_4()
+            .child(titled("Voice", boxed(hear)))
+            .child(titled("Speech to text", boxed(pick)))
+            .child(titled("Models", boxed(rows)));
+        if let Some(problem) = &m.problem {
+            col = col.child(div().text_xs().text_color(rgb(ORANGE)).child(format!("⚠ {problem}")));
+        }
+        col.child(div().text_xs().text_color(rgb(DIM)).child(format!("Dictation and voice mode run these on this Mac; your voice never leaves it. Each download is checked against its pinned SHA-256 before it is kept in {}.", model::tilde(&root.to_string_lossy()))))
     }
 
     /// The files an update would change that a person edited, each with its diff, and the choice.

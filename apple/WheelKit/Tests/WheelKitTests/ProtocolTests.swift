@@ -102,6 +102,8 @@ struct ProtocolTests {
         #expect(logs == LogShipping(url: "http://l/push", state: "failing", lastOkMs: 7, waitingBytes: 512, error: "refused"))
         guard case let .status(_, _, _, _, _, _, _, _, _, _, _, host, _, _) = try ServerMsg.decode(base + #","host":{"exe":"/Users/p/Library/Application Support/Wheel/Server/Current/Wheel Server.app/Contents/MacOS/wheeld","folders":[{"path":"/Users/p/Downloads","allowed":false,"error":"Operation not permitted (os error 1)"},{"path":"/Users/p/Desktop","allowed":true},{"path":"/Users/p/Documents","allowed":false,"waiting":true}]}}"#) else { Issue.record("wrong case"); return }
         #expect(host == HostAccess(exe: "/Users/p/Library/Application Support/Wheel/Server/Current/Wheel Server.app/Contents/MacOS/wheeld", folders: [FolderAccess(path: "/Users/p/Downloads", allowed: false, error: "Operation not permitted (os error 1)"), FolderAccess(path: "/Users/p/Desktop", allowed: true), FolderAccess(path: "/Users/p/Documents", allowed: false, waiting: true)]))
+        guard case let .status(_, _, _, _, _, _, _, _, _, _, _, named, _, _) = try ServerMsg.decode(base + #","host":{"exe":"/w","id":"8c1f","name":"dev","color":"teal","platform":"linux_amd64","folders":[]}}"#) else { Issue.record("wrong case"); return }
+        #expect(named == HostAccess(exe: "/w", id: "8c1f", name: "dev", color: "teal", platform: "linux_amd64", folders: []))
     }
 
     /// A server that predates levels reports none: level 0, protocol 1, no ops, and a mismatch.
@@ -232,9 +234,12 @@ struct ProtocolTests {
         let devices = try ServerMsg.decode(#"{"ev":"devices_changed","devices":[{"id":"d1","name":"iPhone","paired_ms":5,"last_seen_ms":9,"connected":1}]}"#)
         guard case let .devicesChanged(list) = devices else { Issue.record("wrong case"); return }
         #expect(list == [DeviceInfo(id: "d1", name: "iPhone", pairedMs: 5, lastSeenMs: 9, connected: 1)])
-        let paired = try ServerMsg.decode(#"{"ev":"paired","device":"d1","credential":"secret"}"#)
-        guard case let .paired(device, credential) = paired else { Issue.record("wrong case"); return }
-        #expect((device, credential) == ("d1", "secret"))
+        let paired = try ServerMsg.decode(#"{"ev":"paired","device":"d1","credential":"secret","server":"8c1f"}"#)
+        guard case let .paired(device, credential, server) = paired else { Issue.record("wrong case"); return }
+        #expect((device, credential, server) == ("d1", "secret", "8c1f"))
+        // An older wheeld names no server.
+        guard case let .paired(_, _, none) = try ServerMsg.decode(#"{"ev":"paired","device":"d1","credential":"secret"}"#) else { Issue.record("wrong case"); return }
+        #expect(none == nil)
     }
 
     @Test func registersThePushToken() throws {

@@ -2300,7 +2300,7 @@ impl Client {
         let prompt_h = composer::dictation_prompt_height(&self.speech.dictation, agent);
         let list_h = composer::command_list_height(rows.len()) + prompt_h;
         let list = agent.zip(prefix).filter(|_| !rows.is_empty()).map(|(a, prefix)| composer::command_list(a, harness, &rows, at, prefix, &self.controls, cx));
-        let prompt = agent.filter(|_| prompt_h > 0.).map(|a| composer::dictation_prompt(a, &self.speech.dictation, &self.controls, cx));
+        let prompt = agent.filter(|_| prompt_h > 0.).map(|a| composer::dictation_prompt(a, &self.speech.dictation, &self.speech.manage.chosen, &self.controls, cx));
         let list = match (list, prompt) {
             (Some(list), Some(prompt)) => Some(div().flex_none().flex().flex_col().child(list).child(prompt)),
             (list, prompt) => list.or(prompt),

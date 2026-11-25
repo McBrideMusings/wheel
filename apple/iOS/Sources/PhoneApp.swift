@@ -5,27 +5,28 @@ import WheelUI
 @main
 struct PhoneApp: App {
     @UIApplicationDelegateAdaptor(PhoneAppDelegate.self) private var delegate
-    @State private var model = PhoneModel()
+    @State private var servers = ServerList()
 
     init() { UILog.sink = { Log.info($0) } }
 
     var body: some Scene {
         WindowGroup {
             Group {
-                if model.isPaired && !model.certificateMismatch && !model.credentialRefused {
-                    SpaceCarousel(model: model)
+                if let model = servers.shown, !model.certificateMismatch, !model.credentialRefused {
+                    SpaceCarousel(model: model, servers: servers)
                 } else {
-                    PairView(model: model)
+                    // A server that refuses this phone is paired again in place; with none paired, the first one is.
+                    PairView(model: servers.shown ?? servers.adding, servers: servers)
                 }
             }
-            // Voice mode's turns and its audio's own stops reach the session wherever the pane is.
-            .onChange(of: Voice.shared.said) { _, said in model.voice.heard(said) }
-            .onChange(of: Voice.shared.phase) { _, phase in model.voice.audioStopped(phase: phase, problem: Voice.shared.problem) }
-            .onDisappear { model.voice.end() }
+            // Voice mode's turns and its audio's own stops reach the shown server's session wherever the pane is.
+            .onChange(of: Voice.shared.said) { _, said in servers.shown?.voice.heard(said) }
+            .onChange(of: Voice.shared.phase) { _, phase in servers.shown?.voice.audioStopped(phase: phase, problem: Voice.shared.problem) }
+            .onDisappear { servers.shown?.voice.end() }
             .task {
-                model.start()
-                PushCenter.shared.listen(onOpen: { space, pane in model.focus(space: space, pane: pane) })
-                PushCenter.shared.onToken = { model.pushToken($0) }
+                servers.start()
+                PushCenter.shared.listen(onOpen: { space, pane in servers.focus(space: space, pane: pane) })
+                PushCenter.shared.onToken = { servers.pushToken($0) }
                 // Debug builds launched with `WHEEL_NOTIFICATIONS=off` never ask, so a check's
                 // screenshots carry no permission alert.
                 #if DEBUG

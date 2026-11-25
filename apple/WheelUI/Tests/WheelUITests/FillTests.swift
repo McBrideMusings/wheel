@@ -26,6 +26,18 @@ struct FillTests {
         #expect(!pane(#"ui.VideoStream{ stream = "p.s", height = 200 }"#).fillsPane)
     }
 
+    @Test func aFrameWithInfiniteMaxHeightFillsThePane() {
+        #expect(pane(#"ui.Column{ ui.Text("No stream"), modifiers = { { frame = { maxWidth = "infinity", maxHeight = "infinity", alignment = "center" } } } }"#).fillsPane)
+        #expect(pane(#"ui.ZStack{ ui.Column{ ui.Text("a"), modifiers = { { frame = { maxHeight = "infinity" } } } } }"#).fillsPane)
+        #expect(!pane(#"ui.Column{ ui.Text("a"), modifiers = { { frame = { maxWidth = "infinity" } } } }"#).fillsPane)
+    }
+
+    @Test func aFixedHeightStopsWhatItHoldsFromFilling() {
+        // The gallery's NavigationSplitView: a List asking for every height inside a surface 140 points high keeps the page scrolling.
+        #expect(!pane(#"ui.Column{ ui.NavigationSplitView{ ui.List{ ui.Text("a"), modifiers = { { frame = { maxHeight = "infinity" } } } }, ui.Text("d"), modifiers = { { frame = { height = 140 } } } } }"#).fillsPane)
+        #expect(!pane(#"ui.Column{ ui.List{ ui.Text("a") }, modifiers = { { frame = { maxHeight = 300 } } } }"#).fillsPane)
+    }
+
     @Test func aFramelessTableFillsThePane() {
         #expect(pane(#"ui.Table{ columns = {}, sections = {} }"#).fillsPane)
     }

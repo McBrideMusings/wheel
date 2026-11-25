@@ -54,9 +54,9 @@ public final class Voice {
     public private(set) var problem: String?
 
     /// Where the VAD model lives: beside Parakeet in FluidAudio's `Models` folder, as
-    /// FluidAudio's `ModelHub` lays it out (`<base>/Models/silero-vad-coreml`).
+    /// FluidAudio's `ModelHub` lays it out (`<base>/Models/<Repo.vad.folderName>`).
     public nonisolated static var vadFolder: URL {
-        Dictation.modelFolder.deletingLastPathComponent().appendingPathComponent("silero-vad-coreml")
+        Dictation.modelFolder.deletingLastPathComponent().appendingPathComponent(Repo.vad.folderName)
     }
     /// The `<base>` `VadManager(modelDirectory:)` takes.
     nonisolated static var vadBase: URL {
@@ -68,6 +68,9 @@ public final class Voice {
     }
 
     public var modelsOnDisk: Bool { Dictation.shared.modelOnDisk && vadOnDisk }
+
+    /// Let go of the loaded VAD, whose folder goes: the next session loads it again.
+    func forgetVad() { vad = nil }
 
     @ObservationIgnored private var audio: VoiceAudio?
     @ObservationIgnored private var vad: VadManager?
@@ -103,7 +106,7 @@ public final class Voice {
         Task {
             do {
                 if !Dictation.shared.modelOnDisk {
-                    _ = try await AsrModels.download(to: Dictation.modelFolder, version: .v3)
+                    _ = try await AsrModels.download(to: Dictation.modelFolder, version: Dictation.version)
                 }
                 vad = try await VadManager(modelDirectory: Self.vadBase)
                 guard self.owner == owner, phase == .downloading else { return }

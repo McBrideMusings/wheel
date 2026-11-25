@@ -384,7 +384,7 @@ local function modifiers_class(state)
             mod("padding 12", { padding = 12 }, { overlay = { stroke = "separator" } }),
             mod("[4, 16]", { padding = { 4, 16 } }, { overlay = { stroke = "separator" } }),
         }, { align = "start" })),
-        mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; an ideal is the size a ViewThatFits measures", mod("width 120", { frame = { width = 120, alignment = "leading" } }, { overlay = { stroke = "separator" } })),
+        mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; maxHeight infinity on a view not inside a fixed height makes the page fill the pane instead of scrolling (the view centres in the pane with alignment center); an ideal is the size a ViewThatFits measures", mod("width 120", { frame = { width = 120, alignment = "leading" } }, { overlay = { stroke = "separator" } })),
         mrow("layoutPriority", "a number; the view with the higher priority is offered space first", row({
             mod("priority 1", { layoutPriority = 1 }, { overlay = { stroke = "separator" } }),
             mod("priority 0", { layoutPriority = 0 }, { overlay = { stroke = "separator" } }),
@@ -401,6 +401,11 @@ local function modifiers_class(state)
         mrow("dragGesture", "a table raised on release with x, y (points moved); the view follows the pointer until the script answers",
             mod("drag me", { padding = 8 }, { background = "controlBackground" }, { clipShape = { cornerRadius = 6 } },
                 { offset = { x = (state.moved or {}).x or 0, y = (state.moved or {}).y or 0 } }, { dragGesture = { type = "moved" } })),
+        mrow("onHover, animation", "onHover: a table raised with hovering on enter and leave; animation {curve, duration, delay, value}: animates the modifiers before it when value changes",
+            mod(if state.hovered then "pointer on me" else "fades 2 s after the pointer leaves", { padding = 8 }, { background = "controlBackground" },
+                { clipShape = { cornerRadius = 6 } }, { opacity = if state.hovered then 1 else 0.3 },
+                { animation = { curve = "easeOut", duration = 0.4, delay = if state.hovered then 0 else 2, value = state.hovered == true } },
+                { onHover = { type = "hovered" } })),
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
@@ -490,7 +495,7 @@ local function system_class()
             }) },
         } },
         { "NavigationSplitView", "NavigationSplitView", {
-            -- The sidebar List carries a frame: a vertical List with none would make the surface fill the pane, and the gallery would stop scrolling.
+            -- The surface's fixed height bounds the sidebar List's maxHeight infinity frame, so the gallery keeps scrolling.
             { "sidebar and detail", put("NavigationSplitView", { put("List", { txt("one"), txt("two") }, { modifiers = { { frame = { maxHeight = "infinity" } } } }), txt("Detail") }, { modifiers = { { frame = { height = 140 } } } }) },
         } },
         { "NavigationStack", "NavigationStack", {
@@ -678,7 +683,9 @@ local function init(previous)
 end
 
 local function update(state, msg)
-    if msg.type == "moved" then
+    if msg.type == "hovered" then
+        state.hovered = msg.hovering
+    elseif msg.type == "moved" then
         local m = state.moved or { x = 0, y = 0 }
         state.moved = { x = m.x + msg.x, y = m.y + msg.y }
     elseif msg.type == "reverse" then

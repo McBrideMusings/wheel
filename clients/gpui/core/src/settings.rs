@@ -68,11 +68,12 @@ pub enum Tab {
     Artifacts,
     Guidance,
     Project,
+    Speech,
     Devices,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [Tab::General, Tab::Agents, Tab::Usage, Tab::Keys, Tab::Chat, Tab::Terminal, Tab::Artifacts, Tab::Guidance, Tab::Project, Tab::Devices];
+    pub const ALL: [Tab; 11] = [Tab::General, Tab::Agents, Tab::Usage, Tab::Keys, Tab::Chat, Tab::Terminal, Tab::Artifacts, Tab::Guidance, Tab::Project, Tab::Speech, Tab::Devices];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -85,6 +86,7 @@ impl Tab {
             Tab::Artifacts => "Artifacts",
             Tab::Guidance => "Guidance",
             Tab::Project => "Project",
+            Tab::Speech => "Speech",
             Tab::Devices => "Devices",
         }
     }
@@ -100,6 +102,7 @@ impl Tab {
             Tab::Artifacts => "artifacts",
             Tab::Guidance => "guidance",
             Tab::Project => "project",
+            Tab::Speech => "speech",
             Tab::Devices => "devices",
         }
     }
@@ -1108,7 +1111,7 @@ mod tests {
         let host = HostAccess { exe: "/x".into(), source: String::new(), folders: vec![
             wheel_proto::FolderAccess { path: "/Users/me/Desktop".into(), allowed: true, waiting: false, error: None },
             wheel_proto::FolderAccess { path: "/Users/me/Documents".into(), allowed: false, waiting: false, error: Some("denied".into()) },
-        ] };
+        ], ..Default::default() };
         assert_eq!(folder_access_title(&host), "Wheel Server cannot open Documents.");
     }
 }

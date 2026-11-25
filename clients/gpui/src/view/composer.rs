@@ -669,7 +669,7 @@ pub(super) fn dictation_prompt_height(d: &crate::dictation::Dictation, agent: Op
 /// What the model download fetches, how big, where from and where it is kept, with Download and
 /// Cancel (ADR-0013): shown above the composer the first time the microphone is pressed with no
 /// model on the Mac. While it downloads, its progress and Cancel.
-pub(super) fn dictation_prompt(agent: &str, d: &crate::dictation::Dictation, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
+pub(super) fn dictation_prompt(agent: &str, d: &crate::dictation::Dictation, model: &crate::speech_models::Model, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Div {
     let button = |label: &'static str, id: &'static str, run: fn(&mut Client), cx: &mut Context<Client>| {
         div().id(gpui::ElementId::Name(format!("dictation-{id}-{agent}").into())).relative().px_2().rounded_sm().cursor_pointer().bg(rgb(0x31483e)).text_color(rgb(0xd9e8e1))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
@@ -680,7 +680,7 @@ pub(super) fn dictation_prompt(agent: &str, d: &crate::dictation::Dictation, con
             .child(label)
             .child(recorded(agent, &format!("dictation {id}"), controls))
     };
-    let model = crate::speech_models::PARAKEET;
+    let model = *model;
     let text = match d.phase {
         crate::dictation::Phase::Downloading(p) => format!("Downloading {} ({}), {}%", model.name, model.size(), (p * 100.).floor() as u32),
         _ => crate::dictation::prompt(&model, &crate::speech_models::root()),
