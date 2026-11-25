@@ -754,6 +754,75 @@ impl TermModel {
     }
 }
 
+/// A piece of a row drawn as one shaped run of text: cells of one style side by side, or one
+/// wide character alone across its two cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub col: u16,
+    pub cells: u16,
+    pub text: String,
+    pub fg: RgbColor,
+    /// `None` on the page's own background.
+    pub bg: Option<RgbColor>,
+    pub bold: bool,
+    pub italic: bool,
+    pub faint: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub wide: bool,
+}
+
+/// A row as segments, with inverse and selection resolved: an inverse cell swaps its colours
+/// (the page's `background` standing in for none), a selected one takes `selection` as its
+/// background, or is inverted when the theme names no selection colour.
+pub fn segments(row: &[Cell], background: RgbColor, selection: Option<RgbColor>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    for (col, cell) in row.iter().enumerate() {
+        if cell.width == Width::Spacer {
+            continue;
+        }
+        let (mut fg, mut bg) = (cell.fg, cell.bg);
+        if cell.inverse {
+            (fg, bg) = (bg.unwrap_or(background), Some(fg));
+        }
+        if cell.selected {
+            match selection {
+                Some(colour) => bg = Some(colour),
+                None => (fg, bg) = (bg.unwrap_or(background), Some(fg)),
+            }
+        }
+        let text = if cell.invisible || cell.text.is_empty() { " ".to_owned() } else { cell.text.clone() };
+        let wide = cell.width == Width::Wide;
+        let piece = Segment { col: col as u16, cells: if wide { 2 } else { 1 }, text, fg, bg, bold: cell.bold, italic: cell.italic, faint: cell.faint, underline: cell.underline, strikethrough: cell.strikethrough, wide };
+        if let Some(last) = out.last_mut()
+            && !wide
+            && !last.wide
+            && last.col + last.cells == piece.col
+            && (last.fg, last.bg, last.bold, last.italic, last.faint, last.underline, last.strikethrough) == (piece.fg, piece.bg, piece.bold, piece.italic, piece.faint, piece.underline, piece.strikethrough)
+        {
+            last.text.push_str(&piece.text);
+            last.cells += 1;
+            continue;
+        }
+        out.push(piece);
+    }
+    out
+}
+
+/// The columns a double click at `col` selects: the run of word characters around it, or the
+/// cell alone when it is a space or a separator (Ghostty's `selection-word-chars`).
+pub fn word_at(row: &[Cell], col: u16) -> (u16, u16) {
+    let boundary = |c: &Cell| c.text.is_empty() || c.text.chars().all(|ch| ch.is_whitespace() || "'\"│`|:;,()[]{}<>$".contains(ch));
+    let col = (col as usize).min(row.len().saturating_sub(1));
+    if row.is_empty() || boundary(&row[col]) {
+        return (col as u16, col as u16);
+    }
+    let word = |c: &Cell| !boundary(c) || c.width == Width::Spacer;
+    let start = (0..col).rev().take_while(|&i| word(&row[i])).last().unwrap_or(col);
+    let end = (col + 1..row.len()).take_while(|&i| word(&row[i])).last().unwrap_or(col);
+    (start as u16, end as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,5 +1090,35 @@ mod tests {
         assert_eq!(frame.text(), "kept");
         assert_eq!((frame.background, frame.rows[0][0].fg), (SOLARIZED_DARK.background, SOLARIZED_DARK.ansi[1]));
         assert_eq!((frame.cursor.shape, frame.cursor.blinking), (CursorVisualStyle::Bar, false));
+    }
+
+    fn row_of(text: &str) -> Vec<Cell> {
+        text.chars().map(|c| Cell { text: if c == '_' { String::new() } else { c.to_string() }, fg: hex(0xffffff), bg: None, bold: false, italic: false, faint: false, underline: false, strikethrough: false, inverse: false, invisible: false, width: Width::Narrow, selected: false }).collect()
+    }
+
+    #[test]
+    fn a_row_batches_cells_of_one_style_and_splits_wide_and_styled_cells() {
+        let mut row = row_of("ab_c日_de");
+        row[4].width = Width::Wide;
+        row[5].width = Width::Spacer;
+        row[6].bold = true;
+        row[7].inverse = true;
+        let s = segments(&row, hex(0x212121), None);
+        let shape: Vec<(u16, u16, &str, bool)> = s.iter().map(|g| (g.col, g.cells, g.text.as_str(), g.wide)).collect();
+        assert_eq!(shape, vec![(0, 4, "ab c", false), (4, 2, "日", true), (6, 1, "d", false), (7, 1, "e", false)]);
+        assert_eq!((s[3].fg, s[3].bg), (hex(0x212121), Some(hex(0xffffff))));
+        row[0].selected = true;
+        let s = segments(&row, hex(0x212121), Some(hex(0x444444)));
+        assert_eq!((s[0].text.as_str(), s[0].bg, s[1].text.as_str()), ("a", Some(hex(0x444444)), "b c"));
+    }
+
+    #[test]
+    fn a_double_click_selects_the_word_or_the_separator_alone() {
+        let row = row_of("ls -la /tmp/x.txt;ok");
+        assert_eq!(word_at(&row, 1), (0, 1));
+        assert_eq!(word_at(&row, 9), (7, 16));
+        assert_eq!(word_at(&row, 2), (2, 2));
+        assert_eq!(word_at(&row, 17), (17, 17));
+        assert_eq!(word_at(&row, 40), (18, 19));
     }
 }
