@@ -52,6 +52,7 @@ fn main() -> Result<()> {
             }
             let bridge = Bridge::load()?;
             wheel_gpui::view::start_menu_bar(cx, &bridge, endpoint.clone(), hidden);
+            wheel_gpui::directory::start(cx, endpoint.clone());
             let file = wheel_gpui::saved::default_file(&endpoint.ws, hidden);
             let windows = wheel_gpui::launch(cx, &bridge, endpoint, space, hidden, file)?;
             if let (Some(debug), Some(window)) = (debug, windows.last()) {

@@ -3,6 +3,7 @@ pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversa
 pub mod actions;
 pub mod appkit;
 pub mod browser;
+pub mod directory;
 pub mod edit_menu;
 pub mod keymap;
 pub mod saved;
@@ -462,7 +463,7 @@ async fn measure_sweep(window: view::ClientWindow, request: &debug::Request, cx:
 /// wheeld as `name` (default "Wheel app") on a background thread, since pairing waits on the network.
 async fn debug_pair(request: &debug::Request, cx: &mut gpui::AsyncApp) -> (String, serde_json::Value) {
     let (code, name) = (request.body.clone(), request.query.get("name").cloned().unwrap_or_else(|| "Wheel app".to_owned()));
-    let paired = cx.background_executor().spawn(async move { servers::pair(&servers::default_file(), &code, &name) }).await;
+    let paired = cx.update(|cx| directory::pair(cx, code, name)).await;
     match paired {
         Ok(server) => ("200 OK".to_owned(), serde_json::json!({"id": server.id, "name": server.name, "url": server.url, "device": server.device})),
         Err(e) => ("400 Bad Request".to_owned(), debug::error(&format!("{e:#}"))),
@@ -553,17 +554,37 @@ pub fn open_window_as(
 ) -> Result<view::ClientWindow> {
     // The window subscribes to its wheeld's one connection; when it closes it reports an empty
     // view and leaves (`Client::shutdown`), so wheeld forgets its view and what only it held.
-    let (send, mut incoming) = connection(&endpoint).subscribe();
+    let (send, incoming) = connection(&endpoint).subscribe();
     let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden, opening, frame)?;
-    cx.spawn(async move |cx| {
+    pump(cx, window, incoming);
+    Ok(window)
+}
+
+/// Feed `window` its subscription's events. The window holds the task, so a new pump (a switch
+/// to another server) drops the old one and nothing the old connection buffered arrives after.
+fn pump(cx: &mut App, window: view::ClientWindow, mut incoming: daemon::Events) {
+    let task = cx.spawn(async move |cx| {
         while let Some(event) = incoming.next().await {
             if cx.update(|cx| deliver(cx, window, event)).is_err() {
                 return;
             }
         }
-    })
-    .detach();
-    Ok(window)
+    });
+    let _ = window.update(cx, |client, _, _| client.set_pump(task));
+}
+
+/// Show `session` of `endpoint`'s wheeld in `window`: the window leaves its connection's
+/// subscription and subscribes to `endpoint`'s, as a window opened there would.
+pub fn switch_server(cx: &mut App, window: view::ClientWindow, endpoint: daemon::Endpoint, session: String) {
+    let (send, incoming) = connection(&endpoint).subscribe();
+    if window.update(cx, |client, _, cx| {
+        client.rebind(send, endpoint, session);
+        cx.notify();
+    }).is_err() {
+        return;
+    }
+    pump(cx, window, incoming);
+    refresh_windows(cx);
 }
 
 /// Hand `window` one thing its connection reported. A window command acts on other windows

@@ -645,7 +645,7 @@ impl Client {
                 // A press on the card outside a field ends the field's edit.
                 this.settings_edit = None;
             }))
-            .child(div().flex().justify_between().items_center().px_3().pt_2().child(div().font_weight(FontWeight::SEMIBOLD).child("Settings")).child(div().text_xs().text_color(rgb(DIM)).child("Esc closes")))
+            .child(div().flex().justify_between().items_center().px_3().pt_2().child(self.settings_title_element()).child(div().text_xs().text_color(rgb(DIM)).child("Esc closes")))
             .child(tabs)
             .child(div().id("settings-page").overflow_y_scroll().flex_1().min_h_0().p_4().child(page));
         if let Some((name, files)) = self.settings.builtins.edited.clone() {
@@ -1614,4 +1614,20 @@ fn segmented(items: &[(&str, bool)], disabled: bool, cx: &mut Context<Client>, p
             })));
     }
     row
+}
+
+impl Client {
+    /// The settings card's title: "Settings", and the server they belong to in its colour while
+    /// the app knows more than one.
+    pub fn settings_title(&self) -> (String, Option<String>) {
+        let groups = crate::directory::groups();
+        match groups.iter().find(|g| g.key == self.server()).filter(|_| groups.len() > 1) {
+            Some(g) => (format!("Settings · {}", g.name), g.color.clone()),
+            None => ("Settings".to_owned(), None),
+        }
+    }
+    fn settings_title_element(&self) -> gpui::Div {
+        let (title, color) = self.settings_title();
+        div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(super::title::tint(color.as_deref()).unwrap_or(TEXT))).child(title)
+    }
 }

@@ -49,7 +49,11 @@ impl Client {
     pub(super) fn open_fields(&self) -> Vec<(FieldId, String, String)> {
         let mut open = Vec::new();
         if let Some(edit) = &self.name_edit {
-            open.push((FieldId::WindowName, edit.draft.clone(), self.space().map(|s| s.name.clone()).unwrap_or_else(|| "Window name".into())));
+            let placeholder = match edit.target {
+                super::NameTarget::Server { .. } => "Pairing code".to_owned(),
+                _ => self.space().map(|s| s.name.clone()).unwrap_or_else(|| "Window name".into()),
+            };
+            open.push((FieldId::WindowName, edit.draft.clone(), placeholder));
         }
         if let Some(p) = &self.command_palette {
             open.push((FieldId::CommandSearch, p.query.clone(), p.placeholder().to_string()));

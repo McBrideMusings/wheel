@@ -452,8 +452,10 @@ impl Client {
             }
             // The window's name field (`kind=window`) and the Rename Session card (`kind=session&id=`):
             // begin, commit with `name=`, or cancel, as Return and Esc do.
-            "/rename" if matches!(q("kind").as_deref(), Some("window" | "session")) => {
+            "/rename" if matches!(q("kind").as_deref(), Some("window" | "session" | "server")) => {
                 let target = match q("kind").as_deref() {
+                    // The Add Server card; commit's `name=` is the pairing code.
+                    Some("server") => NameTarget::Server { busy: false, error: None },
                     Some("session") => {
                         let Some(id) = q("id").filter(|id| self.sessions.iter().any(|s| &s.id == id)) else { return refuse(MISSING, "id= names no session") };
                         NameTarget::Session(id)
@@ -463,11 +465,12 @@ impl Client {
                 let begin = |this: &mut Self| match &target {
                     NameTarget::Window => this.begin_window_rename(),
                     NameTarget::Session(id) => this.begin_session_rename(id),
+                    NameTarget::Server { .. } => this.begin_add_server(),
                 };
                 match q("action").as_deref() {
                     Some("begin") => begin(self),
                     Some("commit") => {
-                        if self.name_edit.as_ref().map(|e| &e.target) != Some(&target) {
+                        if self.name_edit.as_ref().map(|e| std::mem::discriminant(&e.target)) != Some(std::mem::discriminant(&target)) {
                             begin(self);
                         }
                         if let Some(name) = q("name") && let Some(edit) = self.name_edit.as_mut() {
@@ -744,7 +747,7 @@ impl Client {
             "toasts": self.toasts().iter().map(|t| json!({"id": t.id, "level": t.level.name(), "text": t.text, "actions": t.actions.iter().map(|a| a.title).collect::<Vec<_>>(), "pane": t.pane, "closable": t.closable})).collect::<Vec<_>>(),
             "toast_frames": self.toast_frames.borrow().iter().map(|r| json!([r.x, r.y, r.w, r.h])).collect::<Vec<_>>(),
             "palette": self.command_palette.as_ref().map(|p| json!({"open": true, "mode": match p.mode { crate::command_palette::Mode::Root => "root", crate::command_palette::Mode::NewSpace => "new_space" }, "query": p.query, "rows": p.rows.iter().map(|r| r.id()).collect::<Vec<_>>(), "selected": p.selected})).unwrap_or(json!({"open": false})),
-            "settings": {"open": self.settings_open, "tab": self.settings.tab.id(), "project": self.settings.project},
+            "settings": {"open": self.settings_open, "tab": self.settings.tab.id(), "project": self.settings.project, "title": self.settings_title().0},
             "confirmation": self.confirmation.as_ref().map(|c| json!({"title": c.title, "message": c.message, "button": c.button})),
             "shortcuts_open": self.shortcuts_open,
             "sidebar": self.sidebar_json(),
@@ -759,6 +762,7 @@ impl Client {
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
         out["window_server"] = json!(self.server());
+        out["directory"] = json!(crate::directory::groups().iter().map(|g| json!({"server": g.key, "name": g.name, "color": g.color, "platform": g.platform, "up": g.up, "sessions": g.sessions.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>()})).collect::<Vec<_>>());
         out["link_opacity"] = json!(self.link_opacity());
         out["orchestrator"] = self.orchestrator_json();
         out["last_link"] = json!(self.links.last);

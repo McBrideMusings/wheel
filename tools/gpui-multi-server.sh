@@ -7,11 +7,17 @@
 #   - A's `wheel client ls` lists one client holding both A windows, B's lists one holding B's;
 #   - closing one A window drops only its view from A's list and leaves B's alone;
 #   - killing B leaves only B's window Down, drawn at link_opacity 0.5, and A's windows connected.
+#   - the session menu (wheel-2aln.9): with one server today's rows then Add Server… and no mark;
+#     with two a heading per server, the session button's mark and Settings naming the server;
+#     pressing B's session moves the window to B (B lists it, A drops it, windows.json names B);
+#     New Session on this Mac from that window makes the session on A and moves the window back;
+#     Orchestrator mode moves a window to the server whose orchestrator folder has a space.
 # The server list goes to a scratch file (WHEEL_GPUI_SERVERS_FILE); the credential goes to the
 # login Keychain under "Wheel App Server" and B's id, and the cleanup deletes it. Prints PASS or
 # FAIL per check; kills what it starts by pid.
 #
-# SHOTS=<dir> also draws B's window to <dir>/b-up.png before B is killed and b-down.png after.
+# SHOTS=<dir> also draws B's window to <dir>/b-up.png before B is killed and b-down.png after, and
+# the first window's session menu with one server and with two, and its Settings with two.
 #
 #   tools/gpui-multi-server.sh [path to Wheel Dev.app]   # default clients/gpui/target/app/Wheel Dev.app; run after `clients/gpui/tools/build.py dev`
 set -u
@@ -74,6 +80,14 @@ PIDS+=($!)
 for _ in $(seq 1 100); do debug GET /state > /dev/null 2>&1 && break; sleep 0.2; done
 W1=$(debug GET /state | field "d['window']")
 
+# One server: today's rows plus Add Server…, no heading, the icon-only session button.
+debug POST "/titlemenu?window=$W1&action=open&menu=session" > /dev/null
+M1=$(debug GET "/state?window=$W1")
+[ "$(echo "$M1" | field "[r['id'] for r in d['title']['menu']['rows']][-4:]")" = "['new-session', 'rename-session', 'close-session', 'add-server']" ] && [ "$(echo "$M1" | field "any(r['heading'] for r in d['title']['menu']['rows'])")" = False ] && pass "one server: the session menu reads as before, then Add Server…" || fail "one-server menu: $(echo "$M1" | field "d['title']['menu']")"
+[ "$(echo "$M1" | field "[c['icon'] for c in d['title']['row'] if c['id'] == 'session']")" = "['rectangle.stack']" ] && pass "one server: the session button has no server mark" || fail "one-server session button: $(echo "$M1" | field "[c for c in d['title']['row'] if c['id'] == 'session']")"
+[ -n "${SHOTS:-}" ] && mkdir -p "$SHOTS" && debug POST "/window/snapshot?window=$W1&path=$SHOTS/menu-one-server.png" > /dev/null
+debug POST "/titlemenu?window=$W1&action=close" > /dev/null
+
 PAIRED=$(debug POST "/servers/pair?name=gpui-check" "$(on "$T/b" "$BL" remote pair --address 127.0.0.1)")
 [ "$(echo "$PAIRED" | field "d.get('id')")" = "$B_ID" ] && pass "the app pairs with B ($B_ID)" || fail "pairing: $PAIRED"
 grep -q "\"$B_ID\"" "$T/servers.json" && ! grep -qi credential "$T/servers.json" && pass "servers.json lists B and holds no credential" || fail "servers.json: $(cat "$T/servers.json" 2>&1)"
@@ -106,6 +120,67 @@ for _ in $(seq 1 50); do [ "$(windows_of "$T/a" "$AL")" = "1 $W1" ] && break; sl
 LA=$(windows_of "$T/a" "$AL"); LB=$(windows_of "$T/b" "$BL")
 [ "$LA" = "1 $W1" ] && pass "closing $W3 drops only its view from A" || fail "after closing $W3, A lists: $LA"
 [ "$LB" = "1 $W2" ] && pass "B still lists $W2" || fail "after closing $W3, B lists: $LB"
+
+# Two servers: the session menu groups by server (wheel-2aln.9).
+for _ in $(seq 1 50); do [ "$(debug GET "/state?window=$W1" | field "sum(1 for g in d['directory'] if g['up'])")" = 2 ] && break; sleep 0.2; done
+debug POST "/titlemenu?window=$W1&action=open&menu=session" > /dev/null
+M2=$(debug GET "/state?window=$W1")
+[ "$(echo "$M2" | field "[r['id'] for r in d['title']['menu']['rows'] if r['heading']]")" = "['server:local', 'server:$B_ID']" ] && pass "two servers: a heading per server, this Mac first" || fail "two-server headings: $(echo "$M2" | field "[r['id'] for r in d['title']['menu']['rows']]")"
+B_ROW=$(echo "$M2" | field "next(r['id'] for r in d['title']['menu']['rows'] if r['id'].startswith('session:$B_ID:'))")
+[ -n "$B_ROW" ] && pass "B's sessions are listed under its heading ($B_ROW)" || fail "no session row of B"
+[ "$(echo "$M2" | field "[c['icon'] for c in d['title']['row'] if c['id'] == 'session']")" = "['desktopcomputer']" ] && pass "two servers: the session button carries this Mac's mark" || fail "two-server session button: $(echo "$M2" | field "[c for c in d['title']['row'] if c['id'] == 'session']")"
+[ -n "${SHOTS:-}" ] && debug POST "/window/snapshot?window=$W1&path=$SHOTS/menu-two-servers.png" > /dev/null
+A_NAME=$(echo "$M2" | field "d['directory'][0]['name']")
+debug POST "/titlemenu?window=$W1&action=close" > /dev/null
+debug POST "/title?window=$W1&id=settings" > /dev/null
+[ "$(debug GET "/state?window=$W1" | field "d['settings']['title']")" = "Settings · $A_NAME" ] && pass "Settings names the window's server ($A_NAME)" || fail "settings title: $(debug GET "/state?window=$W1" | field "d['settings']")"
+[ -n "${SHOTS:-}" ] && debug POST "/window/snapshot?window=$W1&path=$SHOTS/settings-two-servers.png" > /dev/null
+debug POST "/title?window=$W1&id=settings" > /dev/null
+debug POST "/rename?window=$W1&kind=server&action=begin" > /dev/null
+[ "$(debug GET "/state?window=$W1" | field "d['window_info']['name_edit']['target']")" = server ] && pass "Add Server… opens its card" || fail "Add Server card: $(debug GET "/state?window=$W1" | field "d['window_info']['name_edit']")"
+[ -n "${SHOTS:-}" ] && debug POST "/window/snapshot?window=$W1&path=$SHOTS/add-server.png" > /dev/null
+debug POST "/rename?window=$W1&kind=server&action=cancel" > /dev/null
+
+# Pressing B's session moves W1 to B.
+debug POST "/titlemenu?window=$W1&action=open&menu=session" > /dev/null
+debug POST "/titlemenu?window=$W1&action=select&item=$B_ROW" > /dev/null
+for _ in $(seq 1 50); do [ "$(debug GET "/state?window=$W1" | field "d['window_server']")" = "$B_ID" ] && [ "$(debug GET "/state?window=$W1" | field "d['active']")" = "$SB" ] && break; sleep 0.2; done
+S1B=$(debug GET "/state?window=$W1")
+[ "$(echo "$S1B" | field "d['window_server']")" = "$B_ID" ] && [ "$(echo "$S1B" | field "d['active']")" = "$SB" ] && [ "$(echo "$S1B" | field "d['connection']")" = connected ] && pass "pressing B's session shows B's space $SB in $W1" || fail "after B's session row, $W1: $(echo "$S1B" | field "d['window_server'], d['active'], d['connection']")"
+for _ in $(seq 1 50); do [ "$(windows_of "$T/b" "$BL")" = "1 $(printf '%s\n' "$W1" "$W2" | sort | tr '\n' ' ' | sed 's/ $//')" ] && break; sleep 0.2; done
+windows_of "$T/a" "$AL" | grep -q "$W1" && fail "A still lists $W1: $(windows_of "$T/a" "$AL")" || pass "A no longer lists $W1"
+[ "$(windows_of "$T/b" "$BL")" = "1 $(printf '%s\n' "$W1" "$W2" | sort | tr '\n' ' ' | sed 's/ $//')" ] && pass "B lists $W1 beside $W2" || fail "B's client ls: $(windows_of "$T/b" "$BL")"
+# A saved record names no window id: with W1 moved, both main windows' records name B.
+on_b_saved() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(sum(1 for w in d.get('windows', []) if w.get('server') == sys.argv[2]))" "$T/windows.json" "$B_ID" 2>/dev/null; }
+for _ in $(seq 1 50); do [ "$(on_b_saved)" = 2 ] && break; sleep 0.2; done
+[ "$(on_b_saved)" = 2 ] && pass "windows.json saves $W1's record on B beside $W2's" || fail "windows.json: $(cat "$T/windows.json" 2>&1 | head -c 600)"
+
+# New Session on this Mac, asked from W1 while it shows B: A makes it and W1 moves back to show it.
+count() { on "$1" "$2" session ls --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d if isinstance(d, list) else d.get("sessions", [])))'; }
+NA=$(count "$T/a" "$AL")
+debug POST "/titlemenu?window=$W1&action=open&menu=session" > /dev/null
+debug POST "/titlemenu?window=$W1&action=select&item=new-session:local" > /dev/null
+for _ in $(seq 1 50); do [ "$(count "$T/a" "$AL")" -gt "$NA" ] && [ "$(debug GET "/state?window=$W1" | field "d['window_server']")" = local ] && break; sleep 0.2; done
+NEW=$(on "$T/a" "$AL" session ls --json | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d if isinstance(d, list) else d.get("sessions", []); print(d[-1]["id"])')
+[ "$(count "$T/a" "$AL")" -gt "$NA" ] && pass "New Session on this Mac makes a session on A ($NEW)" || fail "A's sessions stayed at $NA"
+S1A=$(debug GET "/state?window=$W1")
+[ "$(echo "$S1A" | field "d['window_server']")" = local ] && [ "$(echo "$S1A" | field "d['session']")" = "$NEW" ] && pass "$W1 moves back to A and shows the new session" || fail "after New Session on A, $W1: $(echo "$S1A" | field "d['window_server'], d['session']")"
+
+# Orchestrator mode follows the one orchestrator: A has no space on its orchestrator folder, B
+# opens one on its own (the default, orchestrator/ beside its machine file), so W1 moves to B.
+mkdir -p "$T/b/orchestrator"
+SO=$(on "$T/b" "$BL" space new "$T/b/orchestrator" --name orch-on-b)
+debug POST "/titlemenu?window=$W1&action=open&menu=mode" > /dev/null
+debug POST "/titlemenu?window=$W1&action=select&item=mode:orchestrator" > /dev/null
+for _ in $(seq 1 50); do [ "$(debug GET "/state?window=$W1" | field "d['window_server']")" = "$B_ID" ] && [ "$(debug GET "/state?window=$W1" | field "d['active']")" = "$SO" ] && break; sleep 0.2; done
+SOR=$(debug GET "/state?window=$W1")
+[ "$(echo "$SOR" | field "d['window_server']")" = "$B_ID" ] && [ "$(echo "$SOR" | field "d['active']")" = "$SO" ] && pass "Orchestrator mode moves $W1 to B's orchestrator space $SO" || fail "orchestrator follow, $W1: $(echo "$SOR" | field "d['window_server'], d['active'], d['title']['mode']")"
+debug POST "/titlemenu?window=$W1&action=open&menu=mode" > /dev/null
+debug POST "/titlemenu?window=$W1&action=select&item=mode:spaces" > /dev/null
+debug POST "/titlemenu?window=$W1&action=open&menu=session" > /dev/null
+debug POST "/titlemenu?window=$W1&action=select&item=session:local:$NEW" > /dev/null
+for _ in $(seq 1 50); do [ "$(debug GET "/state?window=$W1" | field "d['window_server']")" = local ] && [ "$(debug GET "/state?window=$W1" | field "d['connection']")" = connected ] && break; sleep 0.2; done
+[ "$(debug GET "/state?window=$W1" | field "d['window_server']")" = local ] && pass "$W1 goes back to A from the menu" || fail "back to A: $(debug GET "/state?window=$W1" | field "d['window_server'], d['session']")"
 
 [ -n "${SHOTS:-}" ] && mkdir -p "$SHOTS" && debug POST "/window/snapshot?window=$W2&path=$SHOTS/b-up.png" > /dev/null
 kill "${PIDS[1]}" 2>/dev/null; wait "${PIDS[1]}" 2>/dev/null
