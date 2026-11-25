@@ -5918,27 +5918,83 @@ async fn op_result(ws: &mut Ws, req: u64, msg: ClientMsg) -> Result<(), String> 
     }
 }
 
-/// The agent `status` names as voice mode's.
-async fn status_voice(ws: &mut Ws, req: u64) -> Option<String> {
+/// The agent `status` names as voice mode's, and the voice agent speaking for it.
+async fn status_voice(ws: &mut Ws, req: u64) -> (Option<String>, Option<wheel_proto::VoiceAgentInfo>) {
     send(ws, ClientMsg::Status { req: Some(req) }).await;
     loop {
-        if let ServerMsg::Status { req: Some(r), voice, .. } = recv(ws).await {
+        if let ServerMsg::Status { req: Some(r), voice, voice_agent, .. } = recv(ws).await {
             if r == req {
-                return voice;
+                return (voice, voice_agent);
             }
         }
     }
 }
 
-/// `agent_voice`: refused without the `voice` lease and for a Codex agent; with it, the named Claude
-/// agent's next turn carries the voice line through its `UserPromptSubmit` hook and `status` names it;
-/// another client taking the lease, and the holder's connection closing, each turn the line off.
+/// Whether process `pid` runs: listed by `ps` and not a zombie.
+fn alive(pid: u32) -> bool {
+    let out = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
+/// Wait up to two seconds for process `pid` to end.
+async fn ended(pid: u32) -> bool {
+    for _ in 0..100 {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// The voice agent's pid once `status` names one.
+async fn voice_pid(ws: &mut Ws, req: u64) -> u32 {
+    let (_, info) = status_voice(ws, req).await;
+    info.expect("a voice agent runs").pid
+}
+
+/// Queue `text` for `agent` and return its turn.
+async fn queue_turn(ws: &mut Ws, req: u64, agent: &str, text: &str) -> u64 {
+    send(ws, ClientMsg::AgentSend { req: Some(req), agent: agent.into(), text: text.into() }).await;
+    loop {
+        if let ServerMsg::AgentQueued { req: r, turn, .. } = recv(ws).await {
+            if r == req {
+                return turn;
+            }
+        }
+    }
+}
+
+/// Everything the voice agent says for `turn` up to its next `done`, the `ms` of its last chunk,
+/// and every turn it spoke for before.
+async fn voice_said(ws: &mut Ws, turn: u64) -> (String, u64, Vec<u64>) {
+    let (mut text, mut before) = (String::new(), Vec::new());
+    loop {
+        if let ServerMsg::VoiceSaid { turn: t, text: chunk, ms, done, .. } = recv(ws).await {
+            if t != turn {
+                before.push(t);
+            } else if done {
+                return (text, ms, before);
+            } else {
+                text.push_str(&chunk);
+            }
+        }
+    }
+}
+
+/// `agent_voice` (ADR-0055, ADR-0059): refused without the `voice` lease and for Codex and pi;
+/// with it, a named Claude agent gets a Haiku voice agent with no tools whose speech streams to the
+/// holder before the voiced agent's turn ends and never enters its transcript, while each turn of
+/// the voiced agent carries the card-only voice line. Another client taking the lease, the holder's
+/// connection closing, naming none and the agent ending each end the voice agent's process.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_voice_holder_names_an_agent_whose_turns_carry_the_voice_line() {
+async fn a_voiced_claude_agent_gets_a_haiku_voice_agent_that_speaks_for_it() {
     let url = start_daemon().await;
     let (_, pane) = space(&url, "/tmp").await;
     let agent = start_agent(&url, &pane, None).await;
     let codex = codex_agent(&url).await;
+    let pi = pi_agent(&url).await;
     let mut phone = connect(&url).await;
     let mut mac = connect(&url).await;
     let mut chat = connect(&url).await;
@@ -5952,41 +6008,98 @@ async fn the_voice_holder_names_an_agent_whose_turns_carry_the_voice_line() {
     send(&mut phone, ClientMsg::LeaseClaim { req: Some(202), key: "voice".into() }).await;
     while !matches!(recv(&mut phone).await, ServerMsg::LeaseClaimed { req: 202, .. }) {}
     let refused = op_result(&mut phone, 203, voice(203, Some(&codex))).await;
-    assert!(refused.as_ref().is_err_and(|m| m.contains("Codex has no way to take the voice line")), "{refused:?}");
-    op_result(&mut phone, 204, voice(204, Some(&pane))).await.unwrap();
-    assert_eq!(status_voice(&mut chat, 205).await, Some(agent.clone()), "a pane id names its agent");
+    assert!(refused.as_ref().is_err_and(|m| m.contains("codex has no voice mode")), "{refused:?}");
+    let refused = op_result(&mut phone, 204, voice(204, Some(&pi))).await;
+    assert_eq!(refused, Err("pi has no voice mode".into()));
+    assert_eq!(status_voice(&mut chat, 205).await, (None, None), "a refusal starts no voice agent");
+
+    // Case 2 and 6: a pane id names its agent, whose voice agent runs claude on haiku with no tools.
+    op_result(&mut phone, 206, voice(206, Some(&pane))).await.unwrap();
+    let (named, info) = status_voice(&mut chat, 207).await;
+    assert_eq!(named, Some(agent.clone()));
+    let info = info.expect("status names the voice agent");
+    assert_eq!((info.harness.as_str(), info.model.as_str()), ("claude", "haiku"));
+    assert!(alive(info.pid), "the voice agent's process runs");
+    let ps = std::process::Command::new("ps").args(["-o", "args=", "-p", &info.pid.to_string()]).output().unwrap();
+    let args = String::from_utf8_lossy(&ps.stdout).to_string();
+    for flag in ["--model haiku", "--tools", "--system-prompt", "--no-session-persistence", "--strict-mcp-config"] {
+        assert!(args.contains(flag), "{flag} in {args}");
+    }
+    assert!(!args.contains("--allowedTools"), "{args}");
     let text = reply(&mut chat, &agent, "show voice").await;
     assert!(text.starts_with("voice: Voice mode is on: the"), "{text:?}");
 
-    // The Mac takes voice over: the phone's agent is voiced no longer.
-    send(&mut mac, ClientMsg::LeaseClaim { req: Some(206), key: "voice".into() }).await;
-    while !matches!(recv(&mut mac).await, ServerMsg::LeaseClaimed { req: 206, .. }) {}
-    assert_eq!(status_voice(&mut chat, 207).await, None);
+    // Case 1: the voice agent acknowledges the message while the voiced agent is still silent,
+    // then speaks the gist of its reply once the turn ends.
+    let turn = queue_turn(&mut chat, 208, &agent, "hold first 3000 then answer").await;
+    let (ack, ack_ms, _) = voice_said(&mut phone, turn).await;
+    let acked_at = wheel_proto::unix_ms_now();
+    assert_eq!(ack, "Voice says: hold first 3000 then answer.");
+    assert!(ack_ms < 2500, "acknowledged {ack_ms} ms after sending");
+    let (gist, gist_ms, _) = voice_said(&mut phone, turn).await;
+    assert_eq!(gist, "Voice says: echo: hold first 3000 then answer.");
+    assert!(gist_ms >= 3000, "the gist comes after the reply, {gist_ms} ms after sending");
+
+    // Case 3: the voiced agent's transcript holds its full reply and nothing the voice agent said.
+    let mut fresh = connect(&url).await;
+    let events = attach_stamped(&mut fresh, &agent, 209).await;
+    let ended_at = events
+        .iter()
+        .find_map(|e| matches!(e.event, AgentEvent::TurnEnd { turn: t, .. } if t == turn).then_some(e.at).flatten())
+        .expect("the turn ended");
+    assert!(acked_at < ended_at, "voice spoke at {acked_at}, the turn ended at {ended_at}");
+    let transcript: String = events.iter().filter_map(|e| match &e.event { AgentEvent::Text { text } => Some(text.as_str()), _ => None }).collect();
+    assert!(transcript.contains("echo: hold first 3000 then answer"), "{transcript}");
+    assert!(!transcript.contains("Voice says"), "{transcript}");
+
+    // A new message interrupts what the voice agent is still saying about the last one.
+    let slow = queue_turn(&mut chat, 210, &agent, "slow voice one").await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let next = queue_turn(&mut chat, 211, &agent, "second message").await;
+    let (said, _, before) = voice_said(&mut phone, next).await;
+    assert_eq!(said, "Voice says: second message.");
+    assert!(!before.contains(&slow), "nothing was said for the interrupted message: {before:?}");
+
+    // Case 4: the Mac takes voice over, which ends the phone's voice agent.
+    let pid = voice_pid(&mut chat, 212).await;
+    send(&mut mac, ClientMsg::LeaseClaim { req: Some(213), key: "voice".into() }).await;
+    while !matches!(recv(&mut mac).await, ServerMsg::LeaseClaimed { req: 213, .. }) {}
+    assert_eq!(status_voice(&mut chat, 214).await, (None, None));
+    assert!(ended(pid).await, "a takeover ends the voice agent");
     assert_eq!(reply(&mut chat, &agent, "show voice").await.lines().next(), Some("voice: -"));
-    let refused = op_result(&mut phone, 208, voice(208, Some(&agent))).await;
+    let refused = op_result(&mut phone, 215, voice(215, Some(&agent))).await;
     assert!(refused.is_err(), "the phone no longer holds voice");
 
-    // The Mac names it, then closes: the line goes with its connection.
-    op_result(&mut mac, 209, voice(209, Some(&agent))).await.unwrap();
-    assert_eq!(status_voice(&mut chat, 210).await, Some(agent.clone()));
+    // The Mac names it, then closes: the voice agent goes with its connection.
+    op_result(&mut mac, 216, voice(216, Some(&agent))).await.unwrap();
+    let pid = voice_pid(&mut chat, 217).await;
     drop(mac);
-    let mut cleared = None;
-    for req in 211..260 {
+    let mut cleared = (Some(String::new()), None);
+    for req in 218..260 {
         cleared = status_voice(&mut chat, req).await;
-        if cleared.is_none() {
+        if cleared.0.is_none() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(cleared, None, "closing the holder's connection clears the voiced agent");
-    assert_eq!(reply(&mut chat, &agent, "show voice").await.lines().next(), Some("voice: -"));
+    assert_eq!(cleared, (None, None), "closing the holder's connection clears the voiced agent");
+    assert!(ended(pid).await, "closing the connection ends the voice agent");
 
-    // Naming none clears it.
+    // Naming none ends it.
     send(&mut phone, ClientMsg::LeaseClaim { req: Some(261), key: "voice".into() }).await;
     while !matches!(recv(&mut phone).await, ServerMsg::LeaseClaimed { req: 261, .. }) {}
     op_result(&mut phone, 262, voice(262, Some(&agent))).await.unwrap();
-    op_result(&mut phone, 263, voice(263, None)).await.unwrap();
-    assert_eq!(status_voice(&mut chat, 264).await, None);
+    let pid = voice_pid(&mut chat, 263).await;
+    op_result(&mut phone, 264, voice(264, None)).await.unwrap();
+    assert_eq!(status_voice(&mut chat, 265).await, (None, None));
+    assert!(ended(pid).await, "naming none ends the voice agent");
+
+    // The voiced agent ending ends it.
+    op_result(&mut phone, 266, voice(266, Some(&agent))).await.unwrap();
+    let pid = voice_pid(&mut chat, 267).await;
+    client_op(&mut chat, 268, ClientMsg::PaneClose { req: Some(268), pane: pane.clone() }).await;
+    assert!(ended(pid).await, "the agent ending ends the voice agent");
+    assert_eq!(status_voice(&mut chat, 269).await, (None, None));
 }
 
 /// What `agent_card` answered: Ok, or the error's message.

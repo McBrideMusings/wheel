@@ -521,7 +521,7 @@ impl Client {
             self.settings.log_shipping = Some((**logs).clone());
             self.settings.host = Some((**host).clone());
             self.settings.shell_problem = shell_integration.clone();
-            self.settings.usage = usage_board.clone();
+            self.settings.usage = (**usage_board).clone();
             if self.settings.login_path.as_ref() != Some(login_path) {
                 self.settings.login_path = Some(login_path.clone());
                 if self.settings_open && self.settings.command_line.detail.is_some() {

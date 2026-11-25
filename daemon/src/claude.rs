@@ -190,7 +190,14 @@ fn folder_grants_perm_answer(cwd: &Path) -> bool {
 /// The arguments the driver adds after the command's own.
 fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
-    if launch.brief.is_some() {
+    if launch.voice_agent {
+        // No built-in tools, MCP servers, slash commands, settings or hooks, and nothing saved: on
+        // a real `claude` this starts with about 4,500 input tokens and streams within a second.
+        args.extend(
+            ["--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "", "--no-session-persistence"]
+                .map(String::from),
+        );
+    } else if launch.brief.is_some() {
         args.extend(["--allowedTools".into(), ALLOWED.into()]);
         if !folder_grants_perm_answer(&launch.cwd) {
             args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
@@ -240,7 +247,8 @@ fn arguments(launch: &Launch, fork_at: Option<&str>) -> Vec<String> {
         args.extend(["--model".into(), model.clone()]);
     }
     if let Some(brief) = &launch.brief {
-        args.extend(["--append-system-prompt".into(), brief.clone()]);
+        let flag = if launch.voice_agent { "--system-prompt" } else { "--append-system-prompt" };
+        args.extend([flag.into(), brief.clone()]);
     }
     args
 }
@@ -1978,6 +1986,7 @@ mod tests {
             model: None,
             permissions: Default::default(),
             voice: Default::default(),
+            voice_agent: false,
         };
         let cut = super::arguments(&launch(1), Some("a1b"));
         let at = cut.iter().position(|a| a == "--resume-session-at").unwrap();
@@ -2006,12 +2015,39 @@ mod tests {
             model: None,
             permissions: Default::default(),
             voice: Default::default(),
+            voice_agent: false,
         };
         let args = super::arguments(&launch, None);
         let at = args.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(args[at + 1], super::ALLOWED);
         let at = args.iter().position(|a| a == "--disallowedTools").unwrap();
         assert_eq!(args[at + 1], super::DISALLOWED);
+    }
+
+    #[test]
+    fn a_voice_agent_has_no_tools_and_its_brief_replaces_the_system_prompt() {
+        use crate::driver::{Conversation, Launch};
+        let launch = Launch {
+            agent: crate::resume::Harness::Claude,
+            command: "claude".into(),
+            cwd: "/tmp".into(),
+            config_dir: None,
+            brief: Some("speak".into()),
+            env: Vec::new(),
+            conversation: Conversation::New("c".into()),
+            model: Some("haiku".into()),
+            permissions: Default::default(),
+            voice: Default::default(),
+            voice_agent: true,
+        };
+        let args = super::arguments(&launch, None);
+        let after = |flag: &str| args.iter().position(|a| a == flag).map(|at| args[at + 1].as_str());
+        assert_eq!(after("--tools"), Some(""));
+        assert_eq!(after("--setting-sources"), Some(""));
+        assert_eq!(after("--system-prompt"), Some("speak"));
+        assert_eq!(after("--model"), Some("haiku"));
+        assert!(args.iter().any(|a| a == "--no-session-persistence") && args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(!args.iter().any(|a| a == "--allowedTools" || a == "--append-system-prompt"), "{args:?}");
     }
 
     #[test]
@@ -2030,6 +2066,7 @@ mod tests {
             model: None,
             permissions: Default::default(),
             voice: Default::default(),
+            voice_agent: false,
         };
         let denies = |rules: &str| {
             std::fs::write(dir.join(".claude/settings.json"), format!(r#"{{"permissions":{{"allow":{rules}}}}}"#)).unwrap();
