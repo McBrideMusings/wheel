@@ -40,18 +40,64 @@ pub struct MenuRow {
     pub checked: bool,
     /// A separator above this row.
     pub divided: bool,
+    /// A server's heading, drawn with its mark (symbol, colour name; no colour while the server
+    /// is down) and never pressed.
+    pub heading: Option<(String, Option<String>)>,
 }
 
-/// The named colours a `state` command's `tint` may print; anything else draws in the primary colour.
+/// What the window shows, for the session menu's rows: its server, session, link and sessions.
+pub struct Shown<'a> {
+    pub server: &'a str,
+    pub session: Option<&'a str>,
+    pub up: bool,
+    pub sessions: &'a [Session],
+}
+
+/// The session menu's rows (SessionMenu.swift). With one server: its sessions, New Session,
+/// Rename Session…, Close Session…, then Add Server…. With more, each server's heading and
+/// sessions (`session:<server>:<id>`, disabled while it is down), a New Session row per server,
+/// Rename and Close for the session shown, then Add Server….
+pub fn session_rows(groups: &[crate::directory::Group], shown: &Shown) -> Vec<MenuRow> {
+    let row = |id: String, title: String, enabled: bool, checked: bool, divided: bool| MenuRow { id, title, enabled, checked, divided, heading: None };
+    let mut rows = vec![];
+    if groups.len() <= 1 {
+        rows.extend(shown.sessions.iter().map(|s| row(format!("session:{}", s.id), s.name.clone(), true, Some(s.id.as_str()) == shown.session, false)));
+        rows.push(row("new-session".into(), "New Session".into(), shown.up, false, true));
+    } else {
+        for g in groups {
+            let own = g.key == shown.server;
+            let up = if own { shown.up } else { g.up };
+            rows.push(MenuRow { id: format!("server:{}", g.key), title: g.name.clone(), enabled: false, checked: false, divided: !rows.is_empty(), heading: Some((g.icon().to_owned(), g.color.clone().filter(|_| up))) });
+            let sessions: Vec<(String, String)> = if own { shown.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect() } else { g.sessions.clone() };
+            rows.extend(sessions.into_iter().map(|(id, name)| row(format!("session:{}:{id}", g.key), name, up, own && Some(id.as_str()) == shown.session, false)));
+        }
+        for (i, g) in groups.iter().enumerate() {
+            let up = if g.key == shown.server { shown.up } else { g.up };
+            rows.push(row(format!("new-session:{}", g.key), format!("New Session on {}", g.name), up, false, i == 0));
+        }
+    }
+    rows.push(row("rename-session".into(), "Rename Session…".into(), shown.session.is_some() && shown.up, false, false));
+    rows.push(row("close-session".into(), "Close Session…".into(), shown.session.is_some(), false, false));
+    rows.push(row("add-server".into(), "Add Server…".into(), true, false, true));
+    rows
+}
+
+/// The named colours a `state` command's `tint` and a server's `host.color` may name (macOS's dark
+/// system colours); anything else draws in the primary colour.
 pub fn tint(name: Option<&str>) -> Option<u32> {
     Some(match name? {
         "red" => 0xff453a,
         "orange" => 0xff9f0a,
         "yellow" => 0xffd60a,
         "green" => 0x30d158,
+        "mint" => 0x63e6e2,
+        "teal" => 0x40c8e0,
+        "cyan" => 0x64d2ff,
         "blue" => 0x0a84ff,
+        "indigo" => 0x5e5ce6,
         "purple" => 0xbf5af2,
         "pink" => 0xff375f,
+        "brown" => 0xac8e68,
         "gray" | "grey" => 0x8e8e93,
         _ => return None,
     })
@@ -92,7 +138,7 @@ impl Client {
         // The title shows while the sidebar is open, and while its name field is up.
         let queue = self.queue.queue();
         let topic = self.shown_topic().map(|t| t.title.as_str());
-        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode, queue.as_ref().map(|q| (q.count, q.tone.as_str())), topic)
+        header::row(self.viewport.0, self.sidebar_open || self.renaming_window(), &plugins, &spaces, self.space_id.as_deref(), &name, self.pinned, &self.mode, queue.as_ref().map(|q| (q.count, q.tone.as_str())), topic, self.server_mark().as_ref())
     }
     /// The row's chips: every button, tab and the title, with the rectangle a check presses.
     pub fn header_chips(&self) -> Vec<header::Chip> {
@@ -140,6 +186,17 @@ impl Client {
             }
             _ => false,
         }
+    }
+    /// The session button's server mark while the app knows more than one server: this window's
+    /// server's symbol and colour, and the session shown.
+    pub fn server_mark(&self) -> Option<header::ServerMark> {
+        let groups = crate::directory::groups();
+        if groups.len() <= 1 {
+            return None;
+        }
+        let group = groups.iter().find(|g| g.key == self.server());
+        let session = self.sessions.iter().find(|s| Some(&s.id) == self.session_id.as_ref()).map_or_else(|| "Session".to_owned(), |s| s.name.clone());
+        Some(header::ServerMark { icon: group.map_or("desktopcomputer", |g| g.icon()).to_owned(), tint: group.and_then(|g| g.color.clone()), session })
     }
     /// A press on a chip of the row.
     pub fn press_title(&mut self, hit: &Hit) {
@@ -194,6 +251,7 @@ impl Client {
             return;
         }
         let was = std::mem::replace(&mut self.mode, mode.to_owned());
+        self.follow_orchestrator();
         self.log(format!("window {}: mode {mode}", &self.window_id[..self.window_id.len().min(12)]));
         // Orchestrator mode shows the space open on the orchestrator's folder in the window's body
         // like any space; the space Spaces mode showed comes back when the mode ends.
@@ -267,19 +325,12 @@ impl Client {
     /// and Close Session… (SessionMenu.swift); or the modes with the current one checked.
     pub fn title_menu_rows(&self, menu: TitleMenu) -> Vec<MenuRow> {
         match menu {
-            TitleMenu::Session => {
-                let current = self.session_id.as_deref();
-                let mut rows: Vec<MenuRow> = self.sessions.iter().map(|s| MenuRow { id: format!("session:{}", s.id), title: s.name.clone(), enabled: true, checked: Some(s.id.as_str()) == current, divided: false }).collect();
-                rows.push(MenuRow { id: "new-session".into(), title: "New Session".into(), enabled: self.link == Link::Up, checked: false, divided: true });
-                rows.push(MenuRow { id: "rename-session".into(), title: "Rename Session…".into(), enabled: current.is_some() && self.link == Link::Up, checked: false, divided: false });
-                rows.push(MenuRow { id: "close-session".into(), title: "Close Session…".into(), enabled: current.is_some(), checked: false, divided: false });
-                rows
-            }
+            TitleMenu::Session => session_rows(&crate::directory::groups(), &Shown { server: self.server(), session: self.session_id.as_deref(), up: self.link == Link::Up, sessions: &self.sessions }),
             TitleMenu::Title => vec![
-                MenuRow { id: "rename-space".into(), title: "Rename Space…".into(), enabled: self.space_id.is_some(), checked: false, divided: false },
-                MenuRow { id: "rename-window".into(), title: "Rename Window…".into(), enabled: true, checked: false, divided: false },
+                MenuRow { id: "rename-space".into(), title: "Rename Space…".into(), enabled: self.space_id.is_some(), checked: false, divided: false, heading: None },
+                MenuRow { id: "rename-window".into(), title: "Rename Window…".into(), enabled: true, checked: false, divided: false, heading: None },
             ],
-            TitleMenu::Mode => header::MODES.iter().map(|(id, title, _)| MenuRow { id: format!("mode:{id}"), title: (*title).to_owned(), enabled: true, checked: self.mode == *id, divided: false }).collect(),
+            TitleMenu::Mode => header::MODES.iter().map(|(id, title, _)| MenuRow { id: format!("mode:{id}"), title: (*title).to_owned(), enabled: true, checked: self.mode == *id, divided: false, heading: None }).collect(),
         }
     }
     /// Run a row of the open menu, which closes.
@@ -295,11 +346,21 @@ impl Client {
             return;
         }
         self.log(format!("title menu: {id}"));
-        if let Some(session) = id.strip_prefix("session:") {
-            self.select_session(session);
+        if let Some(key) = id.strip_prefix("server:") {
+            self.log(format!("title menu: server {key} heading is not pressable"));
+        } else if let Some(rest) = id.strip_prefix("session:") {
+            match rest.split_once(':') {
+                Some((server, session)) if server != self.server() => crate::directory::ask(crate::directory::Ask::Switch { window: self.window_id.clone(), server: server.to_owned(), session: session.to_owned() }),
+                Some((_, session)) => self.select_session(session),
+                None => self.select_session(rest),
+            }
+        } else if id == "add-server" {
+            self.begin_add_server();
+        } else if let Some(server) = id.strip_prefix("new-session:").filter(|s| *s != self.server()) {
+            crate::directory::ask(crate::directory::Ask::NewSession { window: self.window_id.clone(), server: server.to_owned() });
         } else if let Some(mode) = id.strip_prefix("mode:") {
             self.set_mode(mode);
-        } else if id == "new-session" {
+        } else if id == "new-session" || id.strip_prefix("new-session:").is_some() {
             // The Swift app shows the new session in the focused window once it exists.
             let taken: Vec<&str> = self.sessions.iter().map(|s| s.name.as_str()).collect();
             let name = header::session_name(&taken);
@@ -429,6 +490,13 @@ impl Client {
                             cx.notify();
                         }));
                 }
+                Hit::SessionMenu if chip.rect.w > header::BUTTON_W => {
+                    // The server's mark in its colour, then the session's name cut at the end.
+                    let mark = tint(chip.tint.as_deref()).unwrap_or(DIM);
+                    el = el.justify_start().gap(px(5.)).px(px(6.)).rounded_md().cursor_pointer().hover(|s| s.bg(rgb(0x1f2b26))).text_xs().text_color(rgb(DIM))
+                        .child(div().flex_none().w(px(16.)).flex().justify_center().children(self.symbol(&chip.icon, 13., mark)))
+                        .child(div().min_w(px(0.)).overflow_hidden().text_ellipsis().whitespace_nowrap().child(chip.label.clone()));
+                }
                 _ => {
                     let plugin = matches!(chip.hit, Hit::Plugin(_));
                     let colour = if !chip.enabled { 0x5a7266 } else if plugin { tint(chip.tint.as_deref()).unwrap_or(TEXT) } else { DIM };
@@ -529,6 +597,14 @@ impl Client {
         for (row, r) in rows {
             if row.divided {
                 card = card.child(div().absolute().left(px(8.)).top(px(r.y - card_rect.y - 4.)).w(px(card_rect.w - 16.)).h(px(1.)).bg(rgb(LINE)));
+            }
+            if let Some((icon, color)) = &row.heading {
+                // A server's heading: its mark and name, dimmed while it is down; never pressed.
+                let colour = tint(color.as_deref()).unwrap_or(DIM);
+                card = card.child(div().absolute().left(px(r.x - card_rect.x)).top(px(r.y - card_rect.y)).w(px(r.w)).h(px(r.h)).px_2().flex().items_center().gap_2().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(DIM))
+                    .child(div().w(px(14.)).flex_none().flex().justify_center().children(self.symbol(icon, 11., colour)))
+                    .child(div().flex_1().min_w(px(0.)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(row.title.clone())));
+                continue;
             }
             let id = row.id.clone();
             let mut el = div().absolute().left(px(r.x - card_rect.x)).top(px(r.y - card_rect.y)).w(px(r.w)).h(px(r.h)).px_2().rounded_sm().flex().items_center().gap_2().text_color(rgb(if row.enabled { TEXT } else { 0x5a7266 }))
@@ -897,7 +973,7 @@ impl Client {
             "row": row.chips.iter().map(|c| json!({"id": header::frame_id(&c.hit).unwrap_or_else(|| match &c.hit { Hit::Space(id) => format!("tab:{id}"), _ => "title".into() }), "label": c.label, "icon": c.icon, "badge": c.badge, "tint": c.tint, "enabled": c.enabled, "pressable": c.pressable, "active": c.active, "frame": [c.rect.x, c.rect.y, c.rect.w, c.rect.h]})).collect::<Vec<_>>(),
             "tabs": row.track.map(|t| json!({"track": [t.x, t.y, t.w, t.h], "tab_width": row.tab_width, "scrolls": row.scrolls})),
             "menu": self.title_menu.map(|m| json!({"kind": match m { TitleMenu::Session => "session", TitleMenu::Mode => "mode", TitleMenu::Title => "title" },
-                "rows": self.title_menu_placed().map(|(_, rows)| rows.iter().map(|(r, rect)| json!({"id": r.id, "title": r.title, "enabled": r.enabled, "checked": r.checked, "frame": [rect.x, rect.y, rect.w, rect.h]})).collect::<Vec<_>>()).unwrap_or_default()})),
+                "rows": self.title_menu_placed().map(|(_, rows)| rows.iter().map(|(r, rect)| json!({"id": r.id, "title": r.title, "enabled": r.enabled, "checked": r.checked, "heading": r.heading.is_some(), "mark": r.heading.as_ref().map(|(icon, color)| json!({"icon": icon, "color": color})), "frame": [rect.x, rect.y, rect.w, rect.h]})).collect::<Vec<_>>()).unwrap_or_default()})),
             "mode": self.mode,
             "pinned": self.pinned,
             "connection_badge": self.connection_badge().1,
@@ -954,10 +1030,42 @@ fn usage_bar_flex(pct: f64, stale: bool, pace: Option<f64>) -> gpui::Div {
 mod tests {
     use super::*;
 
+    fn group(key: &str, up: bool, sessions: &[&str]) -> crate::directory::Group {
+        crate::directory::Group { key: key.into(), name: key.to_uppercase(), color: Some("blue".into()), platform: "linux_amd64".into(), up, sessions: sessions.iter().map(|s| (s.to_string(), format!("{s} name"))).collect() }
+    }
+
+    #[test]
+    fn one_server_lists_todays_rows_then_add_server() {
+        let sessions = vec![Session { id: "s1".into(), name: "One".into(), spaces: vec![] }, Session { id: "s2".into(), name: "Two".into(), spaces: vec![] }];
+        let rows = session_rows(&[group("local", true, &["s1", "s2"])], &Shown { server: "local", session: Some("s2"), up: true, sessions: &sessions });
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["session:s1", "session:s2", "new-session", "rename-session", "close-session", "add-server"]);
+        assert!(rows[1].checked && !rows[0].checked);
+        assert!(rows.iter().all(|r| r.heading.is_none()), "no heading and no mark with one server");
+    }
+
+    #[test]
+    fn two_servers_group_by_server_and_disable_a_down_ones_rows() {
+        let sessions = vec![Session { id: "s1".into(), name: "Fresh".into(), spaces: vec![] }];
+        let groups = [group("local", true, &["stale"]), group("b", false, &["t1"])];
+        let rows = session_rows(&groups, &Shown { server: "local", session: Some("s1"), up: true, sessions: &sessions });
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["server:local", "session:local:s1", "server:b", "session:b:t1", "new-session:local", "new-session:b", "rename-session", "close-session", "add-server"]);
+        let row = |id: &str| rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(row("session:local:s1").title, "Fresh", "the window's own server lists the sessions it holds");
+        assert!(row("session:local:s1").checked && row("session:local:s1").enabled);
+        assert!(!row("session:b:t1").enabled && !row("new-session:b").enabled, "a down server's rows are disabled");
+        assert!(row("server:local").heading.as_ref().is_some_and(|h| h.0 == "server.rack" && h.1.as_deref() == Some("blue")));
+        assert!(row("server:b").heading.as_ref().is_some_and(|h| h.1.is_none()), "a down server's mark is dimmed");
+        assert!(!row("server:b").enabled);
+        assert_eq!(row("new-session:b").title, "New Session on B");
+    }
+
     #[test]
     fn tint_spells_grey_two_ways_and_ignores_unknown_names() {
         assert_eq!(tint(Some("grey")), tint(Some("gray")));
-        assert_eq!(tint(Some("teal")), None);
+        assert_eq!(tint(Some("teal")), Some(0x40c8e0));
+        assert_eq!(tint(Some("chartreuse")), None);
         assert_eq!(tint(None), None);
     }
 

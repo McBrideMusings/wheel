@@ -4059,7 +4059,7 @@ async fn title_and_bottom_rows(run: Run, first_session_id: String, fixture_space
     let session_menu = title_state(cx)?["menu"].clone();
     let menu_ids: Vec<String> = session_menu["rows"].as_array().unwrap_or(&vec![]).iter().map(|r| r["id"].as_str().unwrap_or_default().to_owned()).collect();
     let session_count = window.update(cx, |c, _, _| c.state_json()["sessions"].as_array().map(Vec::len).unwrap_or(0))?;
-    ensure!(session_menu["kind"] == "session" && menu_ids.len() == session_count + 3 && menu_ids[session_count..] == ["new-session", "rename-session", "close-session"] && menu_ids[0] == format!("session:{first_session_id}") && session_menu["rows"][0]["checked"] == true, "the session menu: {session_menu}");
+    ensure!(session_menu["kind"] == "session" && menu_ids.len() == session_count + 4 && menu_ids[session_count..] == ["new-session", "rename-session", "close-session", "add-server"] && menu_ids[0] == format!("session:{first_session_id}") && session_menu["rows"][0]["checked"] == true, "the session menu: {session_menu}");
     window.update(cx, |c, _, cx| c.key(&gpui::KeyDownEvent { keystroke: wheel_gpui::keymap::KeyChord::parse("escape").unwrap().keystroke(), is_held: false, prefer_character_input: false }, cx))?;
     ensure!(title_state(cx)?["menu"].is_null(), "Esc did not close the session menu");
     // The sidebar hidden: the spaces become tabs in the title row, 220 pt wide for one space, and the title goes.

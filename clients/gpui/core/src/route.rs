@@ -68,6 +68,7 @@ impl Router {
     /// A new socket opened: what the last one held is gone.
     pub fn reset(&mut self) {
         self.held = Held::default();
+        self.back.clear();
     }
 
     pub fn join(&mut self, n: u32, events: fmpsc::UnboundedSender<Event>) {
@@ -107,6 +108,13 @@ impl Router {
         out
     }
 
+    /// Subscriber `n`'s events closed without a leave (a window dropped without shutting down): it
+    /// leaves all the same, and the frames that undo what only it held wait in [`Router::take_back`].
+    pub fn gone(&mut self, n: u32) {
+        let undo = self.leave(n);
+        self.back.extend(undo);
+    }
+
     fn procs_change(&mut self) -> Option<String> {
         let now = self.held.procs.last().map(|(_, space)| space.clone());
         if now == self.held.procs_sent {
@@ -140,7 +148,12 @@ impl Router {
         match op.as_str() {
             "agent_attach" => {
                 let holders = held.agents.entry(s(&frame, "agent")).or_default();
-                if req.is_none() && !holders.is_empty() && !holders.contains(&n) {
+                // wheeld keeps one stream per agent per socket and would restart it, replaying to
+                // every holder; this subscriber already hears it.
+                if req.is_none() && holders.contains(&n) {
+                    return Outgoing::Hold;
+                }
+                if req.is_none() && !holders.is_empty() {
                     held.replays.entry(s(&frame, "agent")).or_default().push_back(n);
                 }
                 holders.insert(n);
@@ -355,6 +368,20 @@ mod tests {
     }
 
     #[test]
+    fn a_window_attaching_an_agent_it_already_holds_sends_nothing() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+        sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
+        assert_eq!(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
+        assert_eq!(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
+        // Only the second window's first attach is owed a replay of its own.
+        assert_eq!(r.held.replays["a"], [2]);
+        // Once it lets go, attaching again is a first attach.
+        assert_eq!(r.outgoing(1, r#"{"op":"agent_detach","agent":"a"}"#), Outgoing::Hold);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+    }
+
+    #[test]
     fn a_feed_is_subscribed_once_and_each_holder_hears_it_with_its_req() {
         let (mut r, _rx) = router(2);
         let f = |req| format!(r#"{{"op":"feed_subscribe","req":{req},"pane":"p","feed":"q","params":{{"dir":"/d"}}}}"#);
@@ -374,6 +401,22 @@ mod tests {
         assert_eq!(sent(r.outgoing(1, r#"{"op":"procs_watch","space":"s1"}"#))["space"], "s1");
         assert_eq!(sent(r.outgoing(2, r#"{"op":"procs_watch","space":"s2"}"#))["space"], "s2");
         assert_eq!(r.leave(2), vec![json!({"op":"procs_watch","space":"s1"}).to_string()]);
+    }
+
+    #[test]
+    fn a_window_dropped_without_leaving_lets_go_of_what_only_it_held() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
+        sent(r.outgoing(2, r#"{"op":"feed_subscribe","req":3,"pane":"p","feed":"q","params":{}}"#));
+        r.gone(2);
+        assert!(!r.subscribers.contains_key(&2));
+        let back: Vec<Value> = r.take_back().iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(back, [json!({"op":"agent_detach","agent":"a"}), json!({"op":"feed_unsubscribe","pane":"p","feed":"q","params":{}})]);
+        // Frames owed on a socket that closed are not sent on the next one.
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"b"}"#));
+        r.gone(1);
+        r.reset();
+        assert!(r.take_back().is_empty());
     }
 
     #[test]

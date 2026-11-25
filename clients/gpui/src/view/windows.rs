@@ -18,6 +18,8 @@ pub enum NameTarget {
     Window,
     /// A session's name, in the Rename Session card.
     Session(String),
+    /// The pairing code, in the Add Server card: whether it is pairing, and why the last try failed.
+    Server { busy: bool, error: Option<String> },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct NameEdit {
@@ -118,6 +120,21 @@ impl Client {
                     self.log(format!("rename session {session} to {name}"));
                     self.send_layout(|req| ClientMsg::SessionRename { req: Some(req), session, name });
                 }
+            }
+            NameTarget::Server { busy: true, .. } => {
+                self.name_edit = Some(edit);
+                return;
+            }
+            NameTarget::Server { .. } => {
+                let code = edit.draft.trim().to_owned();
+                if code.is_empty() {
+                    self.name_edit = Some(NameEdit { target: NameTarget::Server { busy: false, error: Some("Paste a pairing code first".into()) }, draft: edit.draft });
+                    return;
+                }
+                self.log("add server: pairing".into());
+                self.name_edit = Some(NameEdit { target: NameTarget::Server { busy: true, error: None }, draft: edit.draft });
+                crate::directory::ask(crate::directory::Ask::Pair { window: self.window_id.clone(), code });
+                return;
             }
         }
         self.sync_overlay();
@@ -245,9 +262,106 @@ impl Client {
             "id": self.window_id,
             "name": self.window_name,
             "title": self.window_title(),
-            "name_edit": self.name_edit.as_ref().map(|e| json!({"target": match &e.target { NameTarget::Window => "window".to_owned(), NameTarget::Session(s) => format!("session:{s}") }, "draft": e.draft})),
+            "name_edit": self.name_edit.as_ref().map(|e| json!({"target": match &e.target { NameTarget::Window => "window".to_owned(), NameTarget::Session(s) => format!("session:{s}"), NameTarget::Server { .. } => "server".to_owned() }, "error": match &e.target { NameTarget::Server { error, .. } => error.clone(), _ => None }, "draft": e.draft})),
             "windows": windows::with(|r| windows::ls(r, self.endpoint.server(), &self.sessions, &self.spaces)),
             "little": self.little_json(),
         })
+    }
+}
+
+// MARK: Servers
+
+impl Client {
+    pub fn set_pump(&mut self, task: gpui::Task<()>) {
+        self.pump = Some(task);
+    }
+    /// Move this window to `session` of `endpoint`'s wheeld: it tells its old wheeld it shows
+    /// nothing and leaves that subscription, forgets what only the old wheeld's answers would
+    /// complete, and the `Up` its new subscription hears resets the rest as a reconnect does.
+    pub fn rebind(&mut self, out: crate::daemon::Outbox, endpoint: Endpoint, session: String) {
+        self.log(format!("window {}: switch to server {} session {session}", self.short_id(), endpoint.server()));
+        let _ = self.out.send(crate::daemon::frame(&ClientMsg::View { req: None, window: self.window_id.clone(), session: None, space: None, pane: None }));
+        self.out.leave();
+        self.out = out;
+        self.endpoint = endpoint;
+        self.pump = None;
+        self.close_title_menu();
+        self.session_id = Some(session);
+        self.space_id = None;
+        self.session_to_show = None;
+        self.session_show_req = None;
+        self.orchestrator_dir = None;
+        self.agent_reqs.clear();
+        self.split_reqs.clear();
+        // Not Connecting: the new subscription's `Up` runs the reset a reconnect runs.
+        self.link = Link::Down("switching servers".into());
+        self.publish();
+    }
+    /// Orchestrator mode shows the one orchestrator (ADR-0054): while this window's wheeld has no
+    /// space on its orchestrator's folder and another server's does, the window moves there.
+    pub fn follow_orchestrator(&mut self) {
+        if self.little || self.mode != "orchestrator" || self.link != Link::Up || self.orchestrator_dir.is_none() || self.orchestrator_space().is_some() {
+            return;
+        }
+        if let Some((server, session)) = crate::directory::orchestrator_elsewhere(self.server()) {
+            self.log(format!("window {}: no orchestrator space on server {}; server {server} has one, switching", self.short_id(), self.server()));
+            crate::directory::ask(crate::directory::Ask::Switch { window: self.window_id.clone(), server, session });
+        }
+    }
+    /// Add Server…: a card with a field for the code `wheel remote pair` prints.
+    pub fn begin_add_server(&mut self) {
+        self.close_title_menu();
+        self.rename = None;
+        self.name_edit = Some(NameEdit { target: NameTarget::Server { busy: false, error: None }, draft: String::new() });
+        self.sync_overlay();
+    }
+    /// The pairing Add Server… asked for ended: the card closes, or says why it failed.
+    pub fn paired(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(name) => {
+                self.log(format!("add server: paired with {name}"));
+                if self.name_edit.as_ref().is_some_and(|e| matches!(e.target, NameTarget::Server { .. })) {
+                    self.name_edit = None;
+                    self.sync_overlay();
+                }
+            }
+            Err(error) => {
+                self.log(format!("add server: pairing failed: {error}"));
+                if let Some(edit) = self.name_edit.as_mut().filter(|e| matches!(e.target, NameTarget::Server { .. })) {
+                    edit.target = NameTarget::Server { busy: false, error: Some(error) };
+                }
+            }
+        }
+    }
+    /// Something the directory did for this window failed: say so in a notice.
+    pub fn directory_error(&mut self, text: String) {
+        self.log(text.clone());
+        self.post(crate::toasts::Toast::posted("directory".into(), crate::toasts::Level::Error, text, None));
+    }
+    /// The Add Server card: the field, its error, Cancel and Pair.
+    pub(super) fn add_server_overlay(&self, width: f32, height: f32, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let edit = self.name_edit.as_ref()?;
+        let NameTarget::Server { busy, error } = &edit.target else { return None };
+        let busy = *busy;
+        // Fixed-width buttons and a reserved error line: Pairing… and an error never move Cancel or Pair.
+        let button = |label: &'static str, yes: bool, cx: &mut Context<Self>| {
+            let el = div().w(px(84.)).py_1().flex().justify_center().rounded_sm().bg(rgb(if yes { 0x31483e } else { 0x22302a })).child(label);
+            if yes && busy {
+                return el.text_color(rgb(DIM));
+            }
+            el.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                if yes { this.commit_name_edit() } else { this.cancel_name_edit() }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+        };
+        let card = div().w(px(360f32.min(width - 32.))).flex().flex_col().gap_2().p_4().rounded_md().bg(rgb(0x17201c)).border_1().border_color(rgb(LINE)).text_color(rgb(TEXT))
+            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Add Server"))
+            .child(div().text_xs().text_color(rgb(DIM)).child("Paste the code `wheel remote pair` prints"))
+            .child(div().h(px(24.)).px(px(6.)).rounded_sm().bg(rgb(0x0e1311)).border_1().border_color(rgb(ACCENT)).overflow_hidden().whitespace_nowrap().flex().items_center().child(self.field_element(&super::fields::FieldId::WindowName, &edit.draft)))
+            .child(div().h(px(16.)).text_xs().text_color(rgb(super::sidebar::RED)).overflow_hidden().text_ellipsis().whitespace_nowrap().children(error.clone()))
+            .child(div().flex().justify_end().gap_2().child(button("Cancel", false, cx)).child(button(if busy { "Pairing…" } else { "Pair" }, true, cx)));
+        Some(Self::scrim(width, height, card, cx))
     }
 }

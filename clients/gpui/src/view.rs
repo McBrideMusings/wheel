@@ -125,6 +125,8 @@ pub struct Client {
     reported: Option<(Option<String>, Option<String>, Option<String>)>,
     out: crate::daemon::Outbox,
     endpoint: Endpoint,
+    /// The task feeding this window its subscription's events (`crate::pump`); a new one drops it.
+    pump: Option<gpui::Task<()>>,
     spaces: Vec<Space>,
     /// The space shown: kept across layouts by id.
     space_id: Option<String>,
@@ -562,7 +564,7 @@ impl Client {
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(), earlier: HashMap::new(), history_reqs: HashMap::new(),
             server_offer: None, server_source_logged: None, server_started: None,
             sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), speech: Default::default(), voice: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
-            window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false,
+            window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false, pump: None,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
@@ -702,6 +704,7 @@ impl Client {
                                         if self.orchestrator_dir.as_ref() != Some(&dir) {
                                             self.orchestrator_dir = Some(dir);
                                             self.show_orchestrator_space();
+                                            self.follow_orchestrator();
                                             self.sync_queue();
                                             self.read_topic();
                                         }
@@ -914,6 +917,7 @@ impl Client {
         self.ask_space_settings();
         self.sync_queue();
         self.sync_earlier();
+        self.follow_orchestrator();
         // A palette is for the pane as it was when it opened: a pane that left, or that
         // something else changed, closes it. One still waiting for a listing asks again.
         let kinds: HashMap<String, String> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| (l.id.clone(), l.kind.clone())).collect();
@@ -2855,6 +2859,9 @@ impl Render for Client {
         if let Some(card) = self.session_name_overlay(w, h, cx) {
             root = root.child(card);
         }
+        if let Some(card) = self.add_server_overlay(w, h, cx) {
+            root = root.child(card);
+        }
         if self.pairing.open {
             root = root.child(self.pairing_overlay(w, h, cx));
         }
@@ -3613,7 +3620,7 @@ pub fn orchestrator_dir(setting: &wheel_proto::SettingInfo) -> String {
 }
 
 /// Whether two absolute folders are one, a trailing slash aside.
-fn same_dir(a: &str, b: &str) -> bool {
+pub fn same_dir(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
 }
 

@@ -38,6 +38,7 @@ pub mod spoken;
 pub mod status;
 pub mod strip;
 pub mod toasts;
+pub mod terminal;
 pub mod topic;
 pub mod transcript;
 pub mod tray;
