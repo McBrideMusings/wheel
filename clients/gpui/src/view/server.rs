@@ -326,8 +326,12 @@ pub fn stopping() {
     });
 }
 
-/// A connection came up or went down. Up ends whatever the watch waited for.
-pub fn link(up: bool) {
+/// A connection came up or went down. Up ends whatever the watch waited for. Only this Mac's own
+/// wheeld counts: the watch, the menu and Restart Server are about the local service.
+pub fn link(endpoint: &crate::daemon::Endpoint, up: bool) {
+    if endpoint.remote.is_some() {
+        return;
+    }
     with_mut(|s| {
         s.connected = up;
         if up && s.watch.answered() {

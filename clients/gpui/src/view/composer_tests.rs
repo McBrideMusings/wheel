@@ -3,6 +3,7 @@
 use super::*;
 use crate::layout::{Leaf, Space, Tree};
 use gpui::{TestAppContext, VisualTestContext};
+use std::sync::mpsc;
 
 struct Rig {
     cx: VisualTestContext,

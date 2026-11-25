@@ -8,9 +8,12 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 
 /// One open window as it last described itself.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub id: String,
+    /// The wheeld whose session it shows, as `Endpoint::server` keys it: session and space ids
+    /// are each wheeld's own, so every lookup by them is scoped to one server.
+    pub server: String,
     /// The name given with Rename Window or `wheel window rename`; none shows the space's name.
     pub name: Option<String>,
     pub session: Option<String>,
@@ -20,16 +23,27 @@ pub struct Record {
     /// The pin: the window floats over every other.
     pub pinned: bool,
 }
+impl Default for Record {
+    fn default() -> Self {
+        Self { id: String::new(), server: crate::daemon::LOCAL.into(), name: None, session: None, active: None, sidebar: false, pinned: false }
+    }
+}
 
 /// One little window as it last described itself (WheelKit's LittleWindow): one space's grid
 /// under a strip, with no tabs and no sidebar. Its id is its window's id.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Little {
     pub id: String,
+    pub server: String,
     pub space: String,
     /// The main window whose tab for `space` it dims; none when it belongs to none.
     pub owner: Option<String>,
     pub pinned: bool,
+}
+impl Default for Little {
+    fn default() -> Self {
+        Self { id: String::new(), server: crate::daemon::LOCAL.into(), space: String::new(), owner: None, pinned: false }
+    }
 }
 
 /// The windows in the order they opened, and the one that was key last.
@@ -66,19 +80,23 @@ impl Registry {
         }
         self.changed();
     }
-    /// Whether a main window shows `session`.
-    pub fn shows_session(&self, session: &str) -> bool {
-        self.windows.iter().any(|w| w.session.as_deref() == Some(session))
+    /// Whether a main window shows `server`'s `session`.
+    pub fn shows_session(&self, server: &str, session: &str) -> bool {
+        self.windows.iter().any(|w| w.server == server && w.session.as_deref() == Some(session))
     }
-    /// The little window showing `space`, if one is open.
-    pub fn little_showing(&self, space: &str) -> Option<&Little> {
-        self.littles.iter().find(|l| l.space == space)
+    /// The little window showing `server`'s `space`, if one is open.
+    pub fn little_showing(&self, server: &str, space: &str) -> Option<&Little> {
+        self.littles.iter().find(|l| l.server == server && l.space == space)
     }
-    /// The main window holding `space`: the focused one when its session holds it, else the
-    /// first whose session does (WindowLayout.window(holding:)).
-    pub fn window_holding(&self, space: &str, sessions: &[Session]) -> Option<&Record> {
+    /// The main windows on `server`, in the order they opened.
+    pub fn on<'a>(&'a self, server: &'a str) -> impl Iterator<Item = &'a Record> {
+        self.windows.iter().filter(move |w| w.server == server)
+    }
+    /// The main window holding `server`'s `space` (`sessions` being that server's): the focused
+    /// one when its session holds it, else the first whose session does (WindowLayout.window(holding:)).
+    pub fn window_holding(&self, server: &str, space: &str, sessions: &[Session]) -> Option<&Record> {
         let home = session_holding(sessions, space).map(|s| s.id.as_str())?;
-        let holds = |w: &&Record| w.session.as_deref() == Some(home);
+        let holds = |w: &&Record| w.server == server && w.session.as_deref() == Some(home);
         self.focused().filter(holds).or_else(|| self.windows.iter().find(holds))
     }
     pub fn put(&mut self, record: Record) {
@@ -157,9 +175,11 @@ fn resolve<T>(kind: &str, text: &str, items: &[T], id: impl Fn(&T) -> &str, name
     }
 }
 
-/// The window a CLI argument names: its id, else its title (AppModel.windowID(named:)).
-pub fn window_id(registry: &Registry, text: &str, spaces: &[Space]) -> Result<String, String> {
-    resolve("window", text, &registry.windows, |w| &w.id, |w| title(w, spaces))
+/// The window on `server` a CLI argument names: its id, else its title (AppModel.windowID(named:)).
+/// `spaces` are that server's, so a window on another server is never named from here.
+pub fn window_id(registry: &Registry, server: &str, text: &str, spaces: &[Space]) -> Result<String, String> {
+    let windows: Vec<&Record> = registry.on(server).collect();
+    resolve("window", text, &windows, |w| &w.id, |w| title(w, spaces))
 }
 
 /// The space a CLI argument names: its id, else its name (AppModel.spaceID(named:)).
@@ -177,21 +197,23 @@ fn spaces_of<'a>(session: Option<&str>, sessions: &[Session], spaces: &'a [Space
         .unwrap_or_default()
 }
 
-/// `wheel window ls`: every window with its spaces, the background (the spaces of the sessions
-/// no window shows) and the little windows, as the Swift client answers.
-pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value {
+/// `wheel window ls` asked through `server` (whose `sessions` and `spaces` these are): that
+/// server's windows with their spaces, the background (the spaces of its sessions no window
+/// shows) and its little windows, as the Swift client answers. Each carries its `server`.
+pub fn ls(registry: &Registry, server: &str, sessions: &[Session], spaces: &[Space]) -> Value {
     let named = |s: &&Space| json!({"id": s.id, "name": s.name});
     let focused = registry.focused().map(|w| w.id.clone());
     // A space in a little window is not in the background (WindowLayout.backgroundSpaces).
-    let background: Vec<Value> = sessions.iter().filter(|s| !registry.shows_session(&s.id))
-        .flat_map(|s| spaces_of(Some(&s.id), sessions, spaces)).filter(|s| registry.little_showing(&s.id).is_none()).map(|s| named(&s)).collect();
+    let background: Vec<Value> = sessions.iter().filter(|s| !registry.shows_session(server, &s.id))
+        .flat_map(|s| spaces_of(Some(&s.id), sessions, spaces)).filter(|s| registry.little_showing(server, &s.id).is_none()).map(|s| named(&s)).collect();
     let little = |l: &Little| {
         let space = match spaces.iter().find(|s| s.id == l.space) { Some(s) => json!({"id": s.id, "name": s.name}), None => json!({"id": l.space}) };
-        json!({"id": l.id, "space": space, "owner": l.owner})
+        json!({"id": l.id, "server": l.server, "space": space, "owner": l.owner})
     };
     json!({
-        "windows": registry.windows.iter().map(|w| json!({
+        "windows": registry.on(server).map(|w| json!({
             "id": w.id,
+            "server": w.server,
             "name": w.name,
             "title": title(w, spaces),
             "session": w.session,
@@ -201,13 +223,14 @@ pub fn ls(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Value 
             "focused": Some(&w.id) == focused.as_ref(),
         })).collect::<Vec<_>>(),
         "background": background,
-        "little": registry.littles.iter().map(little).collect::<Vec<_>>(),
+        "little": registry.littles.iter().filter(|l| l.server == server).map(little).collect::<Vec<_>>(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::LOCAL;
     use crate::layout::{Leaf, Tree};
 
     fn space(id: &str, name: &str, panes: usize) -> Space {
@@ -222,7 +245,7 @@ mod tests {
         Session { id: id.into(), name: name.into(), spaces: spaces.iter().map(|s| s.to_string()).collect() }
     }
     fn window(id: &str, session: &str, active: &str) -> Record {
-        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true, pinned: false }
+        Record { id: id.into(), session: Some(session.into()), active: Some(active.into()), sidebar: true, ..Default::default() }
     }
     fn fixture() -> (Registry, Vec<Session>, Vec<Space>) {
         let spaces = vec![space("s1", "wheel", 2), space("s2", "docs", 1), space("s3", "site", 3)];
@@ -237,7 +260,7 @@ mod tests {
     fn ls_lists_windows_with_their_spaces_and_the_background() {
         let (mut registry, sessions, spaces) = fixture();
         registry.focused = Some("w1".into());
-        let answer = ls(&registry, &sessions, &spaces);
+        let answer = ls(&registry, LOCAL, &sessions, &spaces);
         assert_eq!(answer["windows"][0]["title"], "wheel");
         assert_eq!(answer["windows"][1]["title"], "Notes");
         assert_eq!(answer["windows"][1]["name"], "Notes");
@@ -253,30 +276,48 @@ mod tests {
     fn a_little_window_is_listed_and_leaves_the_background() {
         let (mut registry, sessions, spaces) = fixture();
         registry.focused = Some("w2".into());
-        assert_eq!(registry.window_holding("s1", &sessions).map(|w| w.id.as_str()), Some("w2"));
-        assert_eq!(registry.window_holding("s3", &sessions), None);
-        registry.put_little(Little { id: "l1".into(), space: "s1".into(), owner: Some("w2".into()), pinned: false });
-        registry.put_little(Little { id: "l2".into(), space: "s3".into(), owner: None, pinned: true });
-        let answer = ls(&registry, &sessions, &spaces);
-        assert_eq!(answer["little"], json!([{"id": "l1", "space": {"id": "s1", "name": "wheel"}, "owner": "w2"}, {"id": "l2", "space": {"id": "s3", "name": "site"}, "owner": null}]));
+        assert_eq!(registry.window_holding(LOCAL, "s1", &sessions).map(|w| w.id.as_str()), Some("w2"));
+        assert_eq!(registry.window_holding(LOCAL, "s3", &sessions), None);
+        registry.put_little(Little { id: "l1".into(), space: "s1".into(), owner: Some("w2".into()), ..Default::default() });
+        registry.put_little(Little { id: "l2".into(), space: "s3".into(), pinned: true, ..Default::default() });
+        let answer = ls(&registry, LOCAL, &sessions, &spaces);
+        assert_eq!(answer["little"], json!([{"id": "l1", "server": "local", "space": {"id": "s1", "name": "wheel"}, "owner": "w2"}, {"id": "l2", "server": "local", "space": {"id": "s3", "name": "site"}, "owner": null}]));
         assert_eq!(answer["background"], json!([]));
-        assert_eq!(registry.little_showing("s3").map(|l| l.id.as_str()), Some("l2"));
+        assert_eq!(registry.little_showing(LOCAL, "s3").map(|l| l.id.as_str()), Some("l2"));
         registry.remove("l2");
-        assert!(registry.little_showing("s3").is_none());
-        assert_eq!(ls(&registry, &sessions, &spaces)["background"], json!([{"id": "s3", "name": "site"}]));
+        assert!(registry.little_showing(LOCAL, "s3").is_none());
+        assert_eq!(ls(&registry, LOCAL, &sessions, &spaces)["background"], json!([{"id": "s3", "name": "site"}]));
     }
 
     #[test]
     fn names_resolve_by_id_then_title_and_say_what_exists() {
         let (registry, _, spaces) = fixture();
-        assert_eq!(window_id(&registry, "w2", &spaces), Ok("w2".into()));
-        assert_eq!(window_id(&registry, "Notes", &spaces), Ok("w2".into()));
-        assert_eq!(window_id(&registry, "nope", &spaces), Err("no window nope; the windows are wheel (w1), Notes (w2)".into()));
+        assert_eq!(window_id(&registry, LOCAL, "w2", &spaces), Ok("w2".into()));
+        assert_eq!(window_id(&registry, LOCAL, "Notes", &spaces), Ok("w2".into()));
+        assert_eq!(window_id(&registry, LOCAL, "nope", &spaces), Err("no window nope; the windows are wheel (w1), Notes (w2)".into()));
         assert_eq!(space_id("docs", &spaces), Ok("s2".into()));
         assert_eq!(space_id("s3", &spaces), Ok("s3".into()));
         let twice = vec![space("a", "x", 1), space("b", "x", 1)];
         assert_eq!(space_id("x", &twice), Err("2 spaces are named x; use one of their ids: a, b".into()));
         assert_eq!(space_id("y", &twice), Err("no space y; the spaces are x (a), x (b)".into()));
+    }
+
+    #[test]
+    fn another_servers_window_with_the_same_ids_is_never_matched() {
+        let (mut registry, sessions, spaces) = fixture();
+        registry.put(Record { server: "dev".into(), ..window("w3", "n2", "s3") });
+        registry.put_little(Little { id: "l3".into(), server: "dev".into(), space: "s1".into(), ..Default::default() });
+        assert!(!registry.shows_session(LOCAL, "n2"));
+        assert!(registry.shows_session("dev", "n2"));
+        assert_eq!(registry.window_holding(LOCAL, "s3", &sessions), None);
+        assert!(registry.little_showing(LOCAL, "s1").is_none());
+        assert_eq!(window_id(&registry, LOCAL, "w3", &spaces), Err("no window w3; the windows are wheel (w1), Notes (w2)".into()));
+        let answer = ls(&registry, LOCAL, &sessions, &spaces);
+        assert_eq!(answer["windows"].as_array().map(Vec::len), Some(2));
+        assert_eq!(answer["windows"][0]["server"], "local");
+        assert_eq!(answer["background"], json!([{"id": "s3", "name": "site"}]));
+        assert_eq!(answer["little"], json!([]));
+        assert_eq!(ls(&registry, "dev", &sessions, &spaces)["windows"][0]["id"], "w3");
     }
 
     #[test]

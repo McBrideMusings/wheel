@@ -69,12 +69,14 @@ pub struct HeaderButton {
 /// How long a focus request or a split's new pane waits for the layout to list it.
 const PENDING_FOCUS_MS: u64 = 10_000;
 
-/// The window that answers a `space_focused` for `space` (AppModel.focus(space:)): the first
-/// window whose session holds it, else the one key last. None when no window is open.
-pub fn focus_target(windows: &crate::windows::Registry, sessions: &[Session], space: &str) -> Option<String> {
+/// The window that answers `server`'s `space_focused` for `space` (AppModel.focus(space:)): the
+/// first of its windows whose session holds it, else the key window when it is one of them, else
+/// its newest. None when no window of that server is open.
+pub fn focus_target(windows: &crate::windows::Registry, server: &str, sessions: &[Session], space: &str) -> Option<String> {
     let home = crate::windows::session_holding(sessions, space).map(|s| s.id.as_str());
-    windows.windows.iter().find(|w| home.is_some() && w.session.as_deref() == home)
-        .or_else(|| windows.focused())
+    windows.on(server).find(|w| home.is_some() && w.session.as_deref() == home)
+        .or_else(|| windows.focused().filter(|w| w.server == server))
+        .or_else(|| windows.on(server).last())
         .map(|w| w.id.clone())
 }
 
@@ -557,6 +559,7 @@ impl Client {
 mod tests {
     use super::*;
 
+    use crate::daemon::LOCAL;
     use crate::windows::{Record, Registry};
 
     fn session(id: &str, spaces: &[&str]) -> Session {
@@ -570,13 +573,18 @@ mod tests {
     fn the_window_showing_the_session_takes_the_focus_request_else_the_key_one() {
         let sessions = [session("a", &["s1"]), session("b", &["s2"]), session("c", &["s3"])];
         let mut r = Registry { windows: vec![window("w1", "a"), window("w2", "b")], focused: Some("w1".into()), ..Default::default() };
-        assert_eq!(focus_target(&r, &sessions, "s2").as_deref(), Some("w2"));
-        assert_eq!(focus_target(&r, &sessions, "s1").as_deref(), Some("w1"));
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s2").as_deref(), Some("w2"));
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s1").as_deref(), Some("w1"));
         // No window shows session c: the key window shows it.
-        assert_eq!(focus_target(&r, &sessions, "s3").as_deref(), Some("w1"));
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s3").as_deref(), Some("w1"));
         r.focused = None;
-        assert_eq!(focus_target(&r, &sessions, "s3").as_deref(), Some("w2"));
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s3").as_deref(), Some("w2"));
         r.windows.clear();
-        assert_eq!(focus_target(&r, &sessions, "s3"), None);
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s3"), None);
+        // Another server's window never answers this one's request, even when it is key.
+        r.windows.push(Record { server: "dev".into(), ..window("w3", "a") });
+        r.windows.push(window("w4", "b"));
+        r.focused = Some("w3".into());
+        assert_eq!(focus_target(&r, LOCAL, &sessions, "s1").as_deref(), Some("w4"));
     }
 }

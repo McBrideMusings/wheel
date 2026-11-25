@@ -630,7 +630,7 @@ impl Client {
     /// space's end the window whose session holds it is the one a hold switches.
     pub fn name_pane_away(&mut self, away: Option<PaneAway>) {
         self.pane_out.want = match &away {
-            Some(PaneAway::End(space)) => crate::windows::with(|r| r.window_holding(space, &self.sessions).map(|w| (w.id.clone(), space.clone()))),
+            Some(PaneAway::End(space)) => crate::windows::with(|r| r.window_holding(self.endpoint.server(), space, &self.sessions).map(|w| (w.id.clone(), space.clone()))),
             _ => None,
         };
         self.hover_pane_drag(away);

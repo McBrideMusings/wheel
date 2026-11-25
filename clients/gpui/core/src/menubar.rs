@@ -21,23 +21,25 @@ pub fn waiting(perms: &[PermInfo], spaces: &[Space]) -> HashMap<String, usize> {
     out
 }
 
-/// The spaces a window shows now: each main window's active space and each little window's.
-fn shown(registry: &Registry) -> Vec<&str> {
-    registry.windows.iter().filter_map(|w| w.active.as_deref()).chain(registry.littles.iter().map(|l| l.space.as_str())).collect()
+/// The spaces of `server` a window shows now: each main window's active space and each little window's.
+fn shown<'a>(registry: &'a Registry, server: &'a str) -> Vec<&'a str> {
+    registry.on(server).filter_map(|w| w.active.as_deref()).chain(registry.littles.iter().filter(|l| l.server == server).map(|l| l.space.as_str())).collect()
 }
 
 /// The spaces in sessions no main window shows and not in a little window, then those wheeld
 /// lists in a little window that belongs to no main window (AppModel.windowlessSpaces): what the
 /// item's badge counts.
-pub fn windowless(registry: &Registry, sessions: &[Session], spaces: &[Space]) -> Vec<String> {
-    let background = sessions.iter().filter(|s| !registry.shows_session(&s.id)).flat_map(|s| s.spaces.iter()).filter(|id| registry.little_showing(id).is_none());
-    let ownerless = registry.littles.iter().filter(|l| l.owner.is_none() && spaces.iter().any(|s| s.id == l.space)).map(|l| &l.space);
+/// `sessions` and `spaces` are `server`'s.
+pub fn windowless(registry: &Registry, server: &str, sessions: &[Session], spaces: &[Space]) -> Vec<String> {
+    let background = sessions.iter().filter(|s| !registry.shows_session(server, &s.id)).flat_map(|s| s.spaces.iter()).filter(|id| registry.little_showing(server, id).is_none());
+    let ownerless = registry.littles.iter().filter(|l| l.server == server && l.owner.is_none() && spaces.iter().any(|s| s.id == l.space)).map(|l| &l.space);
     background.chain(ownerless).cloned().collect()
 }
 
 /// Approvals waiting in spaces no window shows (AppModel.unseenApprovals): the Dock tile's badge.
-pub fn unseen(registry: &Registry, waiting: &HashMap<String, usize>) -> usize {
-    let shown = shown(registry);
+/// `waiting` counts `server`'s spaces.
+pub fn unseen(registry: &Registry, server: &str, waiting: &HashMap<String, usize>) -> usize {
+    let shown = shown(registry, server);
     waiting.iter().filter(|(space, _)| !shown.contains(&space.as_str())).map(|(_, n)| n).sum()
 }
 
@@ -89,18 +91,18 @@ pub struct Card {
     pub rows: Vec<Row>,
 }
 
-/// The popover's cards, in wheeld's order of sessions and spaces.
-pub fn cards(registry: &Registry, sessions: &[Session], spaces: &[Space], waiting: &HashMap<String, usize>) -> Vec<Card> {
+/// The popover's cards for `server` (whose `sessions` and `spaces` these are), in wheeld's order.
+pub fn cards(registry: &Registry, server: &str, sessions: &[Session], spaces: &[Space], waiting: &HashMap<String, usize>) -> Vec<Card> {
     sessions.iter().map(|session| {
-        let holders: Vec<(usize, &crate::windows::Record)> = registry.windows.iter().enumerate().filter(|(_, w)| w.session.as_deref() == Some(session.id.as_str())).collect();
+        let holders: Vec<(usize, &crate::windows::Record)> = registry.windows.iter().enumerate().filter(|(_, w)| w.server == server && w.session.as_deref() == Some(session.id.as_str())).collect();
         let windows = holders.iter().map(|(i, _)| i + 1).collect();
         let rows = session.spaces.iter().filter_map(|id| spaces.iter().find(|s| &s.id == id)).map(|space| Row {
             space: space.id.clone(),
             name: space.name.clone(),
             waiting: waiting.get(&space.id).copied().unwrap_or(0),
             shown: holders.iter().any(|(_, w)| w.active.as_deref() == Some(space.id.as_str())),
-            ownerless_little: registry.little_showing(&space.id).is_some_and(|l| l.owner.is_none()),
-            in_little: registry.little_showing(&space.id).is_some(),
+            ownerless_little: registry.little_showing(server, &space.id).is_some_and(|l| l.owner.is_none()),
+            in_little: registry.little_showing(server, &space.id).is_some(),
         }).collect();
         Card { session: session.id.clone(), name: session.name.clone(), windows, rows }
     }).collect()
@@ -166,6 +168,7 @@ pub fn height(cards: &[Card]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::LOCAL;
     use crate::layout::{Leaf, Tree};
     use crate::windows::{Little, Record};
 
@@ -188,7 +191,7 @@ mod tests {
         Session { id: id.into(), name: id.to_uppercase(), spaces: spaces.iter().map(|s| s.to_string()).collect() }
     }
     fn window(id: &str, session: &str, active: &str) -> Record {
-        Record { id: id.into(), name: None, session: Some(session.into()), active: Some(active.into()), sidebar: true, pinned: false }
+        Record { id: id.into(), session: Some(session.into()), active: Some(active.into()), sidebar: true, ..Default::default() }
     }
 
     #[test]
@@ -208,12 +211,12 @@ mod tests {
         let mut registry = Registry::default();
         registry.put(window("w1", "n1", "s1"));
         // s3 is in a little window owned by w1: not in the background; s5's is ownerless: counted once.
-        registry.put_little(Little { id: "l1".into(), space: "s3".into(), owner: Some("w1".into()), pinned: false });
-        registry.put_little(Little { id: "l2".into(), space: "s5".into(), owner: None, pinned: false });
-        assert_eq!(windowless(&registry, &sessions, &spaces), ["s4", "s5"]);
+        registry.put_little(Little { id: "l1".into(), space: "s3".into(), owner: Some("w1".into()), ..Default::default() });
+        registry.put_little(Little { id: "l2".into(), space: "s5".into(), ..Default::default() });
+        assert_eq!(windowless(&registry, LOCAL, &sessions, &spaces), ["s4", "s5"]);
         // A little window on a space wheeld no longer lists counts for nothing.
-        registry.put_little(Little { id: "l3".into(), space: "gone".into(), owner: None, pinned: false });
-        assert_eq!(windowless(&registry, &sessions, &spaces), ["s4", "s5"]);
+        registry.put_little(Little { id: "l3".into(), space: "gone".into(), ..Default::default() });
+        assert_eq!(windowless(&registry, LOCAL, &sessions, &spaces), ["s4", "s5"]);
         assert_eq!(accessibility(2, 0, false), "Wheel, 2 spaces in sessions with no window");
         assert_eq!(accessibility(1, 3, false), "Wheel, 1 space in sessions with no window, 3 waiting for approval");
         assert_eq!(accessibility(0, 0, false), "Wheel");
@@ -224,9 +227,9 @@ mod tests {
     fn unseen_approvals_skip_the_spaces_a_window_shows() {
         let mut registry = Registry::default();
         registry.put(window("w1", "n1", "s1"));
-        registry.put_little(Little { id: "l1".into(), space: "s2".into(), owner: None, pinned: false });
+        registry.put_little(Little { id: "l1".into(), space: "s2".into(), ..Default::default() });
         let waiting = HashMap::from([("s1".to_owned(), 2), ("s2".to_owned(), 1), ("s3".to_owned(), 4)]);
-        assert_eq!(unseen(&registry, &waiting), 4);
+        assert_eq!(unseen(&registry, LOCAL, &waiting), 4);
     }
 
     #[test]
@@ -245,9 +248,9 @@ mod tests {
         registry.put(window("w1", "n2", "s3"));
         registry.put(window("w2", "n1", "s2"));
         registry.put(window("w3", "n2", "s3"));
-        registry.put_little(Little { id: "l1".into(), space: "s1".into(), owner: None, pinned: false });
+        registry.put_little(Little { id: "l1".into(), space: "s1".into(), ..Default::default() });
         let waiting = HashMap::from([("s2".to_owned(), 1)]);
-        let cards = cards(&registry, &sessions, &spaces, &waiting);
+        let cards = cards(&registry, LOCAL, &sessions, &spaces, &waiting);
         assert_eq!(cards.iter().map(|c| (c.name.as_str(), c.windows.clone())).collect::<Vec<_>>(), [("N1", vec![2]), ("N2", vec![1, 3]), ("N3", vec![])]);
         assert_eq!(cards[0].rows, [
             Row { space: "s1".into(), name: "S1".into(), waiting: 0, shown: false, ownerless_little: true, in_little: true },
@@ -255,8 +258,8 @@ mod tests {
         ]);
         // An ownerless little window marks its row; one a window owns dims it.
         assert!(!cards[0].rows[0].dimmed());
-        registry.put_little(Little { id: "l2".into(), space: "s3".into(), owner: Some("w1".into()), pinned: false });
-        let owned = super::cards(&registry, &sessions, &spaces, &waiting);
+        registry.put_little(Little { id: "l2".into(), space: "s3".into(), owner: Some("w1".into()), ..Default::default() });
+        let owned = super::cards(&registry, LOCAL, &sessions, &spaces, &waiting);
         assert!(owned[1].rows[0].in_little && owned[1].rows[0].dimmed());
         assert!(cards[1].rows[0].shown);
         assert!(cards[2].rows.is_empty());

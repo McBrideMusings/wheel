@@ -96,7 +96,7 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     let native = Native::app(bridge, hidden, frames);
     server::ensure(cx, endpoint.service.clone(), hidden);
     super::pairing_copy::ensure(cx);
-    let crate::daemon::Connection { send, mut incoming } = crate::daemon::Connection::open(endpoint.clone());
+    let (send, mut incoming) = crate::connection(&endpoint).subscribe();
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
         native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
@@ -190,7 +190,7 @@ impl MenuBar {
             }
             Event::Up(_) => {
                 (self.link, self.down_reason, self.incompatible) = (LinkKind::Connected, None, false);
-                server::link(true);
+                server::link(&self.endpoint, true);
                 self.ask_remote();
                 let _ = self.send.send(crate::daemon::frame(&ClientMsg::SettingsLs { req: Some(3), space: None }));
                 self.up = true;
@@ -200,7 +200,7 @@ impl MenuBar {
                 (self.link, self.down_reason, self.incompatible) = (LinkKind::Unreachable, Some(reason), false);
                 // The reply to a code asked on the lost connection never comes.
                 self.copying = None;
-                server::link(false);
+                server::link(&self.endpoint, false);
                 self.up = false;
                 true
             }
@@ -211,7 +211,7 @@ impl MenuBar {
             Event::Incompatible { .. } => {
                 (self.link, self.down_reason, self.incompatible) = (LinkKind::Connected, None, true);
                 self.copying = None;
-                server::link(true);
+                server::link(&self.endpoint, true);
                 self.up = false;
                 true
             }
@@ -471,7 +471,7 @@ impl MenuBar {
         if !self.spaces.iter().any(|s| s.id == space) {
             return;
         }
-        if let Some(little) = crate::windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+        if let Some(little) = crate::windows::with(|r| r.little_showing(self.endpoint.server(), space).map(|l| l.id.clone())) {
             self.log(format!("popover: show space {space}: its little window {little}"));
             let hidden = self.hidden;
             cx.defer(move |cx| {
@@ -484,7 +484,7 @@ impl MenuBar {
             });
             return;
         }
-        let holder = crate::windows::with(|r| r.window_holding(space, &self.sessions).map(|w| w.id.clone()));
+        let holder = crate::windows::with(|r| r.window_holding(self.endpoint.server(), space, &self.sessions).map(|w| w.id.clone()));
         let session = crate::windows::session_holding(&self.sessions, space).map(|s| s.id.clone());
         self.log(format!("popover: show space {space} in {}", holder.as_deref().unwrap_or("the focused window")));
         let shown = space.to_owned();
@@ -507,7 +507,7 @@ impl MenuBar {
     pub fn space_menu_items(&self, space: &str) -> Vec<crate::sidebar::MenuItem> {
         let home = crate::windows::session_holding(&self.sessions, space);
         let sessions: Vec<(String, String)> = self.sessions.iter().map(|s| (s.id.clone(), s.name.clone())).collect();
-        let (little, held) = crate::windows::with(|r| (r.little_showing(space).is_some(), r.window_holding(space, &self.sessions).is_some()));
+        let (little, held) = crate::windows::with(|r| (r.little_showing(self.endpoint.server(), space).is_some(), r.window_holding(self.endpoint.server(), space, &self.sessions).is_some()));
         let mut items = crate::sidebar::menu(space, home.map(|s| s.id.as_str()), &sessions, home.map(|s| s.spaces.as_slice()).unwrap_or(&[]), little);
         for item in items.iter_mut().filter(|i| i.id == "close-others") {
             item.enabled &= held;
@@ -544,7 +544,7 @@ impl MenuBar {
         if item == "little" {
             return self.open_little(&space, cx);
         }
-        let holder = crate::windows::with(|r| r.window_holding(&space, &self.sessions).map(|w| w.id.clone()));
+        let holder = crate::windows::with(|r| r.window_holding(self.endpoint.server(), &space, &self.sessions).map(|w| w.id.clone()));
         let session = crate::windows::session_holding(&self.sessions, &space).map(|s| s.id.clone());
         let front = matches!(item, "rename" | "new-pane" | "close" | "close-others");
         let (item, run) = (item.to_owned(), space.clone());
@@ -580,13 +580,13 @@ impl MenuBar {
 
     /// The sessions no main window shows, in wheeld's order (WindowLayout.backgroundSessions).
     fn background_sessions(&self) -> Vec<String> {
-        crate::windows::with(|r| self.sessions.iter().filter(|s| !r.shows_session(&s.id)).map(|s| s.id.clone()).collect())
+        crate::windows::with(|r| self.sessions.iter().filter(|s| !r.shows_session(self.endpoint.server(), &s.id)).map(|s| s.id.clone()).collect())
     }
 
     /// Tell the item what it counts now, when that changed, and resize an open popover to its cards.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let waiting = menubar::waiting(&self.perms, &self.spaces);
-        let (background, unseen) = crate::windows::with(|r| (menubar::windowless(r, &self.sessions, &self.spaces).len(), menubar::unseen(r, &waiting)));
+        let (background, unseen) = crate::windows::with(|r| (menubar::windowless(r, self.endpoint.server(), &self.sessions, &self.spaces).len(), menubar::unseen(r, self.endpoint.server(), &waiting)));
         let update = self.restart_waiting();
         let told = (background, menubar::accessibility(background, unseen, update), (unseen > 0).then(|| unseen.to_string()), update);
         if self.told.as_ref() != Some(&told) {
@@ -605,7 +605,7 @@ impl MenuBar {
 
     pub fn cards(&self) -> Vec<Card> {
         let waiting = menubar::waiting(&self.perms, &self.spaces);
-        crate::windows::with(|r| menubar::cards(r, &self.sessions, &self.spaces, &waiting))
+        crate::windows::with(|r| menubar::cards(r, self.endpoint.server(), &self.sessions, &self.spaces, &waiting))
     }
 
     /// A click on the item: open the popover under `at` (the item's frame on the main screen), or

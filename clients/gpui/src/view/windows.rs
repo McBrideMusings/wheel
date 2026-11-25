@@ -30,7 +30,7 @@ impl Client {
 
     /// What this window says about itself to the app's list of windows.
     pub fn record(&self) -> Record {
-        Record { id: self.window_id.clone(), name: self.window_name.clone(), session: self.session_id.clone(), active: self.space_id.clone(), sidebar: self.sidebar_open, pinned: self.pinned }
+        Record { id: self.window_id.clone(), server: self.endpoint.server().to_owned(), name: self.window_name.clone(), session: self.session_id.clone(), active: self.space_id.clone(), sidebar: self.sidebar_open, pinned: self.pinned }
     }
     /// Measure where this window's content is on screen and write it to the app's list, which
     /// saves it (saved.rs); a window off every screen reports no size and keeps its last frame.
@@ -55,6 +55,10 @@ impl Client {
     }
     pub fn opener(&self) -> (Rc<Bridge>, Endpoint, bool) {
         (self.bridge.clone(), self.endpoint.clone(), self.hidden)
+    }
+    /// The wheeld this window shows, as the app keys its connection (`Endpoint::server`).
+    pub fn server(&self) -> &str {
+        self.endpoint.server()
     }
     pub fn layout_lists(&self) -> (Vec<Session>, Vec<Space>) {
         (self.sessions.clone(), self.spaces.clone())
@@ -243,7 +247,7 @@ impl Client {
             "name": self.window_name,
             "title": self.window_title(),
             "name_edit": self.name_edit.as_ref().map(|e| json!({"target": match &e.target { NameTarget::Window => "window".to_owned(), NameTarget::Session(s) => format!("session:{s}") }, "draft": e.draft})),
-            "windows": windows::with(|r| windows::ls(r, &self.sessions, &self.spaces)),
+            "windows": windows::with(|r| windows::ls(r, self.endpoint.server(), &self.sessions, &self.spaces)),
             "little": self.little_json(),
         })
     }

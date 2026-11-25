@@ -1,5 +1,5 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
-pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, speech_models, speech_settings, spoken, strip, toasts, topic, transcript, tray, voice, windows};
+pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, servers, settings, sidebar, speech_models, speech_settings, spoken, strip, toasts, topic, transcript, tray, voice, windows};
 pub mod actions;
 pub mod browser;
 pub mod edit_menu;
@@ -22,6 +22,14 @@ static WINDOWS: AtomicU32 = AtomicU32::new(0);
 thread_local! {
     /// Every open window by id, for a window command or a debug request that names another window.
     static HANDLES: RefCell<HashMap<String, view::ClientWindow>> = RefCell::default();
+    /// The app's one connection per wheeld, by `Endpoint::server()`, which every window showing
+    /// that wheeld's sessions and the menu bar subscribe to (ADR-0057).
+    static CONNECTIONS: RefCell<HashMap<String, daemon::Connection>> = RefCell::default();
+}
+
+/// The connection to `endpoint`'s wheeld, opened the first time anything asks for it.
+pub fn connection(endpoint: &daemon::Endpoint) -> daemon::Connection {
+    CONNECTIONS.with(|c| c.borrow_mut().entry(endpoint.server().to_owned()).or_insert_with(|| daemon::Connection::open(endpoint.clone())).clone())
 }
 
 /// The open window `id`, if it is open.
@@ -443,6 +451,33 @@ async fn measure_sweep(window: view::ClientWindow, request: &debug::Request, cx:
     serde_json::json!({"frames": draws.len(), "wall_s": began.elapsed().as_secs_f64(), "draw_ms": stats(&draws), "frame_gap_ms": stats(&gaps)})
 }
 
+/// `POST /servers/pair?name=` with the code `wheel remote pair` prints as the body: pairs with that
+/// wheeld as `name` (default "Wheel app") on a background thread, since pairing waits on the network.
+async fn debug_pair(request: &debug::Request, cx: &mut gpui::AsyncApp) -> (String, serde_json::Value) {
+    let (code, name) = (request.body.clone(), request.query.get("name").cloned().unwrap_or_else(|| "Wheel app".to_owned()));
+    let paired = cx.background_executor().spawn(async move { servers::pair(&servers::default_file(), &code, &name) }).await;
+    match paired {
+        Ok(server) => ("200 OK".to_owned(), serde_json::json!({"id": server.id, "name": server.name, "url": server.url, "device": server.device})),
+        Err(e) => ("400 Bad Request".to_owned(), debug::error(&format!("{e:#}"))),
+    }
+}
+
+/// `POST /servers/window?server=<id>`: a new main window on the paired wheeld `id`, opened as
+/// `window` opens one; the reply names the new window.
+fn debug_server_window(cx: &mut App, window: view::ClientWindow, request: &debug::Request) -> (String, serde_json::Value) {
+    let Some(id) = request.query.get("server") else { return ("400 Bad Request".to_owned(), debug::error("server=<id> is required")) };
+    let Some(server) = servers::load(&servers::default_file()).into_iter().find(|s| &s.id == id) else { return ("404 Not Found".to_owned(), debug::error("no paired server with that id")) };
+    let endpoint = match servers::endpoint(&server) {
+        Ok(e) => e,
+        Err(e) => return ("500 Internal Server Error".to_owned(), debug::error(&format!("{e:#}"))),
+    };
+    let Ok((bridge, _, hidden)) = window.read(cx).map(|c| c.opener()) else { return ("404 Not Found".to_owned(), debug::error("the asking window is gone")) };
+    match new_window(cx, &bridge, endpoint, hidden, None, None, None).and_then(|w| Ok(w.read(cx)?.window_id().to_owned())) {
+        Ok(id) => ("200 OK".to_owned(), serde_json::json!({"window": id, "server": server.id})),
+        Err(e) => ("500 Internal Server Error".to_owned(), debug::error(&format!("{e:#}"))),
+    }
+}
+
 /// Answer the debug server's requests against `window` until the window closes or the server stops.
 pub fn serve_debug(cx: &mut App, window: view::ClientWindow, mut server: debug::Server) {
     cx.spawn(async move |cx| {
@@ -451,6 +486,14 @@ pub fn serve_debug(cx: &mut App, window: view::ClientWindow, mut server: debug::
             if request.method == "POST" && request.path == "/measure/sweep" {
                 let report = measure_sweep(window, &request, cx).await;
                 request.respond(("200 OK".to_owned(), report));
+                continue;
+            }
+            if request.method == "POST" && request.path == "/servers/pair" {
+                request.respond(debug_pair(&request, cx).await);
+                continue;
+            }
+            if request.method == "POST" && request.path == "/servers/window" {
+                request.respond(cx.update(|cx| debug_server_window(cx, window, &request)));
                 continue;
             }
             match answer_debug(window, &request, cx).await {
@@ -501,9 +544,9 @@ pub fn open_window_as(
     opening: Opening,
     frame: Option<saved::Frame>,
 ) -> Result<view::ClientWindow> {
-    // The window holds the only sender: when it closes, the socket closes with it, and wheeld
-    // forgets its view and its offer to run window commands at once.
-    let daemon::Connection { send, mut incoming } = daemon::Connection::open(endpoint.clone());
+    // The window subscribes to its wheeld's one connection; when it closes it reports an empty
+    // view and leaves (`Client::shutdown`), so wheeld forgets its view and what only it held.
+    let (send, mut incoming) = connection(&endpoint).subscribe();
     let window = create_window(cx, bridge, send, endpoint, prefer_session, prefer_space, hidden, opening, frame)?;
     cx.spawn(async move |cx| {
         while let Some(event) = incoming.next().await {
@@ -532,10 +575,10 @@ pub fn deliver(cx: &mut App, window: view::ClientWindow, event: daemon::Event) -
     if let daemon::Event::Message(message) = &event
         && let ServerMsg::SpaceFocused { space, pane } = message.as_ref()
     {
-        let (id, sessions) = window.read(cx).map(|c| (c.window_id().to_owned(), c.layout_lists().0))?;
+        let (id, sessions, server) = window.read(cx).map(|c| (c.window_id().to_owned(), c.layout_lists().0, c.server().to_owned()))?;
         // A space in a little window is shown there: that window focuses the pane and comes
         // front (AppModel.focus(space:) goes to the little window).
-        if let Some(little) = windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+        if let Some(little) = windows::with(|r| r.little_showing(&server, space).map(|l| l.id.clone())) {
             if little == id {
                 window.update(cx, |client, _, cx| {
                     cx.notify();
@@ -548,8 +591,8 @@ pub fn deliver(cx: &mut App, window: view::ClientWindow, event: daemon::Event) -
         // A space whose session no main window shows opens in a little window that belongs to
         // none (AppModel.showRequested), which focuses the pane once its layout lists it.
         let home = windows::session_holding(&sessions, space).map(|s| s.id.clone());
-        let background = home.is_some_and(|home| windows::with(|r| !r.shows_session(&home)));
-        if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) && background {
+        let background = home.is_some_and(|home| windows::with(|r| !r.shows_session(&server, &home)));
+        if windows::with(|r| view::focus_target(r, &server, &sessions, space)).as_deref() == Some(id.as_str()) && background {
             let opened = window.update(cx, |client, _, cx| {
                 client.log(format!("space {space} focused by a request; it runs with no window, so it opens in a little window"));
                 cx.notify();
@@ -563,7 +606,7 @@ pub fn deliver(cx: &mut App, window: view::ClientWindow, event: daemon::Event) -
             }
             return Ok(false);
         }
-        if windows::with(|r| view::focus_target(r, &sessions, space)).as_deref() == Some(id.as_str()) {
+        if windows::with(|r| view::focus_target(r, &server, &sessions, space)).as_deref() == Some(id.as_str()) {
             let shown = window.update(cx, |client, _, cx| {
                 cx.notify();
                 client.show_requested(space, pane.as_deref())
@@ -606,12 +649,14 @@ pub fn answer_window_command(cx: &mut App, via: view::ClientWindow, id: u64, com
 fn run_window_command(cx: &mut App, via: view::ClientWindow, command: &WindowCommand) -> Result<serde_json::Value, String> {
     let gone = |_| "the window wheeld asked has closed".to_owned();
     let (sessions, spaces) = via.read(cx).map(|c| c.layout_lists()).map_err(gone)?;
+    // The command came through one wheeld: it names that wheeld's windows, sessions and spaces.
+    let server = via.read(cx).map(|c| c.server().to_owned()).map_err(gone)?;
     let target = |text: &str| -> Result<(String, view::ClientWindow), String> {
-        let id = windows::with(|r| windows::window_id(r, text, &spaces))?;
+        let id = windows::with(|r| windows::window_id(r, &server, text, &spaces))?;
         window_handle(&id).map(|h| (id.clone(), h)).ok_or_else(|| format!("window {id} has closed"))
     };
     match command {
-        WindowCommand::Ls => Ok(windows::with(|r| windows::ls(r, &sessions, &spaces))),
+        WindowCommand::Ls => Ok(windows::with(|r| windows::ls(r, &server, &sessions, &spaces))),
         WindowCommand::New { name, space } => {
             let held = space.as_deref().map(|s| windows::space_id(s, &spaces)).transpose()?;
             // The session holding the space, else the one the focused window shows.
@@ -679,12 +724,27 @@ pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpo
 pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, space: Option<String>, hidden: bool, saved: &saved::Saved) -> Result<Vec<view::ClientWindow>> {
     let plan = saved.launch_plan();
     eprintln!("wheel-gpui: launch opens {} window(s), restore windows at launch {}", plan.len(), if saved.restore { "on" } else { "off" });
+    let paired = servers::load(&servers::default_file());
+    // A window saved on a paired wheeld opens on it again; one whose wheeld is no longer paired,
+    // is turned off or has no credential stays closed.
+    let on = |server: &Option<String>| -> Option<daemon::Endpoint> {
+        let Some(id) = server else { return Some(endpoint.clone()) };
+        let found = paired.iter().find(|s| &s.id == id && s.enabled).map(servers::endpoint);
+        match found {
+            Some(Ok(endpoint)) => Some(endpoint),
+            Some(Err(e)) => { eprintln!("wheel-gpui: a saved window on {id} stays closed: {e:#}"); None }
+            None => { eprintln!("wheel-gpui: a saved window on {id} stays closed: that wheeld is not paired or is turned off"); None }
+        }
+    };
     let mut handles = vec![];
     let mut space = space;
     for launch in plan {
         let handle = match launch {
             saved::Launch::Main(w) => {
-                let handle = open_window_as(cx, bridge, endpoint.clone(), w.session, space.take().or(w.active), hidden, Opening::Main, w.frame)?;
+                let Some(endpoint) = on(&w.server) else { continue };
+                // `--space` names a space of this Mac's wheeld.
+                let shown = if w.server.is_none() { space.take().or(w.active) } else { w.active };
+                let handle = open_window_as(cx, bridge, endpoint, w.session, shown, hidden, Opening::Main, w.frame)?;
                 let _ = handle.update(cx, |client, _, cx| {
                     client.set_sidebar(w.sidebar);
                     client.set_window_name(w.name);
@@ -694,7 +754,8 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
                 handle
             }
             saved::Launch::Little(l) => {
-                let handle = open_window_as(cx, bridge, endpoint.clone(), None, Some(l.space), hidden, Opening::Little, l.frame)?;
+                let Some(endpoint) = on(&l.server) else { continue };
+                let handle = open_window_as(cx, bridge, endpoint, None, Some(l.space), hidden, Opening::Little, l.frame)?;
                 let _ = handle.update(cx, |client, _, cx| {
                     client.set_pinned(l.pinned);
                     cx.notify();
@@ -714,7 +775,8 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
 /// `session`, else the focused window's, showing `space` when one is named, with the focused
 /// window's sidebar and `name`, brought front.
 pub fn new_window(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpoint, hidden: bool, session: Option<String>, space: Option<String>, name: Option<String>) -> Result<view::ClientWindow> {
-    let (focused, sidebar) = windows::with(|r| (r.focused().and_then(|w| w.session.clone()), r.focused().map(|w| w.sidebar).unwrap_or(true)));
+    // A session id is its wheeld's own: the focused window lends its session only on the same one.
+    let (focused, sidebar) = windows::with(|r| (r.focused().filter(|w| w.server == endpoint.server()).and_then(|w| w.session.clone()), r.focused().map(|w| w.sidebar).unwrap_or(true)));
     let handle = open_window(cx, bridge, endpoint, session.or(focused), space, hidden)?;
     let _ = handle.update(cx, |client, _, cx| {
         client.set_sidebar(sidebar);

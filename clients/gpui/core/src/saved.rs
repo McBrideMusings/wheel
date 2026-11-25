@@ -15,6 +15,9 @@ pub type Frame = [f32; 4];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SavedWindow {
+    /// The paired wheeld it showed, by id; none for this Mac's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -33,6 +36,8 @@ pub struct SavedWindow {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SavedLittle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
     pub space: String,
     #[serde(default)]
     pub pinned: bool,
@@ -85,7 +90,9 @@ impl Saved {
     /// The app's windows now, with `restore` as the setting stands.
     pub fn of(registry: &Registry, restore: bool) -> Self {
         let focused = registry.focused().map(|w| w.id.clone());
+        let remote = |server: &String| (server != crate::daemon::LOCAL).then(|| server.clone());
         let windows = registry.windows.iter().map(|w| SavedWindow {
+            server: remote(&w.server),
             name: w.name.clone(),
             session: w.session.clone(),
             active: w.active.clone(),
@@ -95,6 +102,7 @@ impl Saved {
             focused: focused.as_deref() == Some(w.id.as_str()),
         });
         let littles = registry.littles.iter().map(|l| SavedLittle {
+            server: remote(&l.server),
             space: l.space.clone(),
             pinned: l.pinned,
             frame: registry.frames.get(&l.id).copied(),
@@ -208,7 +216,7 @@ mod tests {
     fn launch_opens_every_saved_window_with_the_focused_one_last() {
         let a = window("n1", "s1", true, [0., 32., 1200., 720.]);
         let b = window("n2", "s2", false, [1400., 32., 1200., 720.]);
-        let little = SavedLittle { space: "s3".into(), pinned: true, frame: Some([10., 40., 480., 330.]) };
+        let little = SavedLittle { server: None, space: "s3".into(), pinned: true, frame: Some([10., 40., 480., 330.]) };
         let saved = Saved { restore: true, windows: vec![a.clone(), b.clone()], littles: vec![little.clone()], ..Default::default() };
         assert_eq!(saved.launch_plan(), vec![Launch::Main(b), Launch::Main(a), Launch::Little(little)]);
     }
@@ -229,16 +237,16 @@ mod tests {
     #[test]
     fn the_registry_saves_and_loads_back() {
         let mut registry = Registry::default();
-        registry.put(Record { id: "w1".into(), name: Some("Notes".into()), session: Some("n1".into()), active: Some("s1".into()), sidebar: false, pinned: true });
-        registry.put(Record { id: "w2".into(), session: Some("n2".into()), active: Some("s2".into()), sidebar: true, ..Default::default() });
-        registry.put_little(Little { id: "w3".into(), space: "s3".into(), owner: Some("w1".into()), pinned: false });
+        registry.put(Record { id: "w1".into(), name: Some("Notes".into()), session: Some("n1".into()), active: Some("s1".into()), sidebar: false, pinned: true, ..Default::default() });
+        registry.put(Record { id: "w2".into(), server: "dev".into(), session: Some("n2".into()), active: Some("s2".into()), sidebar: true, ..Default::default() });
+        registry.put_little(Little { id: "w3".into(), space: "s3".into(), owner: Some("w1".into()), ..Default::default() });
         registry.set_frame("w1", [0., 32., 1200., 720.]);
         registry.set_frame("w3", [50., 60., 480., 330.]);
         registry.focused = Some("w1".into());
         let saved = Saved::of(&registry, false);
-        assert_eq!(saved.windows[0], SavedWindow { name: Some("Notes".into()), session: Some("n1".into()), active: Some("s1".into()), sidebar: false, pinned: true, frame: Some([0., 32., 1200., 720.]), focused: true });
-        assert_eq!((saved.windows[1].frame, saved.windows[1].focused), (None, false));
-        assert_eq!(saved.littles, vec![SavedLittle { space: "s3".into(), pinned: false, frame: Some([50., 60., 480., 330.]) }]);
+        assert_eq!(saved.windows[0], SavedWindow { server: None, name: Some("Notes".into()), session: Some("n1".into()), active: Some("s1".into()), sidebar: false, pinned: true, frame: Some([0., 32., 1200., 720.]), focused: true });
+        assert_eq!((saved.windows[1].server.as_deref(), saved.windows[1].frame, saved.windows[1].focused), (Some("dev"), None, false));
+        assert_eq!(saved.littles, vec![SavedLittle { server: None, space: "s3".into(), pinned: false, frame: Some([50., 60., 480., 330.]) }]);
         let file = std::env::temp_dir().join(format!("wheel-gpui-saved-test-{}.json", std::process::id()));
         saved.write(&file).unwrap();
         assert_eq!(Saved::load(Some(&file)), saved);
@@ -250,7 +258,7 @@ mod tests {
     fn a_closed_window_leaves_its_frame_for_the_next_one() {
         let mut registry = Registry::default();
         registry.put(Record { id: "w1".into(), ..Default::default() });
-        registry.put_little(Little { id: "w2".into(), space: "s".into(), owner: None, pinned: false });
+        registry.put_little(Little { id: "w2".into(), space: "s".into(), ..Default::default() });
         registry.set_frame("w1", [10., 40., 900., 600.]);
         registry.set_frame("w2", [5., 5., 300., 200.]);
         registry.remove("w2");
