@@ -25,7 +25,7 @@ pub const MIN_SIZE: (f32, f32) = (320.0, 200.0);
 /// window's menu and the menu bar's popover both run. The window's id, none when no session
 /// holds the space, and the line that says what happened.
 pub fn open_little(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool, sessions: &[Session], space: &str) -> (Option<String>, String) {
-    if let Some(open) = windows::with(|r| r.little_showing(space).map(|l| l.id.clone())) {
+    if let Some(open) = windows::with(|r| r.little_showing(endpoint.server(), space).map(|l| l.id.clone())) {
         if let Some(handle) = crate::window_handle(&open) {
             crate::bring_front(cx, handle);
         }
@@ -34,7 +34,7 @@ pub fn open_little(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden
     let Some(session) = crate::windows::session_holding(sessions, space).map(|s| s.id.clone()) else {
         return (None, format!("little window for {space}: the layout places it nowhere"));
     };
-    let owner = windows::with(|r| r.window_holding(space, sessions).map(|w| w.id.clone()));
+    let owner = windows::with(|r| r.window_holding(endpoint.server(), space, sessions).map(|w| w.id.clone()));
     let handle = match crate::open_window_as(cx, bridge, endpoint, Some(session), Some(space.to_owned()), hidden, crate::Opening::Little, None) {
         Ok(handle) => handle,
         Err(e) => return (None, format!("little window for {space} did not open: {e:#}")),
@@ -56,14 +56,14 @@ impl Client {
     /// space that moved session or an owner that closed re-points it (WindowLayout.normalize).
     fn little_owner(&self) -> Option<String> {
         let space = self.space_id.as_deref()?;
-        windows::with(|r| r.window_holding(space, &self.sessions).map(|w| w.id.clone()))
+        windows::with(|r| r.window_holding(self.endpoint.server(), space, &self.sessions).map(|w| w.id.clone()))
     }
     /// This little window's record for the app's list of windows.
     pub(super) fn little_record(&self) -> Option<Little> {
         if !self.little {
             return None;
         }
-        Some(Little { id: self.window_id.clone(), space: self.space_id.clone().unwrap_or_default(), owner: self.little_owner(), pinned: self.pinned })
+        Some(Little { id: self.window_id.clone(), server: self.endpoint.server().to_owned(), space: self.space_id.clone().unwrap_or_default(), owner: self.little_owner(), pinned: self.pinned })
     }
     /// The grid of a little window: under the strip, inset from the edges.
     pub(super) fn little_grid_area(&self) -> Rect {
@@ -101,7 +101,7 @@ impl Client {
 
     /// The little window showing `space`, if one is open.
     pub fn little_showing(&self, space: &str) -> Option<String> {
-        windows::with(|r| r.little_showing(space).map(|l| l.id.clone()))
+        windows::with(|r| r.little_showing(self.endpoint.server(), space).map(|l| l.id.clone()))
     }
     /// This main window's shown space is in a little window: the grid shows the placeholder.
     pub fn space_away(&self) -> bool {

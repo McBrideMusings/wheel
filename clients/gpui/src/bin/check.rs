@@ -22,6 +22,21 @@ use std::{path::PathBuf, time::Duration};
 use wheel_proto::{ClientMsg, ServerMsg};
 use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, ClientWindow, Drawn, Link, TITLE}};
 
+/// A connection of the check's own and its one subscriber, which the check pumps by hand into the
+/// window it opened over `send`.
+struct Connection {
+    send: Outbox,
+    incoming: Events,
+    _held: wheel_gpui::daemon::Connection,
+}
+impl Connection {
+    fn open(endpoint: Endpoint) -> Self {
+        let held = wheel_gpui::daemon::Connection::open(endpoint);
+        let (send, incoming) = held.subscribe();
+        Self { send, incoming, _held: held }
+    }
+}
+
 /// The CPU time this thread has used, in milliseconds.
 fn thread_cpu_ms() -> f64 {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
@@ -4462,7 +4477,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
     let mut little = None;
     for _ in 0..30 {
         tick(cx, 100).await;
-        little = cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(&dragged).map(|l| (l.id.clone(), l.owner.clone()))));
+        little = cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(wheel_gpui::daemon::LOCAL, &dragged).map(|l| (l.id.clone(), l.owner.clone()))));
         if little.is_some() {
             break;
         }
@@ -4789,7 +4804,7 @@ async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: Stri
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
             draw(second, None, cx)?;
             let new_space = second.update(cx, |c, _, _| holding(c, &moved))?.filter(|s| *s != held);
-            pane_little = new_space.clone().and_then(|s| cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(&s).map(|l| (s.clone(), l.id.clone(), l.owner.clone())))));
+            pane_little = new_space.clone().and_then(|s| cx.update(|_| wheel_gpui::windows::with(|r| r.little_showing(wheel_gpui::daemon::LOCAL, &s).map(|l| (s.clone(), l.id.clone(), l.owner.clone())))));
             if pane_little.is_some() {
                 break;
             }
@@ -8169,7 +8184,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(listed == want, "the popover's cards list {listed:?}, wheeld's sessions hold {want:?}");
     // The badge counts the spaces in sessions no window shows and in ownerless little windows.
     let spaces_now = window.update(cx, |c, _, _| c.layout_lists().1)?;
-    let background = wheel_gpui::windows::with(|r| wheel_gpui::windows::ls(r, &sessions, &spaces_now)["background"].as_array().map(|a| a.len()).unwrap_or(0)
+    let background = wheel_gpui::windows::with(|r| wheel_gpui::windows::ls(r, wheel_gpui::daemon::LOCAL, &sessions, &spaces_now)["background"].as_array().map(|a| a.len()).unwrap_or(0)
         + r.littles.iter().filter(|l| l.owner.is_none()).count());
     ensure!(menu_state["item"]["badge"].as_u64() == Some(background as u64), "the item's badge reads {}, the windows leave {background} spaces unshown", menu_state["item"]["badge"]);
     let badge_before = menu_state["item"]["badge"].clone();
@@ -8336,7 +8351,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let windows_before_dock = wheel_gpui::windows::with(|r| r.windows.len());
     let (sessions_now, _) = window.update(cx, |c, _, _| c.layout_lists())?;
     let dock_session = wheel_gpui::windows::with(|r| {
-        sessions_now.iter().find(|s| !r.shows_session(&s.id)).map(|s| s.id.clone()).or_else(|| r.focused().and_then(|w| w.session.clone()))
+        sessions_now.iter().find(|s| !r.shows_session(wheel_gpui::daemon::LOCAL, &s.id)).map(|s| s.id.clone()).or_else(|| r.focused().and_then(|w| w.session.clone()))
     });
     cx.update(|cx| wheel_gpui::view::reopen(cx));
     let mut windows_after_dock = windows_before_dock;
@@ -8490,7 +8505,7 @@ async fn space_rows_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, output
     let mut little = None;
     for _ in 0..50 {
         tick(cx, 100).await;
-        little = wheel_gpui::windows::with(|r| r.little_showing(&space).map(|l| (l.id.clone(), l.owner.clone())));
+        little = wheel_gpui::windows::with(|r| r.little_showing(wheel_gpui::daemon::LOCAL, &space).map(|l| (l.id.clone(), l.owner.clone())));
         if little.is_some() {
             break;
         }

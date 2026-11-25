@@ -109,8 +109,17 @@ impl Client {
 
     // MARK: The server
 
-    /// The source hash of the wheeld this app carries; None for a bare binary or another daemon.
+    /// Whether this window's wheeld is the one this app carries and controls; a paired remote
+    /// wheeld is restarted and updated on its own machine, never from here.
+    fn on_local_server(&self) -> bool {
+        self.endpoint.remote.is_none()
+    }
+    /// The source hash of the wheeld this app carries; None for a bare binary, another daemon,
+    /// or a window on a remote wheeld.
     pub fn bundled_source(&self) -> Option<String> {
+        if !self.on_local_server() {
+            return None;
+        }
         super::server::with(|s| s.control.service().and_then(|s| s.bundled_source.clone())).flatten()
     }
     /// The running wheeld's source hash, from its `status`; None before it answered one.
@@ -153,6 +162,9 @@ impl Client {
     }
     /// Restart wheeld from what is installed, in one click; the app's one server control runs it.
     pub fn restart_server(&mut self) {
+        if !self.on_local_server() {
+            return;
+        }
         super::server::restart(self.spaces.len());
     }
     /// Each render and each timer: the notices follow the app's server control (the restart
@@ -160,6 +172,16 @@ impl Client {
     /// while it runs.
     pub fn tick_server(&mut self, cx: &mut Context<Self>) {
         let connected = self.link == Link::Up;
+        if !self.on_local_server() {
+            self.toast_sources.server_restart_available = false;
+            self.toast_sources.rollback_offer = None;
+            self.toast_sources.rolled_back_to = None;
+            self.toast_sources.unreachable = match &self.link {
+                Link::Down(reason) => Some(reason.clone()),
+                _ => None,
+            };
+            return;
+        }
         let Some((offer, rolled, expected, available, busy)) = super::server::with(|s| {
             (s.watch.rollback_offer.clone(), s.watch.rolled_back_to.clone(), s.watch.restart_expected, s.control.available(), s.busy.is_some())
         }) else {

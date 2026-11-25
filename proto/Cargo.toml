@@ -10,7 +10,9 @@ serde.workspace = true
 serde_json.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 sha2 = { version = "0.10", optional = true }
+libc = { version = "0.2", optional = true }
 
 [features]
-# The pinned TLS a client reaches a remote wheeld with (`tls::pinned`).
-tls = ["dep:rustls", "dep:sha2"]
+# The pinned TLS a client reaches a remote wheeld with (`tls::pinned`), and the keepalive
+# both ends of a remote link set (`net::keep_alive`).
+tls = ["dep:rustls", "dep:sha2", "dep:libc"]

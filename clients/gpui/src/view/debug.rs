@@ -758,6 +758,8 @@ impl Client {
             "quarantine": {"spaces": self.quarantine.spaces, "panes": self.quarantine.panes},
             "bridge": {"visible": native["visible"], "key_window": native["key_window"], "app_active": native["app_active"], "root_focused": native["root_focused"], "errors": native["errors"]},
         });
+        out["window_server"] = json!(self.server());
+        out["link_opacity"] = json!(self.link_opacity());
         out["orchestrator"] = self.orchestrator_json();
         out["last_link"] = json!(self.links.last);
         out["links"] = json!({"generation": self.links.generation(), "relinked": self.links.relinked.get(), "remeasured": self.links.remeasured.get()});

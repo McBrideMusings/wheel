@@ -56,7 +56,7 @@ use crate::{browser::{self, CHROME, Press}, command_palette::CommandPalette, dae
 use gpui::{Anchor, App, Bounds, ClipboardItem, Context, FocusHandle, FollowMode, FontStyle, FontWeight, HighlightStyle, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, anchored, canvas, deferred, div, list, prelude::*, px, rgb, rgba};
 use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMsg, NewPaneKind, PaneStatus, RecentDir, ServerMsg};
 use gpui_component::{Root, input::{Input, InputEvent, InputState}};
-use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc, sync::mpsc};
+use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc};
 
 /// A client window: GPUI's `Root` (gpui-component's inputs read it) wrapping a `Client`. It
 /// updates the client as a `WindowHandle<Client>` would.
@@ -101,6 +101,8 @@ impl From<ClientWindow> for gpui::AnyWindowHandle {
 }
 
 pub const TITLE: f32 = 22.0;
+/// How a window whose wheeld dropped draws its last state.
+pub const DOWN_OPACITY: f32 = 0.5;
 /// Where a native view was last put: its rect, whether it was hidden, and the holes cut in it.
 type Placement = ([f64; 4], bool, Vec<[f64; 4]>, f64);
 /// The title row's height; the grid starts under it and ends over the bottom row (`BOTTOM`).
@@ -818,7 +820,7 @@ impl Client {
                 // A subscription lives on one connection: the next layout subscribes again.
                 self.queue.subscribed = None;
                 self.images.reconnected();
-                server::link(true);
+                server::link(&self.endpoint, true);
                 // The notice follows the next `status`; closing it stays closed for the same key
                 // (the bundled hash, else the protocol), as the Swift app keeps `serverBannerDismissed`.
                 self.toast_sources.server_updated = None;
@@ -840,7 +842,7 @@ impl Client {
             }
             Event::Down(reason) => {
                 self.link = Link::Down(reason);
-                server::link(false);
+                server::link(&self.endpoint, false);
                 self.drop_earlier();
                 false
             }
@@ -861,7 +863,7 @@ impl Client {
                 }
                 self.link = Link::Incompatible { server, client };
                 // wheeld answers, at another level: whatever the watch waited for is over.
-                server::link(true);
+                server::link(&self.endpoint, true);
                 self.server_offer = None;
                 self.toast_sources.server_updated = Some(crate::server::banner_key(self.bundled_source().as_deref(), Some(server)));
                 // A window that was up on a newer wheeld shows nothing of it: the older one's
@@ -1046,13 +1048,15 @@ impl Client {
         self.send(&ClientMsg::View { req: None, window: self.window_id.clone(), session: now.0.clone(), space: now.1.clone(), pane: now.2.clone() });
         self.reported = Some(now);
     }
-    /// Open another window over its own connection, showing what this one shows.
+    /// Open another window on this window's wheeld, showing what this one shows.
     pub fn new_window(&self, cx: &mut App) {
         let _ = crate::open_window(cx, &self.bridge, self.endpoint.clone(), self.session_id.clone(), self.space_id.clone(), self.hidden);
     }
-    /// The window is closing: drop its native views. Its connection ends with it, and wheeld
-    /// drops the window's reported view with the connection.
+    /// The window is closing: drop its native views, report that it shows nothing (wheeld drops a
+    /// window whose view is empty), and leave the connection it shares with the app's other windows.
     pub fn shutdown(&mut self) {
+        let _ = self.out.send(crate::daemon::frame(&ClientMsg::View { req: None, window: self.window_id.clone(), session: None, space: None, pane: None }));
+        self.out.leave();
         // The microphone closes with the window that shows it.
         self.close_voice();
         self.drop_dictation();
@@ -1187,6 +1191,10 @@ impl Client {
         if self.link == Link::Up {
             let _ = self.out.send(crate::daemon::frame(message));
         }
+    }
+    /// How opaque the grid draws: dimmed while this window's wheeld is unreachable.
+    pub fn link_opacity(&self) -> f32 {
+        if matches!(self.link, Link::Down(_)) { DOWN_OPACITY } else { 1. }
     }
     /// Whether the connected wheeld listed `op`: a feature that sends it shows only when it did,
     /// and keeps its place disabled when it did not.
@@ -2135,7 +2143,7 @@ impl Client {
                     _ => (TITLE, false),
                 };
                 // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
-                let alpha = if n == 0 { f64::from(self.grid_opacity(&p.leaf.id)) } else { 1. };
+                let alpha = (if n == 0 { f64::from(self.grid_opacity(&p.leaf.id)) } else { 1. }) * f64::from(self.link_opacity());
                 let failed = failed || gone || alpha <= 0.;
                 let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
                 if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h, a)| (*r, *f, *a) != (rect, failed, alpha) || *h != holes) {
@@ -2741,6 +2749,8 @@ impl Render for Client {
             }
             grid = grid.child(if fade { el.opacity(0.7) } else { el });
         }
+        // A window whose wheeld dropped keeps its last state, dimmed; input already waits on `Link::Up`.
+        let grid = if self.link_opacity() < 1. { grid.opacity(self.link_opacity()) } else { grid };
         root = if clipped {
             let a = self.grid_area();
             let (w, h) = self.viewport;
