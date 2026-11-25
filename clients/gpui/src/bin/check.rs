@@ -1,6 +1,6 @@
 //! Hidden regression check for the client, driven by tools/check.py against a fixture wheeld:
-//! layout from the daemon, one native view per web and terminal pane on its pane, separate
-//! terminal sessions, keyboard focus following a click, a divider drag with NSEvents the GPUI
+//! layout from the daemon, one native view per web and browser pane on its pane, terminal panes
+//! drawn by GPUI with separate sessions, keyboard focus following a click, a divider drag with NSEvents the GPUI
 //! view receives, the daemon keeping the ratio, following another client's change, and surviving
 //! sessions and windows (header chips clicked with NSEvents, a second window with its own
 //! connection and view, `wheel client ls` reporting each), an agent pane whose reply's Markdown
@@ -102,7 +102,7 @@ fn chord(s: &str) -> gpui::Keystroke {
     }
     k
 }
-/// Every native pane's own pixels: WKWebView snapshots and Ghostty IOSurface readbacks.
+/// Every native pane's own pixels: WKWebView snapshots.
 async fn shot(native: &Native, directory: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
     std::fs::create_dir_all(directory)?;
     native.call(json!({"op":"snapshot","directory":directory}));
@@ -131,11 +131,68 @@ fn on_body(a: [f64; 4], r: Rect, kind: &str) -> bool {
 fn empty_body_point(r: Rect) -> [f64; 2] {
     [f64::from(r.x + r.w - 6.), f64::from(r.y + TITLE + 3.)]
 }
-fn viewport(status: &Value, pane: &str) -> String {
-    status["panes"][pane]["viewport"].as_str().unwrap_or_default().to_owned()
+/// The text terminal pane `pane` shows, from the client's state (`panes[<id>].terminal`).
+fn viewport(state: &Value, pane: &str) -> String {
+    state["panes"][pane]["terminal"]["viewport"].as_str().unwrap_or_default().to_owned()
 }
-fn last_grid(status: &Value, pane: &str) -> Value {
-    status["panes"][pane]["grids"].as_array().and_then(|a| a.last()).cloned().unwrap_or(Value::Null)
+/// The grid terminal pane `pane` last drew at, `[cols, rows]`.
+fn last_grid(state: &Value, pane: &str) -> Value {
+    state["panes"][pane]["terminal"]["grids"].as_array().and_then(|a| a.last()).cloned().unwrap_or(Value::Null)
+}
+/// Every grid sent to wheeld for the term pane `pane` shows, oldest first.
+fn sent_grids(state: &Value, pane: &str) -> Vec<Value> {
+    state["panes"][pane]["terminal"]["sent_grids"].as_array().cloned().unwrap_or_default()
+}
+/// The client's state, as `GET /state` answers it.
+fn client_state(window: ClientWindow, cx: &mut AsyncApp) -> Result<Value> {
+    Ok(window.update(cx, |c, _, _| c.state_json())?)
+}
+/// Waits until `pred` holds of the client's state, pumping the connection and drawing between
+/// reads: a terminal's output reaches the window only through the connection, and its grid and
+/// focus are what its last frame drew.
+async fn until_state(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, what: &str, pred: impl Fn(&Value) -> bool, cx: &mut AsyncApp) -> Result<Value> {
+    for _ in 0..200 {
+        pump(connection, 100, layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let s = client_state(window, cx)?;
+        if pred(&s) {
+            return Ok(s);
+        }
+    }
+    anyhow::bail!("timed out waiting for {what}: {}", client_state(window, cx)?["panes"])
+}
+/// One POST to a debug route, run the way the debug server runs it (`answer_debug`); its body
+/// when it answers 200.
+async fn route(window: ClientWindow, path: &str, query: &[(&str, &str)], body: &str, cx: &mut AsyncApp) -> Result<Value> {
+    let (reply, _) = std::sync::mpsc::channel();
+    let request = wheel_gpui::debug::Request {
+        method: "POST".into(), path: path.into(), query: query.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        body: body.into(), deadline: std::time::Instant::now() + Duration::from_secs(60), reply,
+    };
+    let (status, answer) = wheel_gpui::answer_debug(window, &request, cx).await?;
+    ensure!(status == "200 OK", "POST {path} {query:?} answered {status}: {answer}");
+    Ok(answer)
+}
+/// Terminal pane `pane` as GPUI draws it: the window drawn, cut to the pane's frame and saved to
+/// `path`. Returns the colour of the body's bottom-right corner, inset past any text, which is the
+/// terminal's background.
+fn terminal_picture(window: ClientWindow, pane: &str, path: &std::path::Path, cx: &mut AsyncApp) -> Result<[u8; 3]> {
+    let s = client_state(window, cx)?;
+    let four = |v: &Value| -> [f32; 4] { [0, 1, 2, 3].map(|i| v[i].as_f64().unwrap_or(0.) as f32) };
+    let (frame, body) = (four(&s["panes"][pane]["frame"]), four(&s["panes"][pane]["terminal"]["body"]));
+    ensure!(frame[2] > 0. && body[2] > 0., "terminal {pane} has no frame {} or body {}", s["panes"][pane]["frame"], s["panes"][pane]["terminal"]["body"]);
+    let any: gpui::AnyWindowHandle = window.into();
+    Ok(any.update(cx, |_, w, cx| -> Result<[u8; 3]> {
+        w.draw(cx).clear();
+        let image = w.render_to_image()?;
+        let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+        let [x, y] = [frame[0], frame[1]].map(|v| ((v * scale) as u32).min(image.width().saturating_sub(1)));
+        let (cw, ch) = (((frame[2] * scale) as u32).min(image.width() - x), ((frame[3] * scale) as u32).min(image.height() - y));
+        image::imageops::crop_imm(&image, x, y, cw, ch).to_image().save(path)?;
+        let [px, py] = [body[0] + body[2] - 6., body[1] + body[3] - 6.].map(|v| (v * scale) as u32);
+        let p = image.get_pixel(px.min(image.width() - 1), py.min(image.height() - 1));
+        Ok([p[0], p[1], p[2]])
+    })??)
 }
 
 /// What `wheel client ls --json` says each GPUI window shows: (window id, session, space, pane).
@@ -299,14 +356,15 @@ struct Run {
     output: PathBuf,
 }
 
-async fn settled_once(native: &Native, terms: &[&String], before: &[Vec<Value>], before_status: &Value, what: &str) -> Result<Value> {
-    let after = native.status();
+/// Each terminal whose grid changed since `before_status` sent exactly one grid, the one it drew
+/// last; the others sent nothing. Both states are the client's.
+fn settled_once(after: &Value, terms: &[&String], before: &[Vec<Value>], before_status: &Value, what: &str) -> Result<Value> {
     let mut resized = 0;
     let mut per = serde_json::Map::new();
     for (i, t) in terms.iter().enumerate() {
-        let sent = after["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default();
+        let sent = sent_grids(after, t);
         let new = &sent[before[i].len().min(sent.len())..];
-        let now = last_grid(&after, t);
+        let now = last_grid(after, t);
         if now != last_grid(before_status, t) {
             ensure!(new.len() == 1 && new[0] == now, "{what}: terminal {t} sent {new:?} after the move, wanted only its last grid {now}");
             resized += 1;
@@ -343,9 +401,9 @@ async fn type_text(native: &Native, text: &str, cx: &mut AsyncApp) {
 /// Runs each step in order. A step takes the shared `Run` and what it reads from earlier steps, and
 /// hands back the `Run` and what later steps and the report read.
 async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
-    let (run, first, native_panes, loaded, before, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
+    let (run, first, native_panes, terminals, loaded, before, before_state, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file) = layout_and_terminals(output, cx).await?;
     let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
-    let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
+    let terms: Vec<&String> = terminals.iter().collect();
     let target = terms[1];
     let (run, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli) = focus_and_resizes(run, terms.clone(), target, cx).await?;
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
@@ -405,7 +463,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, browser_report) = browser_pane(run, native_panes.clone(), cx).await?;
     let (run, commands_report) = command_palette(run, cli_path.clone(), terms.clone(), cx).await?;
     let (run, settings_report) = settings_window(run, cli_path.clone(), cx).await?;
-    let (run, fields_report) = text_fields(run, native_panes.clone(), agent_pane.clone(), cx).await?;
+    let (run, fields_report) = text_fields(run, native_panes.clone(), terms[0].clone(), agent_pane.clone(), cx).await?;
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
     let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
@@ -430,15 +488,18 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, server_lifecycle_report, saw_down, down_reason, banner_while_down, typed_after, identities_after, banner_after, final_status) = server_lifecycle_and_restart(run, native_panes.clone(), terms.clone(), webs.clone(), done.clone(), request.clone(), identities_before.clone(), layouts_before_restart.clone(), cx).await?;
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    // From the client's state: a native pane's view frame, a terminal's body and the grid it drew.
     let per_pane = |s: &Value| -> Value {
-        native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":frame(s,id),"grid":last_grid(s,id)}))).collect::<serde_json::Map<_, _>>().into()
+        let mut panes: serde_json::Map<_, _> = native_panes.iter().map(|(id, kind)| (id.clone(), json!({"kind":kind,"frame":s["panes"][id.as_str()]["bridge"]["frame_top"]}))).collect();
+        panes.extend(terms.iter().map(|t| (t.to_string(), json!({"kind":"terminal","body":s["panes"][t.as_str()]["terminal"]["body"],"grid":last_grid(s,t)}))));
+        panes.into()
     };
     let mut report = json!({
         "host_pid": std::process::id(), "layouts_received": layouts, "first_layout": first,
         "native_panes": native_panes, "loaded_at_start": loaded["panes"],
         "native_aligned_with_panes": aligned, "own_session_only": own,
         "keyboard": {"clicked": target, "click": click, "focused": focused, "typed_viewport": viewport(&typed, target), "leaked_to_first": leaked},
-        "before": per_pane(&before),
+        "before": per_pane(&before_state),
         "drag": {"split": split, "from": start, "to": moved, "parent": [parent.x, parent.y, parent.w, parent.h],
             "after": per_pane(&after_status), "layout_after": after_drag, "ratio_saved_by_wheeld": saved, "steps": drag_steps, "settled": drag_settled, "window_resize": window_resize},
         "external_ratio_change": {"cli_exit": status.code(), "ratio_command": 0.3, "layout": external, "panes": per_pane(&external_status)},
@@ -494,9 +555,10 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     Ok(report)
 }
 
-/// Layout from wheeld, one native view per pane on its body, separate terminal sessions,
-/// keyboard focus by a click, a dropped path and the `terminal.*` settings restyling the surface.
-async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
+/// Layout from wheeld, one native view per web and browser pane on its body, each terminal pane
+/// drawn by GPUI on its body with its own session, keyboard focus by a click, a dropped path and
+/// the `terminal.*` settings restyling the terminal.
+async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Vec<String>, Value, Value, Value, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
     let mut connection = Connection::shared(&endpoint);
@@ -522,51 +584,61 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
         let (leaves, _) = c.scene();
         leaves.iter().filter(|p| c.native_panes.contains(&p.leaf.id)).map(|p| (p.leaf.id.clone(), p.leaf.kind.clone())).collect()
     })?;
+    let terminals: Vec<String> = window.update(cx, |c, _, _| c.scene().0.into_iter().filter(|p| p.leaf.kind == "terminal").map(|p| p.leaf.id).collect())?;
     let webs: Vec<&String> = native_panes.iter().filter(|p| p.1 == "web").map(|p| &p.0).collect();
-    let terms: Vec<&String> = native_panes.iter().filter(|p| p.1 == "terminal").map(|p| &p.0).collect();
+    let terms: Vec<&String> = terminals.iter().collect();
     ensure!(native_panes.iter().any(|p| p.1 == "browser"), "the browser pane has no native view: {native_panes:?}");
-    ensure!(webs.len() >= 2 && terms.len() >= 2, "fixture needs two web and two terminal panes: {native_panes:?}");
-    // Each pane has its own view, loaded or replayed by the client itself.
-    let loaded = wait(&native, "pages and terminals", |s| {
-        webs.iter().all(|w| web_ready(s, w))
-            && terms.iter().all(|t| viewport(s, t).contains(markers[t.as_str()].as_str().unwrap_or("?")))
+    ensure!(webs.len() >= 2 && terms.len() >= 2, "fixture needs two web and two terminal panes: native {native_panes:?}, terminals {terminals:?}");
+    // GPUI draws the terminals: none has a native view.
+    ensure!(!native_panes.iter().any(|p| p.1 == "terminal"), "a terminal pane has a native view: {native_panes:?}");
+    // Each web pane has its own view, loaded by the client itself; each terminal its replayed screen.
+    let loaded = wait(&native, "pages", |s| webs.iter().all(|w| web_ready(s, w)), cx).await?;
+    until_state(&mut connection, &mut layouts, window, "the terminals' markers", |s| {
+        terms.iter().all(|t| viewport(s, t).contains(markers[t.as_str()].as_str().unwrap_or("?")))
     }, cx).await?;
     draw(window, None, cx)?;
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
     draw(window, Some(output.join("client-before.png")), cx)?;
     shot(&native, &output.join("before"), cx).await?;
     let before = native.status();
-    // Every native view sits on its pane's body.
+    let before_state = client_state(window, cx)?;
+    // Every native view sits on its pane's body, and every terminal draws on its pane's body.
     let rects = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.rect)).collect::<Vec<_>>())?;
-    let aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, kind)| (id.clone(), on_body(frame(&before, id), rects.iter().find(|r| &r.0 == id).unwrap().1, kind))).collect();
-    ensure!(aligned.iter().all(|a| a.1), "native views not on their panes: {aligned:?}");
+    let rect_of = |id: &str| rects.iter().find(|r| r.0 == id).unwrap().1;
+    let mut aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, kind)| (id.clone(), on_body(frame(&before, id), rect_of(id), kind))).collect();
+    aligned.extend(terms.iter().map(|t| {
+        let body = &before_state["panes"][t.as_str()]["terminal"]["body"];
+        (t.to_string(), on_body([0, 1, 2, 3].map(|i| body[i].as_f64().unwrap_or(-1.)), rect_of(t), "terminal"))
+    }));
+    ensure!(aligned.iter().all(|a| a.1), "native views or terminals not on their panes: {aligned:?}");
     // Terminals are separate sessions: each shows only its own marker.
     let own: Vec<(String, bool, bool)> = terms.iter().map(|t| {
-        let others = terms.iter().filter(|o| o != &t).any(|o| viewport(&before, t).contains(markers[o.as_str()].as_str().unwrap()));
-        (t.to_string(), viewport(&before, t).contains(markers[t.as_str()].as_str().unwrap()), !others)
+        let others = terms.iter().filter(|o| o != &t).any(|o| viewport(&before_state, t).contains(markers[o.as_str()].as_str().unwrap()));
+        (t.to_string(), viewport(&before_state, t).contains(markers[t.as_str()].as_str().unwrap()), !others)
     }).collect();
     ensure!(own.iter().all(|o| o.1 && o.2), "terminal sessions mixed: {own:?}");
     // A click gives the second terminal keyboard focus; keys reach only its PTY.
     let target = terms[1];
-    let r = rects.iter().find(|r| r.0 == *target).unwrap().1;
+    let r = rect_of(target);
     let click = [f64::from(r.x + r.w / 2.), f64::from(r.y + r.h / 2.)];
     native.call(json!({"op":"post_mouse","kind":"down","point":click}));
     native.call(json!({"op":"post_mouse","kind":"up","point":click}));
-    tick(cx, 300).await;
-    let focused = native.status()["panes"][target.as_str()]["focused"].clone();
+    let focused = match until_state(&mut connection, &mut layouts, window, "the clicked terminal holding the keyboard", |s| s["panes"][target.as_str()]["terminal"]["focused"] == true, cx).await {
+        Ok(s) => s["panes"][target.as_str()]["terminal"]["focused"].clone(),
+        Err(_) => client_state(window, cx)?["panes"][target.as_str()]["terminal"]["focused"].clone(),
+    };
     native.call(json!({"op":"post_key","text":"k","code":40}));
     native.call(json!({"op":"post_key","text":"\r","code":36}));
-    let typed = wait(&native, "typed key in second terminal", |s| viewport(s, target).contains("PTY:k"), cx).await?;
+    let typed = until_state(&mut connection, &mut layouts, window, "typed key in second terminal", |s| viewport(s, target).contains("PTY:k"), cx).await?;
     let leaked = viewport(&typed, terms[0]).contains("PTY:k");
     ensure!(focused == true && !leaked, "keyboard focus: focused={focused} leaked_to_first={leaked}");
-    // The terminal pane (TerminalStyle.swift, the Ghostty surface): a dropped file's path reaches
-    // the PTY of the terminal that holds it, and the `terminal.*` settings restyle the surface live
-    // with the shell still running. Committed IME text is Ghostty's own path, which takes text only
-    // while AppKit dispatches a dequeued event; this headless run has no event loop to dequeue one.
-    let dropped = native.call(json!({"op":"term_drop","pane":target,"paths":["/tmp/a b(1).txt", "/tmp/c"]}));
+    // A dropped file's path reaches the PTY of the terminal it lands on, shell-escaped (the drag
+    // itself needs a real pointer, so the check drops through the debug route), and the
+    // `terminal.*` settings restyle the terminal live with the shell still running.
+    let dropped = route(window, "/term/drop", &[("pane", target.as_str())], &json!(["/tmp/a b(1).txt", "/tmp/c"]).to_string(), cx).await?;
     native.call(json!({"op":"post_key","text":"\r","code":36}));
     let drop_line = r"PTY:/tmp/a\ b\(1\).txt /tmp/c";
-    let after_drop = wait(&native, "a dropped file's path in the terminal", |s| viewport(s, target).contains(drop_line), cx).await?;
+    let after_drop = until_state(&mut connection, &mut layouts, window, "a dropped file's path in the terminal", |s| viewport(s, target).contains(drop_line), cx).await?;
     ensure!(dropped["dropped"] == true, "the drop pasted nothing: {dropped}");
     let other_term = terms.iter().copied().find(|t| *t != target).unwrap();
     ensure!(!viewport(&after_drop, other_term).contains("/tmp/c"), "the other terminal got the typed text: {}", viewport(&after_drop, other_term));
@@ -574,67 +646,47 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
     let term_config = |args: &[&str]| -> Result<std::process::Output> {
         Ok(std::process::Command::new(&term_cli).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "config"]).args(args).output()?)
     };
-    let config_of = |s: &Value, t: &str| s["panes"][t]["config"].as_str().unwrap_or_default().to_owned();
-    // A key can appear more than once in the rendered config; the last line is the one in force.
-    let last = |config: &str, key: &str| config.lines().rev().find_map(|l| l.strip_prefix(&format!("{key} = ")).map(str::to_owned)).unwrap_or_default();
-    let status_before_look = native.status();
-    let look_before = config_of(&status_before_look, target);
+    let look_of = |s: &Value, t: &str| { let t = &s["panes"][t]["terminal"]; json!({"font_family": t["font_family"], "font_size": t["font_size"], "theme": t["theme"], "cursor": t["cursor"], "cursor_blink": t["cursor_blink"], "dark": t["dark"]}) };
+    let is_look = |s: &Value, size: f64, theme: &str, cursor: &str| { let t = &s["panes"][target.as_str()]["terminal"]; t["font_size"].as_f64() == Some(size) && t["theme"] == theme && t["cursor"] == cursor };
+    let status_before_look = client_state(window, cx)?;
+    let look_before = look_of(&status_before_look, target);
     let columns_before = last_grid(&status_before_look, target)[0].as_u64().unwrap_or(0);
-    ensure!(last(&look_before, "font-size") == "14" && last(&look_before, "cursor-style") == "block" && look_before.contains("copy_to_clipboard"),
-        "the terminal's config is not the Swift app's: {look_before}");
+    ensure!(is_look(&status_before_look, 14., "standard", "block"), "the terminal's look before any terminal.* setting: {look_before}");
+    let dark = look_before["dark"] == true;
+    let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let look_dir = output.join("terminal-look");
+    let _ = std::fs::remove_dir_all(&look_dir);
+    std::fs::create_dir_all(&look_dir)?;
+    // The terminal's pixels are GPUI's: its picture is the window's, cut to the pane.
+    let default_bg = terminal_picture(window, target, &look_dir.join(format!("{target}-terminal-default.png")), cx)?;
+    ensure!(!dark || default_bg == [0x21, 0x21, 0x21], "the dark standard terminal's background is {}, not #212121", hex(default_bg));
     for (key, value) in [("terminal.font.size", "18"), ("terminal.theme", "gruvbox"), ("terminal.cursor.style", "bar")] {
         let set = term_config(&["set", key, value, "--machine"])?;
         ensure!(set.status.success(), "config set {key} failed: {}", String::from_utf8_lossy(&set.stderr));
     }
-    let mut restyled = Value::Null;
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        let s = native.status();
-        let c = config_of(&s, target);
-        // The surface itself took the new font when its grid has fewer columns.
-        let columns = last_grid(&s, target)[0].as_u64().unwrap_or(0);
-        if last(&c, "font-size") == "18" && last(&c, "cursor-style") == "bar" && s["panes"][target]["theme"] == "gruvbox" && columns > 0 && columns < columns_before {
-            restyled = s;
-            break;
-        }
-    }
-    ensure!(!restyled.is_null(), "the terminal.* settings never restyled the terminal (grid {} columns before): {} {}", columns_before, config_of(&native.status(), target), last_grid(&native.status(), target));
-    ensure!(restyled["panes"][target.as_str()]["restyled"] == json!([true, true]), "Ghostty refused the restyle: {}", restyled["panes"][target.as_str()]["restyled"]);
-    // A restyled surface draws its next frame on its own schedule: shoot until it has one.
-    let look_dir = output.join("terminal-look");
-    let _ = std::fs::remove_dir_all(&look_dir);
+    // The terminal took the new font when its grid has fewer columns.
+    let restyled = until_state(&mut connection, &mut layouts, window, &format!("the terminal.* settings restyling the terminal (grid {columns_before} columns before)"), |s| {
+        let columns = last_grid(s, target)[0].as_u64().unwrap_or(0);
+        is_look(s, 18., "gruvbox", "bar") && columns > 0 && columns < columns_before
+    }, cx).await?;
     let look_png = look_dir.join(format!("{target}-terminal.png"));
-    for _ in 0..20 {
-        pump(&mut connection, 200, &mut layouts, window, cx).await?;
-        draw(window, None, cx)?;
-        shot(&native, &look_dir, cx).await?;
-        if look_png.exists() {
-            break;
-        }
-    }
+    let restyled_bg = terminal_picture(window, target, &look_png, cx)?;
     ensure!(look_png.exists(), "the restyled terminal never drew a picture");
+    ensure!(!dark || restyled_bg == [0x28, 0x28, 0x28], "the dark gruvbox terminal's background is {}, not #282828", hex(restyled_bg));
     native.call(json!({"op":"post_key","text":"s","code":1}));
     native.call(json!({"op":"post_key","text":"\r","code":36}));
-    wait(&native, "the restyled terminal still answering", |s| viewport(s, target).contains("PTY:s"), cx).await?;
+    until_state(&mut connection, &mut layouts, window, "the restyled terminal still answering", |s| viewport(s, target).contains("PTY:s"), cx).await?;
     for key in ["terminal.font.size", "terminal.theme", "terminal.cursor.style"] {
         let unset = term_config(&["unset", key, "--machine"])?;
         ensure!(unset.status.success(), "config unset {key} failed: {}", String::from_utf8_lossy(&unset.stderr));
     }
-    let reverted = |s: &Value| { let c = config_of(s, target); last(&c, "font-size") == "14" && last(&c, "cursor-style") == "block" && s["panes"][target.as_str()]["theme"] == "default" };
-    let mut unset_status = native.status();
-    for _ in 0..100 {
-        if reverted(&unset_status) {
-            break;
-        }
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        unset_status = native.status();
-    }
-    let look_after = config_of(&unset_status, target);
-    ensure!(reverted(&unset_status), "unsetting the terminal.* settings left the terminal restyled: theme {} {look_after}", unset_status["panes"][target.as_str()]["theme"]);
+    let unset_status = until_state(&mut connection, &mut layouts, window, "unsetting the terminal.* settings putting the standard look back", |s| is_look(s, 14., "standard", "block"), cx).await?;
+    let look_after = look_of(&unset_status, target);
     let terminal_report = json!({"dropped": dropped, "drop_line": drop_line, "target_viewport": viewport(&after_drop, target),
-        "other_viewport": viewport(&after_drop, other_term), "config_before": look_before, "config_restyled": config_of(&restyled, target),
-        "config_after": look_after, "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
-    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, loaded, before, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file))
+        "other_viewport": viewport(&after_drop, other_term), "look_before": look_before, "look_restyled": look_of(&restyled, target),
+        "look_after": look_after, "background": {"dark": dark, "standard": hex(default_bg), "gruvbox": hex(restyled_bg)},
+        "grids": terms.iter().map(|t| (t.to_string(), last_grid(&restyled, t))).collect::<serde_json::Map<_, _>>()});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, first, native_panes, terminals, loaded, before, before_state, rects, aligned, own, click, focused, typed, leaked, terminal_report, saved_file))
 }
 
 /// Command-] and command-[ move the keyboard; a divider drag and a window resize hold the
@@ -648,23 +700,30 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
             "native":c.native_panes.contains(&p.leaf.id)})).collect::<Vec<_>>(),
           "dividers":dividers.iter().map(|d| json!({"split":d.split,"horizontal":d.horizontal,"rect":[d.rect.x,d.rect.y,d.rect.w,d.rect.h]})).collect::<Vec<_>>()})
     });
-    // Command-] from the focused terminal (a native view) moves the keyboard to the next pane in
+    // Command-] from the focused terminal (drawn by GPUI) moves the keyboard to the next pane in
     // layout order, and command-[ moves it back.
     let order: Vec<(String, String)> = window.update(cx, |c, _, _| c.scene().0.into_iter().map(|p| (p.leaf.id, p.leaf.kind)).collect())?;
     let at = order.iter().position(|p| p.0 == *target).unwrap();
     let next = order[(at + 1) % order.len()].clone();
+    let term_focused = |s: &Value, pane: &str| s["panes"][pane]["terminal"]["focused"] == true;
     native.call(json!({"op":"post_key","text":"]","code":30,"command":true}));
     tick(cx, 300).await;
-    let after = native.status();
+    draw(window, None, cx)?;
+    let (after, after_state) = (native.status(), client_state(window, cx)?);
     let client_focus = window.update(cx, |c, _, _| c.focus.current.clone())?;
-    let next_has_it = if next.1 == "web" || next.1 == "terminal" || next.1 == "browser" { after["panes"][next.0.as_str()]["focused"] == true } else { after["root_focused"] == true };
-    ensure!(client_focus.as_deref() == Some(next.0.as_str()) && next_has_it && after["panes"][target.as_str()]["focused"] == false,
-        "command-] moved focus to {client_focus:?}, wanted {next:?}: {after}");
+    let next_has_it = match next.1.as_str() {
+        "web" | "browser" => after["panes"][next.0.as_str()]["focused"] == true,
+        "terminal" => term_focused(&after_state, &next.0),
+        _ => after["root_focused"] == true,
+    };
+    ensure!(client_focus.as_deref() == Some(next.0.as_str()) && next_has_it && !term_focused(&after_state, target),
+        "command-] moved focus to {client_focus:?}, wanted {next:?}: bridge {after}, terminal {}", after_state["panes"][target.as_str()]["terminal"]);
     native.call(json!({"op":"post_key","text":"[","code":33,"command":true}));
     tick(cx, 300).await;
-    let back = native.status();
+    draw(window, None, cx)?;
+    let back = client_state(window, cx)?;
     let back_focus = window.update(cx, |c, _, _| c.focus.current.clone())?;
-    ensure!(back_focus.as_deref() == Some(target.as_str()) && back["panes"][target.as_str()]["focused"] == true, "command-[ moved focus to {back_focus:?}");
+    ensure!(back_focus.as_deref() == Some(target.as_str()) && term_focused(&back, target), "command-[ moved focus to {back_focus:?}, terminal {}", back["panes"][target.as_str()]["terminal"]);
     // Drag the first divider between columns with NSEvents the GPUI view receives.
     let (split, bar, parent) = window.update(cx, |c, _, _| {
         let (_, dividers) = c.scene();
@@ -675,9 +734,9 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
     let moved = [start[0] + 140., start[1]];
     // While the divider is under the pointer, no terminal sends a size: every step is drawn and
     // reported, and only the grid each terminal ends at goes to wheeld once the drag lets go.
-    let sent_of = |s: &Value| terms.iter().map(|t| s["panes"][t.as_str()]["sent_grids"].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>();
+    let sent_of = |s: &Value| terms.iter().map(|t| sent_grids(s, t)).collect::<Vec<_>>();
     let held_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.state_json()["grid_motion"].clone());
-    let before_drag = native.status();
+    let before_drag = client_state(window, cx)?;
     let sent_before_drag = sent_of(&before_drag);
     native.call(json!({"op":"post_mouse","kind":"down","point":start}));
     let mut drag_steps = vec![];
@@ -687,7 +746,7 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
         pump(&mut connection, 50, &mut layouts, window, cx).await?;
         draw(window, None, cx)?;
         pump(&mut connection, 250, &mut layouts, window, cx).await?;
-        let mid = native.status();
+        let mid = client_state(window, cx)?;
         let motion = held_now(cx)?;
         ensure!(motion["resizes_held"] == true && motion["dragging_divider"] == true && sent_of(&mid) == sent_before_drag,
             "divider drag step {step}: held {motion}, sent {:?} before {sent_before_drag:?}", sent_of(&mid));
@@ -698,38 +757,40 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
     draw(window, None, cx)?;
     pump(&mut connection, 800, &mut layouts, window, cx).await?;
     // Each terminal the drag resized sent once, the grid it reported last; the others sent nothing.
-    let drag_settled = settled_once(&native, &terms, &sent_before_drag, &before_drag, "the divider drag").await?;
+    let drag_settled = settled_once(&client_state(window, cx)?, &terms, &sent_before_drag, &before_drag, "the divider drag")?;
     ensure!(held_now(cx)?["resizes_held"] == false, "the divider drag left the resizes held");
-    // A window edge dragged, smaller and back: the bridge holds from AppKit's live resize
-    // notifications, posted here for the window, while the client's own hold stays off.
+    // A window edge dragged, smaller and back: AppKit's live resize, stood in for by the debug
+    // route, holds the terminals' sizes like a divider drag; its end sends each grid once.
     let window_size = window.update(cx, |_, w, _| w.viewport_size())?;
     let mut window_resize = vec![];
     for (what, from, to) in [("the window shrinking", 0., -180.), ("the window growing back", -180., 0.)] {
-        let before = native.status();
+        let before = client_state(window, cx)?;
         let sent_before = sent_of(&before);
-        let begun = native.call(json!({"op":"live_resize","on":true}));
-        ensure!(begun["held"] == true, "{what}: the posted live resize did not hold the resizes: {begun}");
+        let begun = route(window, "/live_resize", &[("on", "true")], "", cx).await?;
+        ensure!(begun["held"] == true, "{what}: the live resize did not hold the resizes: {begun}");
         for step in 1..=3 {
             let w: f32 = from + (to - from) * step as f32 / 3.;
             window.update(cx, |_, win, _| win.resize(gpui::size(window_size.width + gpui::px(w), window_size.height)))?;
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
             draw(window, None, cx)?;
             pump(&mut connection, 250, &mut layouts, window, cx).await?;
-            let mid = native.status();
-            ensure!(mid["live_resize"] == true && mid["resizes_held"] == false && sent_of(&mid) == sent_before,
-                "{what} step {step}: live_resize {} resizes_held {}, sent {:?} before {sent_before:?}", mid["live_resize"], mid["resizes_held"], sent_of(&mid));
+            let mid = client_state(window, cx)?;
+            ensure!(mid["live_resize"] == true && mid["grid_motion"]["resizes_held"] == true && sent_of(&mid) == sent_before,
+                "{what} step {step}: live_resize {} resizes_held {}, sent {:?} before {sent_before:?}", mid["live_resize"], mid["grid_motion"]["resizes_held"], sent_of(&mid));
         }
-        let ended = native.call(json!({"op":"live_resize","on":false}));
+        let ended = route(window, "/live_resize", &[("on", "false")], "", cx).await?;
         ensure!(ended["held"] == false, "{what}: the live resize's end left the resizes held: {ended}");
         draw(window, None, cx)?;
         pump(&mut connection, 800, &mut layouts, window, cx).await?;
-        let settled = settled_once(&native, &terms, &sent_before, &before, what).await?;
-        ensure!(native.status()["live_resize"] == false, "{what} left the window resizing");
+        draw(window, None, cx)?;
+        let settled_state = client_state(window, cx)?;
+        let settled = settled_once(&settled_state, &terms, &sent_before, &before, what)?;
+        ensure!(settled_state["live_resize"] == false && settled_state["grid_motion"]["resizes_held"] == false, "{what} left the window resizing: live_resize {}, grid_motion {}", settled_state["live_resize"], settled_state["grid_motion"]);
         window_resize.push(json!({"what": what, "width": window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?, "terminals": settled}));
     }
     ensure!(window.update(cx, |_, w, _| w.viewport_size())? == window_size, "the window did not come back to its size");
     let after_drag = snapshot(cx)?;
-    let after_status = native.status();
+    let after_status = client_state(window, cx)?;
     draw(window, Some(output.join("client-dragged.png")), cx)?;
     shot(&native, &output.join("dragged"), cx).await?;
     window.update(cx, |c, _, _| c.request_status(2))?;
@@ -744,7 +805,7 @@ async fn focus_and_resizes(run: Run, terms: Vec<&String>, target: &String, cx: &
     draw(window, None, cx)?;
     pump(&mut connection, 500, &mut layouts, window, cx).await?;
     let external = snapshot(cx)?;
-    let external_status = native.status();
+    let external_status = client_state(window, cx)?;
     draw(window, Some(output.join("client-external.png")), cx)?;
     shot(&native, &output.join("external"), cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, split, parent, start, moved, drag_steps, drag_settled, window_resize, after_drag, after_status, saved, status, external, external_status, cli))
@@ -835,13 +896,18 @@ async fn mirrors(mut run: Run, term_pane: String, agent_pane: String, cli_path: 
         draw(run.window, None, cx)?;
         term_state = pane_state(run.window, &term_mirror, cx)?;
         agent_state = pane_state(run.window, &agent_mirror, cx)?;
-        if term_state["mirror"]["source"] == term_pane.as_str() && agent_state["mirror"]["source"] == agent_pane.as_str() && term_state["visible"] == true && agent_state["visible"] == true {
+        if term_state["mirror"]["source"] == term_pane.as_str() && agent_state["mirror"]["source"] == agent_pane.as_str() && term_state["visible"] == true && agent_state["visible"] == true
+            && term_state["terminal"]["attached"] == true {
             break;
         }
     }
     let source_term = pane_state(run.window, &term_pane, cx)?["term"].clone();
     let source_agent = pane_state(run.window, &agent_pane, cx)?["agent"].clone();
     ensure!(term_state["mirror"]["source"] == term_pane.as_str() && term_state["kind"] == "terminal" && term_state["term"] == source_term, "the terminal mirror is {term_state}");
+    // One terminal model per term: the mirror draws the source's, screen and all.
+    let source_screen = pane_state(run.window, &term_pane, cx)?["terminal"].clone();
+    ensure!(term_state["terminal"]["term"] == source_term && term_state["terminal"]["attached"] == true && term_state["terminal"]["viewport"] == source_screen["viewport"],
+        "the terminal mirror draws {}, not its source's model {source_screen}", term_state["terminal"]);
     ensure!(agent_state["mirror"]["source"] == agent_pane.as_str() && agent_state["kind"] == "agent" && agent_state["agent"] == source_agent, "the agent mirror is {agent_state}");
     let status: Value = serde_json::from_str(&cli(&["status", "--json"])?)?;
     let space_name = status["spaces"].as_array().and_then(|a| a.iter().find(|s| s["id"] == space.as_str())).and_then(|s| s["name"].as_str()).unwrap_or_default().to_owned();
@@ -861,7 +927,7 @@ async fn mirrors(mut run: Run, term_pane: String, agent_pane: String, cli_path: 
         }
     }
     draw(run.window, None, cx)?;
-    let report = json!({"terminal": {"pane": term_mirror, "source": term_pane, "kind": term_state["kind"], "term": term_state["term"], "title": title, "visible": term_state["visible"]},
+    let report = json!({"terminal": {"pane": term_mirror, "source": term_pane, "kind": term_state["kind"], "term": term_state["term"], "model_term": term_state["terminal"]["term"], "title": title, "visible": term_state["visible"]},
         "agent": {"pane": agent_mirror, "source": agent_pane, "kind": agent_state["kind"], "agent": agent_state["agent"], "title": agent_state["mirror"]["title"]},
         "source_button_focused_source": focused, "closed_with_close": pane_state(run.window, &term_mirror, cx)?.is_null()});
     std::fs::write(run.output.join("mirrors-report.json"), serde_json::to_vec_pretty(&report)?)?;
@@ -5961,12 +6027,11 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
 /// Every one-line field the client draws is a text input: each opened as its control opens it,
 /// emptied with ⌘A Backspace, given the pasteboard with ⌘V, and copied back with ⌘A ⌘C; Esc
 /// closes it. Keys go through the window's own dispatch, as typed keys do.
-async fn text_fields(run: Run, native_panes: Vec<(String, String)>, agent_pane: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+async fn text_fields(run: Run, native_panes: Vec<(String, String)>, terminal: String, agent_pane: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     use wheel_gpui::{settings::{Layer, Tab, Topic}, view::SettingsEdit};
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let browser = native_panes.iter().find(|p| p.1 == "browser").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("the fixture has no browser pane"))?;
-    let terminal = native_panes.iter().find(|p| p.1 == "terminal").map(|p| p.0.clone()).ok_or_else(|| anyhow::anyhow!("the fixture has no terminal pane"))?;
     let space = window.update(cx, |c, _, _| c.space_id().map(str::to_owned))?.ok_or_else(|| anyhow::anyhow!("the window shows no space"))?;
     let saved = window.update(cx, |_, _, cx| cx.read_from_clipboard())?;
     let open: Vec<(&str, Box<dyn Fn(&mut Client, &mut gpui::Context<Client>)>)> = vec![
@@ -6069,15 +6134,15 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
     let config = |args: &[&str]| -> Result<std::process::Output> {
         Ok(std::process::Command::new(&cli_path).args(["--url", &default_url(), "--token-file", &default_token_file().to_string_lossy(), "config"]).args(args).output()?)
     };
-    // The terminal takes the keyboard by a click, so ⌘K reaches the GPUI view only through the bridge's routing.
+    // The terminal takes the keyboard by a click; ⌘K reaches Wheel's keymap before the terminal's own keys.
     let term_rect = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| &p.leaf.id == terms[0]).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("no terminal pane"))?;
     let term_body = [f64::from(term_rect.x + term_rect.w / 2.), f64::from(term_rect.y + term_rect.h / 2.)];
     native.call(json!({"op":"post_mouse","kind":"down","point":term_body}));
     native.call(json!({"op":"post_mouse","kind":"up","point":term_body}));
     tick(cx, 200).await;
     draw(window, None, cx)?;
-    let routed_before = native.status();
-    ensure!(routed_before["panes"][terms[0].as_str()]["focused"] == true, "clicking the terminal did not give it the keyboard");
+    let routed_before = client_state(window, cx)?;
+    ensure!(routed_before["panes"][terms[0].as_str()]["terminal"]["focused"] == true, "clicking the terminal did not give it the keyboard: {}", routed_before["panes"][terms[0].as_str()]["terminal"]);
     let panes_before = leaves(cx)?;
     post(&native, 'k', true);
     let mut root_rows = None;
@@ -6090,7 +6155,7 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
         }
     }
     let actions_so_far = window.update(cx, |c, _, _| c.actions_log.clone())?;
-    let root_rows = root_rows.ok_or_else(|| anyhow::anyhow!("⌘K in a terminal opened no command palette; held_before_key {:?}, actions {actions_so_far:?}", native.status()["held_before_key"]))?;
+    let root_rows = root_rows.ok_or_else(|| anyhow::anyhow!("⌘K in a terminal opened no command palette; actions {actions_so_far:?}"))?;
     // The fixture's runner and the space's artifacts arrive with `runners` and `artifacts`, after the palette opened.
     let mut root_rows = root_rows;
     for _ in 0..100 {
@@ -6152,7 +6217,7 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
     let runner_pane = after_run.iter().find(|p| !after_split.iter().any(|b| b.0 == p.0)).map(|p| p.0.clone()).unwrap();
     ensure!(after_run.iter().any(|p| p.0 == runner_pane && p.1 == "terminal"), "the runner's pane is not a terminal: {after_run:?}");
     draw(window, None, cx)?;
-    let ran = wait(&native, "the runner's terminal printing its line", |s| viewport(s, &runner_pane).lines().any(|l| l.trim() == "FIXTURE-RUNNER"), cx).await?;
+    let ran = until_state(&mut connection, &mut layouts, window, "the runner's terminal printing its line", |s| viewport(s, &runner_pane).lines().any(|l| l.trim() == "FIXTURE-RUNNER"), cx).await?;
     let runner_viewport = viewport(&ran, &runner_pane);
     // The shortcut sheet: ⌘/ opens it with the keymap's keys, Esc closes it.
     post(&native, '/', true);
@@ -6236,7 +6301,7 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
     native.call(json!({"op":"post_mouse","kind":"up","point":term_body}));
     tick(cx, 200).await;
     draw(window, None, cx)?;
-    wait(&native, "the terminal taking the keyboard again", |s| s["panes"][terms[0].as_str()]["focused"] == true, cx).await?;
+    until_state(&mut connection, &mut layouts, window, "the terminal taking the keyboard again", |s| s["panes"][terms[0].as_str()]["terminal"]["focused"] == true, cx).await?;
     post(&native, 'w', true);
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
@@ -6245,9 +6310,9 @@ async fn command_palette(run: Run, cli_path: String, terms: Vec<&String>, cx: &m
             break;
         }
     }
-    let debug = (window.update(cx, |c, _, _| (c.actions_log.clone(), c.focus.current.clone(), c.keymap.symbol("close-pane")))?, native.status());
-    let asked = window.update(cx, |c, _, _| c.confirmation.clone())?.ok_or_else(|| anyhow::anyhow!("⌘W on a terminal asked nothing: actions {:?}, focus {:?}, close-pane key {:?}, held_before_key {:?}, root_focused {:?}, terminal focused {:?}",
-        debug.0.0, debug.0.1, debug.0.2, debug.1["held_before_key"], debug.1["root_focused"], debug.1["panes"][terms[0].as_str()]["focused"]))?;
+    let debug = (window.update(cx, |c, _, _| (c.actions_log.clone(), c.focus.current.clone(), c.keymap.symbol("close-pane")))?, client_state(window, cx)?);
+    let asked = window.update(cx, |c, _, _| c.confirmation.clone())?.ok_or_else(|| anyhow::anyhow!("⌘W on a terminal asked nothing: actions {:?}, focus {:?}, close-pane key {:?}, terminal focused {:?}",
+        debug.0.0, debug.0.1, debug.0.2, debug.1["panes"][terms[0].as_str()]["terminal"]["focused"]))?;
     ensure!(asked.title == "Kill this pane's shell?" && asked.button == "Close Pane", "the question reads {asked:?}");
     draw(window, Some(output.join("client-confirm-close.png")), cx)?;
     native.call(json!({"op":"post_key","text":"\u{1b}","code":53}));
@@ -7118,13 +7183,15 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     until!("the third pane focused by wheel pane focus", |s: &Value| s["panes"][grid_c.as_str()]["focused"] == true);
     // The header's buttons: Pop out, then back with the CLI; Background, then back.
     let site_list = |s: &Value, key: &str| s["spaces"].as_array().and_then(|a| a.iter().find(|x| x["id"] == grid.as_str())).map(|x| x[key].clone()).unwrap_or_default();
-    // The popped pane draws as a card over the grid (wheel-ynjo.7.3). The third pane and the first
-    // become terminals, so the card holds a native view that must sit on top of the grid's.
-    for pane in [&grid_c, &grid_a] {
-        let (ok, _, err) = run_pumped(&["pane", "kind", pane, "terminal"], &mut connection, &mut layouts, window, cx).await?;
-        ensure!(ok, "wheel pane kind {pane} terminal failed: {err}");
-        until!("a terminal view in the pane", |s: &Value| s["panes"][pane.as_str()]["native"] == true);
-    }
+    // The popped pane draws as a card over the grid (wheel-ynjo.7.3). The third pane becomes a
+    // terminal, which GPUI draws inside the card; the first becomes a browser, a native view the
+    // card (and the tray below) must be cut out of. The first is a terminal again after the tray.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &grid_c, "terminal"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane kind {grid_c} terminal failed: {err}");
+    until!("a terminal drawn in the third pane", |s: &Value| s["panes"][grid_c.as_str()]["terminal"]["attached"] == true && s["panes"][grid_c.as_str()]["native"] == false);
+    let (ok, _, err) = run_pumped(&["pane", "kind", &grid_a, "browser", "--page", "about:blank"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane kind {grid_a} browser failed: {err}");
+    until!("a browser view in the first pane", |s: &Value| s["panes"][grid_a.as_str()]["native"] == true);
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=pop"));
     ensure!(code == 200, "pop got {code}");
     let popped = until!("the third pane popped", |s: &Value| site_list(s, "popped") == json!([grid_c]));
@@ -7133,28 +7200,30 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.5);
     let body_of = |f: [f64; 4]| [f[0], f[1] + f64::from(TITLE), f[2], f[3] - f64::from(TITLE)];
     let card_now = |s: &Value| four(&s["cards"][0]["frame"]);
-    let carded = until!("the popped pane in a card with its view shown", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1)
-        && s["panes"][grid_c.as_str()]["bridge"]["hidden"] == false && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(card_now(s))));
+    let term_body = |s: &Value| four(&s["panes"][grid_c.as_str()]["terminal"]["body"]);
+    let carded = until!("the popped pane in a card with its terminal drawn on the card's body", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1)
+        && near(term_body(s), body_of(card_now(s))));
     ensure!(carded["cards"][0]["panes"] == json!([grid_c]), "the card holds {}, not the popped pane", carded["cards"][0]["panes"]);
     let card_before = card_now(&carded);
     ensure!(near(frame(&carded, &grid_c), card_before), "the popped pane fills {:?}, not its card {card_before:?}", frame(&carded, &grid_c));
     let area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
     ensure!(card_before[0] >= area[0] && card_before[1] >= area[1] && card_before[0] + card_before[2] <= area[0] + area[2] + 0.5 && card_before[1] + card_before[3] <= area[1] + area[3] + 0.5,
         "the card {card_before:?} is not inside the grid {area:?}");
-    // The grid's terminal has the card cut out of it, so the card's own view is the one on top there.
+    // The grid's browser has the card cut out of it, so GPUI's card is the one on top there; the
+    // card's terminal is GPUI's drawing, with no native view of its own.
     let holes = carded["panes"][grid_a.as_str()]["bridge"]["holes"].clone();
-    ensure!(holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), card_before)), "the grid terminal under the card has holes {holes}, not the card {card_before:?}");
-    let card_holes = carded["panes"][grid_c.as_str()]["bridge"]["holes"].clone();
-    ensure!(card_holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), four(&carded["cards"][0]["grip"]))), "the card's view has holes {card_holes}, not its resize corner {}", carded["cards"][0]["grip"]);
-    // Where the card covers the grid terminal, the pointer lands on the card's view, and the grid
-    // terminal's mask keeps the rects around the hole.
+    ensure!(holes.as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), card_before)), "the grid browser under the card has holes {holes}, not the card {card_before:?}");
+    let card_native = carded["panes"][grid_c.as_str()]["native"].clone();
+    ensure!(card_native == false && carded["panes"][grid_c.as_str()]["bridge"].is_null(), "the card's terminal has a native view: {}", carded["panes"][grid_c.as_str()]["bridge"]);
+    // Where the card covers the grid browser, the pointer lands on no native view (GPUI's card
+    // takes it), and the grid browser's mask keeps the rects around the hole.
     let inside = [card_before[0] + 30., card_before[1] + f64::from(TITLE) + 30.];
     let hit = native.call(json!({"op":"hit","point":inside}));
-    ensure!(hit["pane"] == grid_c.as_str(), "a point inside the card's body at {inside:?} hits {hit}, not the card's terminal {grid_c}");
+    ensure!(hit["pane"].is_null(), "a point inside the card's body at {inside:?} hits native view {hit}, not the card GPUI draws");
     let rects = carded["panes"][grid_a.as_str()]["bridge"]["mask_rects"].as_u64().unwrap_or(0);
-    ensure!(rects > 1, "the grid terminal's mask keeps {rects} rect(s): the card was not cut out of it");
+    ensure!(rects > 1, "the grid browser's mask keeps {rects} rect(s): the card was not cut out of it");
     draw(window, Some(output.join("client-popped-card.png")), cx)?;
-    // A real drag on the card's header moves it, and its view goes with it.
+    // A real drag on the card's header moves it, and its terminal goes with it.
     let header_at = [card_before[0] + 40., card_before[1] + 11.];
     let moved_by = [-80., 50.];
     native.call(json!({"op":"post_mouse","kind":"down","point":header_at}));
@@ -7170,7 +7239,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     native.call(json!({"op":"post_mouse","kind":"up","point":[header_at[0] + moved_by[0], header_at[1] + moved_by[1]]}));
     let want = [card_before[0] + moved_by[0], card_before[1] + moved_by[1], card_before[2], card_before[3]];
     let card_state = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want)
-        && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(want)));
+        && near(term_body(s), body_of(want)));
     let card_moved = card_now(&card_state);
     // Its corner resizes it.
     let corner = four(&card_state["cards"][0]["grip"]);
@@ -7193,12 +7262,12 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     };
     let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok && near(listed(&out), in_grid(card_resized)), "after the drag wheel pane ls --json lists {:?} for {grid_c}, not the card's {:?} ({err})", listed(&out), in_grid(card_resized));
-    // Case 2: `wheel pane place` moves the card, and its view goes with it.
+    // Case 2: `wheel pane place` moves the card, and its terminal goes with it.
     let (ok, _, err) = run_pumped(&["pane", "place", &grid_c, "--frame", "40,40,400,260"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane place failed: {err}");
     let placed_at = [area[0] + 40., area[1] + 40., 400., 260.];
     let placed = until!("the card at the frame wheel pane place set", |s: &Value| near(card_now(s), placed_at)
-        && near(four(&s["panes"][grid_c.as_str()]["bridge"]["frame_top"]), body_of(placed_at)));
+        && near(term_body(s), body_of(placed_at)));
     let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok && near(listed(&out), [40., 40., 400., 260.]), "after pane place wheel pane ls --json lists {:?} ({err})", listed(&out));
     draw(window, Some(output.join("client-popped-card-placed.png")), cx)?;
@@ -7212,7 +7281,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop failed: {err}");
     let back = until!("the third pane back in the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["cards"].as_array().is_some_and(Vec::is_empty));
-    ensure!(back["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the card left: {}", back["panes"][grid_a.as_str()]["bridge"]["holes"]);
+    ensure!(back["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid browser kept holes after the card left: {}", back["panes"][grid_a.as_str()]["bridge"]["holes"]);
     // Popped again, it comes back where it was left.
     let (ok, _, err) = run_pumped(&["pane", "pop", &grid_c], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane pop again failed: {err}");
@@ -7222,7 +7291,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     ensure!(ok, "wheel pane pop back failed: {err}");
     until!("the third pane back in the grid again", |s: &Value| grid_panes(s).contains(&grid_c));
     let popped_card_report = json!({"pane": grid_c, "grid": area, "before": card_before, "moved": card_moved, "resized": card_resized, "placed": card_placed, "popped_again": card_now(&again),
-        "grid_view_holes": holes, "card_view_holes": card_holes, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
+        "grid_view_holes": holes, "card_native": card_native, "hit_inside_card": hit["pane"], "grid_mask_rects": rects});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report))
 }
 
@@ -7326,13 +7395,13 @@ async fn card_drops_and_tray(run: Run, mut debug: wheel_gpui::debug::Server, bea
     let (code, _) = call!("POST", format!("/panemenu?action=run&pane={grid_c}&item=background"));
     ensure!(code == 200, "background got {code}");
     // The tray (wheel-ynjo.8.5): the chip at its place on the grid's right edge, cut out of the
-    // grid's terminal; a click opens its list, a drag pins it to another edge, a row brings the pane back.
+    // grid's browser; a click opens its list, a drag pins it to another edge, a row brings the pane back.
     let trayed = until!("the third pane backgrounded with the tray chip shown", |s: &Value| site_list(s, "backgrounded") == json!([grid_c]) && s["tray"]["chip"].is_array());
     let chip = four(&trayed["tray"]["chip"]);
     ensure!(trayed["tray"]["place"] == "right" && trayed["tray"]["rows"][0]["pane"] == grid_c.as_str() && trayed["tray"]["rows"][0]["title"] == "Terminal" && trayed["tray"]["open"] == false,
         "the tray reads {}", trayed["tray"]);
     ensure!((chip[0] + chip[2] + 8. - (area[0] + area[2])).abs() < 0.5, "the chip {chip:?} is not on the grid's right edge {area:?}");
-    let tray_holes = until!("the chip cut out of the grid terminal", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), chip)));
+    let tray_holes = until!("the chip cut out of the grid browser", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 1 && near(four(&h[0]), chip)));
     let chip_hit = native.call(json!({"op":"hit","point":[chip[0] + chip[2] / 2., chip[1] + chip[3] / 2.]}));
     ensure!(chip_hit["pane"].is_null(), "a press on the chip lands in pane {}, not on the chip", chip_hit["pane"]);
     let centre = |r: [f64; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
@@ -7344,35 +7413,35 @@ async fn card_drops_and_tray(run: Run, mut debug: wheel_gpui::debug::Server, bea
     let listed = until!("the tray list open", |s: &Value| s["tray"]["open"] == true && s["tray"]["list"].is_array());
     let list = four(&listed["tray"]["list"]);
     ensure!(list[0] + list[2] <= chip[0] + 0.5, "the list {list:?} does not open left of the chip {chip:?}");
-    let list_holes = until!("the list cut out of the grid terminal", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 2 && near(four(&h[1]), list)));
+    let list_holes = until!("the list cut out of the grid browser", |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["holes"].as_array().is_some_and(|h| h.len() == 2 && near(four(&h[1]), list)));
     draw(window, Some(output.join("client-tray-list.png")), cx)?;
     let (code, escaped) = call!("POST", "/key?keys=escape");
     ensure!(code == 200 && escaped["taken"] == true, "Esc did not close the tray list: {escaped}");
     until!("the tray list closed by Esc", |s: &Value| s["tray"]["open"] == false);
-    // A press inside the grid terminal's native view closes the tray list, the pane menu and the
-    // space menu (wheel-ynjo.27): the press goes to the terminal alone, never GPUI's drawing.
-    let in_term = { let f = frame(&listed, &grid_a); [f[0] + 30., f[1] + f[3] - 30.] };
-    let term_hit = native.call(json!({"op":"hit","point":in_term}));
-    ensure!(term_hit["pane"] == grid_a.as_str(), "a press at {in_term:?} lands in {term_hit}, not the grid terminal");
-    let press_term = |what: &str| -> Result<Value> {
-        let down = native.call(json!({"op":"post_mouse","kind":"down","point":in_term}));
-        native.call(json!({"op":"post_mouse","kind":"up","point":in_term}));
-        ensure!(down["target"] == term_hit["class"], "the press with the {what} open went to {}, not the terminal's {}", down["target"], term_hit["class"]);
+    // A press inside the grid browser's native view closes the tray list, the pane menu and the
+    // space menu (wheel-ynjo.27): the press goes to the native view alone, never GPUI's drawing.
+    let in_view = { let f = frame(&listed, &grid_a); [f[0] + 30., f[1] + f[3] - 30.] };
+    let view_hit = native.call(json!({"op":"hit","point":in_view}));
+    ensure!(view_hit["pane"] == grid_a.as_str(), "a press at {in_view:?} lands in {view_hit}, not the grid browser");
+    let press_view = |what: &str| -> Result<Value> {
+        let down = native.call(json!({"op":"post_mouse","kind":"down","point":in_view}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":in_view}));
+        ensure!(down["target"] == view_hit["class"], "the press with the {what} open went to {}, not the browser's {}", down["target"], view_hit["class"]);
         Ok(down["target"].clone())
     };
     click_at(centre(chip));
-    until!("the tray list open again for the terminal press", |s: &Value| s["tray"]["open"] == true);
-    let press_target = press_term("tray list")?;
-    until!("the tray list closed by a press in the terminal", |s: &Value| s["tray"]["open"] == false);
-    draw(window, Some(output.join("client-tray-terminal-press.png")), cx)?;
+    until!("the tray list open again for the native view press", |s: &Value| s["tray"]["open"] == true);
+    let press_target = press_view("tray list")?;
+    until!("the tray list closed by a press in the native view", |s: &Value| s["tray"]["open"] == false);
+    draw(window, Some(output.join("client-tray-native-press.png")), cx)?;
     let (code, _) = call!("POST", format!("/panemenu?action=open&pane={grid_a}&x=420&y=120"));
-    ensure!(code == 200 && state!()["pane_menu"]["pane"] == grid_a.as_str(), "the pane menu did not open for the terminal press");
-    press_term("pane menu")?;
-    until!("the pane menu closed by a press in the terminal", |s: &Value| s["pane_menu"].is_null());
+    ensure!(code == 200 && state!()["pane_menu"]["pane"] == grid_a.as_str(), "the pane menu did not open for the native view press");
+    press_view("pane menu")?;
+    until!("the pane menu closed by a press in the native view", |s: &Value| s["pane_menu"].is_null());
     let (code, _) = call!("POST", format!("/spacemenu?space={grid}"));
-    ensure!(code == 200 && state!()["space_menu"]["space"] == grid.as_str(), "the space menu did not open for the terminal press");
-    press_term("space menu")?;
-    until!("the space menu closed by a press in the terminal", |s: &Value| s["space_menu"].is_null());
+    ensure!(code == 200 && state!()["space_menu"]["space"] == grid.as_str(), "the space menu did not open for the native view press");
+    press_view("space menu")?;
+    until!("the space menu closed by a press in the native view", |s: &Value| s["space_menu"].is_null());
     // A drag to the grid's top edge pins the chip there.
     let from = centre(chip);
     let to = [area[0] + area[2] * 0.5, area[1] + 20.];
@@ -7404,10 +7473,15 @@ async fn card_drops_and_tray(run: Run, mut debug: wheel_gpui::debug::Server, bea
     let reopened = until!("the tray list open again", |s: &Value| s["tray"]["open"] == true);
     click_at(centre(four(&reopened["tray"]["rows"][0]["frame"])));
     let back_from_tray = until!("the row brought the pane back to the grid", |s: &Value| grid_panes(s).contains(&grid_c) && s["panes"][grid_c.as_str()]["site"] == "grid" && s["tray"]["chip"].is_null());
-    ensure!(back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid terminal kept holes after the chip went: {}", back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"]);
+    ensure!(back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"] == json!([]), "the grid browser kept holes after the chip went: {}", back_from_tray["panes"][grid_a.as_str()]["bridge"]["holes"]);
     let tray_report = json!({"chip": chip, "list": list, "grid_view_holes": tray_holes["panes"][grid_a.as_str()]["bridge"]["holes"], "with_list": list_holes["panes"][grid_a.as_str()]["bridge"]["holes"],
         "moved_place": moved_tray["tray"]["place"], "moved_chip": moved_chip, "list_below": below_list, "row": reopened["tray"]["rows"][0],
-        "terminal_press": {"at": in_term, "target": press_target, "closed": ["tray list", "pane menu", "space menu"]}});
+        "native_view_press": {"at": in_view, "target": press_target, "closed": ["tray list", "pane menu", "space menu"]}});
+    // The first pane a shell again, its size sent, for the zoom and header checks after.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &grid_a, "terminal"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel pane kind {grid_a} terminal failed: {err}");
+    until!("the first pane a terminal again with its size sent", |s: &Value| s["panes"][grid_a.as_str()]["native"] == false
+        && s["panes"][grid_a.as_str()]["terminal"]["attached"] == true && !sent_grids(s, &grid_a).is_empty());
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, card_drops_report, tray_report))
 }
 
@@ -7478,7 +7552,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     let zoom_area = four(&json!(window.update(cx, |c, _, _| { let r = c.grid_area(); [r.x, r.y, r.w, r.h] })?));
     let before_zoom = state!();
     let a_from = frame(&before_zoom, &grid_a);
-    let sent = |s: &Value| s["panes"][grid_a.as_str()]["bridge"]["sent_grids"].as_array().cloned().unwrap_or_default();
+    let sent = |s: &Value| sent_grids(s, &grid_a);
     let sent_before = sent(&before_zoom).len();
     let zoom_button = before_zoom["panes"][grid_a.as_str()]["header_buttons"]["zoom"].clone();
     ensure!(zoom_button["enabled"] == true && zoom_button["on"] == false && before_zoom["grid_motion"]["zoomed"].is_null(), "the zoom button reads {zoom_button} before a zoom");
@@ -7507,8 +7581,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     for pane in [&grid_b, &grid_c] {
         ensure!(apart(frame(&zoomed, pane), zoom_area), "{pane} is at {:?}, inside the grid {zoom_area:?} while another is zoomed", frame(&zoomed, pane));
     }
-    ensure!(zoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == true, "the slid-out terminal's view still shows: {}", zoomed["panes"][grid_c.as_str()]["bridge"]);
-    let (grids, sent_now) = (zoomed["panes"][grid_a.as_str()]["bridge"]["grids"].clone(), sent(&zoomed));
+    let (grids, sent_now) = (zoomed["panes"][grid_a.as_str()]["terminal"]["grids"].clone(), sent(&zoomed));
     ensure!(sent_now.len() == sent_before + 1 && grids.as_array().and_then(|g| g.last()) == sent_now.last(), "the zoom sent {:?} after {sent_before}, the terminal's last grid is {:?}", sent_now, grids.as_array().and_then(|g| g.last()));
     let unzoom_button = &zoomed["panes"][grid_a.as_str()]["header_buttons"]["zoom"];
     ensure!(unzoom_button["on"] == true && unzoom_button["label"] == "Unzoom Pane (⇧⌘↩)", "the zoomed pane's button reads {unzoom_button}");
@@ -7524,7 +7597,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
         native.call(json!({"op":"post_mouse","kind":"up","point":title_at,"clicks":clicks}));
     }
     let unzoomed = until!("the header's double-click put the grid back", |s: &Value| s["grid_motion"]["zoomed"].is_null() && near(frame(s, &grid_a), a_from));
-    ensure!(unzoomed["sidebar"]["pane_drag"].is_null() && unzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == false, "after the unzoom the drag reads {} and the third view {}", unzoomed["sidebar"]["pane_drag"], unzoomed["panes"][grid_c.as_str()]["bridge"]);
+    ensure!(unzoomed["sidebar"]["pane_drag"].is_null() && unzoomed["panes"][grid_c.as_str()]["visible"] == true, "after the unzoom the drag reads {} and the third pane {}", unzoomed["sidebar"]["pane_drag"], unzoomed["panes"][grid_c.as_str()]["visible"]);
     unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
     // A double-click zooms too, at normal speed; ⇧⌘↩ puts the grid back and zooms again.
     // A double-click on the title's text names the pane instead, and leaves the grid alone.
@@ -7562,7 +7635,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     let motions: Vec<Value> = state!()["log"].as_array().map(|l| l.iter().filter(|x| x.as_str().is_some_and(|t| t.contains("grid motion: ") && !t.ends_with("done"))).cloned().collect()).unwrap_or_default();
     ensure!(motions.iter().any(|m| m.as_str().is_some_and(|t| t.contains("grid motion: layout"))), "no layout change animated: {motions:?}");
     let zoom_report = json!({"area": zoom_area, "from": a_from, "mid": a_mid, "mid_progress": mid["grid_motion"]["progress"], "zoomed": frame(&zoomed, &grid_a),
-        "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "lagged_reports": zoomed["panes"][grid_a.as_str()]["bridge"]["lagged_reports"], "normal_ms": normal_ms, "motions": motions});
+        "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "normal_ms": normal_ms, "motions": motions});
     // Reduce Motion (wheel-ynjo.8.6), stood in for by `appkit::motion::stand_in`: the zoom grows the
     // first pane over the others, which keep their frames and fade, their views hidden by the end;
     // the unzoom fades them back. Slowed ten times again so a frame mid-way can be read.
@@ -8136,13 +8209,11 @@ async fn server_lifecycle_and_restart(run: Run, native_panes: Vec<(String, Strin
     pump(&mut connection, 800, &mut layouts, window, cx).await?;
     draw(window, None, cx)?;
     ensure!(layouts > layouts_before_restart, "no layout after the restart");
-    wait(&native, "native views on the restarted daemon", |s| {
-        webs.iter().all(|w| web_ready(s, w))
-            && terms.iter().all(|t| s["panes"][t.as_str()]["pixels"] == true)
-    }, cx).await?;
-    // A new PTY answers keys typed through the reopened view: only the shell's output holds 42.
-    native.call(json!({"op":"pty","pane":terms[0],"text":"echo RECONNECTED-$((6*7))\r"}));
-    let typed_after = match wait(&native, "a restarted terminal answering", |s| viewport(s, terms[0]).contains("RECONNECTED-42"), cx).await {
+    wait(&native, "native views on the restarted daemon", |s| webs.iter().all(|w| web_ready(s, w)), cx).await?;
+    until_state(&mut connection, &mut layouts, window, "terminals attached on the restarted daemon", |s| terms.iter().all(|t| s["panes"][t.as_str()]["terminal"]["attached"] == true), cx).await?;
+    // A new PTY answers text typed into the terminal: only the shell's output holds 42.
+    route(window, "/term/type", &[("pane", terms[0].as_str()), ("text", "echo RECONNECTED-$((6*7))\r")], "", cx).await?;
+    let typed_after = match until_state(&mut connection, &mut layouts, window, "a restarted terminal answering", |s| viewport(s, terms[0]).contains("RECONNECTED-42"), cx).await {
         Ok(s) => s,
         Err(error) => {
             let term = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| &p.leaf.id == terms[0]).and_then(|p| p.leaf.term))?;
@@ -8154,7 +8225,8 @@ async fn server_lifecycle_and_restart(run: Run, native_panes: Vec<(String, Strin
         }
     };
     draw(window, Some(output.join("client-reconnected.png")), cx)?;
-    let identities_after: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&typed_after, id))).collect();
+    let status_after = native.status();
+    let identities_after: Vec<(String, String)> = native_panes.iter().map(|(id, _)| (id.clone(), identity(&status_after, id))).collect();
     ensure!(identities_before.iter().zip(&identities_after).all(|(a, b)| a.1 != b.1), "a native view survived the restart: {identities_before:?} {identities_after:?}");
     let banner_after = window.update(cx, |c, _, _| c.link.banner())?;
     ensure!(banner_after.is_empty(), "banner still shown after reconnect: {banner_after}");
