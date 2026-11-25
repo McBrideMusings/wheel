@@ -170,28 +170,14 @@ impl Native {
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
     }
-    /// Show terminal `term` in a Ghostty view for `pane`, streamed over the daemon socket `ws` and
-    /// styled by the Ghostty controller of `space`, the space it opens in.
-    pub fn open_terminal(&self, pane: &str, term: &str, space: Option<&str>, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"terminal","term":term,"space":space,"ws":ws}));
-    }
     /// Every pane and the terminal or agent it holds (`layout::pane_targets`), for the terminals a page embeds.
     pub fn pane_targets(&self, panes: &serde_json::Value) {
         self.call(json!({"op":"pane_targets","panes":panes}));
-    }
-    /// `space`'s `terminal.*` settings as wheeld resolved them: its terminals restyle in place.
-    pub fn terminal_look(&self, space: &str, settings: &[wheel_proto::SettingInfo]) {
-        let terminal: Vec<&wheel_proto::SettingInfo> = settings.iter().filter(|s| s.key.starts_with("terminal.")).collect();
-        self.call(json!({"op":"terminal_look","space":space,"settings":terminal}));
     }
     /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin), with `holes`
     /// (the same coordinates) cut out of it: the cards drawn over it. `alpha` is how opaque it draws.
     pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]], alpha: f64) {
         self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes,"alpha":alpha}));
-    }
-    /// Hold every terminal's resizes while the grid animates; on release each sends the grid it ended at.
-    pub fn hold_resizes(&self, held: bool) {
-        self.call(json!({"op":"hold_resizes","held":held}));
     }
     /// The daemon socket the plugin panes kept across a reconnect ask for their scripts on.
     pub fn plugin_endpoint(&self, ws: &str) {

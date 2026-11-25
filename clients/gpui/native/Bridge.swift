@@ -55,11 +55,6 @@ final class Slot: NSView {
     /// The cards drawn over this view, as GPUI placed them (x, y, w, h, top-left origin).
     var holesTop: [[Double]] = []
     var web: WKWebView?
-    var terminal: DropTerminalView?
-    var session: InMemoryTerminalSession?
-    var termID: String?
-    /// The space a terminal was opened in, whose controller styles it.
-    var space: String?
     var url: String?
     var loads: [String] = []
     /// An artifact page: the address under `WebPanes.scheme` it opens at, how many times a
@@ -82,17 +77,8 @@ final class Slot: NSView {
     /// GPUI view draws the chrome from the state the bridge emits on every change.
     var browser: BrowserPane?
     var browserChanges: AnyCancellable?
-    var grids: [[Int]] = []
-    /// The grids sent to wheeld as `term_resize`; the report waiting while the grid moves; and a
-    /// count of reports, so a lagging one's fallback knows a newer one came.
-    var sent: [[Int]] = []
-    var heldReport: InMemoryTerminalViewport?
-    var reports = 0
-    /// The reports that did not fit the view when they came.
-    var lagged = 0
-    var writes: [String] = []
     init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
-    var content: NSView { pluginView ?? web ?? terminal! }
+    var content: NSView { pluginView ?? web! }
 }
 
 /// A pane's terminal drawn inside a plugin pane's page (`ui.Terminal{pane}`, ADR-0042): its own session and
@@ -159,7 +145,7 @@ final class Slot: NSView {
             }
         })
         let view = DropTerminalView(frame: bounds)
-        view.controller = native.controller(for: native.panes[hostPane]?.space)
+        view.controller = native.embedController
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
         self.session = session
         terminal = view
@@ -369,38 +355,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     let root: NSView
     let window: Int32
     let emitter: Emit
-    /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
-    /// and no other space's (the Swift app's `AppModel.terminalController(for:)`); a terminal keeps
-    /// the controller of the space it was opened in.
-    var controllers: [String: TerminalController] = [:]
-    /// How each space's terminals draw, from its `terminal.*` settings.
-    var looks: [String: TerminalAppearance] = [:]
-    /// What Ghostty answered to each space's last restyle: it took the configuration, the theme.
-    var restyled: [String: [Bool]] = [:]
-    func controller(for space: String?) -> TerminalController {
-        let key = space ?? ""
-        if let held = controllers[key] { return held }
-        let look = looks[key] ?? .standard
-        let made = TerminalStyle.controller(look)
-        controllers[key] = made
-        return made
-    }
-    /// A space's settings arrived (`terminal_look`): restyle its controller in place, so the shells
-    /// keep running and every surface redraws (the Swift app's `restyleTerminals`).
-    func restyle(_ value: [String: Any]) {
-        guard let space = value["space"] as? String, let list = value["settings"],
-              let data = try? JSONSerialization.data(withJSONObject: list),
-              let settings = try? JSONDecoder().decode([SettingInfo].self, from: data) else {
-            errors.append("terminal_look: unreadable settings for \(value["space"] ?? "no space")")
-            return
-        }
-        let look = TerminalAppearance(settings: settings)
-        guard looks[space] != look else { return }
-        looks[space] = look
-        guard let controller = controllers[space] else { return }
-        let took = TerminalStyle.restyle(controller, to: look)
-        restyled[space] = [took.config, took.theme]
-    }
+    /// The one Ghostty controller every embedded terminal uses, in the default look.
+    lazy var embedController: TerminalController = TerminalStyle.controller(.standard)
     var panes: [String: PaneHost] = [:]
     /// Every pane and what it holds, as the Rust side last said (`pane_targets`): `term`, `agent`.
     var paneTargets: [String: [String: String]] = [:]
@@ -458,7 +414,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var sends: [String] = []
     var monitor: Any?
     var pressMonitor: Any?
-    var liveResizeObservers: [Any] = []
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -487,18 +442,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let at = superview.convert(event.locationInWindow, from: nil)
             pressed(root.hitTest(at), at: root.convert(at, from: superview))
             return event
-        }
-        // A window edge under the pointer holds the terminals' resizes until it is let go, as
-        // AppModel counts `windowResizes` from these notifications. With no queue the block runs
-        // as AppKit posts, before the resize's first frame is laid out.
-        for (name, on) in [(NSWindow.willStartLiveResizeNotification, true), (NSWindow.didEndLiveResizeNotification, false)] {
-            liveResizeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
-                MainActor.assumeIsolated {
-                    guard let self, let window = self.root.window, note.object as? NSWindow === window else { return }
-                    self.liveResizing = on
-                    if !self.holding { self.sendHeld() }
-                }
-            })
         }
     }
     /// The pane whose native view `view` is or lies inside.
@@ -595,7 +538,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
-        liveResizeObservers.forEach { NotificationCenter.default.removeObserver($0) }
         monitor = nil
         pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
@@ -804,16 +746,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                    value["ev"] as? String == "term_attached", let term = value["id"] as? String {
                     // wheeld answers every `term_attach` with this event and then replays the whole screen as `term_output`
                     // to every session of the term on this connection, not only the new one. The socket is ordered, so a
-                    // full reset (ESC c, RIS) now leaves every host and embed blank and the replay repaints them from one state.
+                    // full reset (ESC c, RIS) now leaves every embed blank and the replay repaints them from one state.
                     let reset = Data([0x1b, 0x63])
-                    for host in panes.values where host.termID == term { host.session?.receive(reset) }
                     for embed in embeds.values where embed.termID == term { embed.session?.receive(reset) }
                 }
                 if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                    value["ev"] as? String == "term_output", let term = value["id"] as? String,
                    let encoded = value["data"] as? String, let bytes = Data(base64Encoded: encoded) {
                     termOutputs += 1
-                    for host in panes.values where host.termID == term { host.session?.receive(bytes) }
                     for embed in embeds.values where embed.termID == term { embed.bytes += bytes.count; embed.session?.receive(bytes) }
                 }
                 receive()
@@ -842,11 +782,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         root.addSubview(host.slot)
         if kind == "plugin" {
             let plugin = PluginPane()
-            host.space = value["space"] as? String
+            let space = value["space"] as? String
             let ids = (host.pluginLabel ?? "").split(separator: "/", maxSplits: 1).map(String.init)
             plugin.context = [
                 "pane": .string(id),
-                "space": host.space.map { .string($0) } ?? .null,
+                "space": space.map { .string($0) } ?? .null,
                 "cwd": host.cwd.flatMap { $0.isEmpty ? nil : .string($0) } ?? .null,
                 "plugin": ids.first.map { .string($0) } ?? .null,
                 "plugin_pane": ids.count > 1 ? .string(ids[1]) : .null,
@@ -927,30 +867,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 host.url = page.absoluteString
                 web.load(URLRequest(url: page))
             } else if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
-        } else {
-            let term = value["term"] as! String
-            connect(value["ws"] as! String)
-            let terminal = DropTerminalView(frame: .zero)
-            host.termID = term
-            host.space = value["space"] as? String
-            host.session = InMemoryTerminalSession(write: { [weak self, weak host] data in
-                Task { @MainActor in
-                    guard let self, let host else { return }
-                    host.writes.append(String(decoding: data, as: UTF8.self))
-                    self.send(["op": "term_input", "id": term, "data": data.base64EncodedString()])
-                }
-            }, resize: { [weak self, weak host] viewport in
-                Task { @MainActor in
-                    guard let self, let host else { return }
-                    host.grids.append([Int(viewport.columns), Int(viewport.rows)])
-                    self.resized(host, viewport)
-                }
-            })
-            terminal.controller = controller(for: host.space)
-            terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(host.session!))
-            host.terminal = terminal
-            host.slot.addSubview(terminal)
-            send(["op": "term_attach", "id": term])
         }
         panes[id] = host
     }
@@ -982,7 +898,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
     /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a plugin pane and a terminal are their views' pixels.
+    /// `full`, the whole document); a plugin pane is its view's pixels.
     func render(_ value: [String: Any]) {
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
@@ -1030,9 +946,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 case let .failure(refusal): self?.emit(["answer": "refused", "id": id, "message": refusal.message])
                 }
             }
-        } else if let terminal = host.terminal, let image = terminalPixels(terminal), let tiff = image.tiffRepresentation,
-                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-            emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
         } else {
             emit(["answer": "refused", "id": id, "message": "the GPUI client draws this pane itself; its picture is not served yet"])
         }
@@ -1239,18 +1152,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         default: break
         }
     }
-    /// `term` is no longer shown by `except`: detach it when no pane and no other embed shows it.
-    /// A grid pane still holding it gets its own size back: the embed's size was the term's last `term_resize`.
+    /// `term` is no longer shown by `except`: detach it when no other embed shows it.
     func release(_ term: String, except: EmbedTerminal? = nil) {
-        let hosts = panes.values.filter { $0.termID == term }
-        guard hosts.isEmpty else {
-            for host in hosts {
-                guard let grid = host.grids.last else { continue }
-                host.sent.append(grid)
-                send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
-            }
-            return
-        }
         guard !embeds.values.contains(where: { $0 !== except && $0.termID == term }) else { return }
         send(["op": "term_detach", "id": term])
     }
@@ -1260,7 +1163,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let gone = agentEmbeds.filter { $0.value.hostPane == id }
         for key in gone.keys { agentEmbeds[key] = nil }
         for embed in gone.values { embed.drop() }
-        if let term = host.termID { release(term) }
         if let web = host.web { PageSchemeHandler.close(web) }
         host.slot.removeFromSuperview()
         if let plugin = host.plugin {
@@ -1303,72 +1205,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageClient = client
         return client
     }
-    /// While the GPUI view moves the panes (`hold_resizes`: the grid animates or a divider is
-    /// dragged) or a window edge is dragged, a terminal's resizes wait: only the grid it ends at
-    /// goes to wheeld, as AppModel.settle sends a terminal's size when the move ends.
-    var resizesHeld = false
-    var liveResizing = false
-    var holding: Bool { resizesHeld || liveResizing }
-    /// A report can lag its view: the surface reflows a display frame after the view moved, so a
-    /// report whose pixels are not the view's is a grid of an earlier frame and waits for the one
-    /// that follows, sent anyway after `lagLimit` with no newer report (AppModel.settle's rules).
-    static let lagLimit: Duration = .milliseconds(100)
-    static let paddingPoints: CGFloat = 24
-    func resized(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        if holding { host.heldReport = vp; return }
-        host.reports += 1
-        guard fitsView(host, vp) else {
-            host.lagged += 1
-            sendUnlessNewer(host, vp)
-            return
-        }
-        sendSize(host, vp)
-    }
-    /// Send `vp` after `lagLimit` unless a newer report came meanwhile.
-    func sendUnlessNewer(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        let report = host.reports
-        Task { @MainActor [weak self, weak host] in
-            try? await Task.sleep(for: Self.lagLimit)
-            guard let self, let host, host.reports == report else { return }
-            // A motion that began meanwhile holds it, so its end sends it when nothing newer comes.
-            if self.holding { host.heldReport = host.heldReport ?? vp } else { self.sendSize(host, vp) }
-        }
-    }
-    func sendSize(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        let grid = [Int(vp.columns), Int(vp.rows)]
-        guard host.sent.last != grid, let term = host.termID else { return }
-        host.sent.append(grid)
-        send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
-    }
-    /// Whether report `vp` is of the terminal view's present frame: its pixels are the view's
-    /// less the padding and less than a cell.
-    func fitsView(_ host: PaneHost, _ vp: InMemoryTerminalViewport) -> Bool {
-        guard let view = host.terminal, vp.widthPixels > 0, vp.heightPixels > 0, vp.columns > 0, vp.rows > 0 else { return true }
-        let scale = view.window?.backingScaleFactor ?? 2
-        let slack = Self.paddingPoints * scale
-        let cw = max(CGFloat(vp.cellWidthPixels), CGFloat(vp.widthPixels) / CGFloat(vp.columns))
-        let ch = max(CGFloat(vp.cellHeightPixels), CGFloat(vp.heightPixels) / CGFloat(vp.rows))
-        let dw = view.bounds.width * scale - CGFloat(vp.widthPixels)
-        let dh = view.bounds.height * scale - CGFloat(vp.heightPixels)
-        return (0...slack + cw).contains(dw) && (0...slack + ch).contains(dh)
-    }
-    func holdResizes(_ value: [String: Any]) {
-        resizesHeld = value["held"] as? Bool == true
-        if !holding { sendHeld() }
-    }
-    /// The move ended: each terminal's held report goes.
-    func sendHeld() {
-        // The report held last is of a frame before the motion's end, a cell short of its view
-        // or more: the surface reports the grid of its end frame a display frame later, and only
-        // when that grid differs. So it waits for that report, and goes when none comes.
-        for host in panes.values {
-            if let vp = host.heldReport {
-                host.heldReport = nil
-                host.reports += 1
-                sendUnlessNewer(host, vp)
-            }
-        }
-    }
     func place(_ value: [String: Any]) {
         guard let host = panes[value["pane"] as! String] else { return }
         host.slot.isHidden = value["hidden"] as? Bool == true
@@ -1380,7 +1216,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         host.slot.frame = frame
         host.content.frame = host.slot.bounds
         host.web?.frame = host.slot.bounds
-        host.terminal?.setSurfaceVisible(!host.slot.isHidden)
         host.slot.cut(cuts(host))
     }
     /// What is cut out of `host`'s view: the overlay's rect and the cards over it, in the root's coordinates.
@@ -1505,14 +1340,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             embedPerms.list = []
             agentReqs = [:]; attachReqs = []; taskOutputAsks = [:]
         case "place": place(value)
-        case "hold_resizes": holdResizes(value)
-        case "live_resize":
-            // The check's stand-in for a person dragging the window's edge: AppKit's own start or
-            // end notification, posted for this window.
-            if let window = root.window {
-                NotificationCenter.default.post(name: value["on"] as? Bool == true ? NSWindow.willStartLiveResizeNotification : NSWindow.didEndLiveResizeNotification, object: window)
-            }
-            return ["held": holding]
         case "focus":
             // A pane with no native view is drawn by GPUI: its view takes the keyboard.
             let target = panes[value["pane"] as! String]?.content ?? root
@@ -1528,17 +1355,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 overlay = nil
             }
             panes.values.forEach { $0.slot.cut(cuts($0)) }
-        case "pty":
-            if let host = panes[value["pane"] as! String], let term = host.termID {
-                send(["op": "term_input", "id": term, "data": Data((value["text"] as! String).utf8).base64EncodedString()])
-            }
         case "keymap":
             routed = Set((value["chords"] as? [String]) ?? [])
-        case "terminal_look": restyle(value)
-        case "term_drop":
-            // What a drop of these files does, for the check: the drag itself needs a real pointer.
-            guard let terminal = panes[value["pane"] as! String]?.terminal else { return ["dropped": false] }
-            return ["dropped": terminal.drop(value["paths"] as? [String] ?? [])]
         case "post_key":
             // Real NSEvents to NSWindow.sendEvent: first-responder routing and the views' own key
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
@@ -1632,7 +1450,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                         self.snapshotsPending.remove(host.id)
                     }
                 }
-                if let terminal = host.terminal { _ = png(terminalPixels(terminal), "\(directory)/\(host.id)-terminal.png") }
             }
         default: break
         }
@@ -1643,7 +1460,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
             "snapshots_pending": snapshotsPending.count,
             "snapshots_waiting": snapshotsPending.sorted(),
-            "resizes_held": resizesHeld, "live_resize": liveResizing,
             "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
@@ -1668,14 +1484,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             } else if let p = host.plugin {
                 entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "restarts": p.restarts, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }
-            else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
-                   entry["pixels"] = host.terminal?.layer?.contents != nil
-                   let space = host.space ?? ""
-                   entry["space"] = host.space ?? NSNull()
-                   entry["config"] = controllers[space]?.renderedConfig ?? ""
-                   entry["theme"] = (looks[space] ?? .standard).theme.rawValue
-                   entry["restyled"] = restyled[space] ?? NSNull()
-                   entry["font_size"] = host.terminal?.fontSize.map { Double($0) } ?? NSNull() }
             panesOut[id] = entry
         }
         out["panes"] = panesOut
