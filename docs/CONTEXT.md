@@ -22,6 +22,10 @@ A session no Mac window shows. Its spaces keep running and it is listed in the m
 **Client view**:
 What one attached client shows: for each window, a session, its shown space and that space's shown pane. Each client owns its own; the daemon reports it but never sends it to another client.
 
+**Server**:
+A wheeld a client is paired with, named by its label and keyed by its `host.id`. A client may be paired with several; each holds its own sessions.
+_Avoid_: machine (the `~/.wheel/wheel.toml` scope), host
+
 **Pairing code**:
 The JSON a phone scans or pastes to connect: the daemon's address, a one-time token and the certificate fingerprint.
 
