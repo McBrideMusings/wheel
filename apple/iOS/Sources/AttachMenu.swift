@@ -7,7 +7,7 @@ import WheelUI
 
 /// The composer's + on the phone: Photo Library (several at once), Take Photo where the device has a camera, and Choose
 /// File, when wheeld takes uploads; then Clear chat, which asks first, where the harness resets on `/clear`. The model
-/// is picked on the composer's row (`ModelMenu`).
+/// is picked in the sheet the composer's model button opens (`ModelButton`).
 /// Every pick lands in the pane's `AttachmentTray`.
 struct AttachMenu: View {
     let tray: AttachmentTray
@@ -28,7 +28,7 @@ struct AttachMenu: View {
                 // A menu draws under the keyboard's window, so opening it drops the keyboard (wheel-eg4e.19.40).
                 .onAppear { blurComposer() }
         } label: {
-            Label("Attach", systemImage: "plus").labelStyle(.iconOnly)
+            Label("Attach", systemImage: "plus").labelStyle(.iconOnly).composerIcon()
         }
         .confirmationDialog("Clear this chat?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear chat", role: .destructive) { clear?() }

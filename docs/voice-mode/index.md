@@ -1,6 +1,6 @@
 # Voice mode
 
-Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Built so far: composer dictation (§5.8) and voice mode (§5.9 for the Mac; on the iPhone, WheelUI's `Voice` and `VoiceSession` under the same round button).
+Design from the 22 Nov 2026 session, written to be built on its own. It sits alongside the orchestrator redesign (`docs/orchestrator-redesign/index.md`, §8.9) and follows that doc's layout rules: one header row, the composer only on agent panes, badges, and the settings gear. Built so far: composer dictation (§5.8) and voice mode (§5.9 for the Mac; on the iPhone, WheelUI's `Voice` and `VoiceSession` behind a waveform button beside the mic, which Settings › Speech › Composer can hide, as it can the mic).
 
 ## 1. What it is
 
@@ -23,7 +23,7 @@ The orchestrator is the main user: you talk through what's in the queue, give in
 - **It's the same chat.** What you say is sent as your message; every reply is written into the chat as well as spoken. Voice and text mix freely, and leaving voice mode leaves the full transcript behind.
 - **In the orchestrator, topics apply unchanged** (orchestrator doc §4.2): "next", "back to X" and "triage" work by voice, and nothing from the queue is spoken unless you ask.
 - **Turn-taking:** detection on the device decides when you've stopped speaking (a voice-activity detector, e.g. Silero VAD), then sends the transcript. Hold-to-talk is a setting for noisy places.
-- **Interrupting:** tap the orb or start talking while the agent speaks. Speech stops at once, the unspoken rest of the reply is dropped from audio (it's still in the chat), and it listens.
+- **Interrupting:** tap the orb, or talk while the agent speaks. A tap stops speech at once. On the iPhone a sound over the reply first lowers it to a fifth of its volume; when the sound ends it is transcribed, and only words stop the reply and go to the agent as a turn. Hums, clicks and nods ("yeah", "okay") let the reply carry on at full volume and are dropped; a hum or a click heard while listening is not sent either (WheelUI's `SpokenFiller`). A stopped reply's unspoken rest is dropped from audio (it's still in the chat).
 - **Spoken replies stay short.** While the voice client holds the `voice` lease and names an agent (`agent_voice`), each of that agent's turns carries the voice line (`daemon/src/voice.md`) as hidden context: short spoken sentences, summarize rather than read out code, and put anything long on screen. Claude takes it through a `UserPromptSubmit` hook, pi through Wheel's extension adding it to each run's system prompt; Codex refuses (ADR-0055).
 - **Showing things:** when the agent refers to a diff, pane or doc, it shows it above the orb with `wheel agent card`. Tapping it opens it full screen.
 

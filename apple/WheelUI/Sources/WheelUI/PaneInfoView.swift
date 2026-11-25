@@ -22,7 +22,8 @@ public struct PaneInfoView: View {
                     HStack(alignment: .top, spacing: 12) {
                         Text(field.label)
                             .foregroundStyle(.secondary)
-                            .frame(width: 84, alignment: .leading)
+                            .frame(minWidth: 84, alignment: .leading)
+                            .fixedSize()
                         VStack(alignment: .leading, spacing: 1) {
                             Text(field.value)
                                 .font(.system(.callout, design: .monospaced))

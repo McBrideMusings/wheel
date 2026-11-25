@@ -69,6 +69,12 @@ struct SettingsView: View {
     }
 }
 
+/// This iPhone's choice of which speech buttons the composer shows, kept in its user defaults.
+enum ComposerButtons {
+    static let dictation = "composer.dictation"
+    static let voice = "composer.voice"
+}
+
 /// Every key the daemon reports, a section per key prefix, each row editing this layer's file.
 private struct SettingsList: View {
     let model: PhoneModel
@@ -147,9 +153,21 @@ private struct SettingRow: View {
 /// It runs on the phone alone, so it works with the Mac out of reach.
 private struct SpeechList: View {
     @State private var models = SpeechModels.shared
+    @AppStorage(ComposerButtons.dictation) private var showsDictation = true
+    @AppStorage(ComposerButtons.voice) private var showsVoice = true
 
     var body: some View {
         Form {
+            Section {
+                Toggle("Dictation button", isOn: $showsDictation)
+                    .accessibilityIdentifier("composer-dictation")
+                Toggle("Voice mode button", isOn: $showsVoice)
+                    .accessibilityIdentifier("composer-voice")
+            } header: {
+                Text("Composer")
+            } footer: {
+                Text("Which speech buttons an agent's message field shows on this iPhone.")
+            }
             Section {
                 Button("Hear the voice") { models.hearVoice() }
                     .disabled(Voice.shared.phase != .off)

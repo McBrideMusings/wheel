@@ -132,12 +132,11 @@ import Testing
         #expect(!VoiceSession.offered(by: ["agent_voice"]))
     }
 
-    @Test func theRoundButtonIsStopSendOrVoice() {
-        #expect(ComposerRoundButton.of(busy: true, hasContent: false, voiceOffered: true) == .stop)
-        #expect(ComposerRoundButton.of(busy: true, hasContent: true, voiceOffered: true) == .send)
-        #expect(ComposerRoundButton.of(busy: false, hasContent: true, voiceOffered: true) == .send)
-        #expect(ComposerRoundButton.of(busy: false, hasContent: false, voiceOffered: true) == .voice)
-        #expect(ComposerRoundButton.of(busy: false, hasContent: false, voiceOffered: false) == .send, "a dimmed Send")
+    @Test func theRoundButtonIsStopOrSend() {
+        #expect(ComposerRoundButton.of(busy: true, hasContent: false) == .stop)
+        #expect(ComposerRoundButton.of(busy: true, hasContent: true) == .send)
+        #expect(ComposerRoundButton.of(busy: false, hasContent: true) == .send)
+        #expect(ComposerRoundButton.of(busy: false, hasContent: false) == .send, "a dimmed Send")
     }
 
     @Test func theOrbFollowsTheAudio() {

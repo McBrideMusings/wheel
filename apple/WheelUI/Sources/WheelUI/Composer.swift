@@ -52,12 +52,11 @@ public struct Composer: View {
     /// Whether this conversation's replies are read aloud; nil draws no speaker control.
     @Binding var readAloud: Bool
     let showsReadAloud: Bool
-    /// The pane's own controls for the row, drawn left of the mic and send: the phone's model menu.
+    /// The pane's own controls for the row, drawn left of the mic and send: the phone's usage ring and model button.
     var accessory: AnyView?
     /// The conversation dictation writes into, on the phone; nil draws no microphone.
     var dictation: String?
-    /// Opens voice mode for this conversation; nil when wheeld cannot take it, which leaves the round
-    /// button a dimmed Send while the field is empty and the agent idle.
+    /// Opens voice mode for this conversation, from its own button beside the mic; nil draws none.
     var voice: (() -> Void)?
 
     public init(
@@ -223,7 +222,7 @@ public struct Composer: View {
                 if let attachMenu {
                     attachMenu.environment(\.composerBlur, ComposerBlur { focused = false })
                 } else if let pickFiles {
-                    Button("Attach a file", systemImage: "paperclip") {
+                    Button {
                         let paths = pickFiles()
                         guard !paths.isEmpty else { return }
                         if let attach {
@@ -231,8 +230,9 @@ public struct Composer: View {
                         } else {
                             insert(paths.joined(separator: " ") + " ")
                         }
+                    } label: {
+                        Label("Attach a file", systemImage: "paperclip").labelStyle(.iconOnly).composerIcon()
                     }
-                    .labelStyle(.iconOnly)
                     .buttonStyle(.chat("composer", "Attach a file"))
                     .help(attach == nil ? "Insert a file's path into the message" : "Attach files")
                 }
@@ -243,6 +243,7 @@ public struct Composer: View {
                 } label: {
                     Label("Run a skill", systemImage: "slash.circle")
                         .labelStyle(.iconOnly)
+                        .composerIcon()
                 }
                 #if os(macOS)
                 .menuStyle(.borderlessButton)
@@ -253,22 +254,23 @@ public struct Composer: View {
                 .help("Run a skill")
                 }
                 if showsReadAloud {
-                    Button(readAloud ? "Stop reading replies aloud" : "Read replies aloud",
-                           systemImage: readAloud ? "speaker.wave.2.fill" : "speaker.slash") {
-                        readAloud.toggle()
+                    Button { readAloud.toggle() } label: {
+                        Label(readAloud ? "Stop reading replies aloud" : "Read replies aloud",
+                              systemImage: readAloud ? "speaker.wave.2.fill" : "speaker.slash")
+                            .labelStyle(.iconOnly)
+                            .composerIcon()
                     }
-                    .labelStyle(.iconOnly)
                     .buttonStyle(.chat("composer", "Toggle reading replies aloud"))
                     .help(readAloud ? "Stop reading replies aloud" : "Read this agent's replies aloud")
                 }
                 #if os(iOS)
-                // Last in the left group, so its coming and going moves no other control.
-                if focused {
-                    Button("Hide the keyboard", systemImage: "keyboard.chevron.compact.down") { focused = false }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.chat("composer", "Hide the keyboard"))
-                        .accessibilityIdentifier("hide keyboard")
+                // Always in the row, so nothing beside it moves; it works only while the keyboard is up.
+                Button { focused = false } label: {
+                    Label("Hide the keyboard", systemImage: "keyboard.chevron.compact.down").labelStyle(.iconOnly).composerIcon()
                 }
+                    .buttonStyle(.chat("composer", "Hide the keyboard"))
+                    .disabled(!focused)
+                    .accessibilityIdentifier("hide keyboard")
                 #endif
                 if let error {
                     Text(error).font(ChatFont.meta).foregroundStyle(.red).lineLimit(2)
@@ -281,30 +283,27 @@ public struct Composer: View {
                 if let accessory { accessory }
                 #if os(iOS)
                 if let dictation { DictateButton(owner: dictation) }
+                if let voice {
+                    Button(action: voice) {
+                        Label("Voice mode", systemImage: "waveform").labelStyle(.iconOnly).composerIcon()
+                    }
+                    .buttonStyle(.chat("composer", "Voice mode"))
+                    .disabled(!enabled)
+                    .accessibilityIdentifier("voice mode")
+                }
                 #endif
                 switch roundButton {
                 case .stop:
                     #if os(macOS)
                     Text("esc").font(ChatFont.meta).foregroundStyle(.tertiary)
                     #endif
-                    Button("Stop", systemImage: "stop.circle.fill", action: stop)
-                        .labelStyle(.iconOnly)
+                    Button(action: stop) { roundIcon("Stop", "stop.circle.fill") }
                         .buttonStyle(.chat("composer", "Stop the current turn"))
-                        .font(.title2)
                         .help("Stop the current turn (Esc)")
                         .disabled(!enabled)
-                case .voice:
-                    Button("Voice mode", systemImage: "waveform.circle.fill") { voice?() }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.chat("composer", "Voice mode"))
-                        .font(.title2)
-                        .disabled(!enabled)
-                        .accessibilityIdentifier("voice mode")
                 case .send:
-                    Button("Send", systemImage: "arrow.up.circle.fill", action: submit)
-                        .labelStyle(.iconOnly)
+                    Button(action: submit) { roundIcon("Send", "arrow.up.circle.fill") }
                         .buttonStyle(.chat("composer", "Send the message"))
-                        .font(.title2)
                         .disabled(!canSend)
                         .help(busy ? "Send now: the agent takes it up after the tool call it is on. Control-Return interrupts the turn and sends it first." : "Send")
                 }
@@ -349,7 +348,6 @@ public struct Composer: View {
         if d.owner == dictation {
             switch d.phase {
             case .downloading(let done): return "Downloading \(Dictation.modelName), \(Int(done * 100))%"
-            case .recording: return "Listening…"
             case .transcribing: return "Transcribing…"
             default: return nil
             }
@@ -371,13 +369,12 @@ public struct Composer: View {
         attachments.allSatisfy { $0.state == .ready }
     }
 
-    private var roundButton: ComposerRoundButton {
-        #if os(iOS)
-        ComposerRoundButton.of(busy: busy, hasContent: hasContent, voiceOffered: voice != nil)
-        #else
-        ComposerRoundButton.of(busy: busy, hasContent: hasContent, voiceOffered: false)
-        #endif
+    /// The round button's icon: `.title2` on the Mac too, where the row's other icons stay small.
+    private func roundIcon(_ title: String, _ image: String) -> some View {
+        Label(title, systemImage: image).labelStyle(.iconOnly).font(.title2).composerIcon()
     }
+
+    private var roundButton: ComposerRoundButton { ComposerRoundButton.of(busy: busy, hasContent: hasContent) }
 
     private var canSend: Bool { enabled && hasContent && attachmentsReady }
 
@@ -407,15 +404,12 @@ public struct Composer: View {
 }
 
 /// What the round button at the right of the composer's lower row is: Stop while the agent works and
-/// nothing is typed, voice mode with an empty draft and an idle agent when wheeld offers it, else Send
-/// (dimmed while there is nothing to send). All three draw at one size in one place.
+/// nothing is typed, else Send (dimmed while there is nothing to send). Both draw at one size in one place.
 public enum ComposerRoundButton: Equatable, Sendable {
-    case stop, voice, send
+    case stop, send
 
-    public static func of(busy: Bool, hasContent: Bool, voiceOffered: Bool) -> ComposerRoundButton {
-        if busy && !hasContent { return .stop }
-        if !busy && !hasContent && voiceOffered { return .voice }
-        return .send
+    public static func of(busy: Bool, hasContent: Bool) -> ComposerRoundButton {
+        busy && !hasContent ? .stop : .send
     }
 }
 
@@ -647,6 +641,19 @@ extension EnvironmentValues {
     }
 }
 
+extension View {
+    /// An icon control in the composer's row. On iPhone it is drawn at the round send button's size
+    /// and is 44 points tall, Apple's minimum target; no minimum width, so six of them and the model
+    /// menu still fit one row of a 393-point phone. On the Mac it is left as it is.
+    public func composerIcon() -> some View {
+        #if os(iOS)
+        font(.title2).frame(minHeight: 44).contentShape(Rectangle())
+        #else
+        self
+        #endif
+    }
+}
+
 #if os(iOS)
 /// The composer's microphone: tap to start dictating into `owner`'s draft, tap again to stop and
 /// transcribe. The same size in every state, so nothing beside it moves.
@@ -658,10 +665,11 @@ private struct DictateButton: View {
         let mine = d.owner == owner
         let recording = mine && d.phase == .recording
         let busy = mine && (d.phase == .transcribing || { if case .downloading = d.phase { true } else { false } }())
-        Button(recording ? "Stop dictating" : "Dictate", systemImage: recording ? "stop.circle.fill" : "mic") {
-            d.toggle(for: owner)
+        Button { d.toggle(for: owner) } label: {
+            Label(recording ? "Stop dictating" : "Dictate", systemImage: recording ? "stop.circle.fill" : "mic")
+                .labelStyle(.iconOnly)
+                .composerIcon()
         }
-        .labelStyle(.iconOnly)
         .buttonStyle(.chat("composer", recording ? "Stop dictating" : "Dictate"))
         .foregroundStyle(recording ? Color.red : Color.secondary)
         .opacity(busy ? 0.4 : 1)
