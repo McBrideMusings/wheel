@@ -5455,7 +5455,7 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
     tick(cx, 200).await;
     let (_, value_after_paste, _) = run_pumped(&["pane", "eval", &browser_pane, "document.getElementById('arrows').value"], &mut connection, &mut layouts, window, cx).await?;
     let (_, clip_events, _) = run_pumped(&["pane", "eval", &browser_pane, "clipEvents.join(' ')"], &mut connection, &mut layouts, window, cx).await?;
-    wheel_gpui::appkit::clipboard::restore(saved_pasteboard);
+    drop(saved_pasteboard);
     let clipboard_report = json!({"claimed_by": [copy_claim, cut_claim, paste_claim], "menu": [copy_path, cut_path, paste_path], "focused": clip_focused, "after_copy": after_copy, "after_cut": after_cut, "value_after_cut": value_after_cut, "value_after_paste": value_after_paste, "events": clip_events});
     eprintln!("keys report: arrows {arrows_report} clipboard {clipboard_report}");
     ensure!(arrow_value == "\"abc\"", "arrow keys typed into the textarea: value {arrow_value}, events {arrow_events}");
@@ -6568,7 +6568,7 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     wheel_gpui::appkit::clipboard::set_text("copied since");
     let left = wheel_gpui::appkit::clipboard::clear_concealed();
     let after_left = wheel_gpui::appkit::clipboard::text();
-    wheel_gpui::appkit::clipboard::restore(saved_pasteboard);
+    drop(saved_pasteboard);
     eprintln!("concealed copy: text {copied_text:?} concealed {concealed} cleared {cleared:?} then {after_clear:?}; left {left:?} then {after_left:?}");
     ensure!(copied_text.as_deref().is_some_and(|t| t.contains("\"token\"")) && concealed, "the pasteboard held {copied_text:?}, concealed {concealed}");
     ensure!(cleared == Some(true) && after_clear.is_none(), "the clear left {after_clear:?} ({cleared:?})");
@@ -8173,6 +8173,8 @@ async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), session
     }))
 }
 async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, cx: &mut AsyncApp) -> Result<Value> {
+    // The pairing code this copies goes on the person's pasteboard; theirs comes back when this returns.
+    let _pasteboard = wheel_gpui::appkit::clipboard::save();
     let menu = app_menu_bar(bridge, cx)?;
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
     let mut menu_state = Value::Null;
@@ -8442,6 +8444,8 @@ fn menu_log_count(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, prefix: &str, 
 /// Copy pairing code with every window closed (wheel-ynjo.7.4.6): the popover's button copies
 /// through the menu bar's own connection, no window opens, and AppKit writes the concealed item.
 async fn closed_copy_check(menu: &gpui::Entity<wheel_gpui::view::MenuBar>, cx: &mut AsyncApp) -> Result<Value> {
+    // The pairing code this copies goes on the person's pasteboard; theirs comes back when this returns.
+    let _pasteboard = wheel_gpui::appkit::clipboard::save();
     let state = |cx: &mut AsyncApp| menu.update(cx, |m, cx| m.state_json(cx));
     ensure!(wheel_gpui::windows::with(|r| r.windows.len()) == 0, "a window is open before the copy");
     cx.update(|cx| menu.update(cx, |m, _| m.press_item()));

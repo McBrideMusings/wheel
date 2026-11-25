@@ -73,8 +73,8 @@ pub fn set_text(text: &str) {
     board.setString_forType(&NSString::from_str(text), string_type());
 }
 
-/// Every item the general pasteboard held, each as its types and data, so a check can put the
-/// person's pasteboard back as it found it.
+/// Every item the general pasteboard held, each as its types and data, put back when this drops,
+/// so a check leaves the person's pasteboard as it found it on every exit, an early error included.
 pub struct Saved(Vec<Vec<(Retained<NSString>, Retained<NSData>)>>);
 
 pub fn save() -> Saved {
@@ -82,11 +82,16 @@ pub fn save() -> Saved {
     Saved(items.iter().map(|item| item.types().iter().filter_map(|t| item.dataForType(&t).map(|d| (t, d))).collect()).collect())
 }
 
-pub fn restore(saved: Saved) {
+impl Drop for Saved {
+    fn drop(&mut self) {
+        restore(&self.0);
+    }
+}
+
+fn restore(saved: &[Vec<(Retained<NSString>, Retained<NSData>)>]) {
     let board = NSPasteboard::generalPasteboard();
     board.clearContents();
     let items: Vec<_> = saved
-        .0
         .iter()
         .map(|types| {
             let item = NSPasteboardItem::new();
