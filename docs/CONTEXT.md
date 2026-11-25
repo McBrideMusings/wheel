@@ -37,6 +37,14 @@ _Avoid_: lead, agent card
 One coding agent's run in an agent pane, with an id like `w3179`. It survives restarts of its OS process.
 _Avoid_: session
 
+**Voiced agent**:
+The agent voice mode talks to: the one `agent_voice` names while its connection holds the `voice` lease. It writes its full reply into the chat as for typed text.
+_Avoid_: voice agent (that is the other one)
+
+**Voice agent**:
+A tool-less process of the voiced agent's harness, on that harness's voice model (Claude: `haiku`), that wheeld runs while voice mode is on and that speaks for the voiced agent: a sentence or two on each message the person sends and on each finished reply. It is no pane, no agent and never resumed; what it says streams to the voice lease holder as `voice_said` and never enters the transcript (ADR-0059).
+_Avoid_: speaker, narrator
+
 **Artifact**:
 A page a pane can show, defined by one `[artifacts.<name>]` entry in a `wheel.toml`.
 _Avoid_: manifest, artifact.toml, plugin

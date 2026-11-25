@@ -25,6 +25,7 @@ pub mod host;
 pub mod identity;
 mod keybind;
 mod leases;
+mod voice_agent;
 mod link_patterns;
 pub mod checkout;
 pub mod login_path;

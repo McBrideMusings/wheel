@@ -23,13 +23,6 @@
 //! nothing itself, so `mode` is Wheel's own extension (`shell/pi-permissions.ts`): it asks through
 //! a confirm dialog before a tool runs, and takes its mode as the command `/wheel-permissions`,
 //! which pi runs without a model turn.
-//!
-//! The voice line (ADR-0055) is a second extension, `shell/pi-voice.ts`, which puts the line it
-//! holds into each run's system prompt from pi's `before_agent_start` hook. Before a prompt or a
-//! steer goes out, the host compares the agent's voice mark with what the extension holds and,
-//! when they differ, sends `/wheel-voice` first, since pi handles commands concurrently. Until pi
-//! answers it, every input waits, then they run in the order they came. A mark that changes while
-//! a run streams applies from the next run.
 
 use std::collections::{HashMap, HashSet};
 
@@ -69,16 +62,6 @@ fn hooks_extension(launch: &Launch, name: &str) -> Option<std::path::PathBuf> {
     Some(std::path::Path::new(dir).join(name)).filter(|path| path.is_file())
 }
 
-/// The prompt that sets the voice extension's line, or clears it: pi answers it `handled`.
-fn voice_command(on: bool) -> Value {
-    let message = if on {
-        format!("/wheel-voice {}", crate::claude::VOICE_LINE)
-    } else {
-        "/wheel-voice".to_string()
-    };
-    json!({"type": "prompt", "message": message})
-}
-
 /// Start `pi --mode rpc` for `launch`.
 pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     let mut args: Vec<String> = vec!["--mode".into(), "rpc".into()];
@@ -112,10 +95,6 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
     if let Some(path) = &extension {
         args.extend(["-e".into(), path.display().to_string()]);
     }
-    let voice_extension = hooks_extension(&launch, "pi-voice.ts");
-    if let Some(path) = &voice_extension {
-        args.extend(["-e".into(), path.display().to_string()]);
-    }
     let mode = launch
         .permissions
         .permission_mode
@@ -139,10 +118,6 @@ pub fn launch(launch: Launch) -> Result<DriverHandle, String> {
         pending: HashMap::new(),
         conversation: None,
         gated: extension.is_some(),
-        voiceable: voice_extension.is_some(),
-        voiced: false,
-        held: None,
-        after_voice: Vec::new(),
         mode,
         model: String::new(),
         models: Vec::new(),
@@ -227,10 +202,6 @@ enum Pending {
     },
     /// `get_available_models`, asked before the agent is ready.
     Models,
-    /// `/wheel-voice`, turning the voice line `on` or off; what waited on it goes once pi answers.
-    Voice {
-        on: bool,
-    },
     /// The `/wheel-permissions` command that puts the starting mode in force; the agent is ready
     /// once it answers, with `history` when it was resumed.
     StartMode {
@@ -282,14 +253,6 @@ struct Driver {
     models: Vec<(String, String)>,
     /// Wheel's permission extension is loaded, so pi has a `mode` control.
     gated: bool,
-    /// Wheel's voice extension is loaded, so pi can take the voice line.
-    voiceable: bool,
-    /// The voice line was last asked of the extension on, so it holds it unless pi refused.
-    voiced: bool,
-    /// Inputs that came while `/wheel-voice` was out, in order; `None` while none is.
-    held: Option<std::collections::VecDeque<Input>>,
-    /// Prompts, by turn, that start once `/wheel-voice` is answered, ahead of the held inputs.
-    after_voice: Vec<(u64, String)>,
     /// The permission mode in force.
     mode: String,
     /// The thinking level in force.
@@ -386,33 +349,7 @@ impl Driver {
         self.write(command).await
     }
 
-    /// When the agent's voice mark differs from what the extension holds, send `/wheel-voice`
-    /// and hold every input until pi answers; says whether it did.
-    async fn sync_voice(&mut self) -> Result<bool, String> {
-        let on = self.launch.voice.load(std::sync::atomic::Ordering::SeqCst);
-        if !self.voiceable || on == self.voiced {
-            return Ok(false);
-        }
-        self.held = Some(std::collections::VecDeque::new());
-        self.request(Pending::Voice { on }, voice_command(on)).await?;
-        Ok(true)
-    }
-
     async fn input(&mut self, input: Input) -> Result<(), String> {
-        if let Some(held) = &mut self.held {
-            held.push_back(input);
-            return Ok(());
-        }
-        if matches!(input, Input::Prompt(_) | Input::Steer { .. }) && self.sync_voice().await? {
-            if let Some(held) = &mut self.held {
-                held.push_back(input);
-            }
-            return Ok(());
-        }
-        self.take(input).await
-    }
-
-    async fn take(&mut self, input: Input) -> Result<(), String> {
         match input {
             Input::Prompt(text) => {
                 self.in_turn = true;
@@ -594,27 +531,6 @@ impl Driver {
                 }
                 self.start_mode(None).await
             }
-            Pending::Voice { on } => {
-                // A refused line leaves the agent speaking at length, not without its message, and
-                // is not asked for again until the mark changes.
-                self.voiced = on;
-                match error {
-                    Some(e) => tracing::warn!(pid = self.pid, on, error = %e, "setting the voice line failed"),
-                    None => tracing::info!(pid = self.pid, on, "voice line set"),
-                }
-                for (turn, text) in std::mem::take(&mut self.after_voice) {
-                    self.send_prompt_now(turn, text).await?;
-                }
-                // An input may send `/wheel-voice` again, which holds the rest behind it.
-                let mut held = self.held.take().unwrap_or_default();
-                while let Some(input) = held.pop_front() {
-                    self.input(input).await?;
-                    if let Some(again) = &mut self.held {
-                        again.extend(held.drain(..));
-                    }
-                }
-                Ok(())
-            }
             Pending::StartMode { history } => {
                 if let Some(e) = error {
                     return Err(format!("setting the permission mode failed: {e}"));
@@ -789,17 +705,7 @@ impl Driver {
         self.pad_text = false;
     }
 
-    /// Send `text` as the prompt that starts the turn of `turn`, with the voice line brought up
-    /// to date first.
     async fn send_prompt(&mut self, turn: u64, text: String) -> Result<(), String> {
-        if self.held.is_some() || self.sync_voice().await? {
-            self.after_voice.push((turn, text));
-            return Ok(());
-        }
-        self.send_prompt_now(turn, text).await
-    }
-
-    async fn send_prompt_now(&mut self, turn: u64, text: String) -> Result<(), String> {
         self.steered.retain(|s| s.turn != turn);
         self.begin_turn();
         self.emit(DriverEvent::Steered { turn });
@@ -1316,14 +1222,6 @@ fn history(messages: &Value) -> History {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_voice_command_carries_the_line_only_when_on() {
-        let on = voice_command(true);
-        let message = on["message"].as_str().unwrap();
-        assert_eq!(message.strip_prefix("/wheel-voice "), Some(crate::claude::VOICE_LINE));
-        assert_eq!(voice_command(false)["message"], "/wheel-voice");
-    }
 
     #[test]
     fn a_resumed_agent_becomes_prompts_with_their_output() {

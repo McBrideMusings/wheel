@@ -276,6 +276,10 @@ pub struct Agent {
     cwd: PathBuf,
     home: Option<PathBuf>,
     harness: Harness,
+    /// The agent's program with its own arguments and the environment it runs in, which its voice
+    /// agent runs with too (ADR-0059).
+    command: String,
+    env: Vec<(String, String)>,
     /// The model the agent was started on, shown until the agent offers a `model` control.
     model: Option<String>,
     /// The permission mode and sandbox the next agent process starts with: the ones the agent
@@ -463,6 +467,8 @@ impl Agent {
             cwd: config.cwd.clone(),
             home: config.home.clone(),
             harness: config.agent,
+            command: config.command.clone(),
+            env: config.env.clone(),
             model: config.model.clone(),
             permissions: Mutex::new(config.permissions.clone()),
             voice: Arc::default(),
@@ -1689,6 +1695,7 @@ impl Agent {
             model: config.model.clone(),
             permissions,
             voice: self.voice.clone(),
+            voice_agent: false,
         });
         if let Ok(agent) = &launched {
             self.agent_pid.store(agent._group.0, Ordering::SeqCst);
@@ -1699,6 +1706,21 @@ impl Agent {
     /// Which program this agent runs.
     pub fn harness(&self) -> Harness {
         self.harness
+    }
+
+    /// The agent's program, with any arguments of its own.
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// The environment the agent's process runs with, beyond the daemon's own.
+    pub fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+
+    /// Every event of the agent's conversation from now on, as attached clients get them.
+    pub fn subscribe(&self) -> broadcast::Receiver<StampedEvent> {
+        self.tx.subscribe()
     }
 
     /// Turn the voice line on or off for this agent's next turns.
@@ -2625,6 +2647,8 @@ mod tests {
             cwd: PathBuf::from("/"),
             home: None,
             harness: Harness::Claude,
+            command: "claude".into(),
+            env: Vec::new(),
             model: None,
             permissions: Mutex::new(AgentPermissions::default()),
             voice: Arc::default(),

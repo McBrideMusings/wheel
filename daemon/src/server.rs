@@ -176,9 +176,10 @@ pub struct AppState {
     pub(crate) agent_timing: Mutex<AgentTiming>,
     /// The connection holding each named lease: `voice`, `orchestrator` (`crate::leases`).
     pub(crate) leases: crate::leases::Leases,
-    /// The agent voice mode talks to and the connection that named it, which holds `voice`
-    /// (`agent_voice`); cleared when that lease leaves the connection.
-    pub(crate) voiced: Mutex<Option<(SocketAddr, Arc<Agent>)>>,
+    /// The agent voice mode talks to, the connection that named it, which holds `voice`
+    /// (`agent_voice`), and the voice agent speaking for it; cleared when that lease leaves the
+    /// connection.
+    pub(crate) voiced: Mutex<Option<crate::leases::Voiced>>,
     /// One queue per event hook, so each runs its events in order (`crate::hooks`).
     pub(crate) hook_runs: crate::hooks::Runs,
     /// A pane agent's failed build or test command, as (agent, command), for the event hooks
@@ -1063,15 +1064,19 @@ impl AppState {
             .unwrap_or_default();
         self.identify(&mut host);
         let requests = self.requests.lock().unwrap().clone();
-        let voice = self.voiced.lock().unwrap().as_ref().map(|(_, a)| a.name.clone());
+        let (voice, voice_agent) = match self.voiced.lock().unwrap().as_ref() {
+            Some(v) => (Some(v.agent.name.clone()), v.voice.info()),
+            None => (None, None),
+        };
         ServerMsg::Status {
             req,
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol: wheel_proto::PROTOCOL_VERSION,
             compat: wheel_proto::COMPAT,
-            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
+            ops: wheel_proto::offered().map(str::to_owned).collect(),
             leases: self.leases.holders(),
             voice,
+            voice_agent,
             uptime_secs: self.started.elapsed().as_secs(),
             log_path: self.log_path.clone(),
             terms,
@@ -1082,7 +1087,7 @@ impl AppState {
             requests,
             watches: self.watches(),
             refreshes: self.refreshes().await,
-            usage_board: self.usage_board(),
+            usage_board: Box::new(self.usage_board()),
             agents,
             shell_integration: self.shell_problem.lock().unwrap().clone(),
             login_path: self.login_path.lock().unwrap().clone(),
@@ -1595,7 +1600,7 @@ async fn handle(
             req,
             protocol: wheel_proto::PROTOCOL_VERSION,
             compat: wheel_proto::COMPAT,
-            ops: wheel_proto::ops().iter().map(|op| (*op).to_owned()).collect(),
+            ops: wheel_proto::offered().map(str::to_owned).collect(),
         }),
         ClientMsg::Log {
             req,
@@ -1843,7 +1848,7 @@ async fn handle(
             }
             Err(message) => Some(failed(req, message)),
         },
-        ClientMsg::AgentVoice { req, agent } => match state.agent_voice(agent.as_deref(), peer) {
+        ClientMsg::AgentVoice { req, agent } => match state.agent_voice(agent.as_deref(), peer, out) {
             Ok(()) => req.map(|req| ServerMsg::Ok { req }),
             Err(message) => Some(failed(req, message)),
         },
@@ -3025,6 +3030,7 @@ async fn handle(
                 given,
                 files,
                 voice_line: crate::claude::VOICE_LINE.to_owned(),
+                voice_brief: crate::voice_agent::VOICE_BRIEF.to_owned(),
             }),
             Err(message) => {
                 tracing::warn!(%message, "guidance ls failed");

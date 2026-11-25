@@ -53,6 +53,15 @@ pub fn ops() -> &'static [&'static str] {
     })
 }
 
+/// The events a client checks the server for before relying on them, as serde writes them in `ev`.
+/// `status` lists them after the ops, so a client reads both from one list (ADR-0050).
+pub const EVENTS: &[&str] = &["voice_said"];
+
+/// What `status` lists: every op, then every event in [`EVENTS`].
+pub fn offered() -> impl Iterator<Item = &'static str> {
+    ops().iter().chain(EVENTS).copied()
+}
+
 /// The op a serialized [`ClientMsg`] names; None for text that is not one.
 pub fn op_of(frame: &str) -> Option<String> {
     #[derive(Deserialize)]
@@ -80,7 +89,7 @@ impl Offer {
         Self {
             compat: COMPAT,
             protocol: crate::PROTOCOL_VERSION,
-            ops: ops().iter().map(|op| (*op).to_owned()).collect(),
+            ops: offered().map(str::to_owned).collect(),
         }
     }
 
@@ -227,6 +236,16 @@ mod tests {
             let op = op_of(&serde_json::to_string(&message).unwrap()).unwrap();
             assert!(ops.contains(&op.as_str()), "{op}");
         }
+    }
+
+    #[test]
+    fn each_listed_event_is_a_server_msg_and_status_lists_it_after_the_ops() {
+        let said = crate::ServerMsg::VoiceSaid { agent: "a".into(), turn: 1, text: "Hi.".into(), ms: 5, done: false };
+        let ev = serde_json::to_value(&said).unwrap()["ev"].as_str().unwrap().to_owned();
+        assert_eq!(EVENTS, [ev.as_str()]);
+        let listed: Vec<&str> = offered().collect();
+        assert_eq!(listed.len(), ops().len() + EVENTS.len());
+        assert!(Offer::ours().has("voice_said") && Offer::ours().lacks().is_empty());
     }
 
     #[test]

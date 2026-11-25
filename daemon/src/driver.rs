@@ -71,8 +71,21 @@ pub struct Launch {
     /// The permission mode to start in, in the agent's own terms, and Codex's sandbox; a field
     /// left unset leaves the agent's default.
     pub permissions: AgentPermissions,
-    /// Set while each turn should carry the voice line (ADR-0055); Claude and pi read it.
+    /// Set while each turn should carry the voice line (ADR-0055); Claude reads it.
     pub voice: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// This process is a voice agent (ADR-0059): `brief` replaces the agent's own instructions,
+    /// it has no tools, no settings, hooks or MCP servers of its own, and its conversation is
+    /// never saved.
+    pub voice_agent: bool,
+}
+
+/// The model `agent` runs its voice agent on, in the agent's own words; none when it has no voice
+/// mode (ADR-0059).
+pub fn voice_model(agent: Harness) -> Option<&'static str> {
+    match agent {
+        Harness::Claude => Some("haiku"),
+        Harness::Codex | Harness::Pi => None,
+    }
 }
 
 /// Codex's sandbox values.
@@ -303,6 +316,15 @@ pub(crate) fn spawn(launch: &Launch, args: Vec<String>, home_var: &str) -> Resul
     // A pane learns its space from the daemon, never from an inherited variable.
     command.env_remove("WHEEL_SPACE");
     command.env_remove("WHEEL_SPACE_DIR");
+    if launch.voice_agent {
+        // No pane at all: with no `WHEEL_ENV`, Wheel's `claude` wrapper adds no pane's brief,
+        // plugin or settings.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("WHEEL_") {
+                command.env_remove(key);
+            }
+        }
+    }
     for (key, value) in &launch.env {
         command.env(key, value);
     }
