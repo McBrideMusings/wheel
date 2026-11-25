@@ -2507,7 +2507,8 @@ async fn speech_settings(run: Run, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     speech::send(Cmd::ModelChoose(back.folder));
     until(window, cx, |s| s["chosen"] == back.folder || s["offered"] == back.folder).await?;
     speech::send(Cmd::ModelCancel);
-    window.update(cx, |c, _, _| c.close_settings())?;
+    // Settings opens on the tab it closed on; leave it on General, where this step found it.
+    window.update(cx, |c, _, _| { c.settings_tab(wheel_gpui::settings::Tab::General); c.close_settings(); })?;
     let report = json!({"listed": models.len(), "chose": chose["chosen"], "offered": offered["offered"], "downloaded": vad["models"][2]["on_disk"], "removed": !SILERO_VAD.dir(&root).exists()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
