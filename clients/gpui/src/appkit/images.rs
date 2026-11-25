@@ -1,14 +1,14 @@
 //! What AppKit and CoreImage draw for the client: SF Symbols and the app's icon as PNGs (GPUI
 //! has no symbol font of its own), and QR codes as modules or as an image on the clipboard.
-use objc2::{AnyThread as _, rc::Retained, runtime::ProtocolObject};
+use objc2::{AnyThread as _, MainThreadMarker, rc::Retained, runtime::ProtocolObject};
 use objc2_app_kit::{NSApplication, NSCIImageRep, NSColor, NSFontWeightRegular, NSImage, NSImageSymbolConfiguration, NSPasteboard, NSScreen};
 use objc2_core_foundation::CGAffineTransform;
 use objc2_core_image::{CIFilter, CIImage};
 use objc2_foundation::{NSArray, NSData, NSSize, NSString, NSObjectNSKeyValueCoding as _};
 
-/// The main screen's pixels per point; 2 on a host with no screen.
+/// The main screen's pixels per point; 2 on a host with no screen or off the main thread (a unit test).
 fn screen_scale() -> f64 {
-    NSScreen::mainScreen(super::main_thread()).map_or(2., |s| s.backingScaleFactor())
+    MainThreadMarker::new().and_then(NSScreen::mainScreen).map_or(2., |s| s.backingScaleFactor())
 }
 
 /// SF Symbol `name` at `size` points in `rgba` (sRGB, 0...1), at the screen's scale: the PNG's
