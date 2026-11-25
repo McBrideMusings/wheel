@@ -384,7 +384,7 @@ local function modifiers_class(state)
             mod("padding 12", { padding = 12 }, { overlay = { stroke = "separator" } }),
             mod("[4, 16]", { padding = { 4, 16 } }, { overlay = { stroke = "separator" } }),
         }, { align = "start" })),
-        mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; an ideal is the size a ViewThatFits measures", mod("width 120", { frame = { width = 120, alignment = "leading" } }, { overlay = { stroke = "separator" } })),
+        mrow("frame", "{width, height, minWidth, idealWidth, maxWidth, minHeight, idealHeight, maxHeight, alignment}; a max may be infinity; maxHeight infinity on a view not inside a fixed height makes the page fill the pane instead of scrolling (the view centres in the pane with alignment center); an ideal is the size a ViewThatFits measures", mod("width 120", { frame = { width = 120, alignment = "leading" } }, { overlay = { stroke = "separator" } })),
         mrow("layoutPriority", "a number; the view with the higher priority is offered space first", row({
             mod("priority 1", { layoutPriority = 1 }, { overlay = { stroke = "separator" } }),
             mod("priority 0", { layoutPriority = 0 }, { overlay = { stroke = "separator" } }),
@@ -490,7 +490,7 @@ local function system_class()
             }) },
         } },
         { "NavigationSplitView", "NavigationSplitView", {
-            -- The sidebar List carries a frame: a vertical List with none would make the surface fill the pane, and the gallery would stop scrolling.
+            -- The surface's fixed height bounds the sidebar List's maxHeight infinity frame, so the gallery keeps scrolling.
             { "sidebar and detail", put("NavigationSplitView", { put("List", { txt("one"), txt("two") }, { modifiers = { { frame = { maxHeight = "infinity" } } } }), txt("Detail") }, { modifiers = { { frame = { height = 140 } } } }) },
         } },
         { "NavigationStack", "NavigationStack", {

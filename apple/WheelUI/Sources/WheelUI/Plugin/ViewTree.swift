@@ -238,12 +238,16 @@ public final class ViewTree {
         a.count == b.count && zip(a, b).allSatisfy { $0 === $1 }
     }
 
-    /// A Table or a vertical List with no `frame` modifier fills the pane, so the page around it stays put and that component
-    /// scrolls itself.
+    /// The view fills the pane, with no ScrollView around it, when it holds a node whose `frame` asks for `maxHeight =
+    /// "infinity"` or a Table or vertical List with no `frame` (that component scrolls itself). A node whose `frame` fixes a
+    /// height (`height` or a numeric `maxHeight`) bounds what it holds, so nothing inside it makes the pane fill.
     private static func fills(_ n: ViewNode) -> Bool {
+        let frames = (n.props["modifiers"]?.arrayValue ?? []).compactMap { $0.dictionaryValue?["frame"]?.dictionaryValue }
+        if frames.contains(where: { $0["height"] != nil || $0["maxHeight"]?.numberValue != nil }) { return false }
+        if frames.contains(where: { $0["maxHeight"]?.stringValue == "infinity" }) { return true }
         let scrolls = n.component == "Table" || (n.component == "List" && n.props["direction"]?.stringValue != "horizontal")
             || (n.component == "VideoStream" && n.props["height"] == nil)
-        if scrolls, !(n.props["modifiers"]?.arrayValue ?? []).contains(where: { $0.dictionaryValue?["frame"] != nil }) { return true }
+        if scrolls, frames.isEmpty { return true }
         return n.parts.contains(where: fills)
     }
 
