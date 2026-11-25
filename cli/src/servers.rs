@@ -100,6 +100,15 @@ pub fn check_label(servers: &[Server], label: &str, own: &str) -> Result<(), Str
     }
 }
 
+/// Refuse a server id that is not a UUID's letters: the id names a Keychain item and, off macOS,
+/// a file, so one a server chose to escape that folder must never be used.
+pub fn check_id(id: &str) -> Result<(), String> {
+    match !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        true => Ok(()),
+        false => Err(format!("the server reported an id that is not a UUID: {id:?}")),
+    }
+}
+
 /// A label made from a server's name: lowercase, every run of other characters one `-`.
 pub fn label_of(name: &str) -> String {
     let mut label = String::new();
@@ -129,6 +138,7 @@ pub fn credential_set(list: &Path, id: &str, credential: &str) -> Result<(), Str
     {
         use std::io::Write as _;
         use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+        check_id(id)?;
         let dir = credentials_dir(list);
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -158,6 +168,7 @@ pub fn credential_get(list: &Path, id: &str) -> Result<String, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        check_id(id)?;
         let path = credentials_dir(list).join(id);
         std::fs::read_to_string(&path)
             .map(|c| c.trim().to_string())
@@ -179,6 +190,7 @@ pub fn credential_delete(list: &Path, id: &str) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        check_id(id)?;
         let path = credentials_dir(list).join(id);
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -249,6 +261,14 @@ mod tests {
         assert!(check_label(&list, "", "id-2").is_err());
         assert!(check_label(&list, "a b", "id-2").is_err());
         assert!(check_label(&list, "box", "id-2").is_ok());
+    }
+
+    #[test]
+    fn an_id_that_could_name_another_file_is_refused() {
+        assert!(check_id("3c1d0c44-beb9-48ea-a461-7a519aa064cd").is_ok());
+        assert!(check_id("../../.profile").is_err());
+        assert!(check_id("/etc/passwd").is_err());
+        assert!(check_id("").is_err());
     }
 
     #[test]

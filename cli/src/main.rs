@@ -2389,6 +2389,10 @@ async fn server_add(
         ));
     }
     let fingerprint = code.cert_sha256.to_ascii_lowercase();
+    // A label that can never be taken is refused before the code is spent.
+    if let Some(label) = &label {
+        servers::check_label(&[], label, "").map_err(Fail::Other)?;
+    }
     let name = format!("wheel CLI on {}", hostname());
     let escape = |text: &str| -> String {
         text.bytes()
@@ -2414,39 +2418,69 @@ async fn server_add(
             None => return Err(Fail::Timeout("the server sent no credential".into())),
         }
     };
+    // The code is spent now: from here every failure leaves a device on the server, so says which.
+    let orphan = |why: String| {
+        Fail::Other(format!(
+            "{why}; the server lists this device as {device}: run `wheel remote revoke {device}` there"
+        ))
+    };
     if id.is_empty() {
-        return Err(Fail::Other(format!(
-            "the wheeld at {} reports no id, so it cannot be told apart from another; restart it to update, then pair again (it lists this device as {device})",
+        return Err(orphan(format!(
+            "the wheeld at {} reports no id, so it cannot be told apart from another; restart it to update, then pair again",
             code.url
         )));
     }
+    servers::check_id(&id).map_err(orphan)?;
     let req = conn.req();
-    let ServerMsg::Status { host, .. } = conn.call(ClientMsg::Status { req: Some(req) }, req).await? else {
-        return Err(Fail::Other("unexpected reply to status".into()));
+    let host = match conn.call(ClientMsg::Status { req: Some(req) }, req).await {
+        Ok(ServerMsg::Status { host, .. }) => host,
+        Ok(_) => return Err(orphan("unexpected reply to status".into())),
+        Err(fail) => return Err(orphan(fail.to_string())),
     };
     let listed = list.iter().position(|s| s.id == id);
     let label = match (label, listed) {
         (Some(label), _) => label,
         (None, Some(at)) => list[at].label.clone(),
-        (None, None) => servers::label_of(&host.name),
+        // The name's label, else the id's first part; `-2`, `-3`... when another server has it.
+        (None, None) => {
+            let base = match servers::label_of(&host.name) {
+                l if l.is_empty() || l == servers::LOCAL => {
+                    format!("server-{}", id.split('-').next().unwrap_or(&id))
+                }
+                l => l,
+            };
+            (1..)
+                .map(|n| match n {
+                    1 => base.clone(),
+                    n => format!("{base}-{n}"),
+                })
+                .find(|l| servers::check_label(list, l, &id).is_ok())
+                .expect("some suffix is free")
+        }
     };
-    servers::check_label(list, &label, &id).map_err(Fail::Other)?;
-    servers::credential_set(path, &id, &credential).map_err(|e| {
-        Fail::Other(format!("{e}; the server lists this device as {device}, so revoke it there"))
-    })?;
+    servers::check_label(list, &label, &id).map_err(orphan)?;
+    servers::credential_set(path, &id, &credential).map_err(orphan)?;
     let entry = servers::Server {
         label: label.clone(),
         id: id.clone(),
         url: code.url,
         fingerprint,
-        device,
+        device: device.clone(),
         enabled: true,
     };
+    let before = list.clone();
     match listed {
         Some(at) => list[at] = entry,
         None => list.push(entry),
     }
-    servers::save(path, list).map_err(Fail::Other)?;
+    if let Err(why) = servers::save(path, list) {
+        // The credential would sit in the Keychain with no entry naming it; a re-pair kept its old one.
+        if listed.is_none() {
+            let _ = servers::credential_delete(path, &id);
+        }
+        *list = before;
+        return Err(orphan(why));
+    }
     let verb = if listed.is_some() { "paired again with" } else { "paired with" };
     println!("{verb} {label} ({id}), named {}", host.name);
     Ok(())
