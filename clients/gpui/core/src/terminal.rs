@@ -5,9 +5,11 @@
 
 use base64::Engine as _;
 use ghostty_vt::key::{self, Mods, OptionAsAlt};
-use ghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
+use ghostty_vt::render::{CellIterator, RenderState, RowIterator};
+pub use ghostty_vt::render::CursorVisualStyle;
+pub use ghostty_vt::style::RgbColor;
 use ghostty_vt::screen::CellWide;
-use ghostty_vt::style::{Palette as VtPalette, RgbColor};
+use ghostty_vt::style::Palette as VtPalette;
 use ghostty_vt::selection::{FormatOptions, Selection};
 use ghostty_vt::terminal::{CursorStyle, Event, Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 use ghostty_vt::{focus, mouse, paste};
@@ -553,6 +555,17 @@ impl TermModel {
         self.terminal.mode(mode).unwrap_or(false)
     }
 
+    /// Whether the program asked for mouse reports, which a click then sends in place of selecting.
+    pub fn tracks_mouse(&self) -> bool {
+        self.terminal.is_mouse_tracking().unwrap_or(false)
+    }
+
+    /// Whether the scroll wheel sends arrow keys: on the alternate screen with mode 1007 on, as
+    /// Ghostty's `mouse-scroll` does for a pager or an editor that reads no mouse.
+    pub fn wheel_sends_arrows(&self) -> bool {
+        self.mode(Mode::ALT_SCROLL) && matches!(self.terminal.active_screen(), Ok(ghostty_vt::screen::Screen::Alternate))
+    }
+
     /// The viewport as it draws now; the rows it marks dirty are those changed since the last call.
     pub fn frame(&mut self) -> ghostty_vt::error::Result<Frame> {
         let Self { terminal, render, row_iter, cell_iter, .. } = self;
@@ -728,6 +741,16 @@ impl TermModel {
     pub fn select(&mut self, from: (u16, u16), to: (u16, u16)) -> ghostty_vt::error::Result<()> {
         let at = |(x, y): (u16, u16)| Point::Viewport(PointCoordinate { x, y: y as u32 });
         let selection = Selection::new(self.terminal.grid_ref(at(from))?, self.terminal.grid_ref(at(to))?, false);
+        self.terminal.set_selection(Some(&selection))?;
+        Ok(())
+    }
+
+    /// Select the whole screen, scrollback included, as Ghostty's `select_all`.
+    pub fn select_all(&mut self) -> ghostty_vt::error::Result<()> {
+        let cols = self.terminal.cols()?;
+        let last = self.terminal.total_rows()?.saturating_sub(1) as u32;
+        let at = |x: u16, y: u32| Point::Screen(PointCoordinate { x, y });
+        let selection = Selection::new(self.terminal.grid_ref(at(0, 0))?, self.terminal.grid_ref(at(cols.saturating_sub(1), last))?, false);
         self.terminal.set_selection(Some(&selection))?;
         Ok(())
     }
@@ -1075,6 +1098,15 @@ mod tests {
         assert!(!frame.rows[0][5].selected && frame.rows[0][6].selected && frame.rows[0][10].selected);
         m.clear_selection();
         assert_eq!(m.selection_text(), None);
+    }
+
+    #[test]
+    fn select_all_takes_the_scrollback_too() {
+        let mut m = model(20, 2);
+        m.feed(b"first\r\nsecond\r\nthird\r\nfourth");
+        m.select_all().unwrap();
+        let text = m.selection_text().unwrap();
+        assert!(text.starts_with("first") && text.trim_end().ends_with("fourth"), "{text:?}");
     }
 
     #[test]

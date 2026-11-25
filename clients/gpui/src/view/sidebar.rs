@@ -1195,7 +1195,7 @@ impl Client {
                     _ => None,
                 })
             }
-            "terminal" => self.native.status()["panes"][leaf.id.as_str()]["viewport"].as_str().and_then(last),
+            "terminal" => self.terms.texts.get(leaf.term.as_deref()?).and_then(|t| last(t)),
             "browser" => leaf.url.clone(),
             "web" | "plugin" => Some(leaf.label.clone()),
             _ => None,
