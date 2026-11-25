@@ -1961,21 +1961,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     return ["png_hex": data.map { String(format: "%02x", $0) }.joined(), "width": points.width, "height": points.height]
 }
 
-/// What the app holds outside every window (window id -1): the menu bar item, which lives while
-/// the app runs, with or without a window (WheelApp.swift's MenuBarExtra), and the Dock tile's badge.
+/// What the app holds outside every window (window id -1): alerts, context menus and the images
+/// the menu bar's popover draws. The menu bar item itself is Rust's (clients/gpui/src/appkit).
 @MainActor final class AppNative: NSObject {
     let emitter: Emit
     let hidden: Bool
-    var item: NSStatusItem?
-    var badge = 0
-    var update = false
-    var label = ""
-    var dock: String?
-    var clicks = 0
-    var rightClicks = 0
-    /// The right-click menu's items as the client sent them last, and their titles ("-" a separator).
-    var menuItems: [[String: Any]] = []
-    var menuTitles: [String] = []
     /// The context menu as last built: each item's title and whether it is enabled, "-" a separator.
     var contextItems: [[String: Any]] = []
     /// A question a hidden check answers itself (`answer_alert`): a hidden app shows no alert.
@@ -1990,94 +1980,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func emit(_ value: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
         string.withCString { emitter(-1, $0) }
-    }
-
-    /// Make the item, or redraw it: its image counts `badge` spaces no window shows (MenuBarIcon),
-    /// `label` is what VoiceOver reads, and `dock` the Dock tile's badge (none at zero). In the
-    /// check's test mode the item exists but is never in the menu bar, and the Dock tile is left alone.
-    func statusItem(_ value: [String: Any]) -> [String: Any] {
-        let count = value["badge"] as? Int ?? 0
-        let waiting = value["update"] as? Bool ?? false
-        if item == nil {
-            let made = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-            // The check's item saves its hidden state under its own name, never the app's.
-            if hidden { made.autosaveName = "wheel-gpui-check" }
-            made.isVisible = !hidden
-            made.button?.target = self
-            made.button?.action = #selector(pressed(_:))
-            // A right press sends the action too, keeping whatever the left press sends it on.
-            if let button = made.button {
-                let previous = button.sendAction(on: .leftMouseUp)
-                button.sendAction(on: NSEvent.EventTypeMask(rawValue: UInt64(previous)).union(.rightMouseDown))
-            }
-            item = made
-            badge = -1
-        }
-        if count != badge || waiting != update {
-            badge = count
-            update = waiting
-            item?.button?.image = MenuBarIcon.image(background: count, update: waiting)
-        }
-        label = value["label"] as? String ?? "Wheel"
-        item?.button?.setAccessibilityLabel(label)
-        let dockLabel = value["dock"] as? String
-        if !hidden, dock != dockLabel { NSApp.dockTile.badgeLabel = dockLabel }
-        dock = dockLabel
-        return state()
-    }
-
-    /// Where the item's button is on the main screen, in points from that screen's top left: the
-    /// popover opens under it.
-    func frame() -> [Double] {
-        guard let window = item?.button?.window, let screen = NSScreen.screens.first else { return [] }
-        let f = window.frame, s = screen.frame
-        return [f.minX - s.minX, s.maxY - f.maxY, f.width, f.height]
-    }
-
-    @objc func pressed(_ sender: Any?) {
-        if let type = NSApp.currentEvent?.type, type == .rightMouseDown || type == .rightMouseUp {
-            rightPressed()
-            return
-        }
-        clicks += 1
-        emit(["event": "status_item", "button": "left", "frame": frame()])
-    }
-
-    func rightPressed() {
-        rightClicks += 1
-        emit(["event": "status_item", "button": "right", "frame": frame()])
-    }
-
-    /// The right-click menu from `items` (`id`, `title`, `key`; id "-" a separator). Opened under
-    /// the item after this call returns, so the menu's tracking loop never runs inside the client's
-    /// call; a pick comes back as a `status_menu` event. A hidden item builds it and opens nothing.
-    func statusMenu(_ value: [String: Any]) -> [String: Any] {
-        menuItems = value["items"] as? [[String: Any]] ?? []
-        let menu = NSMenu()
-        for entry in menuItems {
-            let id = entry["id"] as? String ?? ""
-            if id == "-" {
-                menu.addItem(.separator())
-                continue
-            }
-            let item = NSMenuItem(title: entry["title"] as? String ?? id, action: #selector(chose(_:)), keyEquivalent: entry["key"] as? String ?? "")
-            item.target = self
-            item.representedObject = id
-            menu.addItem(item)
-        }
-        menuTitles = menu.items.map { $0.isSeparatorItem ? "-" : $0.title }
-        if !hidden, let statusItem = item, let button = statusItem.button {
-            DispatchQueue.main.async {
-                statusItem.menu = menu
-                button.performClick(nil)
-                statusItem.menu = nil
-            }
-        }
-        return ["menu": menuTitles]
-    }
-
-    @objc func chose(_ sender: NSMenuItem) {
-        emit(["event": "status_menu", "item": sender.representedObject as? String ?? ""])
     }
 
     /// A context menu from `items` (`id`, `title`, `enabled`; id "-" a separator), opened at the
@@ -2181,24 +2083,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 
     func state() -> [String: Any] {
-        let size = item?.button?.image?.size ?? .zero
-        return ["status_item": item != nil, "in_menu_bar": item?.isVisible ?? false, "badge": badge, "update": update, "label": label,
-                "dock": dock ?? NSNull(), "image": [size.width, size.height], "template": item?.button?.image?.isTemplate ?? false, "clicks": clicks,
-                "right_clicks": rightClicks, "menu": menuTitles, "context_menu": contextItems, "alert": pendingAlert ?? NSNull()]
+        ["context_menu": contextItems, "alert": pendingAlert ?? NSNull()]
     }
 
     func command(_ value: [String: Any]) -> [String: Any] {
         switch value["op"] as? String {
-        case "status_item": return statusItem(value)
-        // The check presses the item as a click does; a hidden item has no window to click in.
-        case "press_status_item":
-            if value["button"] as? String == "right" { rightPressed() } else { pressed(nil) }
-            return state()
-        case "status_menu": return statusMenu(value)
-        // The check picks an item as the menu's action does.
-        case "choose_status_menu":
-            emit(["event": "status_menu", "item": value["item"] as? String ?? ""])
-            return state()
         case "context_menu": return contextMenu(value)
         // The check picks a context menu item as the menu's action does.
         case "choose_context_menu":
@@ -2216,9 +2105,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "app_icon": return appIcon(value)
         case "clipboard_concealed": return writeConcealed(value) { FileHandle.standardError.write(Data(("wheel-gpui native: " + $0 + "\n").utf8)) }
         case "symbol": return symbolPNG(value, scale: Double(NSScreen.main?.backingScaleFactor ?? 2))
-        case "pointer_on_item":
-            let on = item?.button?.window.map { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? false
-            return ["pointer_on_item": on && item?.isVisible == true]
         default: return state()
         }
     }
@@ -2283,7 +2169,7 @@ public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: 
     if let playing = ReadAloud.shared.playing { native.emit(["event": "read_aloud", "playing": playing]) }
     return id
 }
-/// The app's own half, window id -1: the menu bar item. Its frames go to `emit` with window -1.
+/// The app's own half, window id -1: alerts and context menus. Its frames go to `emit` with window -1.
 @_cdecl("wheel_native_app_attach") @MainActor
 public func appAttach(_ hidden: Int32, _ emit: @escaping Emit) {
     if app == nil { app = AppNative(hidden: hidden != 0, emit: emit) }

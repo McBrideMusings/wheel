@@ -2522,7 +2522,8 @@ async fn speech_settings(run: Run, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     speech::send(Cmd::ModelChoose(back.folder));
     until(window, cx, |s| s["chosen"] == back.folder || s["offered"] == back.folder).await?;
     speech::send(Cmd::ModelCancel);
-    window.update(cx, |c, _, _| c.close_settings())?;
+    // Settings opens on the tab it closed on; leave it on General, where this step found it.
+    window.update(cx, |c, _, _| { c.settings_tab(wheel_gpui::settings::Tab::General); c.close_settings(); })?;
     let report = json!({"listed": models.len(), "chose": chose["chosen"], "offered": offered["offered"], "downloaded": vad["models"][2]["on_disk"], "removed": !SILERO_VAD.dir(&root).exists()});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
@@ -8160,6 +8161,21 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     ensure!(menu_state["up"] == true, "the menu bar's connection never came up: {menu_state}");
     ensure!(menu_state["item"]["status_item"] == true && menu_state["item"]["in_menu_bar"] == false && menu_state["item"]["template"] == true,
         "the status item is missing, in the menu bar during a hidden check, or not a template image: {}", menu_state["item"]);
+    ensure!(menu_state["item"]["label"] == menu_state["told"]["label"] && menu_state["item"]["label"].as_str().is_some_and(|l| l.starts_with("Wheel")),
+        "the item reads {} to VoiceOver, the menu bar told it {}", menu_state["item"]["label"], menu_state["told"]["label"]);
+    // The item's image in each state, drawn at 2x as the menu bar draws it: no badge, 1, 9+ and the update dot.
+    let mut icons = serde_json::Map::new();
+    for (name, count, update) in [("none", 0, false), ("one", 1, false), ("twelve", 12, false), ("update", 0, true), ("twelve-update", 12, true)] {
+        let icon = wheel_gpui::appkit::status_item::icon(count, update);
+        let png = wheel_gpui::appkit::png(&icon, 2.).ok_or_else(|| anyhow::anyhow!("the {name} icon drew no PNG"))?;
+        std::fs::write(output.join(format!("menubar-icon-{name}.png")), &png)?;
+        let drawn = image::load_from_memory(&png)?.to_rgba8();
+        let inked = drawn.pixels().filter(|p| p[3] > 0).count();
+        ensure!(icon.isTemplate() && inked > 0, "the {name} icon is blank or not a template: {inked} inked pixels");
+        icons.insert(name.into(), json!({"points": [icon.size().width, icon.size().height], "pixels": [drawn.width(), drawn.height()], "inked": inked}));
+    }
+    let width = |n: &str| icons[n]["points"][0].as_f64().unwrap_or(0.);
+    ensure!(width("none") < width("one") && width("one") <= width("twelve") && width("none") < width("update"), "the badge and the dot widen the mark: {icons:?}");
     // Every session's spaces, in wheeld's order, as the window's own layout lists them.
     let (sessions, _) = window.update(cx, |c, _, _| c.layout_lists())?;
     let listed: Vec<(String, Vec<String>)> = menu_state["cards"].as_array().unwrap().iter()
@@ -8376,7 +8392,7 @@ async fn menu_bar_check(bridge: &std::rc::Rc<Bridge>, agent: &str, connection: &
     let every_space: usize = still["cards"].as_array().unwrap().iter().map(|c| c["rows"].as_array().map(|r| r.len()).unwrap_or(0)).sum();
     ensure!(still["item"]["badge"].as_u64() == Some(every_space as u64), "with no window, every space ({every_space}) is unshown; the badge reads {}", still["item"]["badge"]);
     let closed_copy = closed_copy_check(&menu, cx).await?;
-    Ok(json!({"item": menu_state["item"], "cards": menu_state["cards"], "badge_before": badge_before, "background_counted": background,
+    Ok(json!({"item": menu_state["item"], "icons": icons, "cards": menu_state["cards"], "badge_before": badge_before, "background_counted": background,
         "fixture_waiting": fixture_waiting, "rows_waiting": row_waiting, "dock_while_waiting": waiting_state["item"]["dock"], "answered": answered,
         "popover": {"frame": open_state["popover"]["frame"], "height": open_state["height"], "picture": picture, "pixels": [drawn.0, drawn.1]},
         "new_window": {"before": windows_before, "after": windows_after, "popover_closed": after_new["popover"]["open"] == false},
@@ -8702,7 +8718,7 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let picture_stopped = output.join("client-menubar-stopped.png");
     popover_picture(popover, &picture_stopped, cx)?;
     // The right-click menu while stopped: Start Server first.
-    menu.update(cx, |m, _| m.bridge_call(json!({"op": "press_status_item", "button": "right"})));
+    menu.update(cx, |m, _| m.press_item_right());
     let menu_stopped = popover_settle(popover, menu, cx, |s| s["status_menu"]["menu"][0] == "Start Server").await["status_menu"]["menu"].clone();
     ensure!(menu_stopped == json!(["Start Server", "Restart Server", "-", "Quit Wheel"]), "the right-click menu while stopped reads {menu_stopped}");
     // Start Server runs the start command and the line reads Running again.
@@ -8724,10 +8740,10 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     }
     ensure!(grid_back > 0, "Start Server left the window without its grid");
     // The right-click menu while running: Stop Server… asks in an alert; Cancel leaves it running.
-    menu.update(cx, |m, _| m.bridge_call(json!({"op": "press_status_item", "button": "right"})));
+    menu.update(cx, |m, _| m.press_item_right());
     let menu_running = popover_settle(popover, menu, cx, |s| s["status_menu"]["menu"][0] == "Stop Server…").await["status_menu"]["menu"].clone();
     ensure!(menu_running == json!(["Stop Server…", "Restart Server", "-", "Quit Wheel"]), "the right-click menu while running reads {menu_running}");
-    menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_status_menu", "item": "stop"})));
+    menu.update(cx, |m, _| m.choose_status_menu("stop"));
     let mut alert = Value::Null;
     for _ in 0..50 {
         tick(cx, 100).await;
@@ -8746,7 +8762,7 @@ async fn server_line_check(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<w
     let _ = std::fs::remove_file(&stop_file);
     let _ = std::fs::remove_file(&start_file);
     let restarts_before = server_log().iter().filter(|l| *l == "server: restarted from the app").count();
-    menu.update(cx, |m, _| m.bridge_call(json!({"op": "choose_status_menu", "item": "restart"})));
+    menu.update(cx, |m, _| m.choose_status_menu("restart"));
     for _ in 0..50 {
         tick(cx, 100).await;
         if server_log().iter().filter(|l| *l == "server: restarted from the app").count() > restarts_before {

@@ -1,11 +1,11 @@
 #!/bin/bash
 # Render the Wheel Dev app icon: the committed icon with a red DEV band across its lower-right
-# corner, written to apple/Mac/Assets.xcassets/AppIconDev.appiconset. `make icon-render` runs it
+# corner, written to clients/gpui/Assets.xcassets/AppIconDev.appiconset. `make icon-render` runs it
 # after rendering the plain icon; the dev build selects the set with ASSETCATALOG_COMPILER_APPICON_NAME.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/apple/Mac/Assets.xcassets/AppIcon.appiconset"
-OUT="$ROOT/apple/Mac/Assets.xcassets/AppIconDev.appiconset"
+SRC="$ROOT/clients/gpui/Assets.xcassets/AppIcon.appiconset"
+OUT="$ROOT/clients/gpui/Assets.xcassets/AppIconDev.appiconset"
 mkdir -p "$OUT"
 cp "$SRC/Contents.json" "$OUT/Contents.json"
 work="$(mktemp -d)"

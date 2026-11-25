@@ -78,7 +78,7 @@ impl Bridge {
     }
 }
 
-/// The bridge's window id for what the app holds outside every window: the menu bar item.
+/// The bridge's window id for what the app holds outside every window: alerts and context menus.
 pub const APP: i32 = -1;
 
 /// The native views of one window. Every command names the window the bridge assigned at
@@ -98,8 +98,8 @@ impl Native {
         self.window.set(window);
         EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(window, frames);
     }
-    /// The app's own half of the bridge (`APP`): the menu bar item and the Dock tile, which live
-    /// while the app runs, with or without a window. Its frames (the item's clicks) go to `frames`.
+    /// The app's own half of the bridge (`APP`): alerts and context menus, which live
+    /// while the app runs, with or without a window. Its frames (picks and answers) go to `frames`.
     pub fn app(bridge: &Rc<Bridge>, hidden: bool, frames: fmpsc::UnboundedSender<String>) -> Rc<Self> {
         unsafe { (bridge.app_attach)(i32::from(hidden), on_emit) };
         EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(APP, frames);
