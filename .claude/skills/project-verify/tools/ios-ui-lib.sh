@@ -27,7 +27,7 @@ ios_ui_start() {
   xcrun simctl uninstall "$UDID" "$BUNDLE" >/dev/null 2>&1
   local code xrun; code="$(w remote pair --address 127.0.0.1)"
   xrun="$(ls "$DD"/Build/Products/*.xctestrun | head -1)"
-  local envs=(TEST_RUNNER_WHEEL_PAIR_JSON="$code" TEST_RUNNER_WHEEL_SYNC_DIR="$SYNC" TEST_RUNNER_WHEEL_SHOTS="$SHOTS")
+  local envs=(TEST_RUNNER_WHEEL_PAIR_JSON="$code" TEST_RUNNER_WHEEL_FORGET_SERVERS=1 TEST_RUNNER_WHEEL_SYNC_DIR="$SYNC" TEST_RUNNER_WHEEL_SHOTS="$SHOTS")
   for kv in "$@"; do envs+=("TEST_RUNNER_$kv"); done
   env "${envs[@]}" xcodebuild test-without-building -xctestrun "$xrun" -destination "id=$UDID" \
     -only-testing:"WheelPhoneUITests/$test" >"$SCR/xcodebuild.log" 2>&1 &

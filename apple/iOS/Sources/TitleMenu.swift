@@ -127,9 +127,13 @@ struct TitleMenu: View {
     let servers: ServerList
     @Binding var tab: ThumbTab
     @Binding var scope: AgentScope
+    /// The height that fits the spaces list and the controls under it: the sheet's first detent.
+    @Binding var fit: CGFloat
     /// Closes the sheet, then asks the carousel for what comes next (nil: nothing).
     let done: (TitleMenuRequest?) -> Void
     @State private var search = ""
+    @State private var listHeight: CGFloat = 0
+    @State private var controlsHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -138,16 +142,20 @@ struct TitleMenu: View {
             } else {
                 AgentsList(model: model, scope: scope, place: "agents tab") { done(nil) }
             }
-            Divider()
             VStack(spacing: 10) {
                 // One slot for both tabs: search over the spaces, the filter over the agents.
                 Group {
                     if tab == .spaces {
-                        TextField("Search \(model.shownSession?.name ?? "spaces")", text: $search)
-                            .textFieldStyle(.roundedBorder)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .accessibilityIdentifier("space search")
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                            TextField("Search \(model.shownSession?.name ?? "spaces")", text: $search)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .accessibilityIdentifier("space search")
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(maxHeight: .infinity)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10))
                     } else {
                         Picker("Agents", selection: $scope) {
                             Text("This space").tag(AgentScope.thisSpace)
@@ -157,17 +165,25 @@ struct TitleMenu: View {
                         .accessibilityIdentifier("agent scope")
                     }
                 }
-                .frame(height: 34)
+                .frame(height: 36)
                 tabControl
                 sessionBar
             }
             .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0; fitSheet() }
         }
+        .presentationBackground(Color(.secondarySystemGroupedBackground))
         .onAppear { logShown() }
         .onChange(of: model.view.session) { _, _ in
             search = ""
             logShown()
         }
+    }
+
+    /// The sheet opens as tall as its spaces and controls, under the drag indicator.
+    private func fitSheet() {
+        let next = (listHeight + controlsHeight + 20).rounded()
+        if listHeight > 0, controlsHeight > 0, abs(next - fit) > 0.5 { fit = next }
     }
 
     private func logShown() {
@@ -188,20 +204,25 @@ struct TitleMenu: View {
                 } else if listed.isEmpty {
                     Text("No space matches “\(search)”").font(.subheadline).foregroundStyle(.secondary).padding(16)
                 }
-                ForEach(listed) { space in
-                    row(space) {
-                        model.select(space: space.id)
-                        done(nil)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(listed) { space in
+                        row(space) {
+                            model.select(space: space.id)
+                            done(nil)
+                        }
+                        .accessibilityIdentifier("space \(space.name)")
+                        .contextMenu { spaceActions(space) } preview: {
+                            row(space, checked: false) {}.frame(width: 320)
+                        }
+                        Divider().padding(.leading, 16)
                     }
-                    .accessibilityIdentifier("space \(space.name)")
-                    .contextMenu { spaceActions(space) } preview: {
-                        row(space, checked: false) {}.frame(width: 320)
-                    }
-                    Divider().padding(.leading, 16)
+                    action("New space", symbol: "plus", id: "new space") { done(.newSpace) }
                 }
-                action("New space", symbol: "plus", id: "new space") { done(.newSpace) }
+                .background(Color(.tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.top, 4)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0; fitSheet() }
         }
         // The sheet opens at the end of the list, and a short list sits at the bottom.
         .defaultScrollAnchor(.bottom)
@@ -209,28 +230,36 @@ struct TitleMenu: View {
 
     /// Spaces | Agents; the Agents label carries the number of agents waiting on the person.
     private var tabControl: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 2) {
             tabButton("Spaces", target: .spaces, badge: 0)
             tabButton("Agents", target: .agents, badge: model.sessionNeedsYou)
         }
+        .padding(2)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 9))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tab control")
     }
 
-    @ViewBuilder private func tabButton(_ title: String, target: ThumbTab, badge: Int) -> some View {
-        let label = HStack(spacing: 6) {
-            Text(title)
-            if badge > 0 {
-                Text("\(badge)").font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(.white)
-                    .frame(minWidth: 20, minHeight: 20).background(Color.orange, in: Capsule())
+    /// One segment: the chosen one sits on a raised fill, as a segmented control draws it; a
+    /// Picker cannot carry the orange count.
+    private func tabButton(_ title: String, target: ThumbTab, badge: Int) -> some View {
+        let chosen = tab == target
+        return Button { tab = target } label: {
+            HStack(spacing: 5) {
+                Text(title).font(.footnote.weight(.semibold))
+                if badge > 0 {
+                    Text("\(badge)").font(.caption2.weight(.bold).monospacedDigit()).foregroundStyle(.black)
+                        .frame(minWidth: 16, minHeight: 16).background(Color.orange, in: Capsule())
+                }
             }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, minHeight: 28)
+            .background(chosen ? Color(.systemGray3) : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, minHeight: 32)
-        if tab == target {
-            Button { tab = target } label: { label }.buttonStyle(.borderedProminent).accessibilityIdentifier("tab \(title.lowercased())")
-        } else {
-            Button { tab = target } label: { label }.buttonStyle(.bordered).accessibilityIdentifier("tab \(title.lowercased())")
-        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("tab \(title.lowercased())")
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 
     /// Main · Mobile · Games: a tap on one, or a swipe along the bar, shows that session; the lists
@@ -238,64 +267,70 @@ struct TitleMenu: View {
     /// are here, each server's run led by its mark, chips of one width scrolling sideways, and a down
     /// server's chips dimmed (ADR-0057). The + makes a new session or adds a server.
     @ViewBuilder private var sessionBar: some View {
-        if servers.several {
-            HStack(spacing: 8) {
+        HStack(spacing: 0) {
+            ViewThatFits(in: .horizontal) {
+                // Fits: centred, and a swipe along it steps the session.
+                sessionLine.frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { drag in
+                        guard !servers.several, abs(drag.translation.width) > abs(drag.translation.height) else { return }
+                        stepSession(drag.translation.width < 0 ? 1 : -1)
+                    })
+                // Too long: it scrolls sideways, fades at the right edge and keeps the shown session in view.
                 ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(servers.servers) { server in
-                                ServerMark(model: server).font(.footnote.weight(.semibold))
-                                ForEach(server.sessions) { session in
-                                    chip(session, of: server, width: Self.chipWidth).id(Self.chipID(session.id, of: server))
-                                }
-                            }
-                        }
-                    }
-                    // The shown session's chip is in view whichever server holds it.
-                    .onAppear { proxy.scrollTo(shownChip, anchor: .center) }
-                    .onChange(of: shownChip) { _, id in withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                    ScrollView(.horizontal, showsIndicators: false) { sessionLine }
+                        .mask(LinearGradient(stops: [.init(color: .black, location: 0.85), .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing))
+                        .onAppear { proxy.scrollTo(shownChip, anchor: .center) }
+                        .onChange(of: shownChip) { _, id in withAnimation { proxy.scrollTo(id, anchor: .center) } }
                 }
-                plusMenu
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("session bar")
-        } else {
-            HStack(spacing: 8) {
-                ForEach(model.sessions) { session in chip(session, of: model, width: nil) }
-                plusMenu
-            }
-            .contentShape(Rectangle())
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("session bar")
-            .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { drag in
-                guard abs(drag.translation.width) > abs(drag.translation.height) else { return }
-                stepSession(drag.translation.width < 0 ? 1 : -1)
-            })
+            plusMenu
         }
+        .frame(height: 32)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("session bar")
+    }
+
+    /// Every server's sessions as one line of text, each server's run led by its mark when there
+    /// are several (ADR-0057); a down server's sessions dimmed.
+    private var sessionLine: some View {
+        HStack(spacing: 0) {
+            ForEach(Array((servers.several ? servers.servers : [model]).enumerated()), id: \.offset) { index, server in
+                if servers.several {
+                    ServerMark(model: server).font(.footnote.weight(.semibold))
+                        .padding(.leading, index == 0 ? 0 : 14).padding(.trailing, 6)
+                }
+                ForEach(Array(server.sessions.enumerated()), id: \.element.id) { at, session in
+                    if at > 0 { Text("·").foregroundStyle(.tertiary).padding(.horizontal, 6) }
+                    chip(session, of: server).id(Self.chipID(session.id, of: server))
+                }
+            }
+        }
+        .fixedSize()
     }
 
     private static func chipID(_ session: String, of server: PhoneModel) -> String { "\(ObjectIdentifier(server).hashValue)/\(session)" }
     private var shownChip: String { Self.chipID(model.view.session ?? "", of: model) }
 
-    /// A session's chip: its name and space count; `width` nil shares the bar's width.
-    private func chip(_ session: SessionInfo, of server: PhoneModel, width: CGFloat?) -> some View {
+    /// A session: its name and space count, bold when shown.
+    private func chip(_ session: SessionInfo, of server: PhoneModel) -> some View {
         let shown = server === model && session.id == model.view.session
-        let label = HStack(spacing: 4) {
-            Text(session.name).lineLimit(1).minimumScaleFactor(0.7)
-            Text("\(session.spaces.count)").monospacedDigit().opacity(0.7)
-        }
-        .font(.subheadline)
-        .frame(width: width)
-        .frame(minHeight: 32)
-        .frame(maxWidth: width == nil ? .infinity : nil)
-        let tap = { servers.show(session: session.id, of: server) }
-        return Group {
-            if shown {
-                Button(action: tap) { label }.buttonStyle(.borderedProminent)
-            } else {
-                Button(action: tap) { label }.buttonStyle(.bordered)
+        return Button { servers.show(session: session.id, of: server) } label: {
+            // Laid out semibold whether shown or not, so a chip keeps its width when it becomes the shown one.
+            let label = { (weight: Font.Weight) in
+                HStack(spacing: 4) {
+                    Text(session.name).lineLimit(1)
+                    Text("\(session.spaces.count)").monospacedDigit()
+                }
+                .font(.subheadline.weight(weight))
             }
+            label(.semibold).hidden()
+                .overlay { label(shown ? .semibold : .regular) }
+            .foregroundStyle(shown ? .primary : .secondary)
+            .frame(minHeight: 32)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .opacity(server.isConnected ? 1 : 0.4)
         .accessibilityIdentifier("session \(session.name)")
         .accessibilityValue(shown ? "shown" : server.isConnected ? "" : "not connected")
@@ -323,15 +358,11 @@ struct TitleMenu: View {
                 }
             }
         } label: {
-            Image(systemName: "plus").frame(width: 32, height: 32)
+            Image(systemName: "plus").font(.title3).frame(width: 32, height: 32, alignment: .trailing)
         }
-        .buttonStyle(.bordered)
         .accessibilityLabel("New session")
         .accessibilityIdentifier("new session")
     }
-
-    /// A chip's label width with several servers: one width for every chip, so the bar scrolls instead of squeezing.
-    private static let chipWidth: CGFloat = 84
 
     private func stepSession(_ delta: Int) {
         guard let current = model.sessions.firstIndex(where: { $0.id == model.view.session }) else { return }
@@ -379,19 +410,21 @@ struct TitleMenu: View {
                 SpaceDots(space: space, shown: model.statusDots).frame(minWidth: 10)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(space.name).font(.body).foregroundStyle(.primary).lineLimit(1)
-                    Text(agents == 0 ? "No agents" : agents == 1 ? "1 agent" : "\(agents) agents")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(waiting > 0 ? "\(waiting) need\(waiting == 1 ? "s" : "") you" : agents == 0 ? "No agents" : agents == 1 ? "1 agent" : "\(agents) agents")
+                        .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 if waiting > 0 {
-                    Text("\(waiting)").font(.caption.weight(.bold).monospacedDigit()).foregroundStyle(.white)
-                        .frame(minWidth: 22, minHeight: 22)
-                        .background(Color.orange, in: Capsule())
+                    Circle().fill(Color.orange).frame(width: 8, height: 8)
                         .accessibilityLabel("\(waiting) waiting")
                 }
-                if checked ?? (space.id == model.active) { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                if checked ?? (space.id == model.active) {
+                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.tint)
+                } else {
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
+            .padding(.horizontal, 16).padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -404,7 +437,7 @@ struct TitleMenu: View {
                 Text(title)
                 Spacer()
             }
-            .foregroundStyle(.primary)
+            .foregroundStyle(.tint)
             .padding(.horizontal, 16).padding(.vertical, 12)
             .contentShape(Rectangle())
         }

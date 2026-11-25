@@ -14,8 +14,7 @@ final class PinUITests: XCTestCase {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
         let ids = try XCTUnwrap(env["WHEEL_PIN_PANES"], "WHEEL_PIN_PANES").split(separator: ",").map(String.init)
         XCTAssertEqual(ids.count, 3)
-        app = XCUIApplication()
-        app.launchEnvironment["WHEEL_PAIR_JSON"] = pair
+        app = .paired(pair)
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))
