@@ -2004,6 +2004,21 @@ pub enum ClientMsg {
         pane: String,
         value: serde_json::Value,
     },
+    /// Have the values pushed into web pane `pane`'s page (`artifact_data`) sent on this connection
+    /// as `page_data`, the latest one first, until `page_unwatch` or the connection closes. A
+    /// remote client's page reads them in place of its own `.wheel/events` stream, so it holds no
+    /// connection per page. Replies `ok`.
+    PageWatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
+    /// Stop the `page_data` of `pane` on this connection. Replies `ok`.
+    PageUnwatch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+        pane: String,
+    },
     /// Change one of an agent's config options — its model, permission mode or effort level.
     /// `config` is the option's id and `value` one of its choices' `value`s, or `true`/`false`
     /// for a boolean. The whole new list goes to every connection as a `agent_config` first,
@@ -2927,6 +2942,13 @@ pub enum ServerMsg {
         space: String,
         procs: Vec<ProcInfo>,
     },
+    /// A value pushed into web pane `pane`'s page, sent unasked to a connection that watches it
+    /// (`page_watch`). `data` is the value as JSON text, what the page's `.wheel/events` stream
+    /// carries in its `data:` line.
+    PageData {
+        pane: String,
+        data: String,
+    },
     /// What `pane_info` found: the pane's id, its kind (`agent`, `terminal`, `web`, `browser`
     /// or `empty`) and its fields in the order a client lists them.
     PaneInfo {
@@ -3138,6 +3160,7 @@ impl ServerMsg {
             ServerMsg::TermOutput { .. }
             | ServerMsg::TermExited { .. }
             | ServerMsg::ProcsSample { .. }
+            | ServerMsg::PageData { .. }
             | ServerMsg::UsageChanged { .. }
             | ServerMsg::TitleButtonsChanged { .. }
             | ServerMsg::DevicesChanged { .. }

@@ -246,6 +246,8 @@ final class PhoneModel {
     /// What `phone.log` last said about each plugin pane, so a line is written only when it changes.
     private var pluginLogged: [String: String] = [:]
     private let pageDaemon = PageDaemon()
+    /// The values pushed into the web panes' pages, carried on this app's connection (`page_watch`).
+    @ObservationIgnored private lazy var pageFeed = PageFeed(send: { [weak self] in self?.client?.send($0) })
     /// The artifacts plugin pages embed (`WebView{artifact}`, ADR-0047), made with the first one.
     @ObservationIgnored private var artifactEmbeds: ArtifactEmbeds?
     /// One conversation per agent pane in the layout, keyed by agent name.
@@ -645,6 +647,7 @@ final class PhoneModel {
         if links.received(msg) { return }
         if pluginPanes.values.contains(where: { $0.handle(msg) }) { return }
         if artifactEmbeds?.handle(msg) == true { return }
+        if pageFeed.handle(msg) { return }
         switch msg {
         case let .status(_, _, _, _, _, perms, spaces, agents, _, _, _, host, offer, sessions):
             if let host { named(host) }
@@ -666,6 +669,14 @@ final class PhoneModel {
             // A new connection holds no feeds: each plugin pane kept from the last one asks for its script and feeds again.
             for link in heldPlugins where pluginPanes[link.pane] === link { link.start() }
             artifactEmbeds?.connected()
+            // A wheeld without `page_watch` serves each page's event stream over a connection of its own.
+            if offer.has("page_watch") {
+                pageDaemon.feed = pageFeed
+                pageFeed.connected()
+            } else {
+                pageDaemon.feed = nil
+                pageFeed.end()
+            }
             // A fresh connection starts with its first status: attach the page that is showing, and its embeds, again.
             attachedTerms = []
             syncAttachments()
