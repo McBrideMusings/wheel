@@ -362,9 +362,11 @@ final class StreamAudio {
     private var running = false
     private let ring = StreamAudioRing()
     static let backlogSeconds = 0.25
+    /// A hidden check (`WHEEL_MUTE=1`) plays through the engine at volume 0: the audio path runs, nobody hears it.
+    private let muted = ProcessInfo.processInfo.environment["WHEEL_MUTE"] == "1"
     /// The mixer's output gain, 0 to 1.
     var gain: Float = 1 {
-        didSet { if gain != oldValue { engine.mainMixerNode.outputVolume = gain } }
+        didSet { if gain != oldValue { engine.mainMixerNode.outputVolume = muted ? 0 : gain } }
     }
 
     /// Queues one chunk; false when no audio device took the stream.
@@ -395,8 +397,7 @@ final class StreamAudio {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
-        // A hidden check (`WHEEL_MUTE=1`) plays through the engine at volume 0: the audio path runs, nobody hears it.
-        engine.mainMixerNode.outputVolume = ProcessInfo.processInfo.environment["WHEEL_MUTE"] == "1" ? 0 : gain
+        engine.mainMixerNode.outputVolume = muted ? 0 : gain
         source = node
         do {
             try engine.start()
