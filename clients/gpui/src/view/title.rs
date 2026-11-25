@@ -242,7 +242,7 @@ impl Client {
         }
         self.pinned = on;
         self.publish();
-        self.native.call(serde_json::json!({"op": "pin", "on": on}));
+        crate::appkit::window::pin(self.native.ns_view(), on);
         self.log(format!("window {} {}", &self.window_id[..self.window_id.len().min(12)], if on { "pinned" } else { "unpinned" }));
     }
 

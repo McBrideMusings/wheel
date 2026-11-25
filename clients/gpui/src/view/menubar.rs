@@ -42,8 +42,6 @@ const ACCENT: u32 = 0x0a84ff;
 const DETAILS_INDENT: f32 = 46.;
 
 pub struct MenuBar {
-    /// The bridge's app half: alerts, context menus and the images it draws.
-    native: Rc<Native>,
     /// The menu bar item and the Dock tile's badge.
     status: crate::appkit::StatusItem,
     bridge: Rc<Bridge>,
@@ -93,8 +91,6 @@ pub struct MenuBar {
 /// Make the menu bar item: its own connection over `endpoint`, the status item, and the tasks
 /// that feed it wheeld's frames, its clicks and every change to the app's windows.
 pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool) -> Entity<MenuBar> {
-    let (frames, _) = futures::channel::mpsc::unbounded::<String>();
-    let native = Native::app(bridge, hidden, frames);
     let (presses, mut pressed) = futures::channel::mpsc::unbounded();
     let status = crate::appkit::StatusItem::new(hidden, presses);
     let (answers, mut answered) = futures::channel::mpsc::unbounded();
@@ -104,7 +100,7 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     let (send, mut incoming) = crate::connection(&endpoint).subscribe();
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
-        native, status, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
+        status, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
         running_source: None, lacks: 0, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
         sessions: vec![], spaces: vec![], perms: vec![], told: None, popover: None, symbols: RefCell::default(), log: vec![],
         status_dots: crate::status::all_ranks(), space_menu: None, dialogs, context_menu: vec![], next_req: 100, closing: None, copying: None,
@@ -717,8 +713,7 @@ impl MenuBar {
         if view == 0 {
             return None;
         }
-        let at = self.native.call(json!({"op": "view_frame", "view": view}))["frame"].as_array()?.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect::<Vec<_>>();
-        let [x, y, w, h] = at[..] else { return None };
+        let [x, y, w, h] = crate::appkit::window::view_frame(view as usize as *mut std::ffi::c_void)?.map(|v| v as f32);
         let rows: HashMap<String, Vec<String>> = self.cards().into_iter().map(|c| (c.session, c.rows.into_iter().map(|r| r.space).collect())).collect();
         let cards = popover.cards.borrow().iter().map(|(session, [cx_, cy, cw, ch])| {
             let frame = Rect { x: x + cx_, y: y + cy, w: *cw, h: *ch };
@@ -1100,7 +1095,7 @@ impl Render for Popover {
         let quit = menu.row("power", "Quit Wheel", Some("⌘Q")).on_mouse_up(MouseButton::Left, |_, _, cx| cx.quit());
         col = col.child(div().h(px(1.)).bg(rgb(LINE))).child(div().flex().flex_col().gap(px(ROW_GAP)).child(new_window).child(quit));
         // The window follows the content's height, keeping its top edge under the item.
-        let (content, native, ns_view) = (self.content.clone(), menu.native.clone(), self.view.clone());
+        let (content, ns_view) = (self.content.clone(), self.view.clone());
         let fit = canvas(move |b, window, cx| {
             let height = b.size.height.as_f32();
             content.set(height);
@@ -1114,7 +1109,7 @@ impl Render for Popover {
                 cx.defer(move |cx| {
                     // The view is the popover's: a popover closed since this draw is not touched.
                     if menu_bar().is_some_and(|m| m.read(cx).popover.is_some()) {
-                        native.call(json!({"op": "fit_window", "view": view, "width": WIDTH, "height": height}));
+                        crate::appkit::window::fit(view as usize as *mut std::ffi::c_void, Some(f64::from(WIDTH)), Some(f64::from(height)));
                     }
                 });
             }

@@ -1451,6 +1451,13 @@ impl Client {
         }
         closed
     }
+    /// The system's Reduce Motion (`appkit::motion`), when the window opens and on every change.
+    pub fn set_reduce_motion(&mut self, on: bool) {
+        if self.reduce_motion != on {
+            self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
+        }
+        self.reduce_motion = on;
+    }
     /// A frame the bridge sent on its own: a browser pane's state is kept for its chrome, its
     /// reports go to wheeld as this connection's requests, and an answer to a relayed daemon
     /// request goes back as the reply wheeld waits for.
@@ -1485,12 +1492,6 @@ impl Client {
             }
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             Frame::Event(BrowserEvent::ReadAloud { playing }) => self.read_aloud = playing,
-            Frame::Event(BrowserEvent::ReduceMotion { on }) => {
-                if self.reduce_motion != on {
-                    self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
-                }
-                self.reduce_motion = on;
-            }
             // A press in a terminal or page view closes the open popovers, as one on GPUI's drawing does.
             Frame::Event(BrowserEvent::Pressed { pane, point: [x, y] }) => {
                 if self.press_away(x, y) {

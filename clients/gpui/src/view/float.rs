@@ -2,13 +2,14 @@
 //! naming the dragged space, which follows the pointer across every window and the desktop
 //! (DragChipWindow), and over the desktop the preview card of the space it will open in a little
 //! window (DesktopDropOverlay, SpaceCardView). Each is one app-wide window, opened on first use
-//! and kept, deaf to the pointer; the bridge's `float` op places, shows and hides it.
-use crate::{layout::Rect, native::{Bridge, Native}, sidebar};
-use futures::StreamExt as _;
+//! and kept, deaf to the pointer; `appkit::window::float` places, shows and hides it.
+use crate::{appkit::window, layout::Rect, sidebar};
 use gpui::{App, AppContext as _, Bounds, Context, FontWeight, IntoElement, ParentElement as _, Render, Styled as _, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, point, px, rgb, size};
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use serde_json::{Value, json};
-use std::{cell::RefCell, rc::Rc};
+use objc2::rc::Retained;
+use objc2_app_kit::NSView;
+use std::{cell::RefCell, ffi::c_void};
 
 const CHIP_BG: u32 = 0x22302a;
 const CARD_BG: u32 = 0x17201c;
@@ -62,10 +63,11 @@ impl Render for FloatView {
     }
 }
 
-/// One floating window, its bridge half, and what it was last asked to do.
+/// One floating window, its content view, and what it was last asked to do.
 pub struct Float {
     pub handle: WindowHandle<FloatView>,
-    pub native: Rc<Native>,
+    /// Retained: a window closed under the drag leaves a view with no window, which every call skips.
+    view: Retained<NSView>,
     pub shown: bool,
     pub frame: Option<Rect>,
     pub text: String,
@@ -86,7 +88,7 @@ thread_local! {
 /// The window `owner`'s drag wants `want` drawn: the change is applied after the caller's update,
 /// since opening or drawing a window inside another window's update cannot reach the app. A
 /// `Nothing` from a window that does not own what is drawn changes nothing.
-pub fn set(owner: &str, want: Want, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) {
+pub fn set(owner: &str, want: Want, hidden: bool, cx: &mut App) {
     let changed = FLOATS.with(|f| {
         let mut f = f.borrow_mut();
         let same = match &f.want {
@@ -99,8 +101,7 @@ pub fn set(owner: &str, want: Want, bridge: &Rc<Bridge>, hidden: bool, cx: &mut 
         !same
     });
     if changed {
-        let bridge = bridge.clone();
-        cx.defer(move |cx| apply(want, &bridge, hidden, cx));
+        cx.defer(move |cx| apply(want, hidden, cx));
     }
 }
 
@@ -115,29 +116,29 @@ pub fn release(owner: &str) {
         owned
     });
     if owned {
-        hide(|f| &mut f.chip);
-        hide(|f| &mut f.card);
+        hide(|f| &mut f.chip, true);
+        hide(|f| &mut f.card, true);
     }
 }
 
-fn apply(want: Want, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) {
+fn apply(want: Want, hidden: bool, cx: &mut App) {
     let (chip, card) = match &want {
         Want::Nothing => (None, None),
         Want::Chip { at, .. } => (Some(*at), None),
         Want::Card { at, .. } => (None, Some(*at)),
     };
     if chip.is_none() {
-        hide(|f| &mut f.chip);
+        hide(|f| &mut f.chip, hidden);
     }
     if card.is_none() {
-        hide(|f| &mut f.card);
+        hide(|f| &mut f.card, hidden);
     }
     let name = match &want {
         Want::Chip { name, .. } | Want::Card { name, .. } => name.clone(),
         Want::Nothing => return,
     };
     let is_card = card.is_some();
-    let Some((handle, native, was_shown)) = ensure(is_card, bridge, hidden, cx) else {
+    let Some((handle, view, was_shown)) = ensure(is_card, cx) else {
         // The next move asks again.
         FLOATS.with(|f| f.borrow_mut().want = None);
         eprintln!("wheel-gpui: space drag: the {} window did not open", if is_card { "card" } else { "chip" });
@@ -159,15 +160,15 @@ fn apply(want: Want, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) {
     };
     let frame = match (chip, card) {
         (Some((x, y)), _) => {
-            let screen = native.call(json!({"op": "screen_at", "point": [x, y]}));
-            let visible = rect_of(&screen["frame"]).unwrap_or(Rect { x: f32::MIN / 4., y: f32::MIN / 4., w: f32::MAX / 2., h: f32::MAX / 2. });
+            let visible = window::screen_at([f64::from(x), f64::from(y)]).map(|[x, y, w, h]| Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).unwrap_or(Rect { x: f32::MIN / 4., y: f32::MIN / 4., w: f32::MAX / 2., h: f32::MAX / 2. });
             let (ox, oy) = sidebar::chip_origin(x, y, (width, CHIP_H), visible);
             Rect { x: ox, y: oy, w: width, h: CHIP_H }
         }
         (_, Some((x, y))) => sidebar::card_frame(x, y),
         _ => return,
     };
-    native.call(json!({"op": "float", "frame": [frame.x, frame.y, frame.w, frame.h], "show": true, "level": if is_card { "card" } else { "chip" }, "grow": is_card && !was_shown}));
+    let still = crate::appkit::motion::on(cx);
+    window::float(ptr(&view), window::Float { frame: [frame.x, frame.y, frame.w, frame.h].map(f64::from), show: true, card: is_card, grow: is_card && !was_shown, still, hidden });
     FLOATS.with(|f| {
         let mut f = f.borrow_mut();
         if let Some(float) = if is_card { f.card.as_mut() } else { f.chip.as_mut() } {
@@ -178,23 +179,27 @@ fn apply(want: Want, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) {
     });
 }
 
-fn hide(slot: impl Fn(&mut Floats) -> &mut Option<Float>) {
+fn ptr(view: &Retained<NSView>) -> *mut c_void {
+    Retained::as_ptr(view).cast_mut().cast()
+}
+
+fn hide(slot: impl Fn(&mut Floats) -> &mut Option<Float>, hidden: bool) {
     FLOATS.with(|f| {
         let mut f = f.borrow_mut();
         if let Some(float) = slot(&mut f).as_mut().filter(|fl| fl.shown) {
             let r = float.frame.unwrap_or(Rect { x: 0., y: 0., w: 1., h: 1. });
-            float.native.call(json!({"op": "float", "frame": [r.x, r.y, r.w, r.h], "show": false}));
+            window::float(ptr(&float.view), window::Float { frame: [r.x, r.y, r.w, r.h].map(f64::from), show: false, card: false, grow: false, still: true, hidden });
             float.shown = false;
         }
     });
 }
 
 /// The chip's or the card's window, opened the first time it is wanted; whether it was showing.
-fn ensure(card: bool, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) -> Option<(WindowHandle<FloatView>, Rc<Native>, bool)> {
+fn ensure(card: bool, cx: &mut App) -> Option<(WindowHandle<FloatView>, Retained<NSView>, bool)> {
     let held = FLOATS.with(|f| {
         let f = f.borrow();
         let slot = if card { &f.card } else { &f.chip };
-        slot.as_ref().map(|fl| (fl.handle, fl.native.clone(), fl.shown))
+        slot.as_ref().map(|fl| (fl.handle, fl.view.clone(), fl.shown))
     });
     // A window something else closed (the check closes every window) opens again.
     match held {
@@ -211,36 +216,27 @@ fn ensure(card: bool, bridge: &Rc<Bridge>, hidden: bool, cx: &mut App) -> Option
         WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), kind: WindowKind::PopUp, titlebar: None, focus: false, show: false, is_movable: false, window_background: WindowBackgroundAppearance::Transparent, ..Default::default() },
         |_, cx| cx.new(|_| FloatView { content: Want::Nothing }),
     ).ok()?;
-    let native = Native::new(bridge);
-    let (frames, mut incoming) = futures::channel::mpsc::unbounded::<String>();
-    handle.update(cx, |_, window, _| -> Option<()> {
+    let view = handle.update(cx, |_, window, _| -> Option<Retained<NSView>> {
         let RawWindowHandle::AppKit(raw) = window.window_handle().ok()?.as_raw() else { return None };
-        native.attach_to(raw.ns_view.as_ptr(), hidden, frames);
-        Some(())
+        // SAFETY: the window's content view, which GPUI keeps while the window is open.
+        unsafe { Retained::retain(raw.ns_view.as_ptr().cast::<NSView>()) }
     }).ok()??;
-    // The bridge's frames for this window (its Reduce Motion) are read and dropped.
-    cx.spawn(async move |_| while incoming.next().await.is_some() {}).detach();
     FLOATS.with(|f| {
         let mut f = f.borrow_mut();
-        let float = Float { handle, native: native.clone(), shown: false, frame: None, text: String::new() };
+        let float = Float { handle, view: view.clone(), shown: false, frame: None, text: String::new() };
         if card { f.card = Some(float) } else { f.chip = Some(float) }
     });
-    Some((handle, native, false))
+    Some((handle, view, false))
 }
 
-fn rect_of(v: &Value) -> Option<Rect> {
-    let a: Vec<f32> = v.as_array()?.iter().map(|n| n.as_f64().unwrap_or(0.) as f32).collect();
-    (a.len() == 4).then(|| Rect { x: a[0], y: a[1], w: a[2], h: a[3] })
-}
-
-/// The chip and the card as last asked, each with its window's frame as the bridge measures it,
+/// The chip and the card as last asked, each with its window's frame as AppKit measures it,
 /// for the check.
 pub fn state() -> Value {
     FLOATS.with(|f| {
         let f = f.borrow();
         let one = |fl: &Option<Float>| fl.as_ref().map(|fl| json!({
             "shown": fl.shown, "asked": fl.frame.map(|r| [r.x, r.y, r.w, r.h]), "text": fl.text,
-            "frame": fl.native.call(json!({"op": "frame"}))["frame"].clone(),
+            "frame": window::frame(ptr(&fl.view)).map(|p| p.frame),
         }));
         json!({"chip": one(&f.chip), "card": one(&f.card)})
     })

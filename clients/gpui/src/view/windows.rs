@@ -35,9 +35,8 @@ impl Client {
     /// Measure where this window's content is on screen and write it to the app's list, which
     /// saves it (saved.rs); a window off every screen reports no size and keeps its last frame.
     pub fn measure_frame(&self) {
-        let answer = self.native.call(json!({"op": "frame"}));
-        let Some(f) = answer["frame"].as_array().filter(|a| a.len() == 4) else { return };
-        let frame: Vec<f32> = f.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect();
+        let Some(placed) = crate::appkit::window::frame(self.native.ns_view()) else { return };
+        let frame = placed.frame.map(|v| v as f32);
         if frame[2] > 0. && frame[3] > 0. {
             windows::with(|r| r.set_frame(&self.window_id, [frame[0], frame[1], frame[2], frame[3]]));
         }

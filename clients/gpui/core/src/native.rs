@@ -35,7 +35,6 @@ unsafe extern "C" fn on_emit(window: i32, json: *const c_char) {
 pub struct Bridge {
     _library: libloading::Library,
     attach: unsafe extern "C" fn(*mut c_void, i32, Emit) -> i32,
-    app_attach: unsafe extern "C" fn(i32, Emit),
     command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
     free: unsafe extern "C" fn(*mut c_void),
 }
@@ -51,7 +50,6 @@ impl Bridge {
             let library = libloading::Library::new(&path).with_context(|| format!("loading {}", path.display()))?;
             Ok(Rc::new(Self {
                 attach: *library.get(b"wheel_native_attach")?,
-                app_attach: *library.get(b"wheel_native_app_attach")?,
                 command: *library.get(b"wheel_native_command")?,
                 free: *library.get(b"wheel_native_free")?,
                 _library: library,
@@ -67,43 +65,39 @@ impl Bridge {
         unsafe extern "C" fn attach(_: *mut c_void, _: i32, _: Emit) -> i32 {
             1
         }
-        unsafe extern "C" fn app_attach(_: i32, _: Emit) {}
         unsafe extern "C" fn command(_: *const c_char) -> *mut c_char {
             unsafe { libc::strdup(c"{}".as_ptr()) }
         }
         unsafe extern "C" fn free(p: *mut c_void) {
             unsafe { libc::free(p) }
         }
-        Rc::new(Self { _library: libloading::os::unix::Library::this().into(), attach, app_attach, command, free })
+        Rc::new(Self { _library: libloading::os::unix::Library::this().into(), attach, command, free })
     }
 }
-
-/// The bridge's window id for what the app holds outside every window: alerts and context menus.
-pub const APP: i32 = -1;
 
 /// The native views of one window. Every command names the window the bridge assigned at
 /// `attach_to`; before that, commands answer `detached`.
 pub struct Native {
     bridge: Rc<Bridge>,
     window: Cell<i32>,
+    /// The window's content view `attach_to` was given (null before): where AppKit places the window.
+    ns_view: Cell<usize>,
 }
 impl Native {
     pub fn new(bridge: &Rc<Bridge>) -> Rc<Self> {
-        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0) })
+        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0), ns_view: Cell::new(0) })
     }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
     /// active, deaf to the pointer. The bridge's own frames for this window go to `frames`.
     pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool, frames: fmpsc::UnboundedSender<String>) {
         let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden), on_emit) };
         self.window.set(window);
+        self.ns_view.set(ns_view as usize);
         EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(window, frames);
     }
-    /// The app's own half of the bridge (`APP`): alerts and context menus, which live
-    /// while the app runs, with or without a window. Its frames (picks and answers) go to `frames`.
-    pub fn app(bridge: &Rc<Bridge>, hidden: bool, frames: fmpsc::UnboundedSender<String>) -> Rc<Self> {
-        unsafe { (bridge.app_attach)(i32::from(hidden), on_emit) };
-        EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(APP, frames);
-        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(APP) })
+    /// The window's content view, null before `attach_to` and after `detach`.
+    pub fn ns_view(&self) -> *mut c_void {
+        self.ns_view.get() as *mut c_void
     }
     /// The window is closing: the bridge drops its views, socket and key monitor.
     pub fn detach(&self) {
@@ -112,6 +106,7 @@ impl Native {
             map.remove(&self.window.get());
         }
         self.window.set(0);
+        self.ns_view.set(0);
     }
     pub fn call(&self, mut value: Value) -> Value {
         value["window"] = json!(self.window.get());
@@ -262,9 +257,6 @@ pub enum BrowserEvent {
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
-    /// The system's Reduce Motion, sent once the window attaches and on every change (or the
-    /// check's override, `reduce_motion` with `set`).
-    ReduceMotion { on: bool },
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]
@@ -294,8 +286,6 @@ mod tests {
         assert!(matches!(healthy, Frame::Event(BrowserEvent::Plugin { error: None, .. })));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
-        let reduced: Frame = serde_json::from_str(r#"{"event":"reduce_motion","on":true}"#).unwrap();
-        assert!(matches!(reduced, Frame::Event(BrowserEvent::ReduceMotion { on: true })));
         let stopped: Frame = serde_json::from_str(r#"{"event":"read_aloud","playing":null}"#).unwrap();
         assert!(matches!(stopped, Frame::Event(BrowserEvent::ReadAloud { playing: None })));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();

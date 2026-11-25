@@ -189,6 +189,10 @@ pub fn create_window(
         bounds = Bounds { origin: point(px(x), px(y)), size: size(px(w), px(h)) };
     }
     let speech = speech::entity(cx);
+    // Reduce Motion is the app's, read and followed from the first window on.
+    if !cx.has_global::<appkit::motion::ReduceMotion>() {
+        appkit::motion::watch(cx);
+    }
     let window = view::ClientWindow::open(
         cx,
         WindowOptions {
@@ -223,8 +227,10 @@ pub fn create_window(
                     })
                     .detach();
                 }
+                cx.observe_global::<appkit::motion::ReduceMotion>(|client: &mut view::Client, cx| client.set_reduce_motion(appkit::motion::on(cx))).detach();
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
+                client.set_reduce_motion(appkit::motion::on(cx));
                 // A window opened after a choice in Settings › Speech starts with that choice.
                 if let Some(speech) = &speech {
                     let s = speech.read(cx);
@@ -266,7 +272,7 @@ pub fn create_window(
         // Every move and resize is saved with the window (saved.rs).
         cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
         if let Some([x, y, ..]) = frame {
-            native.call(serde_json::json!({"op": "move_window", "point": [f64::from(x), f64::from(y)]}));
+            appkit::window::move_to(native.ns_view(), [f64::from(x), f64::from(y)]);
         }
         Ok(())
     })??;

@@ -1,9 +1,11 @@
-//! AppKit from Rust through objc2 (ADR-0056): what the app holds outside every GPUI window. Each
-//! piece is a typed Rust call on the main thread, never an op of the Swift bridge's JSON ABI.
+//! AppKit from Rust through objc2 (ADR-0056): what the app holds outside every GPUI window, and
+//! where its windows sit on screen. Each piece is a typed Rust call on the main thread, never an op of the Swift bridge's JSON ABI.
 pub mod clipboard;
 pub mod dialogs;
 pub mod images;
+pub mod motion;
 pub mod status_item;
+pub mod window;
 
 pub use dialogs::{Alert, Answer, Dialogs, MenuItem};
 pub use status_item::{ItemEvent, MenuEntry, StatusItem};

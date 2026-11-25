@@ -482,20 +482,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var sends: [String] = []
     var monitor: Any?
     var pressMonitor: Any?
-    var motionObserver: Any?
     var liveResizeObservers: [Any] = []
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
-    /// Test mode: the window is never ordered front (`float`, `grow_window`).
-    var testMode = false
-    /// The `float` op made the window a drag's floating window.
-    var floating = false
 
     init(root: NSView, window: Int32, hidden: Bool, emit: @escaping Emit) {
         self.root = root
         self.window = window
-        self.testMode = hidden
         self.emitter = emit
         super.init()
         Self.keyEquivalentsFollowTheKeyboard(root)
@@ -518,12 +512,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pressed(root.hitTest(at), at: root.convert(at, from: superview))
             return event
         }
-        // The GPUI view keeps the system's Reduce Motion: sent once its frames are registered, after
-        // `attach` returns, and on every change.
-        motionObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.emitReduceMotion() }
-        }
-        DispatchQueue.main.async { [weak self] in self?.emitReduceMotion() }
         // A window edge under the pointer holds the terminals' resizes until it is let go, as
         // AppModel counts `windowResizes` from these notifications. With no queue the block runs
         // as AppKit posts, before the resize's first frame is laid out.
@@ -537,7 +525,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             })
         }
     }
-    func emitReduceMotion() { emit(["event": "reduce_motion", "on": reduceMotion()]) }
     /// The pane whose native view `view` is or lies inside.
     func owner(of view: NSView?) -> PaneHost? {
         guard let view else { return nil }
@@ -632,9 +619,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
-        if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
         liveResizeObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        motionObserver = nil
         monitor = nil
         pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
@@ -1579,14 +1564,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 NotificationCenter.default.post(name: value["on"] as? Bool == true ? NSWindow.willStartLiveResizeNotification : NSWindow.didEndLiveResizeNotification, object: window)
             }
             return ["held": holding]
-        case "reduce_motion":
-            // With `set`, the check stands in for the system setting (null hands it back), and
-            // every window hears the new value.
-            if value.keys.contains("set") {
-                reduceMotionOverride = value["set"] as? Bool
-                natives.values.forEach { $0.emitReduceMotion() }
-            }
-            return ["reduce_motion": reduceMotion()]
         case "focus":
             // A pane with no native view is drawn by GPUI: its view takes the keyboard.
             let target = panes[value["pane"] as! String]?.content ?? root
@@ -1694,92 +1671,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 }
             }
             return ["target": mouseTarget.map { String(describing: type(of: $0)) } ?? "nil"]
-        // Where the window's content is on screen, with the origin at the top left of the main
-        // screen, and its place among the app's windows front to back (-1 while it is off screen):
-        // what a space drag measures each window against.
-        case "frame":
-            guard let window = root.window else { return ["frame": NSNull(), "order": -1, "visible": false] }
-            return ["frame": topLeftFrame(root), "order": NSApp.orderedWindows.firstIndex(of: window) ?? -1, "visible": window.isVisible]
-        // Put the content's top left corner at `point` in the same coordinates. After this call
-        // returns, as `fit_window` does: GPUI's resize callback cannot reach its app during the call.
-        case "move_window":
-            guard let a = value["point"] as? [Double], a.count == 2, root.window != nil else { return ["moved": false] }
-            DispatchQueue.main.async { [weak root] in
-                guard let root, let window = root.window else { return }
-                let content = window.convertToScreen(root.convert(root.bounds, to: nil))
-                var frame = window.frame
-                let (left, top) = (frame.minX - content.minX, frame.maxY - content.maxY)
-                frame.origin.x = a[0] + left
-                frame.origin.y = mainScreenTop() - a[1] + top - frame.height
-                window.setFrame(frame, display: true)
-            }
-            return ["moved": "queued"]
-        // A space drag's own window, the chip (`level` chip) or the desktop's preview card
-        // (`level` card), as DragChipWindow and DesktopDropOverlay make theirs: deaf to the
-        // pointer, clear, on every Space. Its content goes to `frame` (top left coordinates as
-        // `frame` reports), growing in from 1.6 times its size when `grow` is set and Reduce Motion
-        // is off; `show` orders it front (never in test mode) or out. After this call returns,
-        // as `move_window` does.
-        case "float":
-            guard let a = value["frame"] as? [Double], a.count == 4, root.window != nil else { return ["floated": false] }
-            let (show, card, grow) = (value["show"] as? Bool == true, value["level"] as? String == "card", value["grow"] as? Bool == true)
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.root.window else { return }
-                if !self.floating {
-                    self.floating = true
-                    window.ignoresMouseEvents = true
-                    window.isOpaque = false
-                    window.backgroundColor = .clear
-                    window.hasShadow = true
-                    window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-                }
-                window.level = card ? .floating : .popUpMenu
-                let target = NSRect(x: a[0], y: mainScreenTop() - a[1] - a[3], width: a[2], height: a[3])
-                if grow, show, !reduceMotion(), !self.testMode {
-                    window.setFrame(target.insetBy(dx: -a[2] * 0.3, dy: -a[3] * 0.3), display: false)
-                    if !window.isVisible { window.orderFrontRegardless() }
-                    // The animator never holds the main thread, so the drag's moves keep coming.
-                    NSAnimationContext.runAnimationGroup { $0.duration = 0.18; window.animator().setFrame(target, display: true) }
-                } else {
-                    // A zero-length animation replaces a grow still running, so the card stays on the pointer.
-                    NSAnimationContext.runAnimationGroup { $0.duration = 0; window.animator().setFrame(target, display: true) }
-                }
-                if show, !self.testMode {
-                    if !window.isVisible { window.orderFrontRegardless() }
-                } else if !show {
-                    window.orderOut(nil)
-                }
-            }
-            return ["floated": "queued"]
-        // The visible frame of the screen holding `point` (the main screen's when none does), in
-        // the same top left coordinates: where a drag's chip window stays.
-        case "screen_at":
-            guard let a = value["point"] as? [Double], a.count == 2 else { return ["frame": NSNull()] }
-            let at = NSPoint(x: a[0], y: mainScreenTop() - a[1])
-            guard let screen = NSScreen.screens.first(where: { NSMouseInRect(at, $0.frame, false) }) ?? NSScreen.screens.first else { return ["frame": NSNull()] }
-            let v = screen.visibleFrame
-            return ["frame": [Double(v.minX), mainScreenTop() - Double(v.maxY), Double(v.width), Double(v.height)]]
-        // A little window grows from the frame `from` (a preview card's, top left coordinates) to
-        // its own size with its content's top left at `point` (WindowManager.openLittle): animated
-        // unless Reduce Motion is on or in test mode. After this call returns.
-        case "grow_window":
-            guard let f = value["from"] as? [Double], f.count == 4, let a = value["point"] as? [Double], a.count == 2, root.window != nil else { return ["grown": false] }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.root.window else { return }
-                let content = window.convertToScreen(self.root.convert(self.root.bounds, to: nil))
-                var frame = window.frame
-                let (left, top) = (frame.minX - content.minX, frame.maxY - content.maxY)
-                frame.origin.x = a[0] + left
-                frame.origin.y = mainScreenTop() - a[1] + top - frame.height
-                if !reduceMotion(), !self.testMode {
-                    // `from` is the card's content rectangle; the window's frame round it holds its chrome.
-                    window.setFrame(window.frameRect(forContentRect: NSRect(x: f[0], y: mainScreenTop() - f[1] - f[3], width: f[2], height: f[3])), display: false)
-                    NSAnimationContext.runAnimationGroup { $0.duration = 0.25; window.animator().setFrame(frame, display: true) }
-                } else {
-                    window.setFrame(frame, display: true)
-                }
-            }
-            return ["grown": "queued"]
         case "hit":
             let a = value["point"] as! [Double]
             var point = NSPoint(x: a[0], y: a[1])
@@ -1787,11 +1678,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             let hit = root.hitTest(root.convert(point, to: root.superview))
             let host = owner(of: hit)
             return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": host?.id ?? NSNull()]
-        case "pin":
-            // The title row's pin: the window floats over every other while it is on (`setPinned`).
-            let on = value["on"] as? Bool == true
-            root.window?.level = on ? .floating : .normal
-            return ["pinned": root.window?.level == .floating]
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = []
@@ -1864,70 +1750,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
 }
 
-/// What the app holds outside every window (window id -1): the popover window's size and frame.
-/// The menu bar item, its menus, alerts, images and the clipboard are Rust's (clients/gpui/src/appkit).
-@MainActor final class AppNative: NSObject {
-    let emitter: Emit
-    let hidden: Bool
-
-    init(hidden: Bool, emit: @escaping Emit) {
-        self.hidden = hidden
-        self.emitter = emit
-        super.init()
-    }
-
-    /// Size the window holding `view` to `width` by `height` points of content, keeping its top
-    /// edge where it is (AppKit keeps the bottom one): the popover grows down from under the item.
-    /// After this call returns, as GPUI's own resize does: the client's resize callback cannot
-    /// reach its app while the client's call into the bridge holds it, and drops the size.
-    func fitWindow(_ value: [String: Any]) -> [String: Any] {
-        guard let raw = (value["view"] as? NSNumber)?.uintValue, let pointer = UnsafeRawPointer(bitPattern: raw) else { return ["fitted": false] }
-        let view = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
-        guard view.window != nil else { return ["fitted": false] }
-        let width = value["width"] as? Double
-        let height = value["height"] as? Double
-        DispatchQueue.main.async { [weak view] in
-            guard let window = view?.window else { return }
-            var frame = window.frame
-            let top = frame.maxY
-            let content = NSRect(x: 0, y: 0, width: width ?? Double(window.contentLayoutRect.width), height: height ?? Double(window.contentLayoutRect.height))
-            frame.size = window.frameRect(forContentRect: content).size
-            frame.origin.y = top - frame.height
-            window.setFrame(frame, display: true)
-        }
-        return ["fitted": "queued"]
-    }
-
-    /// Where `view` is on screen, top left origin (the popover's frame for a space drag).
-    func viewFrame(_ value: [String: Any]) -> [String: Any] {
-        guard let raw = (value["view"] as? NSNumber)?.uintValue, let pointer = UnsafeRawPointer(bitPattern: raw) else { return ["frame": NSNull()] }
-        let view = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
-        guard view.window != nil else { return ["frame": NSNull()] }
-        return ["frame": topLeftFrame(view)]
-    }
-
-    func command(_ value: [String: Any]) -> [String: Any] {
-        switch value["op"] as? String {
-        case "fit_window": return fitWindow(value)
-        case "view_frame": return viewFrame(value)
-        default: return [:]
-        }
-    }
-}
-/// The main screen's top edge in AppKit's screen coordinates: y grows down from it in the
-/// frames the client measures (a hidden check host may have no screen; 0 keeps the sums whole).
-@MainActor func mainScreenTop() -> Double { Double(NSScreen.screens.first?.frame.maxY ?? 0) }
-/// `view`'s rectangle on screen as [x, y, width, height] with the origin at the main screen's top left.
-@MainActor func topLeftFrame(_ view: NSView) -> [Double] {
-    guard let window = view.window else { return [0, 0, 0, 0] }
-    let r = window.convertToScreen(view.convert(view.bounds, to: nil))
-    return [Double(r.minX), mainScreenTop() - Double(r.maxY), Double(r.width), Double(r.height)]
-}
-@MainActor private var app: AppNative?
-/// The check's stand-in for the system's Reduce Motion (`reduce_motion` with `set`); nil reads the system's.
-@MainActor private var reduceMotionOverride: Bool?
-@MainActor func reduceMotion() -> Bool { reduceMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-
 /// One Native per GPUI window, by the id `attach` hands back.
 @MainActor private var natives: [Int32: Native] = [:]
 @MainActor private var watchingReadAloud = false
@@ -1958,11 +1780,6 @@ public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: 
     if let playing = ReadAloud.shared.playing { native.emit(["event": "read_aloud", "playing": playing]) }
     return id
 }
-/// The app's own half, window id -1: alerts and context menus. Its frames go to `emit` with window -1.
-@_cdecl("wheel_native_app_attach") @MainActor
-public func appAttach(_ hidden: Int32, _ emit: @escaping Emit) {
-    if app == nil { app = AppNative(hidden: hidden != 0, emit: emit) }
-}
 @_cdecl("wheel_native_command") @MainActor
 public func command(_ pointer: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar> {
     do {
@@ -1972,8 +1789,6 @@ public func command(_ pointer: UnsafePointer<CChar>) -> UnsafeMutablePointer<CCh
         if value["op"] as? String == "detach" {
             natives.removeValue(forKey: window)?.detach()
             result = ["detached": true]
-        } else if window == -1 {
-            result = app?.command(value) ?? ["detached": true]
         } else {
             // GPUI may render before the bridge attaches to the window.
             result = natives[window]?.command(value) ?? ["detached": true]

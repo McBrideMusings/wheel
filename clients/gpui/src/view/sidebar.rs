@@ -6,7 +6,6 @@
 use super::*;
 use super::settings::now_ms;
 use crate::sidebar::{self, DropLayer, DropPopover, DropWindow, MenuItem, PaneAway, PaneDrag, PaneTarget, Rename, Row, SpaceDrag, SpaceDropTarget};
-use serde_json::json;
 use std::path::Path;
 
 /// What a space drag is over, as every window draws it: the window it is over draws the bar and
@@ -287,9 +286,8 @@ impl Client {
     fn measure_world(&self, cx: &App) -> DragWorld {
         let me = self.window_id.clone();
         let frame_of = |native: &Native| -> Option<((f32, f32), i64, bool)> {
-            let answer = native.call(json!({"op": "frame"}));
-            let f: Vec<f32> = answer["frame"].as_array()?.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect();
-            Some(((*f.first()?, *f.get(1)?), answer["order"].as_i64().unwrap_or(-1), answer["visible"] == true))
+            let placed = crate::appkit::window::frame(native.ns_view())?;
+            Some(((placed.frame[0] as f32, placed.frame[1] as f32), placed.order as i64, placed.visible))
         };
         let drop_window = |c: &Client, origin: (f32, f32)| {
             let mut w = c.drop_window(origin);
@@ -393,7 +391,7 @@ impl Client {
             crate::refresh_other_windows(cx, &self.window_id);
         }
         let want = self.float_want();
-        super::float::set(&self.window_id, want, &self.bridge, self.hidden, cx);
+        super::float::set(&self.window_id, want, self.hidden, cx);
     }
     /// What this window's drag draws outside its windows: over the desktop the space's preview
     /// card, elsewhere the chip, once the pointer drives it and the windows are measured.
@@ -503,7 +501,10 @@ impl Client {
         let Some(handle) = crate::window_handle(id) else { return };
         let card = sidebar::card_frame(x, y);
         let (ox, oy) = sidebar::little_origin(card.x + card.w / 2., card.y + card.h / 2., super::little::SIZE);
-        let moved = handle.read(cx).map(|c| c.native.call(json!({"op": "grow_window", "from": [card.x, card.y, card.w, card.h], "point": [ox, oy]}))).unwrap_or_default();
+        // Reduce Motion, or the hidden check, puts the window there with no animation.
+        let still = crate::appkit::motion::on(cx) || self.hidden;
+        let from = [card.x, card.y, card.w, card.h].map(f64::from);
+        let moved = handle.read(cx).is_ok_and(|c| crate::appkit::window::grow(c.native.ns_view(), from, [f64::from(ox), f64::from(oy)], still));
         self.log(format!("little window {id} grown from the card at {:.0},{:.0} to {ox:.0},{oy:.0} for the drop at {x:.0},{y:.0}: {moved}", card.x, card.y));
     }
     pub fn cancel_space_drag(&mut self, escape: bool) {

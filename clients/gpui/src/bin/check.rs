@@ -4330,9 +4330,9 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
     // A space dragged between windows (wheel-ynjo.7.5.2; SpaceDrag.swift, SpaceDropping.swift):
     // window 2 moves beside window 1, a new space in window 1's session is dragged by a real
     // press onto window 2's sidebar, then from there onto the desktop, then onto a popover card.
-    let frame_of = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let frame_of = |n: &Native| -> Vec<f32> { wheel_gpui::appkit::window::frame(n.ns_view()).map(|p| p.frame.iter().map(|v| *v as f32).collect()).unwrap_or_default() };
     let f1 = frame_of(&native);
-    native2.call(json!({"op":"move_window","point":[f64::from(f1[0] + f1[2] + 200.), f64::from(f1[1])]}));
+    wheel_gpui::appkit::window::move_to(native2.ns_view(), [f64::from(f1[0] + f1[2] + 200.), f64::from(f1[1])]);
     let mut f2 = vec![];
     for _ in 0..20 {
         tick(cx, 100).await;
@@ -4347,7 +4347,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
     // saved, as launch does, opens two windows there; with the setting off, one.
     // Launch drops a frame whose centre is on no screen, and beside window 1 window 2 may be off
     // this machine's screen: for the restore it moves to a place on screen, then back.
-    native2.call(json!({"op":"move_window","point":[f64::from(f1[0] + 160.), f64::from(f1[1] + 90.)]}));
+    wheel_gpui::appkit::window::move_to(native2.ns_view(), [f64::from(f1[0] + 160.), f64::from(f1[1] + 90.)]);
     let mut f2_on = vec![];
     for _ in 0..20 {
         tick(cx, 100).await;
@@ -4358,7 +4358,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
     }
     ensure!(f2_on.len() == 4 && (f2_on[0] - (f1[0] + 160.)).abs() <= 1., "window 2 did not move onto the screen for the restore: {f2_on:?}");
     let restore = restore_check(&saved_file, (&f1, &f2_on), (&first_session, &second_session), (window, second), first_space.as_deref(), cx).await?;
-    native2.call(json!({"op":"move_window","point":[f64::from(f2[0]), f64::from(f2[1])]}));
+    wheel_gpui::appkit::window::move_to(native2.ns_view(), [f64::from(f2[0]), f64::from(f2[1])]);
     for _ in 0..20 {
         tick(cx, 100).await;
         if frame_of(&native2).first().is_some_and(|x| (x - f2[0]).abs() <= 1.) {
@@ -4420,7 +4420,7 @@ async fn second_window_and_space_drags(run: Run, saved_file: PathBuf, native_pan
         }
     }
     let chip_asked = rect4(&chip_over_window["asked"]);
-    let aim_screen = rect4(&native.call(json!({"op":"screen_at","point":[aim.0, aim.1]}))["frame"]);
+    let aim_screen = rect4(&json!(wheel_gpui::appkit::window::screen_at([f64::from(aim.0), f64::from(aim.1)])));
     ensure!(chip_asked.len() == 4 && aim_screen.len() == 4, "no chip window over window 2's sidebar: {chip_over_window}, screen {aim_screen:?}");
     let chip_expect = wheel_gpui::sidebar::chip_origin(aim.0, aim.1, (chip_asked[2], chip_asked[3]), wheel_gpui::layout::Rect { x: aim_screen[0], y: aim_screen[1], w: aim_screen[2], h: aim_screen[3] });
     ensure!(chip_over_window["shown"] == true && chip_over_window["text"] == "dragged" && (chip_asked[0] - chip_expect.0).abs() <= 1. && (chip_asked[1] - chip_expect.1).abs() <= 1.
@@ -4664,7 +4664,7 @@ async fn pane_drag_out_of_window(run: Run, f1: Vec<f32>, f2: Vec<f32>, id1: Stri
     };
     let floats = |cx: &mut AsyncApp| cx.update(|_| wheel_gpui::view::float::state());
     let spaces_of = |c: &Client, session: &str| -> Vec<String> { c.layout_lists().0.into_iter().find(|s| s.id == session).map(|s| s.spaces).unwrap_or_default() };
-    let frame_of = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let frame_of = |n: &Native| -> Vec<f32> { wheel_gpui::appkit::window::frame(n.ns_view()).map(|p| p.frame.iter().map(|v| *v as f32).collect()).unwrap_or_default() };
     // A pane dragged by its header out of its window (wheel-ynjo.8.3; PaneMove.swift's awayTarget,
     // armHold, dropAway): from a space of window 1 onto a row of window 2, held there until
     // window 2 shows that space, then onto a side of a pane in it; from window 2 onto the
@@ -7474,11 +7474,11 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     ensure!(motions.iter().any(|m| m.as_str().is_some_and(|t| t.contains("grid motion: layout"))), "no layout change animated: {motions:?}");
     let zoom_report = json!({"area": zoom_area, "from": a_from, "mid": a_mid, "mid_progress": mid["grid_motion"]["progress"], "zoomed": frame(&zoomed, &grid_a),
         "slid_out": [frame(&zoomed, &grid_b), frame(&zoomed, &grid_c)], "sent_grids": sent_now, "grids": grids, "lagged_reports": zoomed["panes"][grid_a.as_str()]["bridge"]["lagged_reports"], "normal_ms": normal_ms, "motions": motions});
-    // Reduce Motion (wheel-ynjo.8.6), stood in for by the bridge's override: the zoom grows the
+    // Reduce Motion (wheel-ynjo.8.6), stood in for by `appkit::motion::stand_in`: the zoom grows the
     // first pane over the others, which keep their frames and fade, their views hidden by the end;
     // the unzoom fades them back. Slowed ten times again so a frame mid-way can be read.
-    let reduced = native.call(json!({"op":"reduce_motion","set":true}));
-    ensure!(reduced["reduce_motion"] == true, "the bridge's reduce_motion override answered {reduced}");
+    let reduced = cx.update(|cx| wheel_gpui::appkit::motion::stand_in(Some(true), cx));
+    ensure!(reduced, "the Reduce Motion stand-in left motion on");
     let still = until!("the view heard Reduce Motion on", |s: &Value| s["grid_motion"]["reduce_motion"] == true);
     let (b_from, c_from) = (frame(&still, &grid_b), frame(&still, &grid_c));
     let still_button = four(&still["panes"][grid_a.as_str()]["header_buttons"]["zoom"]["frame"]);
@@ -7534,7 +7534,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     ensure!(opacity(&rdone, &grid_c) == 1. && alpha(&rdone, &grid_c) == 1. && rdone["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
         "after the reduced unzoom the third pane draws at {}, its view {}", opacity(&rdone, &grid_c), rdone["panes"][grid_c.as_str()]["bridge"]);
     unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
-    native.call(json!({"op":"reduce_motion","set":null}));
+    cx.update(|cx| wheel_gpui::appkit::motion::stand_in(None, cx));
     let mut zoom_report = zoom_report;
     zoom_report["reduced"] = json!({"others": [b_from, c_from], "mid": {"progress": rmid["grid_motion"]["progress"], "opacity": o_mid, "alpha": a_mid_alpha, "zoomed_pane": frame(&rmid, &grid_a)},
         "zoomed": {"opacity": opacity(&rzoomed, &grid_c), "hidden": rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"]}, "unzoom_mid_opacity": o_back});
@@ -8119,7 +8119,7 @@ async fn restore_check(file: &std::path::Path, frames: (&[f32], &[f32]), session
             for (handle, (session, want_space, frame)) in opened.iter().zip(want) {
                 draw(*handle, None, cx)?;
                 let native = handle.update(cx, |c, _, _| c.native())?;
-                let at: Vec<f32> = native.call(json!({"op": "frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default();
+                let at: Vec<f32> = wheel_gpui::appkit::window::frame(native.ns_view()).map(|p| p.frame.iter().map(|v| *v as f32).collect()).unwrap_or_default();
                 let (on, space) = shown(*handle, cx)?;
                 all &= session.as_ref().is_none_or(|s| on.as_ref() == Some(s)) && want_space.as_ref().is_none_or(|s| space.as_ref() == Some(s)) && frame.as_ref().is_none_or(|f| near(f, &at));
                 seen.push(json!({"session": on, "space": space, "frame": at}));
@@ -9268,11 +9268,11 @@ async fn pane_drag_in_little_window(owner: &Side, peer: &Side, pumper: ClientWin
     }
     ensure!(grid.len() == 2, "the little window drew {grid:?}, not the two panes of {}", rig.space);
     let native = little.update(cx, |c, _, _| c.native())?;
-    let frame_now = |n: &Native| -> Vec<f32> { n.call(json!({"op":"frame"}))["frame"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default() };
+    let frame_now = |n: &Native| -> Vec<f32> { wheel_gpui::appkit::window::frame(n.ns_view()).map(|p| p.frame.iter().map(|v| *v as f32).collect()).unwrap_or_default() };
     // Beside both main windows: windows that are never on screen have no stacking order, so the
     // pointer must be over the little window alone for it to be the one under it.
     let beside = (owner.f[0] + owner.f[2]).max(peer.f[0] + peer.f[2]) + 40.;
-    native.call(json!({"op": "move_window", "point": [f64::from(beside), f64::from(owner.f[1])]}));
+    wheel_gpui::appkit::window::move_to(native.ns_view(), [f64::from(beside), f64::from(owner.f[1])]);
     let mut frame = vec![];
     for _ in 0..30 {
         draw(little, None, cx)?;
