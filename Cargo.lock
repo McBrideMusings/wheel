@@ -3238,6 +3238,7 @@ dependencies = [
  "http",
  "hyper",
  "hyper-util",
+ "inotify",
  "jiff",
  "json-patch",
  "libc",

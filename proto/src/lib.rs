@@ -33,8 +33,7 @@ pub const AGENT_NOT_REOPENED: &str =
     "agent ended: could not reopen that conversation, so this is a new one";
 
 /// The daemon instance a release build runs as. An instance's files live under
-/// `~/Library/Application Support/<instance>` (token, saved spaces, `machine` artifacts) and
-/// `~/Library/Logs/<instance>`;
+/// [`support_dir`] (token, saved spaces, `machine` artifacts) and [`log_dir`];
 /// the dev build runs as `wheel-dev`, so the two never share a token or a layout.
 pub const DEFAULT_INSTANCE: &str = "wheel";
 
@@ -50,12 +49,43 @@ fn first_protocol() -> u32 {
     1
 }
 
-/// Where an instance keeps its client token and saved spaces. Fails when `HOME` is unset rather
-/// than guessing a relative path.
+/// Where an instance keeps its client token and saved spaces: `~/Library/Application Support` on
+/// macOS, `$XDG_DATA_HOME` (`~/.local/share`) elsewhere. Fails when `HOME` is unset rather than
+/// guessing a relative path.
 pub fn support_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarError> {
-    Ok(std::path::PathBuf::from(std::env::var("HOME")?)
-        .join("Library/Application Support")
-        .join(instance))
+    Ok(base_dir("Library/Application Support", "XDG_DATA_HOME", ".local/share")?.join(instance))
+}
+
+/// Where an instance writes `wheeld.log`: `~/Library/Logs` on macOS, `$XDG_STATE_HOME`
+/// (`~/.local/state`) elsewhere.
+pub fn log_dir(instance: &str) -> Result<std::path::PathBuf, std::env::VarError> {
+    Ok(base_dir("Library/Logs", "XDG_STATE_HOME", ".local/state")?.join(instance))
+}
+
+fn base_dir(
+    mac: &str,
+    xdg: &str,
+    xdg_default: &str,
+) -> Result<std::path::PathBuf, std::env::VarError> {
+    let home = std::path::PathBuf::from(std::env::var("HOME")?);
+    Ok(pick_base(cfg!(target_os = "macos"), &home, mac, std::env::var_os(xdg), xdg_default))
+}
+
+/// [`base_dir`] with the platform and environment given.
+fn pick_base(
+    macos: bool,
+    home: &std::path::Path,
+    mac: &str,
+    xdg: Option<std::ffi::OsString>,
+    xdg_default: &str,
+) -> std::path::PathBuf {
+    if macos {
+        return home.join(mac);
+    }
+    // The XDG spec ignores a relative value.
+    xdg.map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(xdg_default))
 }
 
 /// Which registry an artifact belongs to: `project` is the space's own, `machine` is every project
@@ -5119,6 +5149,19 @@ pub fn queued_turns(events: &[StampedEvent]) -> std::collections::HashSet<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_instance_directory_is_librarys_on_macos_and_xdgs_elsewhere() {
+        use std::path::{Path, PathBuf};
+        let home = Path::new("/h");
+        let pick = |macos, xdg: Option<&str>| {
+            super::pick_base(macos, home, "Library/Logs", xdg.map(Into::into), ".local/state")
+        };
+        assert_eq!(pick(true, Some("/x")), PathBuf::from("/h/Library/Logs"));
+        assert_eq!(pick(false, Some("/x")), PathBuf::from("/x"));
+        assert_eq!(pick(false, Some("rel")), PathBuf::from("/h/.local/state"));
+        assert_eq!(pick(false, None), PathBuf::from("/h/.local/state"));
+    }
+
     #[test]
     fn a_pane_frame_reads_four_numbers_with_a_size_above_zero() {
         assert_eq!(super::PaneFrame::parse("40, 40,600,400"), Some(super::PaneFrame { x: 40., y: 40., w: 600., h: 400. }));
