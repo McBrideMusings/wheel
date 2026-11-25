@@ -91,8 +91,6 @@ subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-librar
     str(client / 'native/Bridge.swift'),
     # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
     str(repo / 'apple/Shared/TerminalStyle.swift'),
-    # The Swift app's menu bar image: the mark with the badge of spaces no window shows.
-    str(repo / 'apple/Mac/Sources/MenuBarIcon.swift'),
     *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
@@ -104,9 +102,9 @@ fresh(contents / 'MacOS/wheel-gpui-check')
 for resource in products.glob('*.bundle'):
     shutil.copytree(resource, contents / 'Resources' / resource.name, dirs_exist_ok=True)
 
-# The icon is the Swift app's asset set (the DEV band for the dev variant), folded into an .icns:
+# The icon is the asset set beside the client (the DEV band for the dev variant), folded into an .icns:
 # the set's sizes are each iconset entry and its @2x.
-iconset_src = repo / 'apple/Mac/Assets.xcassets' / f"{spec['icon']}.appiconset"
+iconset_src = client / 'Assets.xcassets' / f"{spec['icon']}.appiconset"
 with tempfile.TemporaryDirectory() as tmp:
     iconset = pathlib.Path(tmp) / 'AppIcon.iconset'
     iconset.mkdir()

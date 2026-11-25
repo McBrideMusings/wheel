@@ -26,7 +26,7 @@ targets:
     sources:
       - Mac/Sources
       - Shared
-      - Mac/Assets.xcassets
+      - ../clients/gpui/Assets.xcassets
       - AgentLogos.xcassets
     dependencies:
       - package: WheelKit

@@ -1,6 +1,7 @@
 //! Wheel's GPUI client: a window over wheeld, drawn in Rust.
 pub use wheel_gpui_core::{cards, chat_links, command_palette, composer, conversations, crash_guard, daemon, debug, dictation, earlier, focus, footer, grid_drop, header, layout, markdown, menubar, motion, native, pairing, palette, pane_header, perms, popped, procs, queue, running, server, settings, sidebar, speech_models, speech_settings, spoken, strip, toasts, topic, transcript, tray, voice, windows};
 pub mod actions;
+pub mod appkit;
 pub mod browser;
 pub mod edit_menu;
 pub mod keymap;

@@ -85,9 +85,9 @@ idle-chat: ## Check the installed Mac app and wheeld are quiet (run after a clie
 lsregister-prune: ## Unregister Wheel.app copies outside /Applications (ARGS=--dry-run to list)
 	bash $(PROJECT_TOOLS)/lsregister-prune.sh $(ARGS)
 
-icon-render: ## Render apple/Mac/AppIcon.svg into the app icon's PNGs
+icon-render: ## Render clients/gpui/AppIcon.svg into the app icon's PNGs
 	cd $(ROOT) && for s in 16 32 64 128 256 512 1024; do \
-		png=apple/Mac/Assets.xcassets/AppIcon.appiconset/$$s.png; \
-		resvg -w $$s -h $$s apple/Mac/AppIcon.svg $$png && magick $$png -alpha off $$png || exit 1; \
+		png=clients/gpui/Assets.xcassets/AppIcon.appiconset/$$s.png; \
+		resvg -w $$s -h $$s clients/gpui/AppIcon.svg $$png && magick $$png -alpha off $$png || exit 1; \
 	done
 	bash $(ROOT)/tools/render-dev-icon.sh

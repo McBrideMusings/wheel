@@ -1,9 +1,9 @@
 //! The menu bar item (WheelApp.swift's MenuBarExtra, MenuBarView.swift): it lives while the app
 //! runs, with or without a window, so it holds its own connection to wheeld for the sessions,
-//! spaces and waiting approvals, and reads the app's list of windows for what they show. The
-//! bridge owns the NSStatusItem (`native::APP`); a click on it opens the popover, a GPUI pop-up
-//! window under the item, with the server line, a card per session and New Window and Quit Wheel;
-//! a right-click opens the native menu of StatusItemMenu.swift. Stop, Start and Restart run
+//! spaces and waiting approvals, and reads the app's list of windows for what they show. It owns the
+//! NSStatusItem (`appkit::StatusItem`); a click on it opens the popover, a GPUI pop-up window under
+//! the item, with the server line, a card per session and New Window and Quit Wheel; a right-click
+//! opens the native menu of StatusItemMenu.swift. Stop, Start and Restart run
 //! through the app's one server control (`view::server`).
 use super::settings::{BOX, DIM, LINE, PANEL, TEXT};
 use super::server;
@@ -42,8 +42,10 @@ const ACCENT: u32 = 0x0a84ff;
 const DETAILS_INDENT: f32 = 46.;
 
 pub struct MenuBar {
-    /// The bridge's app half: the status item and the Dock tile.
+    /// The bridge's app half: alerts, context menus and the images it draws.
     native: Rc<Native>,
+    /// The menu bar item and the Dock tile's badge.
+    status: crate::appkit::StatusItem,
     bridge: Rc<Bridge>,
     endpoint: Endpoint,
     hidden: bool,
@@ -63,7 +65,7 @@ pub struct MenuBar {
     /// The remote listener and the paired devices, for the server line's details.
     remote: Option<crate::settings::Remote>,
     paired: Vec<String>,
-    /// The right-click menu as the bridge built it last.
+    /// The right-click menu's titles as it was built last.
     status_menu: Value,
     app_icon: RefCell<Option<Option<(Arc<Image>, f32)>>>,
     sessions: Vec<Session>,
@@ -72,8 +74,6 @@ pub struct MenuBar {
     /// What the item was last told: the badge, the accessibility label, the Dock tile's badge and
     /// whether a new server waits for a restart (the update dot).
     told: Option<(usize, String, Option<String>, bool)>,
-    /// The bridge's account of the item after it was last told.
-    item: Value,
     popover: Option<WindowHandle<Popover>>,
     symbols: Symbols,
     log: Vec<String>,
@@ -94,14 +94,16 @@ pub struct MenuBar {
 pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool) -> Entity<MenuBar> {
     let (frames, mut clicks) = futures::channel::mpsc::unbounded::<String>();
     let native = Native::app(bridge, hidden, frames);
+    let (presses, mut pressed) = futures::channel::mpsc::unbounded();
+    let status = crate::appkit::StatusItem::new(hidden, presses);
     server::ensure(cx, endpoint.service.clone(), hidden);
     super::pairing_copy::ensure(cx);
     let crate::daemon::Connection { send, mut incoming } = crate::daemon::Connection::open(endpoint.clone());
     let mut changes = crate::windows::with(|r| r.watch());
     let menu = cx.new(|_| MenuBar {
-        native, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
+        native, status, bridge: bridge.clone(), endpoint, hidden, send, up: false, link: LinkKind::Connecting, down_reason: None, incompatible: false,
         running_source: None, lacks: 0, started: None, remote: None, paired: vec![], status_menu: Value::Null, app_icon: RefCell::default(),
-        sessions: vec![], spaces: vec![], perms: vec![], told: None, item: Value::Null, popover: None, symbols: RefCell::default(), log: vec![],
+        sessions: vec![], spaces: vec![], perms: vec![], told: None, popover: None, symbols: RefCell::default(), log: vec![],
         status_dots: crate::status::all_ranks(), space_menu: None, context_menu: Value::Null, next_req: 100, closing: None, copying: None,
     });
     MENU_BAR.with(|m| *m.borrow_mut() = Some(menu.clone()));
@@ -115,18 +117,20 @@ pub fn start(cx: &mut App, bridge: &Rc<Bridge>, endpoint: Endpoint, hidden: bool
     .detach();
     let held = menu.clone();
     cx.spawn(async move |cx| {
+        while let Some(event) = pressed.next().await {
+            match event {
+                crate::appkit::ItemEvent::Press { right: true, .. } => held.update(cx, |m, _| m.open_status_menu()),
+                crate::appkit::ItemEvent::Press { frame, .. } => held.update(cx, |m, cx| m.toggle_popover(frame, cx)),
+                crate::appkit::ItemEvent::Menu(item) => held.update(cx, |m, cx| m.choose(&item, cx)),
+            }
+        }
+    })
+    .detach();
+    let held = menu.clone();
+    cx.spawn(async move |cx| {
         while let Some(frame) = clicks.next().await {
             let Ok(frame) = serde_json::from_str::<Value>(&frame) else { continue };
             match frame["event"].as_str() {
-                Some("status_item") if frame["button"] == "right" => held.update(cx, |m, _| m.open_status_menu()),
-                Some("status_item") => {
-                    let at = frame["frame"].as_array().filter(|f| f.len() == 4).map(|f| [0, 1, 2, 3].map(|i| f[i].as_f64().unwrap_or(0.) as f32));
-                    held.update(cx, |m, cx| m.toggle_popover(at, cx));
-                }
-                Some("status_menu") => {
-                    let item = frame["item"].as_str().unwrap_or_default().to_owned();
-                    held.update(cx, |m, cx| m.choose(&item, cx));
-                }
                 Some("context_menu") => {
                     let item = frame["item"].as_str().unwrap_or_default().to_owned();
                     held.update(cx, |m, cx| m.space_menu_chosen(&item, cx));
@@ -362,11 +366,12 @@ impl MenuBar {
         })
     }
 
-    /// A right-click on the item: the bridge builds the native menu from these items and opens
-    /// it under the item; a pick comes back as a `status_menu` event.
+    /// A right-click on the item: the native menu from these items, opened under the item; a pick
+    /// comes back as an `ItemEvent::Menu`.
     fn open_status_menu(&mut self) {
-        let items: Vec<Value> = crate::server::menu(self.running(), self.stopped_by_menu()).iter().map(|i| json!({"id": i.id, "title": i.title, "key": i.key})).collect();
-        self.status_menu = self.native.call(json!({"op": "status_menu", "items": items}));
+        let items = crate::server::menu(self.running(), self.stopped_by_menu());
+        let entries: Vec<_> = items.iter().map(|i| crate::appkit::MenuEntry { id: i.id, title: i.title, key: i.key }).collect();
+        self.status_menu = json!({"menu": self.status.open_menu(&entries)});
         self.log(format!("status item menu: {}", self.status_menu["menu"]));
     }
 
@@ -596,7 +601,7 @@ impl MenuBar {
             if self.told.as_ref().map(|t| t.3) != Some(update) {
                 self.log(format!("menu bar update dot: {}", if update { "shown" } else { "none" }));
             }
-            self.item = self.native.call(json!({"op": "status_item", "badge": told.0, "label": told.1, "dock": told.2, "update": told.3}));
+            self.status.show(told.0, &told.1, told.2.as_deref(), told.3);
             self.told = Some(told);
         }
         // An open popover redraws from this model and fits the height its content measures.
@@ -663,13 +668,24 @@ impl MenuBar {
 
     /// Whether the pointer is on the status item: a press there toggles the popover itself.
     fn pointer_on_item(&self) -> bool {
-        self.native.call(json!({"op": "pointer_on_item"}))["pointer_on_item"] == true
+        self.status.pointer_on()
     }
 
     /// Press the status item as a click does (the check's item is never in the menu bar): the
-    /// bridge sends its click back, which opens the popover. The bridge's account of the item.
+    /// press comes back as a person's does, which opens the popover. The item as it stands.
     pub fn press_item(&self) -> Value {
-        self.native.call(json!({"op": "press_status_item"}))
+        self.status.press(false);
+        self.status.state()
+    }
+
+    /// Right-press the status item, which opens its menu.
+    pub fn press_item_right(&self) {
+        self.status.press(true);
+    }
+
+    /// Pick `id` from the item's right-click menu as the menu's action does.
+    pub fn choose_status_menu(&self, id: &str) {
+        self.status.choose(id);
     }
 
     pub fn popover(&self) -> Option<WindowHandle<Popover>> {
@@ -726,7 +742,7 @@ impl MenuBar {
         })).unwrap_or(Value::Null);
         json!({
             "up": self.up,
-            "item": self.item,
+            "item": self.status.state(),
             "told": self.told.as_ref().map(|t| json!({"badge": t.0, "label": t.1, "dock": t.2, "update": t.3})),
             "server": server,
             "status_menu": self.status_menu,
