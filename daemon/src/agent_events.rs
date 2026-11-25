@@ -9,6 +9,8 @@ use wheel_proto::{AgentState, ServerMsg};
 /// What an agent event is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
+    /// A turn started.
+    Started,
     /// A turn ended.
     Finished,
     /// The agent failed, or gave up restarting.
@@ -27,6 +29,7 @@ impl Kind {
     /// The name a hook's `on` gives the events of this kind.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Kind::Started => "turn_start",
             Kind::Finished => "turn_end",
             Kind::Failed => "fail",
             Kind::Permission => "permission",
@@ -49,7 +52,7 @@ pub(crate) struct Event {
 }
 
 /// Turns the broadcast into events. It remembers which agents are busy and since when, so a
-/// turn that ends reads as one event, a state that never worked reads as none, and a turn past
+/// turn that starts and one that ends each read as one event, a state that never worked reads as none, and a turn past
 /// the limit reads as one `over_time` event.
 #[derive(Default)]
 pub(crate) struct Filter {
@@ -88,10 +91,13 @@ impl Filter {
             ServerMsg::AgentStateChanged { agent, state } => {
                 let was_busy = !matches!(state, AgentState::Busy { .. }) && self.end_turn(agent);
                 match state {
-                    AgentState::Busy { .. } => {
-                        self.busy.entry(agent.clone()).or_insert(now);
-                        None
-                    }
+                    AgentState::Busy { .. } => match self.busy.entry(agent.clone()) {
+                        std::collections::hash_map::Entry::Occupied(_) => None,
+                        std::collections::hash_map::Entry::Vacant(turn) => {
+                            turn.insert(now);
+                            add(agent, Kind::Started, format!("{agent} started a turn"))
+                        }
+                    },
                     AgentState::Ready if was_busy => add(agent, Kind::Finished, format!("{agent} finished its turn")),
                     AgentState::Failed { message } => add(agent, Kind::Failed, format!("{agent} failed: {message}")),
                     AgentState::GaveUp { message, .. } => {
@@ -226,12 +232,16 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_ends_is_one_event_and_a_start_up_is_none() {
+    fn a_turn_starts_and_ends_as_one_event_each_and_a_start_up_is_none() {
         let mut filter = Filter::default();
         let now = Instant::now();
         assert_eq!(filter.event(&state("w5", AgentState::Starting), now), None);
         assert_eq!(filter.event(&state("w5", AgentState::Ready), now), None);
-        assert_eq!(filter.event(&state("w5", AgentState::Busy { queued: 0 }), now), None);
+        assert_eq!(
+            text(filter.event(&state("w5", AgentState::Busy { queued: 0 }), now)),
+            (Kind::Started, "w5 started a turn".into())
+        );
+        assert_eq!(filter.event(&state("w5", AgentState::Busy { queued: 1 }), now), None, "a queued message is the same turn");
         assert_eq!(
             text(filter.event(&state("w5", AgentState::Ready), now)),
             (Kind::Finished, "w5 finished its turn".into())

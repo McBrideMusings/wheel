@@ -1445,6 +1445,16 @@ enum AgentCommand {
     /// harness, model, status}`, `status` being `idle`, `working`, `needs_you` or `stopped`. It
     /// ends when the daemon goes away.
     Watch,
+    /// Print every agent event of this wheeld (or of `--server`'s) as one JSON line, as it
+    /// happens: the JSON a `[[hook]]` reads (`event` is `turn_start`, `turn_end`, `fail`,
+    /// `permission`, `answered`, `over_time` or `build_failed`, then `agent`, `pane`, `space`,
+    /// `text`, `at_ms`, and `perm` and `request` for a permission). Needs no pane, runs until
+    /// stopped, and ends with an error when the connection to wheeld is lost.
+    Events {
+        /// Follow the stream; wheeld keeps no past events, so this is the only mode.
+        #[arg(long)]
+        follow: bool,
+    },
     /// Talk to an agent in voice mode until this command is stopped: take the `voice` lease and
     /// name the agent, so each of its turns carries the voice line asking for short spoken replies
     /// (ADR-0055). Prints the agent's name once it is set, and ends with an error when another
@@ -3283,6 +3293,30 @@ async fn agent_watch(conn: &mut Conn) -> Result<(), Fail> {
             }
         }
         while conn.recv(Duration::from_millis(100)).await?.is_some() {}
+    }
+}
+
+/// Print each agent event wheeld sends on one `agent_events_follow` stream, one JSON line each,
+/// until the connection ends.
+async fn agent_events(conn: &mut Conn, follow: bool) -> Result<(), Fail> {
+    if !follow {
+        return Err(Fail::Other("wheeld keeps no past agent events; pass --follow to print each one as it happens".into()));
+    }
+    let req = conn.req();
+    let ServerMsg::Ok { .. } = conn.call(ClientMsg::AgentEventsFollow { req: Some(req) }, req).await? else {
+        return Err(Fail::Other("unexpected reply to agent_events_follow".into()));
+    };
+    loop {
+        // Agents can be quiet for longer than any one wait; a quiet hour only waits again.
+        match conn.recv(Duration::from_secs(3600)).await? {
+            Some(ServerMsg::AgentEventsLine { req: r, event }) if r == req => {
+                println!("{}", serde_json::to_string(&event).map_err(other)?);
+            }
+            Some(ServerMsg::AgentEventsMissed { req: r, missed }) if r == req => {
+                eprintln!("wheel: this stream fell behind and wheeld dropped {missed} agent events");
+            }
+            _ => {}
+        }
     }
 }
 
@@ -6969,6 +7003,7 @@ async fn run() -> ExitCode {
                 agent_wait(&mut conn, agent, timeout).await
             }
             Command::Agent(AgentCommand::Watch) => agent_watch(&mut conn).await,
+            Command::Agent(AgentCommand::Events { follow }) => agent_events(&mut conn, follow).await,
             Command::Agent(AgentCommand::Voice { agent }) => agent_voice(&mut conn, agent).await,
             Command::Perm(PermCommand::List) => perm_list(&mut conn).await,
             Command::Perm(PermCommand::Answer { id, choice }) => {

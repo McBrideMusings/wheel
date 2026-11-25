@@ -820,6 +820,14 @@ pub enum ClientMsg {
         agent: String,
         timeout_secs: f64,
     },
+    /// Follow every agent event of this wheeld, needing no pane: replies `ok`, then sends one
+    /// `agent_events_line` under the same `req` for each event a `[[hook]]` would be told
+    /// about, and `agent_events_missed` when this connection fell behind and some were dropped.
+    /// The stream lasts as long as the connection.
+    AgentEventsFollow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        req: Option<u64>,
+    },
     /// Take the lease named `key` (`voice`: the one client talking to an agent): this connection holds it
     /// until it releases it or closes, and another connection's claim takes it over. Replies `lease_claimed`
     /// naming this connection, and every connection gets `lease`.
@@ -2461,6 +2469,17 @@ pub enum ServerMsg {
         state: AgentState,
         ready: bool,
     },
+    /// One agent event of an `agent_events_follow` stream: `event` is the JSON a `[[hook]]`
+    /// reads on stdin (`event`, `agent`, `pane`, `space`, `text`, `at_ms`, `perm`, `request`).
+    AgentEventsLine {
+        req: u64,
+        event: serde_json::Value,
+    },
+    /// An `agent_events_follow` stream fell behind and `missed` events were dropped.
+    AgentEventsMissed {
+        req: u64,
+        missed: u64,
+    },
     /// Replace the whole conversation view of `agent` with `events`. Sent on attach, and again
     /// when this connection fell behind and missed events.
     AgentAttached {
@@ -3118,6 +3137,8 @@ impl ServerMsg {
             | ServerMsg::AgentInTerminal { req, .. }
             | ServerMsg::AgentTyped { req, .. }
             | ServerMsg::AgentWaited { req, .. }
+            | ServerMsg::AgentEventsLine { req, .. }
+            | ServerMsg::AgentEventsMissed { req, .. }
             | ServerMsg::Conversations { req, .. }
             | ServerMsg::ConversationHistory { req, .. }
             | ServerMsg::Conversation { req, .. }

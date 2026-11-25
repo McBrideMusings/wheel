@@ -12,7 +12,8 @@
 //! that project. `run` is a shell command run in the folder of the file that names it (`~/.wheel`
 //! for the machine's, the project's root for a project's), with the event's JSON on stdin. Both
 //! files are read at each event, so an edit applies to the next one. Each hook runs its events one
-//! at a time, in the order they happened.
+//! at a time, in the order they happened. Every event also goes to each `agent_events_follow`
+//! stream (`wheel agent events --follow`), as the same JSON on one line.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,7 +34,7 @@ const TURN_LIMIT: Duration = Duration::from_secs(1800);
 const RUN_LIMIT: Duration = Duration::from_secs(120);
 
 /// The events a hook's `on` can name.
-pub(crate) const EVENTS: &[&str] = &["turn_end", "fail", "permission", "answered", "over_time", "build_failed"];
+pub(crate) const EVENTS: &[&str] = &["turn_start", "turn_end", "fail", "permission", "answered", "over_time", "build_failed"];
 
 
 /// One `[[hook]]` entry as a file names it.
@@ -256,13 +257,14 @@ impl AppState {
         })
     }
 
-    /// Hand `event` to every hook that names it: write it into the hook's inbox, when it has one,
-    /// then queue its command on it.
+    /// Send `event` to every `agent_events_follow` stream, then hand it to every hook that names
+    /// it: write it into the hook's inbox, when it has one, then queue its command on it.
     fn hook_event(&self, event: Event, request: Option<&PermInfo>) {
         let name = event.kind.name();
         let place = self.agent_place(&event.agent);
         let hooks: Vec<Hook> = self.hooks_for(place.as_ref().map(|p| p.2.as_str())).into_iter().filter(|h| h.on.iter().any(|e| e == name)).collect();
-        if hooks.is_empty() {
+        let followed = self.agent_events.receiver_count() > 0;
+        if hooks.is_empty() && !followed {
             return;
         }
         let payload = Payload {
@@ -275,6 +277,17 @@ impl AppState {
             perm: event.perm.as_deref(),
             request,
         };
+        if followed {
+            match serde_json::to_value(&payload) {
+                Ok(value) => {
+                    let _ = self.agent_events.send(Arc::new(value));
+                }
+                Err(error) => tracing::warn!(event = name, %error, "agent event not serialized for its followers"),
+            }
+        }
+        if hooks.is_empty() {
+            return;
+        }
         let json = match serde_json::to_vec_pretty(&payload) {
             Ok(json) => json,
             Err(error) => return tracing::warn!(event = name, %error, "hook event not serialized"),
@@ -469,7 +482,7 @@ inbox = "/abs/box"
 
     #[test]
     fn every_event_on_names_has_a_kind() {
-        let kinds = [Kind::Finished, Kind::Failed, Kind::Permission, Kind::Answered, Kind::OverTime, Kind::BuildFailed];
+        let kinds = [Kind::Started, Kind::Finished, Kind::Failed, Kind::Permission, Kind::Answered, Kind::OverTime, Kind::BuildFailed];
         let names: Vec<&str> = kinds.into_iter().map(Kind::name).collect();
         assert_eq!(names, EVENTS);
     }
