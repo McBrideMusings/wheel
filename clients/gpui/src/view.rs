@@ -2143,9 +2143,10 @@ impl Client {
                     self.placed.remove(&p.leaf.id);
                 }
                 // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
-                // card while a load has failed.
+                // card while a load has failed; an agent pane's `agent/view` page sits under its agent's waiting request.
                 let (top, failed) = match p.leaf.kind.as_str() {
                     "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
+                    "agent" => (TITLE + self.view_card_height(p.leaf.agent.as_deref(), p.rect.h - TITLE), false),
                     _ => (TITLE, false),
                 };
                 // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
@@ -2409,6 +2410,8 @@ impl Client {
                 }
                 body
             }
+            // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
+            "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
             _ if native => div(),
             // The body draws as a cached view of its own (`body.rs`); the frame and header draw here.
             "agent" => div().child(self.bodies.view(p, (r.w - 2. - 2. * PAD, r.h - TITLE - 2. * PAD), cx)),
@@ -2575,7 +2578,7 @@ impl Client {
                 .child(if self.mode == "agents" { self.card_header_buttons(&p.leaf.id, cx) } else { self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx) })
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot_with(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()), spinner.clone())))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
-            .child(if p.leaf.kind == "browser" && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
+            .child(if matches!(p.leaf.kind.as_str(), "browser" | "agent") && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
             .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, self.field_element(&fields::FieldId::ArtifactSearch(p.leaf.id.clone()), &palette.query), r.w, r.h - TITLE, cx)))
     }
     /// A card's resize corner, over its panes and their views.

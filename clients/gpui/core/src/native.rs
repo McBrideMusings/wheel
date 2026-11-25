@@ -136,10 +136,10 @@ impl Native {
     pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws}));
     }
-    /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts with the host-drawn
-    /// permission card of the pane's agent under it (`agent: true`).
+    /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts. The client draws
+    /// the permission card of the pane's agent above it.
     pub fn open_agent_view(&self, pane: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","agent":true,"space":space,"cwd":cwd,"ws":ws}));
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws}));
     }
     /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
     /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
