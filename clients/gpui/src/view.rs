@@ -3042,7 +3042,9 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
     // Only the transcript gives up room; the label, a request card, the composer and the footer
     // keep their heights, and whatever still does not fit is clipped at the pane's edge, as
     // Swift's AgentBody stack is.
-    div().relative().flex().flex_col().h(px(height.max(1.))).overflow_hidden()
+    // As wide as the pane, so a long line (a task's output path, the footer's) truncates
+    // instead of widening the body past the pane's edge.
+    div().relative().flex().flex_col().w_full().h(px(height.max(1.))).overflow_hidden()
         .child(div().flex_none().h(px(LABEL)).text_color(rgb(0x8fa89b)).child(format!("{label} · {state}")))
         .child(col)
         .children(tasks.strip)
