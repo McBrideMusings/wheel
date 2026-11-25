@@ -11,7 +11,9 @@ import SwiftUI
 // cornerRadius}; clipShape: {cornerRadius}; opacity; lineLimit; truncationMode (head, middle, tail); multilineTextAlignment; textSelection; textCase; tracking; help;
 // disabled, accessibilityLabel; hoverEffect: "highlight" (a rounded fill while the pointer is over an enabled control: SwiftUI's own
 // effect on iOS, drawn here on macOS, where SwiftUI has none) or "none" (no hover feedback, the default one included: see
-// `paneHover`); pointerStyle: "link" (the pointing-hand cursor, macOS).
+// `paneHover`); pointerStyle: "link" (the pointing-hand cursor, macOS); onHover: a table raised with `hovering` each time the
+// pointer enters or leaves the view; animation: {curve (linear, easeIn, easeOut, easeInOut), duration, delay, value} animates
+// what the modifiers before it change when `value` changes, as SwiftUI's `animation(_:value:)`.
 // A name this does not map draws a visible marker, never nothing.
 
 /// The colour a modifier's colour name means.
@@ -125,6 +127,23 @@ private func alignment(_ name: String?) -> Alignment {
     }
 }
 
+/// The animation an `animation` modifier names: a curve (easeInOut when absent) over `duration` seconds (SwiftUI's 0.35 when
+/// absent), started `delay` seconds after the change; nil for a curve SwiftUI does not name.
+func paneAnimation(_ arg: JSONValue) -> Animation? {
+    guard let d = arg.dictionaryValue else { return nil }
+    let duration = d["duration"]?.numberValue ?? 0.35
+    var a: Animation
+    switch d["curve"]?.stringValue ?? "easeInOut" {
+    case "linear": a = .linear(duration: duration)
+    case "easeIn": a = .easeIn(duration: duration)
+    case "easeOut": a = .easeOut(duration: duration)
+    case "easeInOut": a = .easeInOut(duration: duration)
+    default: return nil
+    }
+    if let delay = d["delay"]?.numberValue, delay > 0 { a = a.delay(delay) }
+    return a
+}
+
 /// Applies a component's `modifiers` list, in order.
 struct PaneModifiers: ViewModifier {
     let list: [JSONValue]
@@ -138,6 +157,11 @@ struct PaneModifiers: ViewModifier {
             guard let d = entry.dictionaryValue, let (name, arg) = d.first else { continue }
             if name == "dragGesture" {
                 view = AnyView(view.modifier(PaneDragMove(node: node, tree: tree, keyPath: "modifiers.\(i).dragGesture", moved: list)))
+                continue
+            }
+            if name == "onHover" {
+                let keyPath = "modifiers.\(i).onHover"
+                view = AnyView(view.onHover { over in tree.raise(node, keyPath, ["hovering": .bool(over)]) })
                 continue
             }
             view = apply(name, arg, to: view)
@@ -174,6 +198,8 @@ struct PaneModifiers: ViewModifier {
             if let r = arg.dictionaryValue?["cornerRadius"]?.numberValue { return AnyView(v.clipShape(RoundedRectangle(cornerRadius: r, style: .continuous))) }
         case "disabled": if arg.boolValue == true { return AnyView(v.disabled(true)) } else { return v }
         case "opacity": if let n = arg.numberValue { return AnyView(v.opacity(n)) }
+        case "animation":
+            if let a = paneAnimation(arg) { return AnyView(v.animation(a, value: arg.dictionaryValue?["value"] ?? .null)) }
         case "offset":
             if let o = arg.dictionaryValue {
                 return AnyView(v.offset(x: o["x"]?.numberValue ?? 0, y: o["y"]?.numberValue ?? 0))

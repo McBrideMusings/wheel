@@ -401,6 +401,11 @@ local function modifiers_class(state)
         mrow("dragGesture", "a table raised on release with x, y (points moved); the view follows the pointer until the script answers",
             mod("drag me", { padding = 8 }, { background = "controlBackground" }, { clipShape = { cornerRadius = 6 } },
                 { offset = { x = (state.moved or {}).x or 0, y = (state.moved or {}).y or 0 } }, { dragGesture = { type = "moved" } })),
+        mrow("onHover, animation", "onHover: a table raised with hovering on enter and leave; animation {curve, duration, delay, value}: animates the modifiers before it when value changes",
+            mod(if state.hovered then "pointer on me" else "fades 2 s after the pointer leaves", { padding = 8 }, { background = "controlBackground" },
+                { clipShape = { cornerRadius = 6 } }, { opacity = if state.hovered then 1 else 0.3 },
+                { animation = { curve = "easeOut", duration = 0.4, delay = if state.hovered then 0 else 2, value = state.hovered == true } },
+                { onHover = { type = "hovered" } })),
         mrow("disabled", "true", put("Button", nil, { child = txt("Disabled button"), action = act(), modifiers = { { disabled = true } } })),
         mrow("tint", "a colour name", put("Button", nil, { child = txt("Confirm"), variant = "primary", action = act(), modifiers = { { tint = "green" } } })),
         mrow("help, accessibilityLabel", "a string", put("Button", nil, { child = put("Icon", nil, { name = "play.fill" }), action = act(), modifiers = { { help = "Run build" }, { accessibilityLabel = "Run build" } } })),
@@ -678,7 +683,9 @@ local function init(previous)
 end
 
 local function update(state, msg)
-    if msg.type == "moved" then
+    if msg.type == "hovered" then
+        state.hovered = msg.hovering
+    elseif msg.type == "moved" then
         local m = state.moved or { x = 0, y = 0 }
         state.moved = { x = m.x + msg.x, y = m.y + msg.y }
     elseif msg.type == "reverse" then
