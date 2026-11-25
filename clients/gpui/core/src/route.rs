@@ -60,6 +60,8 @@ struct Held {
 pub struct Router {
     pub subscribers: BTreeMap<u32, fmpsc::UnboundedSender<Event>>,
     held: Held,
+    /// Frames the router itself owes wheeld in answer to what it received ([`Router::take_back`]).
+    back: Vec<String>,
 }
 
 impl Router {
@@ -209,16 +211,27 @@ impl Router {
         }
     }
 
+    /// The frames to send wheeld that no subscriber sent: answers the router gave on their behalf.
+    pub fn take_back(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.back)
+    }
+
     /// The subscribers a frame from wheeld goes to, each with the frame it gets. `raw` is the
     /// frame's text, read for its `req`.
     pub fn incoming(&mut self, message: ServerMsg, raw: &str) -> Vec<(u32, ServerMsg)> {
         let everyone = || self.subscribers.keys().copied().collect::<Vec<_>>();
         let to = |ns: Vec<u32>, m: ServerMsg| ns.into_iter().map(|n| (n, m.clone())).collect::<Vec<_>>();
         match &message {
-            ServerMsg::WindowRequest { .. } => {
-                // One app answers a window command once: the first window that offered.
-                let n = self.held.window_offered.iter().next().copied().or_else(|| everyone().first().copied());
-                return n.map(|n| vec![(n, message)]).unwrap_or_default();
+            ServerMsg::WindowRequest { id, .. } => {
+                // One app answers a window command once: the first window that offered and is still
+                // listening. With none, wheeld hears so now rather than waiting out its timeout.
+                let n = self.held.window_offered.iter().copied().find(|n| self.subscribers.get(n).is_some_and(|events| !events.is_closed()));
+                if let Some(n) = n {
+                    return vec![(n, message)];
+                }
+                let error = "no window of this app is open".to_owned();
+                self.back.push(crate::daemon::frame(&wheel_proto::ClientMsg::WindowAnswer { id: *id, data: None, error: Some(error) }));
+                return vec![];
             }
             ServerMsg::RenderPane { id, .. } | ServerMsg::InspectPane { id, .. } => {
                 let asked: BTreeSet<u32> = self.held.render_offered.iter().copied().filter(|n| self.subscribers.contains_key(n)).collect();
@@ -372,9 +385,28 @@ mod tests {
         assert_eq!(r.incoming(m, &raw).len(), 2);
         assert_eq!(r.outgoing(1, r#"{"op":"render_refused","id":4,"message":"not shown"}"#), Outgoing::Hold);
         assert_eq!(sent(r.outgoing(2, r#"{"op":"render_refused","id":4,"message":"not shown"}"#))["id"], 4);
-        // A window command goes to one window.
+    }
+
+    #[test]
+    fn a_window_command_reaches_the_window_that_offered_and_its_answer_reaches_wheeld() {
+        let (mut r, mut rx) = router(3);
         sent(r.outgoing(2, r#"{"op":"window_offer"}"#));
+        sent(r.outgoing(3, r#"{"op":"window_offer"}"#));
         let (m, raw) = msg(json!({"ev":"window_request","id":1,"command":"ls"}));
-        assert_eq!(r.incoming(m, &raw).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), [2]);
+        assert_eq!(r.incoming(m, &raw).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), [2], "one window answers, never the menu bar");
+        // The answer goes to wheeld as the window wrote it: wheeld matches it by `id`, not `req`.
+        let answer = r#"{"op":"window_answer","id":1,"data":{"windows":[]}}"#;
+        assert_eq!(r.outgoing(2, answer), Outgoing::Send(answer.to_owned()));
+        assert!(r.take_back().is_empty());
+        // The window that offered closed: the next one that offered answers.
+        r.leave(2);
+        let (m, raw) = msg(json!({"ev":"window_request","id":2,"command":"ls"}));
+        assert_eq!(r.incoming(m, &raw).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), [3]);
+        // A window whose events went away without leaving is not asked either.
+        drop(rx.remove(2));
+        let (m, raw) = msg(json!({"ev":"window_request","id":3,"command":"ls"}));
+        assert!(r.incoming(m, &raw).is_empty(), "the menu bar is not asked");
+        let back: Vec<Value> = r.take_back().iter().map(|t| serde_json::from_str(t).unwrap()).collect();
+        assert_eq!(back, [json!({"op":"window_answer","id":3,"error":"no window of this app is open"})]);
     }
 }

@@ -514,6 +514,11 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<Out>, woken: &std::os:
                     for (n, message) in hub.router.incoming(message, &t) {
                         hub.tell(n, Event::Message(Box::new(message)));
                     }
+                    for text in hub.router.take_back() {
+                        if let Err(ended) = write(&mut ws, &mut unsent, text) {
+                            return ended;
+                        }
+                    }
                 }
                 Ok(Message::Close(_)) => return lost(offer.is_some(), "wheeld closed the socket".into()),
                 Ok(_) => {}

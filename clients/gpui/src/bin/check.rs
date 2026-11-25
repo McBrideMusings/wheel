@@ -22,7 +22,7 @@ use std::{path::PathBuf, time::Duration};
 use wheel_proto::{ClientMsg, ServerMsg};
 use wheel_gpui::{browser::CHROME, daemon::*, header::{Chip, Hit}, layout::Rect, native::{Bridge, Native}, transcript::{Kind, ToolRow}, view::{Client, ClientWindow, Drawn, Link, TITLE}};
 
-/// A connection of the check's own and its one subscriber, which the check pumps by hand into the
+/// A connection and the check's one subscriber of it, which the check pumps by hand into the
 /// window it opened over `send`.
 struct Connection {
     send: Outbox,
@@ -30,6 +30,14 @@ struct Connection {
     _held: wheel_gpui::daemon::Connection,
 }
 impl Connection {
+    /// A subscriber of the app's own connection to `endpoint`'s wheeld, which the windows the app
+    /// opens share: wheeld sees one Mac app, as it does with the real one.
+    fn shared(endpoint: &Endpoint) -> Self {
+        let held = wheel_gpui::connection(endpoint);
+        let (send, incoming) = held.subscribe();
+        Self { send, incoming, _held: held }
+    }
+    /// A connection of its own, for a stand-in wheeld the app's windows do not share.
     fn open(endpoint: Endpoint) -> Self {
         let held = wheel_gpui::daemon::Connection::open(endpoint);
         let (send, incoming) = held.subscribe();
@@ -489,7 +497,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
 async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run, Value, Vec<(String, String)>, Value, Value, Vec<(String, Rect)>, Vec<(String, bool)>, Vec<(String, bool, bool)>, [f64; 2], Value, Value, bool, Value, PathBuf)> {
     let bridge = Bridge::load()?;
     let endpoint = Endpoint::new(&default_url(), &default_token_file())?;
-    let mut connection = Connection::open(endpoint.clone());
+    let mut connection = Connection::shared(&endpoint);
     // The windows are saved as the app saves them (saved.rs), to a file of the check's own.
     let saved_file = output.join("saved-windows.json");
     let _ = std::fs::remove_file(&saved_file);
