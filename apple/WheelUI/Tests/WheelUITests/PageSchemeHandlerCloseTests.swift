@@ -55,7 +55,7 @@ private final class StandIn: @unchecked Sendable {
             while read(fd, &buffer, buffer.count) > 0 {}
             lock.withLock { open -= 1 }
         } else {
-            let page = "<html><body>page<script>new EventSource('.wheel/events')</script></body></html>"
+            let page = "<html><body>page<script>new EventSource('.wheel/events').onmessage = (e) => { document.title = e.data }</script></body></html>"
             write(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(page.utf8.count)\r\nConnection: close\r\n\r\n\(page)")
         }
     }
@@ -94,6 +94,36 @@ private final class StandIn: @unchecked Sendable {
         web = nil
         #expect(await until { server.streams.open == 0 }, "the stream is still open: \(server.streams)")
         #expect(handler.runningCount == 0)
+    }
+
+    /// With a `PageFeed` the page's event stream rides the app's connection: the page opens no stream of its own to
+    /// wheeld, gets each `pageData` value, and closing it stops the watch.
+    @Test func aFeedCarriesThePagesEventStream() async throws {
+        let server = try StandIn()
+        let daemon = PageDaemon()
+        daemon.url = URL(string: "ws://127.0.0.1:\(server.port)/ws")
+        daemon.token = "t"
+        var sent: [ClientMsg] = []
+        let feed = PageFeed { sent.append($0) }
+        daemon.feed = feed
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        let handler = PageSchemeHandler(pane: "p1", daemon: daemon)
+        config.setURLSchemeHandler(handler, forURLScheme: WebPanes.scheme)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.borderless], backing: .buffered, defer: true)
+        var web: WKWebView? = WKWebView(frame: NSRect(x: 0, y: 0, width: 200, height: 200), configuration: config)
+        window.contentView?.addSubview(web!)
+        web!.load(URLRequest(url: WebPanes.pageURL(pane: "p1")!))
+        #expect(await until { sent == [.pageWatch(req: nil, pane: "p1")] }, "the page's stream watched p1: \(sent)")
+        feed.handle(.pageData(pane: "p1", data: #"{"n":1}"#))
+        #expect(await until { web?.title == #"{"n":1}"# }, "the page got the value: \(web?.title ?? "-")")
+        #expect(server.streams.opened == 0, "the page opened its own stream: \(server.streams)")
+
+        PageSchemeHandler.close(web!)
+        web!.removeFromSuperview()
+        web = nil
+        #expect(await until { sent.last == .pageUnwatch(req: nil, pane: "p1") }, "the watch was not stopped: \(sent)")
+        #expect(feed.streams("p1") == 0)
     }
 }
 #endif

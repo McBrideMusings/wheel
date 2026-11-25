@@ -10,15 +10,17 @@ public final class PageDaemon {
     public var url: URL?
     public var token: String?
     public var pairing: Pairing?
+    /// Set while the connected wheeld offers `page_watch`: a page's `.wheel/events` stream is answered from the
+    /// connection's `pageData` instead of a request of its own.
+    public var feed: PageFeed?
 
     public init() {}
 }
 
 /// Lets at most `limit` page requests run at once and holds the rest in order. The daemon's remote
-/// listener refuses a client address its 16th open connection (`MAX_PER_PEER`), the phone already
-/// holds one per terminal, chat and live stream, and a page opens one more for each file it asks
-/// for: with every page request let through, a page of ten images breaks the ones that arrive
-/// past the limit. One gate is shared by every web pane, since the limit is the phone's.
+/// listener refuses a client address its 16th open connection (`MAX_PER_PEER`), and a page opens
+/// one for each file it asks for: with every page request let through, a page of ten images breaks
+/// the ones that arrive past the limit. One gate is shared by every web pane, since the limit is the phone's.
 @MainActor
 public final class RequestGate {
     private var free: Int
@@ -388,6 +390,8 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
             ? .sameSite : (navigating && method == "GET" ? .crossSiteNavigation : .crossSite)
         let shown = WebPanes.withoutQuery(page)
         let pane = pane
+        // The page's own event stream rides the app's connection when wheeld offers it (`PageFeed`).
+        let feed = !loopback && target.path == "/artifacts/\(pane)/.wheel/events" ? daemon.feed : nil
         let transport = currentTransport()
         let sent = request
         // A loopback page's cookies live in the web view's store as the Mac's page would hold them
@@ -408,15 +412,21 @@ public final class PageSchemeHandler: NSObject, WKURLSchemeHandler {
                 if !streaming { await Self.gate.enter() }
                 defer { if !streaming { Self.gate.leave() } }
                 guard !Task.isCancelled else { return }
-                UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
                 let reply: Reply
-                do {
-                    reply = try await Self.fetch(sent, over: transport, streaming: streaming, jar: jar, cross: cross)
-                } catch let refusal as Refusal {
-                    guard !Task.isCancelled else { return }
-                    UILog.info("browser pane \(pane) \(method) \(shown) from \(cross?.origin ?? "-") \(refusal.why)")
-                    task.didFailWithError(URLError(.noPermissionsToReadFile))
-                    return
+                if let feed {
+                    UILog.info("web pane \(pane) page \(shown) requested on the app's connection")
+                    reply = Reply(status: 200, headers: ["Content-Type": "text/event-stream", "Cache-Control": "no-store"],
+                                  body: feed.events(pane))
+                } else {
+                    do {
+                        UILog.info("web pane \(pane) page \(shown) requested \(transport.isPinned ? "through the pinned connection" : "over URLSession")")
+                        reply = try await Self.fetch(sent, over: transport, streaming: streaming, jar: jar, cross: cross)
+                    } catch let refusal as Refusal {
+                        guard !Task.isCancelled else { return }
+                        UILog.info("browser pane \(pane) \(method) \(shown) from \(cross?.origin ?? "-") \(refusal.why)")
+                        task.didFailWithError(URLError(.noPermissionsToReadFile))
+                        return
+                    }
                 }
                 if self?.loopback == true, let kept = LoopbackCORS.Validators(answer: reply.headers) {
                     if self?.validators.count ?? 0 >= 512 { self?.validators.removeAll() }

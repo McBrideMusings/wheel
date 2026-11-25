@@ -27,7 +27,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 ring = "0.17"
 webpki-roots = "1"
 libc = "0.2"
-fsevent-sys = "4.1.0"
 tower-http = { version = "0.6", features = ["fs"] }
 notify = "7.0.0"
 ghostty-vt = "=0.7.0"
@@ -54,6 +53,12 @@ similar = "3.2.0"
 tokio-tungstenite = "0.28"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fsevent-sys = "4.1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+inotify = { version = "0.10", default-features = false }
 
 [build-dependencies]
 sha2 = "0.10"

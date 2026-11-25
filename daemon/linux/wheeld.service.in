@@ -1,0 +1,12 @@
+# wheeld on a Linux host (ADR-0058). tools/linux-server.sh fills in @INSTANCE@, @LISTEN@ and
+# @ARGS@ and installs this as ~/.config/systemd/user/@INSTANCE@.service; `current` is the version
+# `make restart-server-linux` last moved it to.
+[Unit]
+Description=Wheel Server (wheeld, @INSTANCE@)
+
+[Service]
+ExecStart=%h/.local/share/@INSTANCE@/server/current/wheeld --instance @INSTANCE@ --listen @LISTEN@ --cli %h/.local/share/@INSTANCE@/server/current/wheel --path-from-login-shell@ARGS@
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

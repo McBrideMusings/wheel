@@ -174,6 +174,11 @@ public enum ClientMsg: Sendable, Equatable {
     case feedSubscribe(req: UInt64?, pane: String, feed: String, params: JSONValue)
     /// Stop the `feedUpdate`s of that subscription; replies `ok`.
     case feedUnsubscribe(req: UInt64?, pane: String, feed: String, params: JSONValue)
+    /// Have the values pushed into web pane `pane`'s page sent on this connection as `pageData`, the latest first, until
+    /// `pageUnwatch`; the page reads them in place of its own `.wheel/events` stream. Replies `ok`.
+    case pageWatch(req: UInt64?, pane: String)
+    /// Stop the `pageData` of `pane`; replies `ok`.
+    case pageUnwatch(req: UInt64?, pane: String)
     /// Plugin pane `pane`'s script invokes `action` with `args`; replies `pluginAction` or `error`.
     case pluginAction(req: UInt64?, pane: String, action: String, args: JSONValue)
     /// Plugin pane `pane` shows artifact `artifact` inside its page (`WebView{artifact}`); replies `pluginEmbed` with the page id
@@ -424,6 +429,10 @@ public enum ClientMsg: Sendable, Equatable {
             o = ["op": "plugin_source", "pane": pane]; put(req)
         case let .feedSubscribe(req, pane, feed, params):
             o = ["op": "feed_subscribe", "pane": pane, "feed": feed, "params": params.foundation]; put(req)
+        case let .pageWatch(req, pane):
+            o = ["op": "page_watch", "pane": pane]; put(req)
+        case let .pageUnwatch(req, pane):
+            o = ["op": "page_unwatch", "pane": pane]; put(req)
         case let .feedUnsubscribe(req, pane, feed, params):
             o = ["op": "feed_unsubscribe", "pane": pane, "feed": feed, "params": params.foundation]; put(req)
         case let .pluginAction(req, pane, action, args):
@@ -1380,6 +1389,9 @@ public enum ServerMsg: Sendable {
     case clients(req: UInt64, clients: [ClientInfo])
     /// A file in web pane `pane`'s folder changed: reload it.
     case paneReload(pane: String)
+    /// A value pushed into web pane `pane`'s page, to a connection that watches it (`pageWatch`); `data` is the value as
+    /// JSON text, the `data:` line of the page's `.wheel/events` stream.
+    case pageData(pane: String, data: String)
     /// Artifact `name` has no entry any more: its page's browser storage can go. `cwd` is the
     /// space directory of a `project` artifact, nil for a `machine` one.
     case artifactGone(scope: ArtifactScope, name: String, cwd: String?)
@@ -1588,6 +1600,7 @@ extension ServerMsg: Decodable {
         case "space_focused": self = .spaceFocused(space: try c.decode(String.self, forKey: .space), pane: try c.decodeIfPresent(String.self, forKey: .pane))
         case "clients": self = .clients(req: try c.decode(UInt64.self, forKey: .req), clients: try c.decode([ClientInfo].self, forKey: .clients))
         case "pane_reload": self = .paneReload(pane: try c.decode(String.self, forKey: .pane))
+        case "page_data": self = .pageData(pane: try c.decode(String.self, forKey: .pane), data: try c.decode(String.self, forKey: .data))
         case "artifact_gone":
             self = .artifactGone(scope: try c.decode(ArtifactScope.self, forKey: .scope), name: try c.decode(String.self, forKey: .name),
                                  cwd: try c.decodeIfPresent(String.self, forKey: .cwd))

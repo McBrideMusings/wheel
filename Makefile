@@ -7,7 +7,7 @@ WHEEL_DERIVED_DATA ?= $(ROOT)/DerivedData
 PROJECT_TOOLS := $(ROOT)/.claude/skills/project-verify/tools
 
 .PHONY: help build-server build-client dev test test-rust test-fast test-wheelkit test-wheelui test-wheelluau test-scripts vet fmt kill \
-	deploy-client deploy-dev restart-server restart-server-dev deploy-phone ios-check \
+	deploy-client deploy-dev restart-server restart-server-dev deploy-linux restart-server-linux deploy-phone ios-check \
 	grid-motion idle-chat lsregister-prune icon-render
 
 help: ## List the targets
@@ -58,17 +58,24 @@ fmt: ## Format the Rust tree
 kill: ## Stop a wheeld left running by `make dev`
 	-pkill -f '$(ROOT)/target/debug/wheeld'
 
-deploy-client: ## Build the GPUI client and install it as /Applications/Wheel.app; wheeld keeps running
+deploy-client: ## Build the GPUI client and install it as /Applications/Wheel.app, then deploy-linux; wheeld keeps running
 	bash $(ROOT)/tools/install-app.sh release
+	bash $(ROOT)/tools/linux-server.sh deploy
 
 deploy-dev: ## Build the dev GPUI client (DEV icon, .dev id, its own wheeld) and install it as /Applications/Wheel Dev.app
 	bash $(ROOT)/tools/install-app.sh dev
 
-restart-server: ## Restart Wheel.app's wheeld from its bundle; ends every terminal and agent
+restart-server: ## Restart Wheel.app's wheeld from its bundle, then restart-server-linux; ends every terminal and agent
 	bash $(ROOT)/tools/restart-server.sh release
 
 restart-server-dev: ## Restart Wheel Dev.app's wheeld from its bundle
 	bash $(ROOT)/tools/restart-server.sh dev
+
+deploy-linux: ## Cross-compile wheeld and stage it on the Linux host (WHEEL_LINUX_HOST) without running it
+	bash $(ROOT)/tools/linux-server.sh deploy
+
+restart-server-linux: ## Run the staged wheeld on the Linux host: its systemd --user unit restarts
+	bash $(ROOT)/tools/linux-server.sh restart
 
 deploy-phone: ## Build the phone app, install it on the device in WHEEL_IOS_DEVICE and launch it
 	bash $(PROJECT_TOOLS)/deploy-phone.sh

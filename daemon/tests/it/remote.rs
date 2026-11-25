@@ -1414,3 +1414,143 @@ async fn a_phone_reaches_the_macs_loopback_pages_through_wheeld() {
     assert!(status.contains(" 502 "), "{status}");
     assert!(body.contains(&format!("localhost:{closed} on the Mac")), "{body}");
 }
+
+/// One `GET` over its own pinned TLS connection, as the phone's `PinnedHTTP` sends it: the status
+/// line and the body's length, or why the connection failed.
+async fn remote_fetch(port: u16, fingerprint: &str, path: &str, token: &str) -> Result<(String, usize), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let config = wheel_proto::tls::pinned(fingerprint).map_err(|e| e.to_string())?;
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| e.to_string())?;
+    let mut tls = TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from("localhost").unwrap(), tcp)
+        .await
+        .map_err(|e| format!("handshake: {e}"))?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    tls.write_all(request.as_bytes()).await.map_err(|e| e.to_string())?;
+    let mut raw = Vec::new();
+    tls.read_to_end(&mut raw).await.map_err(|e| format!("read: {e}"))?;
+    let end = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("no response head")?;
+    let status = String::from_utf8_lossy(&raw[..end]).lines().next().unwrap_or("").to_string();
+    Ok((status, raw.len() - end - 4))
+}
+
+/// The phone keeps a page for every web pane in its layout. Each page's pushed values reach it as
+/// `page_data` on the phone's one connection (`page_watch`), so a phone watching twenty pages still
+/// has the connections to load eight large images on one page at once.
+#[tokio::test]
+async fn a_phone_watching_many_pages_still_loads_every_image() {
+    let dir = Scratch(std::env::temp_dir().join(format!("wheeld-streams-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let site = dir.0.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("index.html"), "<p>post</p>").unwrap();
+    let (local, remote) = (free_port(), free_port());
+    std::fs::write(
+        dir.0.join("wheel.toml"),
+        format!(
+            "[remote]\nlisten = \"127.0.0.1:{remote}\"\n\n[artifacts.site]\npath = {:?}\n",
+            site.display().to_string()
+        ),
+    )
+    .unwrap();
+    let _daemon = start(&dir.0, local);
+    let token = std::fs::read_to_string(dir.0.join("token")).unwrap();
+    let token = token.trim();
+    let fingerprint = remote_info(local, token).await["fingerprint"].as_str().unwrap().to_string();
+
+    let project = dir.0.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let (mut cli, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{local}/ws?token={token}"))
+        .await
+        .unwrap();
+    let space = local_req(&mut cli, serde_json::json!({"op":"space_create","req":1,"cwd":project.to_str().unwrap()})).await;
+    assert_eq!(space["ev"], "created", "{space}");
+    let status = local_req(&mut cli, serde_json::json!({"op":"status","req":2})).await;
+    let status: wheel_proto::ServerMsg = serde_json::from_value(status).unwrap();
+    let wheel_proto::ServerMsg::Status { spaces, .. } = status else { panic!("expected status") };
+    let pane = wheeld::spaces::first_pane(&spaces[0].root).to_string();
+    let set = local_req(
+        &mut cli,
+        serde_json::json!({"op":"pane_set_kind","req":3,"pane":pane,"kind":"web","artifact":"site","scope":"machine"}),
+    )
+    .await;
+    assert_eq!(set["ev"], "ok", "{set}");
+    let mut panes = vec![pane.clone()];
+    for req in 0..19 {
+        let split = local_req(&mut cli, serde_json::json!({"op":"pane_split","req":100 + req,"pane":pane,"dir":"right"})).await;
+        assert_eq!(split["ev"], "created", "{split}");
+        let id = split["id"].as_str().unwrap().to_string();
+        let set = local_req(
+            &mut cli,
+            serde_json::json!({"op":"pane_set_kind","req":200 + req,"pane":id,"kind":"web","artifact":"site","scope":"machine"}),
+        )
+        .await;
+        assert_eq!(set["ev"], "ok", "{set}");
+        panes.push(id);
+    }
+    // A value pushed before the page is watched is the first one the watch sends.
+    let pushed = local_req(&mut cli, serde_json::json!({"op":"artifact_data","req":4,"pane":pane,"value":{"n":1}})).await;
+    assert_eq!(pushed["ev"], "ok", "{pushed}");
+    // Eight images of 700 KB in the pane's data folder, as the post's were.
+    let data = dir.0.join("panes").join(&pane);
+    let image = vec![0x5Au8; 700 << 10];
+    for i in 0..8 {
+        std::fs::write(data.join(format!("img{i}.png")), &image).unwrap();
+    }
+
+    let issued = local_call(local, token, r#"{"op":"pairing_issue","req":1}"#, "pairing").await;
+    let pairing = issued["token"].as_str().unwrap();
+    let mut phone = remote_ws(remote, &fingerprint, &format!("pair={pairing}&name=Phone")).await.unwrap();
+    let credential = next_event(&mut phone, "paired").await.unwrap()["credential"].as_str().unwrap().to_string();
+
+    // Twenty pages watched, all on the phone's one connection.
+    for (req, watched) in panes.iter().enumerate() {
+        phone
+            .send(Message::text(serde_json::json!({"op":"page_watch","req":req + 1,"pane":watched}).to_string()))
+            .await
+            .unwrap();
+    }
+    let first = next_event(&mut phone, "page_data").await.unwrap();
+    assert_eq!(first["pane"], pane.as_str(), "{first}");
+    assert_eq!(first["data"], r#"{"n":1}"#, "{first}");
+    let pushed = local_req(&mut cli, serde_json::json!({"op":"artifact_data","req":5,"pane":pane,"value":{"n":2}})).await;
+    assert_eq!(pushed["ev"], "ok", "{pushed}");
+    let next = next_event(&mut phone, "page_data").await.unwrap();
+    assert_eq!(next["data"], r#"{"n":2}"#, "{next}");
+    // A page no longer watched is sent nothing.
+    phone
+        .send(Message::text(serde_json::json!({"op":"page_unwatch","req":50,"pane":pane}).to_string()))
+        .await
+        .unwrap();
+    let unwatched = loop {
+        let reply = next_event(&mut phone, "ok").await.unwrap();
+        if reply["req"] == 50 {
+            break reply;
+        }
+    };
+    assert_eq!(unwatched["req"], 50);
+    let pushed = local_req(&mut cli, serde_json::json!({"op":"artifact_data","req":6,"pane":pane,"value":{"n":3}})).await;
+    assert_eq!(pushed["ev"], "ok", "{pushed}");
+    let quiet = tokio::time::timeout(Duration::from_millis(300), next_event(&mut phone, "page_data")).await;
+    assert!(quiet.is_err(), "an unwatched page was sent {quiet:?}");
+
+    let fetches: Vec<_> = (0..8)
+        .map(|i| {
+            let (fingerprint, credential, pane) = (fingerprint.clone(), credential.clone(), pane.clone());
+            tokio::spawn(async move {
+                remote_fetch(remote, &fingerprint, &format!("/artifacts/{pane}/data/img{i}.png"), &credential).await
+            })
+        })
+        .collect();
+    let mut failed = Vec::new();
+    for (i, fetch) in fetches.into_iter().enumerate() {
+        let result = fetch.await.unwrap();
+        if !matches!(&result, Ok((status, len)) if status.contains(" 200 ") && *len == 700 << 10) {
+            failed.push((i, result));
+        }
+    }
+    assert!(failed.is_empty(), "{} of 8 images failed: {failed:?}", failed.len());
+}

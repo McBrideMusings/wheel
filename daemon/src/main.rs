@@ -13,11 +13,12 @@ struct Args {
     #[arg(long, default_value = wheel_proto::DEFAULT_LISTEN)]
     listen: String,
     /// Which daemon this is: its files default to ~/Library/Application Support/<instance> and
-    /// ~/Library/Logs/<instance>. The dev build runs as wheel-dev.
+    /// ~/Library/Logs/<instance> on macOS, ~/.local/share/<instance> and ~/.local/state/<instance>
+    /// on Linux. The dev build runs as wheel-dev.
     #[arg(long, default_value = wheel_proto::DEFAULT_INSTANCE)]
     instance: String,
     /// This instance's own directory: its token and saved layout.
-    /// Defaults to ~/Library/Application Support/<instance>.
+    /// Defaults to ~/Library/Application Support/<instance> (~/.local/share/<instance> on Linux).
     #[arg(long)]
     support_dir: Option<PathBuf>,
     /// This machine's `wheel.toml`: its settings and `machine` artifact entries, with those artifacts'
@@ -25,7 +26,8 @@ struct Args {
     /// ~/.wheel/wheel.toml; a test or swarm daemon names its own so it never touches the real one.
     #[arg(long)]
     machine_file: Option<PathBuf>,
-    /// Directory for wheeld.log. Defaults to ~/Library/Logs/<instance>.
+    /// Directory for wheeld.log. Defaults to ~/Library/Logs/<instance> (~/.local/state/<instance>
+    /// on Linux).
     #[arg(long)]
     log_dir: Option<PathBuf>,
     /// File holding the client token; created with mode 0600 if missing.
@@ -105,9 +107,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run(args: Args) -> anyhow::Result<()> {
-    let log_dir = args
-        .log_dir
-        .unwrap_or_else(|| home().join("Library/Logs").join(&args.instance));
+    let log_dir = match args.log_dir {
+        Some(dir) => dir,
+        None => wheel_proto::log_dir(&args.instance)?,
+    };
     std::fs::create_dir_all(&log_dir)?;
     let log_path = log_dir.join("wheeld.log");
     let support = match args.support_dir {

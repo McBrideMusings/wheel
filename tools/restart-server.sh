@@ -3,15 +3,16 @@
 # Resources/wheel-server.sh (the script the app runs itself) copies that version to Application
 # Support, makes it Current and restarts the launch agent. This ends every terminal and agent, the
 # pane that ran this one included, so the restart runs detached and writes what happened to
-# ~/Library/Logs/wheel/restart-server.log.
+# ~/Library/Logs/wheel/restart-server.log. The release restart then restarts the Linux host's wheeld
+# (tools/linux-server.sh restart, ADR-0058), whose unreachable host never fails this one.
 #   restart-server.sh release   com.piercemakes.wheel.daemon (Wheel.app)
 #   restart-server.sh dev       com.piercemakes.wheel.dev.daemon (Wheel Dev.app)
 set -euo pipefail
 
 case "${1:-}" in
-  release) LABEL=com.piercemakes.wheel.daemon APP=/Applications/Wheel.app ;;
-  dev) LABEL=com.piercemakes.wheel.dev.daemon APP="/Applications/Wheel Dev.app" ;;
-  --detached) LABEL="$2" APP="$3" ;;
+  release) LABEL=com.piercemakes.wheel.daemon APP=/Applications/Wheel.app LINUX=1 ;;
+  dev) LABEL=com.piercemakes.wheel.dev.daemon APP="/Applications/Wheel Dev.app" LINUX=0 ;;
+  --detached) LABEL="$2" APP="$3" LINUX="$4" ;;
   *) echo "usage: restart-server.sh release|dev" >&2; exit 2 ;;
 esac
 SERVICE="gui/$(id -u)/$LABEL"
@@ -23,7 +24,7 @@ pid_of() { launchctl print "$SERVICE" 2>/dev/null | awk '$1 == "pid" { print $3;
 if [ "${1:-}" != --detached ]; then
   [ -x "$APP/Contents/Resources/wheel-server.sh" ] || { echo "$APP has no wheel-server.sh; deploy the app first" >&2; exit 1; }
   mkdir -p "$LOG_DIR"
-  nohup bash "$0" --detached "$LABEL" "$APP" >>"$LOG" 2>&1 </dev/null &
+  nohup bash "$0" --detached "$LABEL" "$APP" "$LINUX" >>"$LOG" 2>&1 </dev/null &
   echo "restarting $LABEL (pid $(pid_of)); every terminal and agent ends. Log: $LOG"
   exit 0
 fi
@@ -33,13 +34,16 @@ sleep 1
 before="$(pid_of)"
 say "restarting $SERVICE (pid ${before:-none})"
 "$APP/Contents/Resources/wheel-server.sh" restart
+status=1
 for _ in $(seq 50); do
   after="$(pid_of)"
   if [ -n "$after" ] && [ "$after" != "$before" ]; then
     say "restarted $SERVICE: pid ${before:-none} -> $after, running $(lsof -a -p "$after" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
-    exit 0
+    status=0
+    break
   fi
   sleep 0.1
 done
-say "$SERVICE has no new pid 5 s after the restart (was ${before:-none}, now ${after:-none})"
-exit 1
+[ "$status" = 0 ] || say "$SERVICE has no new pid 5 s after the restart (was ${before:-none}, now ${after:-none})"
+[ "$LINUX" != 1 ] || bash "$(dirname "$0")/linux-server.sh" restart || status=1
+exit "$status"

@@ -1,7 +1,9 @@
 //! A web pane's two-way channel with its page. The page writes values into a state store over HTTP
 //! (`PUT .wheel/state/<key>`), and `wheel artifact state` reads them, optionally waiting for a key;
 //! `wheel artifact data` pushes one JSON value to the page, which receives it on the
-//! `.wheel/events` stream — the latest one first, so a page that loads later still has it.
+//! `.wheel/events` stream — the latest one first, so a page that loads later still has it. A remote
+//! client reads the same values as `page_data` on its WebSocket (`page_watch`) and answers its pages'
+//! streams itself, so its connection count does not grow with its web panes.
 //!
 //! Both live in the pane's data directory as hidden files (`.state.json`, `.data.json`), so they
 //! are never served as files, never reload the pane, survive a daemon restart and go when the

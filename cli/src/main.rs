@@ -37,7 +37,8 @@ struct Cli {
     /// Daemon WebSocket URL.
     #[arg(long, global = true, env = "WHEEL_URL", default_value_t = format!("ws://{}/ws", wheel_proto::DEFAULT_LISTEN))]
     url: String,
-    /// File holding the daemon's client token. Defaults to ~/Library/Application Support/wheel/token.
+    /// File holding the daemon's client token. Defaults to ~/Library/Application Support/wheel/token
+    /// (~/.local/share/wheel/token on Linux).
     #[arg(long, global = true, env = "WHEEL_TOKEN_FILE")]
     token_file: Option<PathBuf>,
     /// Send the command to this paired server, by label or id (`wheel server list`); `local` is
