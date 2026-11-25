@@ -148,7 +148,12 @@ impl Router {
         match op.as_str() {
             "agent_attach" => {
                 let holders = held.agents.entry(s(&frame, "agent")).or_default();
-                if req.is_none() && !holders.is_empty() && !holders.contains(&n) {
+                // wheeld keeps one stream per agent per socket and would restart it, replaying to
+                // every holder; this subscriber already hears it.
+                if req.is_none() && holders.contains(&n) {
+                    return Outgoing::Hold;
+                }
+                if req.is_none() && !holders.is_empty() {
                     held.replays.entry(s(&frame, "agent")).or_default().push_back(n);
                 }
                 holders.insert(n);
@@ -360,6 +365,20 @@ mod tests {
         assert_eq!(r.incoming(m, &raw).len(), 2);
         assert_eq!(r.outgoing(1, r#"{"op":"agent_detach","agent":"a"}"#), Outgoing::Hold);
         assert_eq!(r.leave(2), vec![json!({"op":"agent_detach","agent":"a"}).to_string()]);
+    }
+
+    #[test]
+    fn a_window_attaching_an_agent_it_already_holds_sends_nothing() {
+        let (mut r, _rx) = router(2);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
+        sent(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#));
+        assert_eq!(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
+        assert_eq!(r.outgoing(2, r#"{"op":"agent_attach","agent":"a"}"#), Outgoing::Hold);
+        // Only the second window's first attach is owed a replay of its own.
+        assert_eq!(r.held.replays["a"], [2]);
+        // Once it lets go, attaching again is a first attach.
+        assert_eq!(r.outgoing(1, r#"{"op":"agent_detach","agent":"a"}"#), Outgoing::Hold);
+        sent(r.outgoing(1, r#"{"op":"agent_attach","agent":"a"}"#));
     }
 
     #[test]
