@@ -1087,6 +1087,10 @@ impl AppState {
 
     /// Send every log line waiting to the log store, as the daemon's timer does. Blocking.
     pub fn ship_now(&self) {
+        // Shipping off: nothing to send, so no pass (which first waits on the log writer).
+        if self.push_url().is_empty() {
+            return;
+        }
         self.logship.ship(|| {
             // The URL first: a pass that sees a URL also sees any retry set before it.
             let url = self.push_url();

@@ -423,11 +423,9 @@ async fn events(core: Arc<Core>, mut rx: UnboundedReceiver<Msg>) {
                 }
                 core.refresh().await;
             }
-            _ = tick.tick() => {
-                if core.running() {
-                    core.refresh().await;
-                }
-            }
+            // Only while a run goes: an idle runner does not wake. A run starting sends an event,
+            // which comes round this loop and turns the tick back on.
+            _ = tick.tick(), if core.running() => core.refresh().await,
             _ = checked.tick() => {
                 for dir in core.dirs() {
                     core.read_checks(dir);
