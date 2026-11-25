@@ -8,7 +8,8 @@ use ghostty_vt::key::{self, Mods, OptionAsAlt};
 use ghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
 use ghostty_vt::screen::CellWide;
 use ghostty_vt::style::{Palette as VtPalette, RgbColor};
-use ghostty_vt::terminal::{CursorStyle, Event, Mode, Options, ScrollViewport, Terminal};
+use ghostty_vt::selection::{FormatOptions, Selection};
+use ghostty_vt::terminal::{CursorStyle, Event, Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 use ghostty_vt::{focus, mouse, paste};
 use wheel_proto::{ClientMsg, ServerMsg, SettingInfo};
 
@@ -364,8 +365,14 @@ pub struct TermModel {
     pub title: Option<String>,
     /// The shell's exit code once it exited (`None` inside for a signal).
     pub exited: Option<Option<u32>>,
-    /// The grid last sent as `term_resize`.
+    /// The grid last sent as `term_resize` since the last attach.
     sent: Option<(u16, u16)>,
+    /// Whether a mouse button is held, which button-event mouse reports (mode 1002) follow.
+    button_down: bool,
+    /// The size the mouse encoder was last given; setting it again forgets the last cell reported.
+    mouse_size: Option<mouse::EncoderSize>,
+    /// The program's mouse modes the encoder last took; taking them again forgets the last cell too.
+    mouse_modes: Option<[bool; 8]>,
     /// What the terminal wrote back to the program (answers to queries), waiting to be sent.
     replies: Vec<u8>,
 }
@@ -393,6 +400,9 @@ impl TermModel {
             title: None,
             exited: None,
             sent: None,
+            button_down: false,
+            mouse_size: None,
+            mouse_modes: None,
             replies: Vec::new(),
         };
         model.restyle(look, dark)?;
@@ -416,6 +426,8 @@ impl TermModel {
                 self.terminal.reset();
                 self.title = None;
                 self.exited = None;
+                // Another client may have sized the term since: the next resize goes whatever it is.
+                self.sent = None;
                 true
             }
             ServerMsg::TermOutput { id, data } if *id == self.id => {
@@ -462,7 +474,7 @@ impl TermModel {
         if self.sent == Some((cols, rows)) {
             return None;
         }
-        let _ = self.terminal.resize(cols, rows, cell.width.round() as u32, cell.height.round() as u32);
+        self.terminal.resize(cols, rows, cell.width.round() as u32, cell.height.round() as u32).ok()?;
         self.sent = Some((cols, rows));
         Some(ClientMsg::TermResize { req: None, id: self.id.clone(), cols, rows })
     }
@@ -567,7 +579,11 @@ impl TermModel {
         };
         // Option typing Alt sends the key's own character, which the encoder prefixes with ESC;
         // otherwise the layout's character is the text and Option was spent making it.
-        let text = if input.alt && self.option_as_alt { unshifted.map(|c| c.to_string()) } else { input.text.map(str::to_owned) };
+        let text = if input.alt && self.option_as_alt {
+            unshifted.map(|c| if input.shift { c.to_uppercase().to_string() } else { c.to_string() })
+        } else {
+            input.text.map(str::to_owned)
+        };
         let mut consumed = Mods::empty();
         if text.is_some() {
             if input.shift {
@@ -632,8 +648,13 @@ impl TermModel {
             }))
             .set_mods(mods)
             .set_position(mouse::Position { x: x as f32, y: y as f32 });
+        match action {
+            MouseAction::Press if !matches!(button, Some(MouseButton::WheelUp | MouseButton::WheelDown)) => self.button_down = true,
+            MouseAction::Release => self.button_down = false,
+            _ => {}
+        }
         let px = |v: f64| v.round().max(0.0) as u32;
-        self.mouse.set_options_from_terminal(&self.terminal).set_size(mouse::EncoderSize {
+        let size = mouse::EncoderSize {
             screen_width: px(width),
             screen_height: px(height),
             cell_width: px(cell.width).max(1),
@@ -642,10 +663,39 @@ impl TermModel {
             padding_bottom: px(PADDING_Y),
             padding_left: px(PADDING_X),
             padding_right: px(PADDING_X),
-        });
+        };
+        // One motion report per cell the pointer enters, not per point it moves.
+        let modes = [Mode::X10_MOUSE, Mode::NORMAL_MOUSE, Mode::BUTTON_MOUSE, Mode::ANY_MOUSE, Mode::UTF8_MOUSE, Mode::SGR_MOUSE, Mode::URXVT_MOUSE, Mode::SGR_PIXELS_MOUSE].map(|m| self.mode(m));
+        if self.mouse_modes != Some(modes) {
+            self.mouse.set_options_from_terminal(&self.terminal);
+            self.mouse_modes = Some(modes);
+        }
+        self.mouse.set_any_button_pressed(self.button_down).set_track_last_cell(true);
+        if self.mouse_size != Some(size) {
+            self.mouse.set_size(size);
+            self.mouse_size = Some(size);
+        }
         let mut out = Vec::new();
         let _ = self.mouse.encode_to_vec(&event, &mut out);
         out
+    }
+
+    /// Select from one viewport cell (column, row) to another, inclusive; drawn through `Cell::selected`.
+    pub fn select(&mut self, from: (u16, u16), to: (u16, u16)) -> ghostty_vt::error::Result<()> {
+        let at = |(x, y): (u16, u16)| Point::Viewport(PointCoordinate { x, y: y as u32 });
+        let selection = Selection::new(self.terminal.grid_ref(at(from))?, self.terminal.grid_ref(at(to))?, false);
+        self.terminal.set_selection(Some(&selection))?;
+        Ok(())
+    }
+
+    pub fn clear_selection(&mut self) {
+        let _ = self.terminal.set_selection(None);
+    }
+
+    /// The selected text, as Copy puts it on the pasteboard; `None` with nothing selected.
+    pub fn selection_text(&self) -> Option<String> {
+        let bytes = self.terminal.format_selection_alloc(FormatOptions::new().with_trim(true)).ok()??;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// The focus report a program that turned on mode 1004 reads when the pane gains or loses
@@ -820,6 +870,7 @@ mod tests {
         assert_eq!(m.encode_key(&option_f), "ƒ".as_bytes());
         m.option_as_alt = true;
         assert_eq!(m.encode_key(&option_f), b"\x1bf");
+        assert_eq!(m.encode_key(&KeyInput { key: "f", text: Some("Ï"), alt: true, shift: true, ..KeyInput::default() }), b"\x1bF");
         assert_eq!(m.encode_key(&KeyInput { key: "c", text: Some("c"), control: true, ..KeyInput::default() }), b"\x03");
         assert_eq!(m.encode_key(&KeyInput { key: "a", text: Some("A"), shift: true, ..KeyInput::default() }), b"A");
         assert_eq!(m.encode_key(&KeyInput { key: "enter", text: Some("\r"), ..KeyInput::default() }), b"\r");
@@ -843,6 +894,12 @@ mod tests {
         // (30, 20) is past the 10 x 8 padding: column 3, row 1, one-based in SGR.
         assert_eq!(m.encode_mouse(MouseAction::Press, Some(MouseButton::Left), 30.0, 20.0, 800.0, 600.0, cell, false, false, false), b"\x1b[<0;3;1M");
         assert_eq!(m.encode_focus(true), b"\x1b[I");
+        // Button-event tracking: a drag with the button held reports each cell entered, once.
+        m.feed(b"\x1b[?1002h");
+        assert!(m.encode_mouse(MouseAction::Motion, Some(MouseButton::Left), 50.0, 20.0, 800.0, 600.0, cell, false, false, false).len() > 0);
+        assert!(m.encode_mouse(MouseAction::Motion, Some(MouseButton::Left), 51.0, 21.0, 800.0, 600.0, cell, false, false, false).is_empty());
+        m.encode_mouse(MouseAction::Release, Some(MouseButton::Left), 51.0, 21.0, 800.0, 600.0, cell, false, false, false);
+        assert!(m.encode_mouse(MouseAction::Motion, None, 90.0, 20.0, 800.0, 600.0, cell, false, false, false).is_empty());
         assert_eq!(m.encode_focus(false), b"\x1b[O");
     }
 
@@ -870,6 +927,22 @@ mod tests {
         assert!(matches!(m.resize(97, 34, cell), Some(ClientMsg::TermResize { cols: 97, rows: 34, .. })));
         assert!(m.resize(97, 34, cell).is_none());
         assert_eq!(m.frame().unwrap().cols, 97);
+        // After a new attach wheeld's term may be any size: the grid goes again.
+        m.receive(&ServerMsg::TermAttached { req: None, id: "t1".into(), replay_bytes: 0 });
+        assert!(m.resize(97, 34, cell).is_some());
+    }
+
+    #[test]
+    fn a_selection_draws_and_copies() {
+        let mut m = model(20, 4);
+        m.feed(b"hello world\r\nsecond");
+        assert_eq!(m.selection_text(), None);
+        m.select((6, 0), (10, 0)).unwrap();
+        assert_eq!(m.selection_text().as_deref(), Some("world"));
+        let frame = m.frame().unwrap();
+        assert!(!frame.rows[0][5].selected && frame.rows[0][6].selected && frame.rows[0][10].selected);
+        m.clear_selection();
+        assert_eq!(m.selection_text(), None);
     }
 
     #[test]
