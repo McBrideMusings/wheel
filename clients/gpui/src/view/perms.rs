@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 use wheel_proto::PermInfo;
 
 const ORANGE: u32 = 0xe0a050;
+/// The inset around the card at the top of an `agent/view` pane's body.
+const VIEW_PAD: f32 = 8.;
+/// What the card's insets add to its height there: its own top margin is part of the inset.
+const VIEW_INSETS: f32 = 2. * VIEW_PAD - MARGIN;
+/// The height an `agent/view` pane's page keeps at least while the card sits above it.
+const VIEW_PAGE_LEAST: f32 = 120.;
 
 impl Client {
     /// Send `choice` for request `id`. The card stays until `perm_resolved` comes back, from this
@@ -28,6 +34,21 @@ impl Client {
     pub(super) fn card_height(&self, agent: Option<&str>, body: f32, composer: f32) -> f32 {
         let room = body - LABEL - composer - FOOTER - 8. - 2. * LINE;
         agent.and_then(|a| perms::waiting(&self.perms, a)).map_or(0., |(_, perm)| perms::fitted(perm, self.perm_tool(perm).as_ref(), room))
+    }
+    /// The room the card of `agent`'s oldest waiting request takes at the top of an `agent/view`
+    /// pane's body `body` tall, insets included; zero while it waits on nothing. The pane's native
+    /// view is placed under it, and its page keeps `VIEW_PAGE_LEAST` at least.
+    pub(super) fn view_card_height(&self, agent: Option<&str>, body: f32) -> f32 {
+        let room = body - VIEW_PAGE_LEAST - VIEW_INSETS;
+        agent.and_then(|a| perms::waiting(&self.perms, a)).map_or(0., |(_, perm)| perms::fitted(perm, self.perm_tool(perm).as_ref(), room) + VIEW_INSETS)
+    }
+    /// The card an `agent/view` pane draws above its page, `view_card_height` tall, while its
+    /// agent waits on a request. The page belongs to the plugin, so it holds no answer keys.
+    pub(super) fn view_card(&self, agent: Option<&str>, body: f32, cx: &mut Context<Client>) -> Option<gpui::Div> {
+        let (position, perm) = perms::waiting(&self.perms, agent?)?;
+        let height = self.view_card_height(agent, body) - VIEW_INSETS;
+        let card = perm_card(perm, self.perm_tool(perm).as_ref(), position, self.perms.len(), false, height, &self.controls, cx);
+        Some(div().flex_none().px(px(VIEW_PAD)).pt(px(VIEW_PAD - MARGIN)).pb(px(VIEW_PAD)).child(card))
     }
     /// The asking agent's tool line for `perm` (`perms::tool_line`), read from its transcript on
     /// every frame, so a `tool_update` that changes the row redraws the card.

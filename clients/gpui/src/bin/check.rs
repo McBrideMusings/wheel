@@ -364,6 +364,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, links_report) = chat_links(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), terms[0].clone(), cx).await?;
     let (run, buttons_inside_short_pane, resolved_from_cli, status_report) = statuses(run, agent_pane.clone(), agent_name.clone(), agent_rect.clone(), cli_path.clone(), cx).await?;
     let (run, splits_above, perm_card, card_shown, answered_by_key, question_card, question_options, clicked, question_answer) = perm_cards(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
+    let (run, agent_view_report) = agent_view_card(run, agent_pane.clone(), agent_name.clone(), cx).await?;
+    eprintln!("check: perms.agent_view {agent_view_report}");
     let (run, commands_listed, by_arrows, co_listed, by_tab, by_click, queue_ids, took_back, cleared_queue, queued_then_sent, saw_sending, control_return_ran, esc_stopped) = composer_and_queue(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, attachments_report) = attachments(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
     let (run, conversations_from, listed, old_id, new_id, new_id_differs, recent_report, resumed_rows, codex_pane_streams, earlier_report) = conversations(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -376,7 +378,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
-        "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card});
+        "question_options": question_options, "buttons_inside_short_pane": buttons_inside_short_pane, "question_answer": question_answer, "questions_clicked": clicked.len(), "card": perm_card, "question_card": question_card, "agent_view": agent_view_report});
     let (run, first_session_id, fixture_space, sidebar_report) = sidebar(run, click.clone(), cx).await?;
     let (run, title_report) = title_and_bottom_rows(run, first_session_id.clone(), fixture_space.clone(), native_panes.clone(), cx).await?;
     let (run, mirrors_report) = mirrors(run, terms[0].clone(), agent_pane.clone(), cli_path.clone(), cx).await?;
@@ -2014,6 +2016,93 @@ async fn statuses(run: Run, agent_pane: String, agent_name: String, agent_rect: 
         "needs_you": wheel_gpui::status::label(&needs_you), "marks_needing": marks_needing, "after_answer": status_name(&after_answer),
         "dots_setting": window.update(cx, |c, _, _| c.status_dots.iter().copied().collect::<Vec<_>>())?});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, buttons_inside_short_pane, resolved_from_cli, status_report))
+}
+
+/// An agent pane shown as its `agent/view` page (wheel-4r73.6): while its agent waits on a request the client
+/// draws the agent pane's card above the page and places the page's view under it; Allow on that card answers
+/// the request in wheeld, and the page takes the whole body back.
+async fn agent_view_card(run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
+    let replies = |cx: &mut AsyncApp| -> Result<String> { Ok(window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| t.rows.iter().filter_map(|r| match &r.kind { Kind::Reply(x) => Some(x.clone()), _ => None }).collect::<Vec<_>>().join("\n")).unwrap_or_default())?) };
+    let pane_rect = |cx: &mut AsyncApp| -> Result<Rect> {
+        window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == agent_pane).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("pane {agent_pane} is not in the grid"))
+    };
+    let page = |cx: &mut AsyncApp| -> Result<[f64; 4]> { Ok(frame(&native.status(), &agent_pane)) };
+    let card = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.control_bounds(&agent_name, "perm-card"));
+    window.update(cx, |c, _, cx| {
+        c.run_header_menu("agent-view", &agent_pane);
+        cx.notify();
+    })?;
+    let mut opened = false;
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let s = native.status();
+        if s["panes"][agent_pane.as_str()]["kind"] == "plugin" && s["panes"][agent_pane.as_str()]["hidden"] == false && frame(&s, &agent_pane)[3] > 0. {
+            opened = true;
+            break;
+        }
+    }
+    ensure!(opened, "the agent view never opened: {}", native.status()["panes"][agent_pane.as_str()]);
+    let r = pane_rect(cx)?;
+    let idle = page(cx)?;
+    let body_top = f64::from(r.y + TITLE);
+    ensure!((idle[1] - body_top).abs() < 0.5 && card(cx)?.is_none(), "with nothing waiting the page should start under the header at {body_top} with no card: page {idle:?}, card {:?}", card(cx)?);
+    draw(window, Some(output.join("client-agent-view-idle.png")), cx)?;
+    shot(&native, &output.join("agent-view-idle"), cx).await?;
+    let replies_before = replies(cx)?.matches("permission: allow").count();
+    connection.send.send(wheel_gpui::daemon::frame(&ClientMsg::AgentSend { req: None, agent: agent_name.clone(), text: "permission described".into() }))?;
+    let (mut perm, mut waiting) = (Value::Null, idle);
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        perm = window.update(cx, |c, _, _| c.perm_card_json(&agent_pane))?;
+        waiting = page(cx)?;
+        if !perm.is_null() && !perm["tool"].is_null() && waiting[1] > idle[1] + 0.5 {
+            break;
+        }
+    }
+    ensure!(!perm.is_null(), "the agent view drew no card for the waiting request");
+    let drawn = card(cx)?.ok_or_else(|| anyhow::anyhow!("the card drew nowhere: {perm}"))?;
+    let below = waiting[1] - f64::from(drawn.1 + drawn.3);
+    ensure!(f64::from(drawn.1) > body_top && below >= 0. && (waiting[1] + waiting[3] - (idle[1] + idle[3])).abs() < 0.5,
+        "the page {waiting:?} should sit under the card {drawn:?} and keep its bottom edge {idle:?}");
+    draw(window, Some(output.join("client-agent-view-waiting.png")), cx)?;
+    shot(&native, &output.join("agent-view-waiting"), cx).await?;
+    let allow_id = perm["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();
+    let allow = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("perm:{allow_id}")))?.ok_or_else(|| anyhow::anyhow!("the card drew no Allow button: {perm}"))?;
+    let p = [f64::from(allow.0 + allow.2 / 2.), f64::from(allow.1 + allow.3 / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    let (mut answered, mut after) = (false, waiting);
+    for _ in 0..300 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        after = page(cx)?;
+        let gone = window.update(cx, |c, _, _| c.perm_card_json(&agent_pane).is_null() && !c.perms.iter().any(|p| p.agent == agent_name))?;
+        let ready = window.update(cx, |c, _, _| c.transcripts.get(&agent_name).is_some_and(|t| t.state == "ready"))?;
+        if gone && ready && replies(cx)?.matches("permission: allow").count() > replies_before && (after[1] - idle[1]).abs() < 0.5 {
+            answered = true;
+            break;
+        }
+    }
+    ensure!(answered, "Allow on the agent view's card left the request or the page: page {after:?}, card {}, replies {}", window.update(cx, |c, _, _| c.perm_card_json(&agent_pane))?, replies(cx)?);
+    ensure!(card(cx)?.is_none(), "the card stayed drawn after the answer: {:?}", card(cx)?);
+    draw(window, Some(output.join("client-agent-view-answered.png")), cx)?;
+    window.update(cx, |c, _, cx| {
+        c.run_header_menu("agent-view", &agent_pane);
+        cx.notify();
+    })?;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        if native.status()["panes"][agent_pane.as_str()].is_null() {
+            break;
+        }
+    }
+    ensure!(native.status()["panes"][agent_pane.as_str()].is_null(), "the native agent view never came back: {}", native.status()["panes"][agent_pane.as_str()]);
+    let report = json!({"idle_page": idle, "waiting_page": waiting, "card": [drawn.0, drawn.1, drawn.2, drawn.3], "answered_page": after, "allow": allow_id, "request": perm["id"]});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 
 /// Permission and question cards: Return allows, a click on each first answer answers.
@@ -6574,7 +6663,7 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     ensure!(cleared == Some(true) && after_clear.is_none(), "the clear left {after_clear:?} ({cleared:?})");
     ensure!(left == Some(false) && after_left.as_deref() == Some("copied since"), "the clear took what was copied since: {after_left:?} ({left:?})");
     let device = ServerMsg::DeviceConnected { device: "d1".into(), name: "Check phone".into(), address: "127.0.0.1:5".into(), paired: true };
-    window.update(cx, |c, _, _| c.on_event(Event::Message(Box::new(device))))?;
+    window.update(cx, |c, _, cx| c.on_event(Event::Message(Box::new(device)), cx))?;
     let (connected, close_at) = window.update(cx, |c, _, _| (c.pairing.connected.clone(), c.pairing.close_at))?;
     ensure!(connected.as_deref() == Some("Check phone") && close_at.is_some(), "the window did not take the connection: {connected:?} {close_at:?}");
     let mut pairing_closed = false;

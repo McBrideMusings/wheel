@@ -104,35 +104,34 @@ impl Client {
         self.log(format!("transcript {agent}: copied reply {ix}, {} character(s)", markdown.chars().count()));
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(markdown));
     }
-    /// Speak reply `ix`, or stop it when it is the one being read (`ReadAloud.toggle`): the bridge
-    /// runs the Swift app's synthesizer and tells every window what it reads now (the
-    /// `read_aloud` event, the one writer of `self.read_aloud`).
-    pub fn read_aloud(&mut self, agent: &str, ix: usize) {
+    /// Speak reply `ix`, or stop it when it is the one being read: the app's one synthesizer
+    /// ([`crate::appkit::read_aloud`]), whose global every window observes into `self.read_aloud`.
+    pub fn read_aloud(&mut self, agent: &str, ix: usize, cx: &mut App) {
         let Some(t) = self.transcripts.get(agent) else { return };
         let (Some(row), Some(text)) = (t.rows.get(ix), t.message_markdown(ix)) else { return };
         let key = format!("{agent}#{}", row.id);
-        let answer = self.native.call(serde_json::json!({"op": "read_aloud", "text": text, "owner": agent, "key": key}));
+        let playing = crate::appkit::read_aloud::toggle(text, agent, key, cx);
         self.press(format!("play {agent} {ix}"));
-        self.log(format!("transcript {agent}: read aloud row {ix}: {}", answer["playing"]));
+        self.log(format!("transcript {agent}: read aloud row {ix}: {}", serde_json::json!(playing)));
     }
     /// The + menu's Read aloud: on, `agent`'s next finished reply is spoken; off stops
     /// its speech at once and leaves another conversation's alone (`AgentChat.readsAloud`).
-    pub fn toggle_reads_aloud(&mut self, agent: &str) {
+    pub fn toggle_reads_aloud(&mut self, agent: &str, cx: &mut App) {
         let on = !self.reads_aloud.remove(agent);
         if on {
             self.reads_aloud.insert(agent.to_owned());
         } else {
-            self.native.call(serde_json::json!({"op": "read_aloud_stop", "owner": agent}));
+            crate::appkit::read_aloud::stop(agent, cx);
         }
         self.press(format!("read-aloud {agent}"));
         self.log(format!("transcript {agent}: read aloud {}", if on { "on" } else { "off" }));
     }
     /// Speak `agent`'s turn that just ended, keyed by its last reply so that reply's play button
     /// shows stop while it is read.
-    pub(super) fn speak_last_reply(&mut self, agent: &str) {
+    pub(super) fn speak_last_reply(&mut self, agent: &str, cx: &mut App) {
         let Some((id, text)) = self.transcripts.get(agent).and_then(Transcript::last_reply) else { return };
-        let answer = self.native.call(serde_json::json!({"op": "read_aloud_speak", "text": text, "owner": agent, "key": format!("{agent}#{id}")}));
-        self.log(format!("transcript {agent}: read aloud the turn's reply: {}", answer["playing"]));
+        let playing = crate::appkit::read_aloud::speak(&text, agent, Some(format!("{agent}#{id}")), cx);
+        self.log(format!("transcript {agent}: read aloud the turn's reply: {}", serde_json::json!(playing)));
     }
     /// The copy button on reply `ix`, with RowView.swift's glyph and tooltip.
     pub(super) fn copy_button(&self, agent: &str, ix: usize, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -158,7 +157,7 @@ impl Client {
         div().id(gpui::ElementId::Name(format!("play-{agent}-{ix}").into())).relative().w(px(18.)).flex().justify_center().cursor_pointer().text_xs().text_color(rgb(0x8fa89b))
             .tooltip(tip(help))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
-                this.read_aloud(&a, ix);
+                this.read_aloud(&a, ix, cx);
                 cx.stop_propagation();
                 cx.notify();
             }))

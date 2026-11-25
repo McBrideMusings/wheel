@@ -136,10 +136,10 @@ impl Native {
     pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws}));
     }
-    /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts with the host-drawn
-    /// permission card of the pane's agent under it (`agent: true`).
+    /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts. The client draws
+    /// the permission card of the pane's agent above it.
     pub fn open_agent_view(&self, pane: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","agent":true,"space":space,"cwd":cwd,"ws":ws}));
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws}));
     }
     /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
     /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
@@ -251,9 +251,6 @@ pub enum BrowserEvent {
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
     /// A plugin pane drew its view or failed: `error` is the one-line message in the pane's header, or None.
     Plugin { pane: String, error: Option<String> },
-    /// The reply the app's synthesizer reads now (`read_aloud`), or None once it stops; sent to
-    /// every window on every change.
-    ReadAloud { playing: Option<String> },
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
@@ -286,8 +283,6 @@ mod tests {
         assert!(matches!(healthy, Frame::Event(BrowserEvent::Plugin { error: None, .. })));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
-        let stopped: Frame = serde_json::from_str(r#"{"event":"read_aloud","playing":null}"#).unwrap();
-        assert!(matches!(stopped, Frame::Event(BrowserEvent::ReadAloud { playing: None })));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

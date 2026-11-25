@@ -229,9 +229,17 @@ pub fn create_window(
                     .detach();
                 }
                 cx.observe_global::<appkit::motion::ReduceMotion>(|client: &mut view::Client, cx| client.set_reduce_motion(appkit::motion::on(cx))).detach();
+                // Every window's play buttons follow the reply the app's synthesizer reads.
+                cx.observe_global::<appkit::read_aloud::ReadAloud>(|client: &mut view::Client, cx| {
+                    if client.set_read_aloud(appkit::read_aloud::playing(cx)) {
+                        cx.notify();
+                    }
+                })
+                .detach();
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
                 client.set_reduce_motion(appkit::motion::on(cx));
+                client.set_read_aloud(appkit::read_aloud::playing(cx));
                 // A window opened after a choice in Settings › Speech starts with that choice.
                 if let Some(speech) = &speech {
                     let s = speech.read(cx);
@@ -646,7 +654,7 @@ pub fn deliver(cx: &mut App, window: view::ClientWindow, event: daemon::Event) -
         return Ok(false);
     }
     let (layout, plugins_due) = window.update(cx, |client, _, cx| {
-        let layout = client.on_event(event);
+        let layout = client.on_event(event, cx);
         cx.notify();
         (layout, client.take_plugins_due())
     })?;
