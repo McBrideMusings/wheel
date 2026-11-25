@@ -48,7 +48,7 @@ tracing.workspace = true
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 ureq = "3"
-wheel-proto = { path = "../proto", features = ["tls"] }
+wheel-proto = { path = "../proto", features = ["tls", "pairing"] }
 similar = "3.2.0"
 tokio-tungstenite = "0.28"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
