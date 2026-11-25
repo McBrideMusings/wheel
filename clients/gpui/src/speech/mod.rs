@@ -10,7 +10,8 @@ mod download;
 mod worker;
 
 use crate::dictation::{self, Dictation};
-use crate::speech_models::{self, PARAKEET, SILERO_VAD};
+use crate::speech_models::{self, SILERO_VAD};
+use crate::speech_settings::{self, Manage};
 use crate::voice::{self, Owner, Voice};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
@@ -39,6 +40,14 @@ pub enum Cmd {
     VoiceSent,
     /// The agent's finished reply, as Markdown.
     VoiceSpeak(String),
+    /// Settings › Speech: download (or redownload), remove, cancel, and pick the speech-to-text
+    /// model, each naming a model by its folder.
+    ModelDownload(&'static str),
+    ModelRemove(&'static str),
+    ModelCancel,
+    ModelChoose(&'static str),
+    /// Settings › Speech: speak a sample reply in voice mode's voice.
+    VoicePreview,
 }
 
 /// What a download is for.
@@ -46,6 +55,8 @@ pub enum Cmd {
 pub enum Purpose {
     Dictation,
     Voice,
+    /// One model, from Settings › Speech.
+    Settings,
 }
 
 /// What the audio thread, the worker and the download tell the entity.
@@ -121,18 +132,21 @@ pub fn entity(cx: &App) -> Option<Entity<Speech>> {
 pub struct Speech {
     pub dictation: Dictation,
     pub voice: Voice,
+    pub manage: Manage,
     tx: UnboundedSender<Msg>,
     worker: worker::Worker,
     mic: Option<audio::Mic>,
     voice_audio: Option<audio::VoiceAudio>,
     downloading: Option<(Purpose, Arc<AtomicBool>)>,
+    preview: Option<audio::Preview>,
     epoch: Instant,
 }
 
 impl Speech {
     fn new(tx: UnboundedSender<Msg>) -> Self {
         let worker = worker::Worker::start(tx.clone());
-        Speech { dictation: Dictation::default(), voice: Voice::default(), tx, worker, mic: None, voice_audio: None, downloading: None, epoch: Instant::now() }
+        let manage = Manage { chosen: speech_models::chosen(&speech_models::root()), ..Default::default() };
+        Speech { dictation: Dictation::default(), voice: Voice::default(), manage, tx, worker, mic: None, voice_audio: None, downloading: None, preview: None, epoch: Instant::now() }
     }
 
     /// Take one message; true when what windows show changed.
@@ -145,9 +159,10 @@ impl Speech {
 
     fn command(&mut self, cmd: Cmd) -> bool {
         let root = speech_models::root();
+        let stt = self.manage.chosen;
         match cmd {
             Cmd::DictationToggle { agent, window } => {
-                let effects = self.dictation.toggle(&agent, &window, PARAKEET.on_disk(&root));
+                let effects = self.dictation.toggle(&agent, &window, stt.on_disk(&root));
                 self.run_dictation(effects);
             }
             Cmd::DictationDownload => {
@@ -159,14 +174,14 @@ impl Speech {
                 self.run_dictation(effects);
             }
             Cmd::DictationPrepare => {
-                if PARAKEET.on_disk(&root) {
-                    self.worker.load(root);
+                if stt.on_disk(&root) {
+                    self.worker.load(root, stt);
                 }
                 return false;
             }
             Cmd::VoiceStart(owner) => {
                 log(format!("voice: open for {} in window {}", owner.agent, owner.window));
-                let effects = self.voice.start(owner, PARAKEET.on_disk(&root) && SILERO_VAD.on_disk(&root));
+                let effects = self.voice.start(owner, stt.on_disk(&root) && SILERO_VAD.on_disk(&root));
                 self.run_voice(effects);
             }
             Cmd::VoiceStop(owner) => {
@@ -199,6 +214,39 @@ impl Speech {
                 let effects = self.voice.speak(&reply);
                 self.run_voice(effects);
             }
+            Cmd::ModelDownload(folder) | Cmd::ModelRemove(folder) | Cmd::ModelChoose(folder) if speech_models::named(folder).is_none() => {
+                log(format!("settings: no model in folder {folder}"));
+                return false;
+            }
+            Cmd::ModelDownload(folder) => {
+                let effects = self.manage.download(speech_models::named(folder).expect("checked above"), &self.dictation, &self.voice);
+                self.run_manage(effects);
+            }
+            Cmd::ModelRemove(folder) => {
+                let effects = self.manage.remove(speech_models::named(folder).expect("checked above"), &self.dictation, &self.voice);
+                self.run_manage(effects);
+            }
+            Cmd::VoicePreview => {
+                if self.voice.phase != voice::Phase::Off {
+                    log("voice preview refused: voice mode is on".into());
+                    return false;
+                }
+                log("voice preview: speaking the sample reply".into());
+                self.preview.get_or_insert_with(audio::Preview::new).speak(speech_settings::SAMPLE_REPLY);
+                return false;
+            }
+            Cmd::ModelCancel => {
+                let effects = self.manage.cancel();
+                self.run_manage(effects);
+            }
+            Cmd::ModelChoose(folder) => {
+                let model = speech_models::named(folder).expect("checked above");
+                let effects = self.manage.choose(model, model.on_disk(&root), &self.dictation, &self.voice);
+                self.run_manage(effects);
+            }
+        }
+        if let Some(problem) = &self.manage.problem {
+            log(format!("settings: {problem}"));
         }
         true
     }
@@ -221,9 +269,12 @@ impl Speech {
                     self.run_voice(effects);
                 }
             }
+            // Settings downloads ask for no microphone.
+            Event::Permission { purpose: Purpose::Settings, .. } => return false,
             Event::Progress { purpose, fraction } => match purpose {
                 Purpose::Dictation => self.dictation.progress(fraction),
                 Purpose::Voice => self.voice.progress(fraction),
+                Purpose::Settings => self.manage.progress(fraction),
             },
             Event::Downloaded { purpose, result } => {
                 if self.downloading.as_ref().is_some_and(|(p, _)| *p == purpose) {
@@ -238,6 +289,10 @@ impl Speech {
                     Purpose::Voice => {
                         let effects = self.voice.downloaded(result);
                         self.run_voice(effects);
+                    }
+                    Purpose::Settings => {
+                        let effects = self.manage.downloaded(result, &self.dictation, &self.voice);
+                        self.run_manage(effects);
                     }
                 }
             }
@@ -299,16 +354,16 @@ impl Speech {
                 dictation::Effect::Finish { take } => {
                     let samples = self.mic.take().map(audio::Mic::stop).unwrap_or_default();
                     log(format!("dictation: {} samples ({:.1} s) to transcribe", samples.len(), samples.len() as f32 / 16_000.));
-                    self.worker.transcribe(take, samples, root.clone());
+                    self.worker.transcribe(take, samples, root.clone(), self.manage.chosen);
                 }
                 dictation::Effect::Discard => {
                     if let Some(mic) = self.mic.take() {
                         mic.stop();
                     }
                 }
-                dictation::Effect::Download => self.download(Purpose::Dictation, vec![PARAKEET]),
+                dictation::Effect::Download => self.download(Purpose::Dictation, vec![self.manage.chosen]),
                 dictation::Effect::CancelDownload => self.cancel_download(Purpose::Dictation),
-                dictation::Effect::Load => self.worker.load(root.clone()),
+                dictation::Effect::Load => self.worker.load(root.clone(), self.manage.chosen),
             }
         }
     }
@@ -316,7 +371,7 @@ impl Speech {
     fn run_voice(&mut self, effects: Vec<voice::Effect>) {
         for effect in effects {
             match effect {
-                voice::Effect::StartAudio { session } => self.worker.voice_begin(session, speech_models::root()),
+                voice::Effect::StartAudio { session } => self.worker.voice_begin(session, speech_models::root(), self.manage.chosen),
                 voice::Effect::StopAudio => {
                     if let Some(audio) = self.voice_audio.take() {
                         audio.stop();
@@ -325,7 +380,7 @@ impl Speech {
                     self.worker.voice_end();
                 }
                 voice::Effect::Download => {
-                    let missing = [PARAKEET, SILERO_VAD].into_iter().filter(|m| !m.on_disk(&speech_models::root())).collect();
+                    let missing = [self.manage.chosen, SILERO_VAD].into_iter().filter(|m| !m.on_disk(&speech_models::root())).collect();
                     self.download(Purpose::Voice, missing);
                 }
                 voice::Effect::CancelDownload => self.cancel_download(Purpose::Voice),
@@ -345,6 +400,31 @@ impl Speech {
                         audio.set_muted(on);
                     }
                     self.worker.voice_reset();
+                }
+            }
+        }
+    }
+
+    fn run_manage(&mut self, effects: Vec<speech_settings::Effect>) {
+        let root = speech_models::root();
+        for effect in effects {
+            match effect {
+                speech_settings::Effect::Download(model) => self.download(Purpose::Settings, vec![model]),
+                speech_settings::Effect::CancelDownload => self.cancel_download(Purpose::Settings),
+                speech_settings::Effect::Remove(model) => {
+                    if model == self.manage.chosen {
+                        self.worker.unload();
+                    }
+                    let result = speech_models::remove(&root, &model);
+                    log(format!("settings: removed {} from {}: {}", model.name, model.dir(&root).display(), result.as_ref().map_or_else(|e| e.clone(), |()| "done".into())));
+                    self.manage.problem = result.err();
+                }
+                speech_settings::Effect::Save(model) => {
+                    let result = speech_models::choose(&root, &model);
+                    log(format!("settings: speech to text is {} ({})", model.name, result.as_ref().map_or_else(|e| e.clone(), |()| "saved".into())));
+                    self.manage.problem = result.err();
+                    // The model chosen before is let go; the next press loads this one.
+                    self.worker.unload();
                 }
             }
         }
@@ -417,6 +497,11 @@ impl Speech {
     }
 
     fn download(&mut self, purpose: Purpose, models: Vec<speech_models::Model>) {
+        if let Some((running, _)) = &self.downloading {
+            log(format!("download for {purpose:?} refused: the one for {running:?} is running"));
+            let _ = self.tx.unbounded_send(Msg::Event(Event::Downloaded { purpose, result: Err("another download is running".into()) }));
+            return;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.downloading = Some((purpose, cancel.clone()));
         let root = speech_models::root();
@@ -469,7 +554,7 @@ mod tests {
         let (tx, mut rx) = unbounded::<Msg>();
         let worker = worker::Worker::start(tx.clone());
         let samples = audio::Mic::from_file(&clip).unwrap().stop();
-        worker.transcribe(1, samples, root.clone());
+        worker.transcribe(1, samples, root.clone(), speech_models::PARAKEET);
         match next(&mut rx, 120) {
             Some(Event::Dictated { take: 1, result: Ok(text), ms, seconds }) => {
                 eprintln!("dictated {text:?} from {seconds:.1} s in {ms} ms");
@@ -477,7 +562,7 @@ mod tests {
             }
             _ => panic!("no transcription"),
         }
-        worker.voice_begin(7, root.clone());
+        worker.voice_begin(7, root.clone(), speech_models::PARAKEET);
         assert!(matches!(next(&mut rx, 60), Some(Event::VoiceReady { session: 7, result: Ok(_) })));
         let audio = audio::VoiceAudio::start(Some(clip), true, 7, tx.clone(), worker.jobs()).unwrap();
         let (mut started, mut ended, mut said) = (false, false, None);

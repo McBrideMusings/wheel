@@ -1,9 +1,9 @@
-//! The thread that runs the models: Parakeet TDT 0.6b v3 through sherpa-onnx's transducer for
+//! The thread that runs the models: the chosen Parakeet TDT 0.6b (v3 or v2) through sherpa-onnx's transducer for
 //! speech to text, and Silero VAD for where a voice turn ends. One thread holds both, so a model is
 //! loaded once and never runs twice at once; the main thread and the audio threads hand it work
 //! over a channel and hear back through the speech entity's.
 use super::{Event, Msg};
-use crate::speech_models::{PARAKEET, SILERO_VAD};
+use crate::speech_models::{Model, SILERO_VAD};
 use futures::channel::mpsc::UnboundedSender;
 use sherpa_rs::silero_vad::{SileroVad, SileroVadConfig};
 use sherpa_rs::transducer::{TransducerConfig, TransducerRecognizer};
@@ -26,9 +26,11 @@ const PREROLL: usize = RATE as usize * 4 / 10;
 const KEPT: usize = RATE as usize * 2;
 
 pub enum Job {
-    Load { root: PathBuf },
-    Transcribe { take: u64, samples: Vec<f32>, root: PathBuf },
-    VoiceBegin { session: u64, root: PathBuf },
+    Load { root: PathBuf, model: Model },
+    Transcribe { take: u64, samples: Vec<f32>, root: PathBuf, model: Model },
+    VoiceBegin { session: u64, root: PathBuf, model: Model },
+    /// Let go of a loaded speech-to-text model, whose folder is going.
+    Unload,
     VoiceAudio { session: u64, samples: Vec<f32> },
     /// Drop a turn half heard (mute).
     VoiceReset,
@@ -51,14 +53,17 @@ impl Worker {
     pub fn jobs(&self) -> Sender<Job> {
         self.jobs.clone()
     }
-    pub fn load(&self, root: PathBuf) {
-        let _ = self.jobs.send(Job::Load { root });
+    pub fn load(&self, root: PathBuf, model: Model) {
+        let _ = self.jobs.send(Job::Load { root, model });
     }
-    pub fn transcribe(&self, take: u64, samples: Vec<f32>, root: PathBuf) {
-        let _ = self.jobs.send(Job::Transcribe { take, samples, root });
+    pub fn transcribe(&self, take: u64, samples: Vec<f32>, root: PathBuf, model: Model) {
+        let _ = self.jobs.send(Job::Transcribe { take, samples, root, model });
     }
-    pub fn voice_begin(&self, session: u64, root: PathBuf) {
-        let _ = self.jobs.send(Job::VoiceBegin { session, root });
+    pub fn voice_begin(&self, session: u64, root: PathBuf, model: Model) {
+        let _ = self.jobs.send(Job::VoiceBegin { session, root, model });
+    }
+    pub fn unload(&self) {
+        let _ = self.jobs.send(Job::Unload);
     }
     pub fn voice_reset(&self) {
         let _ = self.jobs.send(Job::VoiceReset);
@@ -70,7 +75,7 @@ impl Worker {
 
 #[derive(Default)]
 struct State {
-    recognizer: Option<(PathBuf, TransducerRecognizer)>,
+    recognizer: Option<(PathBuf, Model, TransducerRecognizer)>,
     /// The voice session the VAD listens for, the VAD, samples short of a window, and whether the
     /// VAD heard speech in the last window.
     session: Option<u64>,
@@ -89,20 +94,20 @@ fn run(jobs: Receiver<Job>, events: UnboundedSender<Msg>) {
     };
     while let Ok(job) = jobs.recv() {
         match job {
-            Job::Load { root } => {
-                if let Err(why) = state.recognizer(&root) {
+            Job::Load { root, model } => {
+                if let Err(why) = state.recognizer(&root, &model) {
                     eprintln!("wheel-gpui: speech: {why}");
                 }
             }
-            Job::Transcribe { take, samples, root } => {
+            Job::Transcribe { take, samples, root, model } => {
                 let seconds = samples.len() as f32 / RATE as f32;
                 let started = Instant::now();
-                let result = state.recognizer(&root).map(|r| transcribe(r, &samples));
+                let result = state.recognizer(&root, &model).map(|r| transcribe(r, &samples));
                 send(Event::Dictated { take, result, ms: started.elapsed().as_millis(), seconds });
             }
-            Job::VoiceBegin { session, root } => {
+            Job::VoiceBegin { session, root, model } => {
                 let started = Instant::now();
-                let result = state.recognizer(&root).map(|_| ()).and_then(|()| vad(&root)).map(|vad| {
+                let result = state.recognizer(&root, &model).map(|_| ()).and_then(|()| vad(&root)).map(|vad| {
                     state.vad = Some((root, vad));
                     state.session = Some(session);
                     state.listen_afresh();
@@ -122,6 +127,7 @@ fn run(jobs: Receiver<Job>, events: UnboundedSender<Msg>) {
                 }
                 state.listen_afresh();
             }
+            Job::Unload => state.recognizer = None,
             Job::VoiceEnd => {
                 state.session = None;
                 state.vad = None;
@@ -139,15 +145,15 @@ impl State {
         self.kept_from = 0;
     }
 
-    /// Parakeet, loaded from `root` (again when the folder changed).
-    fn recognizer(&mut self, root: &Path) -> Result<&mut TransducerRecognizer, String> {
-        if self.recognizer.as_ref().is_none_or(|(from, _)| from != root) {
+    /// `model`, loaded from `root` (again when the folder or the model changed).
+    fn recognizer(&mut self, root: &Path, model: &Model) -> Result<&mut TransducerRecognizer, String> {
+        if self.recognizer.as_ref().is_none_or(|(from, m, _)| from != root || m != model) {
             self.recognizer = None;
-            if !PARAKEET.on_disk(root) {
-                return Err(format!("{} is not in {}", PARAKEET.name, PARAKEET.dir(root).display()));
+            if !model.on_disk(root) {
+                return Err(format!("{} is not in {}", model.name, model.dir(root).display()));
             }
             let started = Instant::now();
-            let path = |file: &str| PARAKEET.path(root, file).to_string_lossy().into_owned();
+            let path = |file: &str| model.path(root, file).to_string_lossy().into_owned();
             let recognizer = TransducerRecognizer::new(TransducerConfig {
                 encoder: path("encoder.int8.onnx"),
                 decoder: path("decoder.int8.onnx"),
@@ -161,11 +167,11 @@ impl State {
                 provider: Some(PROVIDER.into()),
                 ..Default::default()
             })
-            .map_err(|e| format!("{} did not load: {e}", PARAKEET.name))?;
-            eprintln!("wheel-gpui: speech: {} loaded in {} ms ({THREADS} threads)", PARAKEET.name, started.elapsed().as_millis());
-            self.recognizer = Some((root.to_owned(), recognizer));
+            .map_err(|e| format!("{} did not load: {e}", model.name))?;
+            eprintln!("wheel-gpui: speech: {} loaded in {} ms ({THREADS} threads)", model.name, started.elapsed().as_millis());
+            self.recognizer = Some((root.to_owned(), *model, recognizer));
         }
-        Ok(&mut self.recognizer.as_mut().expect("loaded above").1)
+        Ok(&mut self.recognizer.as_mut().expect("loaded above").2)
     }
 
     /// Feed the VAD; a start of speech and each finished turn go back, the turn transcribed.
@@ -190,7 +196,7 @@ impl State {
                 let seconds = turn.len() as f32 / RATE as f32;
                 let started = Instant::now();
                 let result = match self.recognizer.as_mut() {
-                    Some((_, r)) => Ok(transcribe(r, &turn)),
+                    Some((_, _, r)) => Ok(transcribe(r, &turn)),
                     None => Err("the speech model is not loaded".into()),
                 };
                 send(Event::Said { session, result, ms: started.elapsed().as_millis(), seconds });

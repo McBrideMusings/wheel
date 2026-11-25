@@ -5,7 +5,8 @@ import Observation
 internal import FluidAudio
 
 /// Speech to text for the composer, on this device: the microphone records while the person
-/// holds the turn, Parakeet TDT 0.6b v3 (FluidAudio, `docs/voice-mode/stt-engines.md`) turns the
+/// holds the turn, the Parakeet TDT 0.6b chosen in Settings › Speech (v3 or v2, FluidAudio,
+/// `docs/voice-mode/stt-engines.md`) turns the
 /// recording into text, and the text goes into the draft of the conversation that asked. No audio
 /// leaves the device and nothing here talks to wheeld; the person sends the draft as typed text.
 /// One recorder for the app: starting in one conversation while another records stops nothing,
@@ -34,9 +35,11 @@ public final class Dictation {
     }
 
     /// What the download fetches, named before it starts (ADR-0013).
-    public static let modelName = "Parakeet TDT 0.6b v3"
-    public static let modelSize = "469 MB"
-    public static let modelSource = "huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml"
+    public nonisolated static var modelName: String { SpeechModels.chosenModel.name }
+    public nonisolated static var modelSize: String { SpeechModels.chosenModel.size }
+    public nonisolated static var modelSource: String { SpeechModels.chosenModel.source }
+    /// The chosen model's FluidAudio version.
+    nonisolated static var version: AsrModelVersion { SpeechModels.version(of: SpeechModels.chosenModel) }
 
     public private(set) var phase: Phase = .idle
     /// The conversation recording, asked or downloading for; nil while idle.
@@ -49,13 +52,15 @@ public final class Dictation {
     /// Where the model lives: FluidAudio's own cache (`~/Library/Application Support/FluidAudio/Models`
     /// on the Mac, the app container's on the phone), or `WHEEL_DICTATION_MODELS` for a check that
     /// must start without it.
-    public nonisolated static var modelFolder: URL {
-        let standard = AsrModels.defaultCacheDirectory(for: .v3)
+    public nonisolated static var modelFolder: URL { modelFolder(for: version) }
+
+    nonisolated static func modelFolder(for version: AsrModelVersion) -> URL {
+        let standard = AsrModels.defaultCacheDirectory(for: version)
         guard let models = ProcessInfo.processInfo.environment["WHEEL_DICTATION_MODELS"], !models.isEmpty else { return standard }
         return URL(fileURLWithPath: models).appendingPathComponent(standard.lastPathComponent)
     }
 
-    public var modelOnDisk: Bool { AsrModels.modelsExist(at: Self.modelFolder, version: .v3) }
+    public var modelOnDisk: Bool { AsrModels.modelsExist(at: Self.modelFolder, version: Self.version) }
 
     @ObservationIgnored private var loading: Task<AsrManager, any Error>?
     @ObservationIgnored private var recorder: Recorder?
@@ -91,7 +96,7 @@ public final class Dictation {
         UILog.info("dictation: downloading \(Self.modelName) from \(Self.modelSource) into \(Self.modelFolder.path)")
         Task {
             do {
-                _ = try await AsrModels.download(to: Self.modelFolder, version: .v3) { progress in
+                _ = try await AsrModels.download(to: Self.modelFolder, version: Self.version) { progress in
                     Task { @MainActor in
                         if case .downloading = Dictation.shared.phase { Dictation.shared.phase = .downloading(progress.fractionCompleted) }
                     }
@@ -122,12 +127,18 @@ public final class Dictation {
         guard loading == nil, modelOnDisk else { return }
         loading = Task.detached(priority: .utility) {
             let started = Date()
-            let models = try await AsrModels.load(from: Dictation.modelFolder, version: .v3)
+            let models = try await AsrModels.load(from: Dictation.modelFolder, version: Dictation.version)
             let asr = AsrManager(config: .default)
             try await asr.loadModels(models)
             await UILog.info("dictation: model loaded in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
             return asr
         }
+    }
+
+    /// Let go of the loaded model (another was chosen, or its folder goes): the next use loads the chosen one.
+    func forgetModel() {
+        loading?.cancel()
+        loading = nil
     }
 
     /// The loaded model, for voice mode, which transcribes each turn with the same one.

@@ -308,6 +308,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, agent_pane, agent_name, agent_rect, cli_path, agent_report) = agent_turns(run, rects.clone(), cx).await?;
     let (run, dictation_report) = dictation(run, agent_name.clone(), cx).await?;
     let (run, voice_report) = voice_mode(run, agent_pane.clone(), agent_name.clone(), cx).await?;
+    let (run, speech_settings_report) = speech_settings(run, cx).await?;
+    eprintln!("check: settings.speech {speech_settings_report}");
     // In the log too, since a later step's failure leaves no report.json.
     eprintln!("check: composer.dictation {dictation_report}\ncheck: composer.voice {voice_report}");
     let (run, markdown_report) = markdown_reply(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), cx).await?;
@@ -2405,6 +2407,87 @@ impl Drop for SpeechCleanup {
             }
         }
     }
+}
+
+/// Settings › Speech (wheel-7w13), in a scratch speech folder: every model listed with its size,
+/// source and folder; picking a model on disk makes it the choice and saves it; picking one that is
+/// not offers its download and Cancel withdraws it; Remove frees a model's folder; Silero VAD
+/// downloads for real (0.6 MB, hash-checked) and lands on disk. The speech-to-text models stand in
+/// as sparse files of their catalogue sizes, so no 600 MB download runs.
+async fn speech_settings(run: Run, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+    use wheel_gpui::speech::{self, Cmd};
+    use wheel_gpui::speech_models::{self, PARAKEET, PARAKEET_V2, SILERO_VAD};
+    let Run { bridge, connection, layouts, window, native, markers, output } = run;
+    let dir = std::env::temp_dir().join(format!("wheel-gpui-speech-settings-{}", std::process::id()));
+    let root = dir.join("models");
+    std::fs::create_dir_all(&root)?;
+    let _cleanup = SpeechCleanup(dir.clone());
+    // SAFETY: as in SpeechCleanup.
+    unsafe { std::env::set_var("WHEEL_SPEECH_MODELS", &root) };
+    let state = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["speech_models"].clone())?) };
+    async fn until(window: ClientWindow, cx: &mut AsyncApp, done: impl Fn(&Value) -> bool) -> Result<Value> {
+        let mut last = Value::Null;
+        for _ in 0..200 {
+            draw(window, None, cx)?;
+            last = window.update(cx, |c, _, _| c.state_json()["speech_models"].clone())?;
+            if done(&last) {
+                break;
+            }
+            tick(cx, 50).await;
+        }
+        Ok(last)
+    }
+    let chosen_before = state(cx)?["chosen"].clone();
+    window.update(cx, |c, _, _| {
+        c.open_settings();
+        c.settings_tab(wheel_gpui::settings::Tab::General);
+    })?;
+    draw(window, Some(output.join("settings-general.png")), cx)?;
+    window.update(cx, |c, _, _| c.settings_tab(wheel_gpui::settings::Tab::Speech))?;
+    draw(window, Some(output.join("settings-speech-empty.png")), cx)?;
+    let listed = state(cx)?;
+    let models = listed["models"].as_array().cloned().unwrap_or_default();
+    ensure!(models.len() == 3 && models.iter().all(|m| m["on_disk"] == false), "Settings › Speech listed {listed}");
+    for (m, want) in models.iter().zip([PARAKEET, PARAKEET_V2, SILERO_VAD]) {
+        ensure!(m["name"] == want.name && m["size"] == want.size().as_str() && m["source"] == want.source && m["dir"] == want.dir(&root).to_string_lossy().as_ref(), "a row names {m}, not {}", want.described());
+    }
+    // v2 on disk: picking it makes it the choice, kept in the speech folder.
+    for file in PARAKEET_V2.files {
+        std::fs::create_dir_all(PARAKEET_V2.dir(&root))?;
+        std::fs::File::create(PARAKEET_V2.path(&root, file.name))?.set_len(file.bytes)?;
+    }
+    if chosen_before == PARAKEET_V2.folder {
+        speech::send(Cmd::ModelChoose(PARAKEET.folder));
+    }
+    speech::send(Cmd::ModelChoose(PARAKEET_V2.folder));
+    let chose = until(window, cx, |s| s["chosen"] == PARAKEET_V2.folder).await?;
+    ensure!(chose["chosen"] == PARAKEET_V2.folder && speech_models::chosen(&root) == PARAKEET_V2, "picking v2 on disk did not choose it: {chose}");
+    draw(window, Some(output.join("settings-speech-v2.png")), cx)?;
+    // v3 is not on disk: picking it offers its download and keeps v2; Cancel withdraws the offer.
+    speech::send(Cmd::ModelChoose(PARAKEET.folder));
+    let offered = until(window, cx, |s| s["offered"] == PARAKEET.folder).await?;
+    ensure!(offered["offered"] == PARAKEET.folder && offered["chosen"] == PARAKEET_V2.folder, "picking v3 off disk offered nothing: {offered}");
+    draw(window, Some(output.join("settings-speech-offer.png")), cx)?;
+    speech::send(Cmd::ModelCancel);
+    let withdrawn = until(window, cx, |s| s["offered"].is_null()).await?;
+    ensure!(withdrawn["offered"].is_null() && withdrawn["chosen"] == PARAKEET_V2.folder, "Cancel left {withdrawn}");
+    // Silero VAD downloads, hash-checked, into the scratch folder.
+    speech::send(Cmd::ModelDownload(SILERO_VAD.folder));
+    let vad = until(window, cx, |s| s["downloading"].is_null() && s["models"][2]["on_disk"] == true).await?;
+    ensure!(vad["models"][2]["on_disk"] == true && vad["problem"].is_null() && SILERO_VAD.on_disk(&root), "Silero VAD did not land: {vad}");
+    draw(window, Some(output.join("settings-speech-downloaded.png")), cx)?;
+    // Remove frees the folder.
+    speech::send(Cmd::ModelRemove(SILERO_VAD.folder));
+    let removed = until(window, cx, |s| s["models"][2]["on_disk"] == false).await?;
+    ensure!(!SILERO_VAD.dir(&root).exists() && removed["problem"].is_null(), "Remove left {}: {removed}", SILERO_VAD.dir(&root).display());
+    // The choice of the app outside the check comes back.
+    let back = if chosen_before == PARAKEET_V2.folder { PARAKEET_V2 } else { PARAKEET };
+    speech::send(Cmd::ModelChoose(back.folder));
+    until(window, cx, |s| s["chosen"] == back.folder || s["offered"] == back.folder).await?;
+    speech::send(Cmd::ModelCancel);
+    window.update(cx, |c, _, _| c.close_settings())?;
+    let report = json!({"listed": models.len(), "chose": chose["chosen"], "offered": offered["offered"], "downloaded": vad["models"][2]["on_disk"], "removed": !SILERO_VAD.dir(&root).exists()});
+    Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
 
 /// Dictation (wheel-e1xk.2): with no model on the Mac the microphone shows what the download

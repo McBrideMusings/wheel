@@ -7,7 +7,6 @@
 use super::*;
 use crate::dictation::Dictation;
 use crate::speech::{self, Cmd};
-use crate::speech_models::PARAKEET;
 use crate::voice::{self, Phase, Session, Voice};
 
 /// The orb's full width on the layer, and on the pill.
@@ -27,13 +26,14 @@ const BOTTOM: f32 = 48.;
 pub(super) struct SpeechState {
     pub dictation: Dictation,
     pub voice: Voice,
+    pub manage: crate::speech_settings::Manage,
 }
 
 impl Client {
     /// Speech changed: text dictated in this window goes into its draft, a turn said to this
     /// window's session goes to the agent, and a session whose voice moved elsewhere ends.
     /// Returns whether this window draws anything that changed.
-    pub fn on_speech(&mut self, dictation: &Dictation, voice: &Voice) -> bool {
+    pub fn on_speech(&mut self, dictation: &Dictation, voice: &Voice, manage: &crate::speech_settings::Manage) -> bool {
         let window = self.window_id().to_owned();
         if let Some(heard) = &dictation.heard
             && self.speech.dictation.heard.as_ref().map(|h| h.id) != Some(heard.id)
@@ -44,8 +44,8 @@ impl Client {
             self.set_draft(&heard.owner, crate::dictation::dictated(&draft, &heard.text));
         }
         // Only the level moved: a window not showing the orb draws nothing new.
-        let level_only = self.speech.dictation == *dictation && self.speech.voice.same_but_level(voice);
-        self.speech = SpeechState { dictation: dictation.clone(), voice: voice.clone() };
+        let level_only = self.speech.dictation == *dictation && self.speech.voice.same_but_level(voice) && self.speech.manage == *manage;
+        self.speech = SpeechState { dictation: dictation.clone(), voice: voice.clone(), manage: manage.clone() };
         if let Some(s) = self.voice.as_mut() {
             if s.moved_away(&window, voice) {
                 // Voice is another window's now: this layer goes, and the audio stays with it.
@@ -77,12 +77,12 @@ impl Client {
 
     /// The line under `agent`'s composer while dictation works for it.
     pub fn dictation_note(&self, agent: &str) -> Option<String> {
-        self.speech.dictation.note(agent, &PARAKEET)
+        self.speech.dictation.note(agent, &self.speech.manage.chosen)
     }
 
     /// The download prompt's text, as drawn.
     pub fn dictation_prompt_text(&self) -> String {
-        crate::dictation::prompt(&PARAKEET, &crate::speech_models::root())
+        crate::dictation::prompt(&self.speech.manage.chosen, &crate::speech_models::root())
     }
 
     /// The microphone in `agent`'s composer.
@@ -280,7 +280,7 @@ impl Client {
                 .child(div().text_xs().text_color(rgb(0x7fa6e8)).child(context)))
             .child(button("panes", "square.on.square", "▢", false, cx));
         let root = crate::speech_models::root();
-        let models = [PARAKEET, crate::speech_models::SILERO_VAD].iter().map(|m| m.described()).collect::<Vec<_>>().join(" and ");
+        let models = [self.speech.manage.chosen, crate::speech_models::SILERO_VAD].iter().map(|m| m.described()).collect::<Vec<_>>().join(" and ");
         // The middle gives up room first, so the header and the bottom row stay in a short pane.
         let middle = div().flex_1().min_h_0().overflow_hidden().flex().flex_col().items_center().justify_center().gap_2()
             .children(card.map(|title| div().id(gpui::ElementId::Name(format!("voice-card-{agent}").into())).relative().px_3().py_2().rounded_md().bg(rgb(0x22302a)).border_1().border_color(rgb(0x3d5247))
