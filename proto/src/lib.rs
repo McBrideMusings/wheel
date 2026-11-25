@@ -12,6 +12,8 @@ mod finder;
 mod ops;
 #[cfg(feature = "tls")]
 pub mod net;
+#[cfg(feature = "pairing")]
+pub mod pairing;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub use finder::TextFinder;

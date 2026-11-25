@@ -295,6 +295,9 @@ enum RemoteCommand {
         /// is one, else the first IP.
         #[arg(long)]
         address: Option<String>,
+        /// Also print the code as a QR in Unicode blocks, below the JSON line, for a phone to scan.
+        #[arg(long)]
+        qr: bool,
     },
     /// List the paired devices: id, name, when each last connected and whether it is connected now.
     Devices {
@@ -2616,8 +2619,8 @@ async fn remote_info(conn: &mut Conn) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The pairing code for a new token: the JSON a phone reads.
-async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fail> {
+/// The pairing code for a new token: the JSON a phone reads, and with `qr` the QR it scans.
+async fn remote_pair(conn: &mut Conn, address: Option<String>, qr: bool) -> Result<(), Fail> {
     let req = conn.req();
     let ServerMsg::Remote {
         listen,
@@ -2640,33 +2643,7 @@ async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fai
             "remote access did not start: {problem}"
         )));
     }
-    let is_ip = |a: &str| {
-        a.contains(':')
-            || a.split('.').count() == 4 && a.split('.').all(|p| p.parse::<u8>().is_ok())
-    };
-    let tailscale = |a: &String| {
-        let parts: Vec<u8> = a.split('.').filter_map(|p| p.parse().ok()).collect();
-        parts.len() == 4
-            && a.split('.').count() == 4
-            && parts[0] == 100
-            && (64..=127).contains(&parts[1])
-    };
-    let address = match address {
-        Some(a) if addresses.contains(&a) => a,
-        Some(a) => {
-            return Err(Fail::Other(format!(
-                "{a} is not an address wheeld listens on; they are: {}",
-                addresses.join(", ")
-            )))
-        }
-        None => addresses
-            .iter()
-            .find(|a| tailscale(a))
-            .or_else(|| addresses.iter().find(|a| is_ip(a)))
-            .or(addresses.first())
-            .cloned()
-            .ok_or_else(|| Fail::Other("the daemon reports no address".into()))?,
-    };
+    let address = wheel_proto::pairing::choose_address(&addresses, address.as_deref()).map_err(Fail::Other)?;
     let req = conn.req();
     let ServerMsg::Pairing { token, .. } = conn
         .call(ClientMsg::PairingIssue { req: Some(req) }, req)
@@ -2674,17 +2651,11 @@ async fn remote_pair(conn: &mut Conn, address: Option<String>) -> Result<(), Fai
     else {
         return Err(Fail::Other("unexpected reply to pairing_issue".into()));
     };
-    let host = if address.contains(':') {
-        format!("[{address}]")
-    } else {
-        address
-    };
-    let code = serde_json::json!({
-        "cert_sha256": fingerprint,
-        "token": token,
-        "url": format!("wss://{host}:{port}/ws"),
-    });
+    let code = wheel_proto::pairing::code(&fingerprint, &token, &address, port);
     println!("{code}");
+    if qr {
+        print!("{}", wheel_proto::pairing::qr(&code).map_err(Fail::Other)?);
+    }
     Ok(())
 }
 
@@ -6907,7 +6878,7 @@ async fn run() -> ExitCode {
             }
             Command::Window(command) => window(&mut conn, command).await,
             Command::Remote(RemoteCommand::Info) => remote_info(&mut conn).await,
-            Command::Remote(RemoteCommand::Pair { address }) => remote_pair(&mut conn, address).await,
+            Command::Remote(RemoteCommand::Pair { address, qr }) => remote_pair(&mut conn, address, qr).await,
             Command::Remote(RemoteCommand::Devices { json }) => remote_devices(&mut conn, json).await,
             Command::Remote(RemoteCommand::Revoke { id }) => remote_revoke(&mut conn, id).await,
             Command::Push(PushCommand::Test { event }) => push_test(&mut conn, event).await,

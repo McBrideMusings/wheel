@@ -58,6 +58,21 @@ struct Args {
     /// beside the bundled wheeld, so the app can tell whether the running one differs.
     #[arg(long)]
     source_hash: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Ask the wheeld running at `--listen` (its token from `--token-file` or this instance's
+    /// support directory) for a one-time pairing code, and print it as JSON and as a terminal QR:
+    /// what a device pairs with when this host has no screen and no `wheel`.
+    Pair {
+        /// The address the code names, one of those `wheel remote info` lists; a Tailscale
+        /// address when there is one, else the first IP.
+        #[arg(long)]
+        address: Option<String>,
+    },
 }
 
 fn home() -> PathBuf {
@@ -100,10 +115,91 @@ fn main() -> anyhow::Result<()> {
         println!("{}", env!("WHEELD_SOURCE_HASH"));
         return Ok(());
     }
+    if let Some(Command::Pair { address }) = args.command {
+        // Where the setting that turns remote access on lives, for the error when it is off.
+        let setting = format!(
+            "{} in {}",
+            match args.instance == wheel_proto::DEFAULT_INSTANCE {
+                true => "remote.listen".to_string(),
+                false => format!("remote.{}.listen", args.instance),
+            },
+            args.machine_file.unwrap_or_else(|| home().join(".wheel/wheel.toml")).display()
+        );
+        let token_file = match args.token_file {
+            Some(path) => path,
+            None => match args.support_dir {
+                Some(dir) => dir,
+                None => wheel_proto::support_dir(&args.instance)?,
+            }
+            .join("token"),
+        };
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(pair(&args.listen, &token_file, address, &setting));
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(run(args))
+}
+
+/// `wheeld pair`: a client of the running wheeld, asking it the two things a pairing code holds.
+async fn pair(
+    listen: &str,
+    token_file: &Path,
+    address: Option<String>,
+    setting: &str,
+) -> anyhow::Result<()> {
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use tokio_tungstenite::tungstenite::Message;
+    use wheel_proto::{ClientMsg, ServerMsg};
+    let token = std::fs::read_to_string(token_file)
+        .map_err(|e| anyhow::anyhow!("read token from {}: {e}", token_file.display()))?;
+    let url = format!("ws://{listen}/ws?token={}", token.trim());
+    let wait = std::time::Duration::from_secs(10);
+    let (mut ws, _) = tokio::time::timeout(wait, tokio_tungstenite::connect_async(url))
+        .await
+        .map_err(|_| anyhow::anyhow!("wheeld at {listen} took no connection within 10s"))?
+        .map_err(|e| anyhow::anyhow!("connect to wheeld at {listen}: {e}"))?;
+    let mut call = async |msg: ClientMsg, req: u64| -> anyhow::Result<ServerMsg> {
+        ws.send(Message::Text(serde_json::to_string(&msg)?.into())).await?;
+        tokio::time::timeout(wait, async {
+            while let Some(frame) = ws.next().await {
+                let Message::Text(text) = frame? else { continue };
+                // Frames this client did not ask for, such as pushed events, are skipped.
+                let Ok(reply) = serde_json::from_str::<ServerMsg>(&text) else { continue };
+                if reply.req() != Some(req) {
+                    continue;
+                }
+                if let ServerMsg::Error { message, .. } = reply {
+                    anyhow::bail!("{message}");
+                }
+                return Ok(reply);
+            }
+            anyhow::bail!("wheeld closed the connection")
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("no reply from wheeld within 10s"))?
+    };
+    let ServerMsg::Remote { listen: remote, addresses, port, fingerprint, problem, .. } =
+        call(ClientMsg::RemoteInfo { req: Some(1) }, 1).await?
+    else {
+        anyhow::bail!("unexpected reply to remote_info");
+    };
+    anyhow::ensure!(remote.is_some(), "remote access is off: set {setting}");
+    if let Some(problem) = problem {
+        anyhow::bail!("remote access did not start: {problem}");
+    }
+    let address =
+        wheel_proto::pairing::choose_address(&addresses, address.as_deref()).map_err(anyhow::Error::msg)?;
+    let ServerMsg::Pairing { token, .. } = call(ClientMsg::PairingIssue { req: Some(2) }, 2).await? else {
+        anyhow::bail!("unexpected reply to pairing_issue");
+    };
+    let code = wheel_proto::pairing::code(&fingerprint, &token, &address, port);
+    println!("{code}");
+    print!("{}", wheel_proto::pairing::qr(&code).map_err(anyhow::Error::msg)?);
+    Ok(())
 }
 
 async fn run(args: Args) -> anyhow::Result<()> {
