@@ -8,6 +8,9 @@ struct PairView: View {
     let model: PhoneModel
     /// Opened from Add Server…, beside the servers already paired.
     var adding = false
+    /// Set when `model` is a paired server that refuses this phone: the other servers stay reachable,
+    /// and this one can be forgotten instead of paired again.
+    var servers: ServerList?
     @State private var pasted = ""
     @State private var problem: String?
     @State private var scanning = false
@@ -31,6 +34,16 @@ struct PairView: View {
                 }
                 if let message {
                     Section { Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
+                }
+                if let servers, servers.servers.contains(where: { $0 === model }) {
+                    Section {
+                        ForEach(servers.servers.filter { $0 !== model }) { other in
+                            Button { servers.show(other) } label: { ServerMark(model: other) }
+                                .accessibilityIdentifier("show server \(other.serverName)")
+                        }
+                        Button("Forget \(model.serverName)", role: .destructive) { servers.remove(model) }
+                            .accessibilityIdentifier("forget server")
+                    }
                 }
             }
             .navigationTitle(adding ? "Add Server" : "Pair with a Mac")

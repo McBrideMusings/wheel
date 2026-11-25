@@ -82,7 +82,22 @@ sleep 3
   || fail "client ls after beta (alpha '$(phone_view alpha)', beta '$(phone_view beta)')"
 xcrun simctl io "$UDID" screenshot "$SHOTS/beta-shown.png" > /dev/null 2>&1
 
+# Pairing alpha again replaces its entry in place: still two servers, and the relaunch reads two.
+launch SIMCTL_CHILD_WHEEL_PAIR_JSON="$(w alpha remote pair --address 127.0.0.1)"
+wait_log "paired again; the new pairing replaces it" && pass "a new code for alpha replaces alpha's pairing" || fail "a new code for alpha replaces alpha's pairing"
+launch
+wait_log "servers: 2 paired" && pass "after the re-pair the Keychain holds two pairings" || fail "after the re-pair (log: $(grep 'servers:' "$(LOG)" | tail -1))"
+
 kill "$PID_beta"; sleep 4
 xcrun simctl io "$UDID" screenshot "$SHOTS/beta-down.png" > /dev/null 2>&1
+
+# alpha revokes the phone while it is shown: the pairing screen offers beta (down) and Forget alpha.
+DEV=$(w alpha remote devices | grep -o '^d[0-9]*' | sort -V | tail -1)  # the newest: the re-pair made it
+launch SIMCTL_CHILD_WHEEL_SHOW_SESSION=alpha/Main
+wait_log "session bar: tap alpha/Main" && w alpha remote revoke "$DEV" > /dev/null
+wait_log "refused this phone's credential" && pass "alpha refuses the revoked phone" || fail "alpha refuses the revoked phone"
+sleep 2
+xcrun simctl io "$UDID" screenshot "$SHOTS/alpha-revoked.png" > /dev/null 2>&1
+
 
 [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS FAILED"; exit 1; }

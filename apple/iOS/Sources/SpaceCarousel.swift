@@ -989,8 +989,8 @@ private struct ServerPrompts: ViewModifier {
             .sheet(isPresented: $adding, onDismiss: { servers.cancelAdding() }) {
                 PairView(model: servers.adding, adding: true)
             }
-            // A server paired from Add Server… is shown; its sheet is done.
-            .onChange(of: servers.servers.count) { _, _ in adding = false }
+            // A code from Add Server… connected (a new server, or one held paired again): a fresh model takes its place, and the sheet is done.
+            .onChange(of: ObjectIdentifier(servers.adding)) { _, _ in adding = false }
             .alert("Forget \(forgetting?.serverName ?? "")?", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } })) {
                 Button("Forget", role: .destructive) { if let forgetting { servers.remove(forgetting) } }
                 Button("Cancel", role: .cancel) {}

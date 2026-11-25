@@ -16,7 +16,7 @@ struct PhoneApp: App {
                     SpaceCarousel(model: model, servers: servers)
                 } else {
                     // A server that refuses this phone is paired again in place; with none paired, the first one is.
-                    PairView(model: servers.shown ?? servers.adding)
+                    PairView(model: servers.shown ?? servers.adding, servers: servers)
                 }
             }
             // Voice mode's turns and its audio's own stops reach the shown server's session wherever the pane is.

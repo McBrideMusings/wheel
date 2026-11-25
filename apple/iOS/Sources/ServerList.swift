@@ -72,12 +72,25 @@ final class ServerList {
         model.selectSession(session)
     }
 
-    /// A tapped notification's space and pane: shown on the server holding that space.
+    /// A tapped notification's space and pane: shown on the server holding that space. At a cold
+    /// start no server has listed its spaces yet, so the tap waits for the layout that names it.
     func focus(space: String, pane: String) {
-        let model = servers.first { $0.spaces.contains { $0.id == space } } ?? shown
-        guard let model else { return }
+        guard let model = servers.first(where: { $0.spaces.contains { $0.id == space } }) else {
+            Log.info("notification for \(space)/\(pane): no server lists the space yet; waiting for a layout")
+            pendingFocus = (space, pane)
+            return
+        }
+        pendingFocus = nil
         show(model)
         model.focus(space: space, pane: pane)
+    }
+
+    /// A notification's space and pane whose server has not listed the space yet.
+    @ObservationIgnored private var pendingFocus: (space: String, pane: String)?
+
+    private func layoutArrived(on model: PhoneModel) {
+        guard let pending = pendingFocus, model.spaces.contains(where: { $0.id == pending.space }) else { return }
+        focus(space: pending.space, pane: pending.pane)
     }
 
     func pushToken(_ token: String) {
@@ -100,6 +113,7 @@ final class ServerList {
         model.setOnScreen(false)
         if let apnsToken { model.pushToken(apnsToken) }
         model.onPaired = { [weak self] model in self?.paired(model) }
+        model.onLayout = { [weak self, weak model] in if let model { self?.layoutArrived(on: model) } }
         return model
     }
 
@@ -113,12 +127,15 @@ final class ServerList {
             if let id = mine.server, let held = theirs.server { return id == held }
             return mine.url == theirs.url
         }
-        for old in servers where same(old) {
-            Log.info("server \(old.serverName) paired again; the new pairing replaces it")
-            old.disconnect()
+        if let i = servers.firstIndex(where: same) {
+            // Paired again: the new model takes the old one's place, as its Keychain entry does.
+            Log.info("server \(servers[i].serverName) paired again; the new pairing replaces it")
+            servers[i].disconnect()
+            servers[i] = model
+            servers.removeAll { $0 !== model && same($0) }
+        } else if !servers.contains(where: { $0 === model }) {
+            servers.append(model)
         }
-        servers.removeAll(where: same)
-        if !servers.contains(where: { $0 === model }) { servers.append(model) }
         show(model)
     }
 

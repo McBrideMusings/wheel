@@ -29,8 +29,13 @@ final class PhoneModel {
     /// asks to pair again instead of retrying.
     private(set) var credentialRefused = false
     private(set) var spaces: [SpaceInfo] = [] {
-        didSet { links.layoutChanged(spaces) }
+        didSet {
+            links.layoutChanged(spaces)
+            onLayout?()
+        }
     }
+    /// Called after every change to `spaces`: the server list resolves a notification tap waiting for its space.
+    @ObservationIgnored var onLayout: (() -> Void)?
     /// The sessions wheeld holds, in order, each naming its spaces (ADR-0021).
     private(set) var sessions: [SessionInfo] = []
     /// The session and space this phone shows. The daemon keeps no view (ADR-0022): switching here
@@ -411,6 +416,10 @@ final class PhoneModel {
         #endif
         guard client == nil else { return }
         pairing = saved
+        // A server that is down at launch still shows the name and mark it last reported.
+        if let last = UserDefaults.standard.dictionary(forKey: Self.hostKey(saved)) as? [String: String] {
+            host = HostAccess(exe: "", id: last["id"], name: last["name"], color: last["color"], platform: last["platform"], folders: [])
+        }
         open(saved)
     }
 
@@ -464,7 +473,10 @@ final class PhoneModel {
 
     func unpair() {
         close()
-        if let pairing { PairingStore.remove(pairing) }
+        if let pairing {
+            PairingStore.remove(pairing)
+            UserDefaults.standard.removeObject(forKey: Self.hostKey(pairing))
+        }
         pairing = nil
         host = nil
         trying = nil
@@ -608,6 +620,10 @@ final class PhoneModel {
     private func named(_ host: HostAccess) {
         if self.host != host {
             self.host = host
+            if let pairing {
+                let last = ["id": host.id, "name": host.name, "color": host.color, "platform": host.platform].compactMapValues { $0 }
+                UserDefaults.standard.set(last, forKey: Self.hostKey(pairing))
+            }
             Log.info("server \(host.name ?? "unnamed") id \(host.id ?? "none") colour \(host.color ?? "none") platform \(host.platform ?? "none")")
         }
         guard let id = host.id, !id.isEmpty, var held = pairing, held.server != id else { return }
@@ -1516,6 +1532,9 @@ final class PhoneModel {
         saved["orchestratorPage"] = orchestratorPage
         UserDefaults.standard.set(saved, forKey: Self.viewKey(pairing))
     }
+
+    /// The name and mark each paired wheeld last reported.
+    private static func hostKey(_ pairing: Pairing) -> String { "serverHost \(pairing.url.absoluteString)" }
 
     /// Each Mac's ids are its own, so the view is saved per paired daemon.
     private static func viewKey(_ pairing: Pairing) -> String { "lastView \(pairing.url.absoluteString)" }
