@@ -1449,6 +1449,18 @@ async fn handle(
         ClientMsg::AgentSend { req, agent, text } => {
             // Sized, never the text: a prompt can quote anything.
             tracing::info!(%peer, %agent, chars = text.len(), "agent send");
+            // Claude Code takes `/clear` itself and starts a new conversation. Codex and pi
+            // would read it as a message, so for them it is `agent_conversation_new`, with
+            // that op's `conversation` reply.
+            let clears = matches!(text.trim(), "/clear" | "/new");
+            if clears
+                && state
+                    .resolve_agent(&agent)
+                    .is_ok_and(|a| a.agent.harness() != crate::resume::Harness::Claude)
+            {
+                spawn_switch(state, out, req, agent, None, peer);
+                return None;
+            }
             match state.resolve_agent(&agent).and_then(|a| {
                 let turn = a.agent.send(text)?;
                 Ok((a.agent.name.clone(), turn))

@@ -786,6 +786,11 @@ impl Agent {
         }
     }
 
+    /// Which program this agent runs.
+    pub fn harness(&self) -> Harness {
+        self.harness
+    }
+
     /// The agent's id for this conversation, once it has one.
     pub fn conversation_id(&self) -> Option<String> {
         self.conversation_id.lock().unwrap().clone()

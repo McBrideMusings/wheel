@@ -2428,6 +2428,47 @@ async fn a_codex_message_waits_in_the_queue_until_sent_now_and_is_then_steered_i
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_slash_clear_sent_to_a_codex_agent_starts_a_new_conversation_instead_of_a_turn() {
+    let url = start_daemon().await;
+    let mut ws = connect(&url).await;
+    let agent = codex_agent(&url).await;
+    attach(&mut ws, &agent, 1).await;
+    agent_reply(&mut ws, &agent, "before the clear").await;
+    let first = layout(&url).await["spaces"][0]["root"]["conversation"]
+        .as_str()
+        .map(ToString::to_string)
+        .expect("the listing names the conversation");
+
+    let reply = ok_or_error(
+        &mut ws,
+        ClientMsg::AgentSend {
+            req: Some(2),
+            agent: agent.clone(),
+            text: "/clear".into(),
+        },
+        2,
+    )
+    .await;
+    let ServerMsg::Conversation { id, .. } = reply else {
+        panic!("a /clear to Codex is a new conversation, not a turn: {reply:?}");
+    };
+    assert_ne!(id, first);
+    let events = attach(&mut ws, &agent, 3).await;
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::User { text, .. } if text == "/clear")),
+        "the transcript shows no /clear message: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::User { .. } | AgentEvent::Text { .. })),
+        "the transcript is empty: {events:?}"
+    );
+    let listed = layout(&url).await["spaces"][0]["root"]["conversation"]
+        .as_str()
+        .map(ToString::to_string);
+    assert_eq!(listed.as_deref(), Some(id.as_str()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn send_now_interrupts_a_codex_turn_that_waits_on_a_permission() {
     let url = start_daemon().await;
     let mut ws = connect(&url).await;

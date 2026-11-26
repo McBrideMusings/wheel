@@ -626,6 +626,8 @@ pub enum ClientMsg {
     },
     /// Give an agent a message. Replies `agent_queued` with the message's turn id; the turn
     /// streams as `agent` events carrying that id.
+    /// In a Codex or pi agent, `/clear` or `/new` alone starts a new conversation as
+    /// `agent_conversation_new` does and replies `conversation`; Claude Code takes `/clear` itself.
     AgentSend {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,

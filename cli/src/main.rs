@@ -2445,7 +2445,7 @@ async fn agent_send(
         return Err(Fail::Other("unexpected reply to agent_attach".into()));
     };
     let req = conn.req();
-    let ServerMsg::AgentQueued { turn, .. } = conn
+    let turn = match conn
         .call(
             ClientMsg::AgentSend {
                 req: Some(req),
@@ -2455,8 +2455,14 @@ async fn agent_send(
             req,
         )
         .await?
-    else {
-        return Err(Fail::Other("unexpected reply to agent_send".into()));
+    {
+        ServerMsg::AgentQueued { turn, .. } => turn,
+        // `/clear` in a Codex or pi agent starts a new conversation instead of a turn.
+        ServerMsg::Conversation { id, .. } => {
+            println!("new conversation {id}");
+            return Ok(());
+        }
+        _ => return Err(Fail::Other("unexpected reply to agent_send".into())),
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
     let mut out = std::io::stdout();
