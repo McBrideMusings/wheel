@@ -620,6 +620,86 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         // What AppKit does when a window becomes key: WebKit marks its pages focused and active
         // from this, and a page fires key events only then.
         window.becomeKey()
+        diagResend(window)
+    }
+
+    static func diagIsCopyKey(_ e: NSEvent) -> Bool {
+        e.type == .keyDown && e.modifierFlags.contains(.command) && ["c", "v", "x"].contains(e.charactersIgnoringModifiers ?? "")
+    }
+    static func diagLog(_ s: String) { FileHandle.standardError.write(Data("WHEELDIAG \(s)\n".utf8)) }
+    static func diagResend(_ window: NSWindow) {
+        typealias Imp = @convention(c) (NSObject, Selector, NSEvent) -> Void
+        typealias BImp = @convention(c) (NSObject, Selector, NSEvent) -> Bool
+        let send = #selector(NSApplication.sendEvent(_:))
+        if let m = class_getInstanceMethod(type(of: NSApp!), send) {
+            let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Void = { app, e in
+                let d = diagIsCopyKey(e)
+                if d { diagLog("sendEvent in \(e.charactersIgnoringModifiers ?? "") current=\(NSApp.currentEvent === e) cls=\(type(of: app)) depth=\(Thread.callStackSymbols.count)") }
+                base(app, send, e)
+                if d { diagLog("sendEvent out \(e.charactersIgnoringModifiers ?? "")") }
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        let pke = #selector(NSWindow.performKeyEquivalent(with:))
+        if let m = class_getInstanceMethod(NSWindow.self, pke) {
+            let base = unsafeBitCast(method_getImplementation(m), to: BImp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Bool = { w, e in
+                let r = base(w, pke, e)
+                if diagIsCopyKey(e) { diagLog("window pke \(type(of: w)) \(e.charactersIgnoringModifiers ?? "") -> \(r)") }
+                return r
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        if let m = class_getInstanceMethod(NSMenu.self, pke) {
+            let base = unsafeBitCast(method_getImplementation(m), to: BImp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Bool = { menu, e in
+                let r = base(menu, pke, e)
+                if diagIsCopyKey(e) { diagLog("menu pke \((menu as? NSMenu)?.title ?? "?") main=\(menu === NSApp.mainMenu) \(e.charactersIgnoringModifiers ?? "") -> \(r)") }
+                return r
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        let kd = #selector(NSResponder.keyDown(with:))
+        for cls in [NSWindow.self, NSView.self] as [AnyClass] {
+            if let m = class_getInstanceMethod(cls, kd) {
+                let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+                let block: @convention(block) (NSObject, NSEvent) -> Void = { r, e in
+                    if diagIsCopyKey(e) { diagLog("keyDown base \(type(of: r)) \(e.charactersIgnoringModifiers ?? "")") }
+                    base(r, kd, e)
+                }
+                method_setImplementation(m, imp_implementationWithBlock(block))
+            }
+        }
+        let ws = #selector(NSWindow.sendEvent(_:))
+        if let m = class_getInstanceMethod(type(of: window), ws) {
+            let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Void = { w, e in
+                if diagIsCopyKey(e) { diagLog("window sendEvent \(type(of: w)) \(e.charactersIgnoringModifiers ?? "")") }
+                base(w, ws, e)
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        }
+        // WebKit calls these only when it hands back a key the page did not handle.
+        let superPke = NSSelectorFromString("_web_superPerformKeyEquivalent:")
+        if let m = class_getInstanceMethod(WKWebView.self, superPke) {
+            let base = unsafeBitCast(method_getImplementation(m), to: BImp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Bool = { v, e in
+                let r = base(v, superPke, e)
+                if diagIsCopyKey(e) { diagLog("webkit handback superPke \(e.charactersIgnoringModifiers ?? "") -> \(r)") }
+                return r
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        } else { diagLog("webkit handback superPke missing") }
+        let superKd = NSSelectorFromString("_web_superKeyDown:")
+        if let m = class_getInstanceMethod(WKWebView.self, superKd) {
+            let base = unsafeBitCast(method_getImplementation(m), to: Imp.self)
+            let block: @convention(block) (NSObject, NSEvent) -> Void = { v, e in
+                if diagIsCopyKey(e) { diagLog("webkit handback superKeyDown \(e.charactersIgnoringModifiers ?? "")") }
+                base(v, superKd, e)
+            }
+            method_setImplementation(m, imp_implementationWithBlock(block))
+        } else { diagLog("webkit handback superKeyDown missing") }
     }
 
     /// GPUI's view classes whose `performKeyEquivalent:` `keyEquivalentsFollowTheKeyboard` replaced.
