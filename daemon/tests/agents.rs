@@ -5765,12 +5765,13 @@ fn pane_in(layout: &serde_json::Value, pane: &str) -> Option<serde_json::Value> 
 
 /// An orchestrator is an ordinary agent pane (wheel-eg4e.19.4): `orchestrator_start` makes one in
 /// the space and names its pane, which the layout marks with its scope; two can share a space,
-/// each with its own inbox; it runs with every tool an agent pane has and the orchestrator brief
-/// on top of the pane's; `orchestrator_stop` closes its pane.
+/// and its folder (wheel-eg4e.20.1); it runs with every tool an agent pane has and the
+/// orchestrator brief on top of the pane's; `orchestrator_stop` closes its pane.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
+async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_a_folder() {
     use wheel_proto::OrchestratorScope::Space;
-    let url = start_daemon().await;
+    let dir = std::env::temp_dir().join(format!("wheel-orchestrator-pane-{}", std::process::id()));
+    let (url, _daemon) = start_daemon_in(&dir).await;
     let mut ws = connect(&url).await;
     let (space_id, _) = space(&url, "/tmp").await;
 
@@ -5784,24 +5785,27 @@ async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
     let pane = pane_in(&space_json, &first).expect("the orchestrator's pane is in its space");
     assert_eq!((pane["kind"].as_str(), pane["agent"].as_str(), pane["orchestrator"].as_str()), (Some("agent"), Some(agent.as_str()), Some("space")), "{pane}");
 
-    // 2. A second one in the same space runs too, with an inbox of its own.
+    // 2. A second one in the same space runs too, in the space's one folder, its inbox empty.
     let (second, other) = orchestrator(&mut ws, 72, Some(&space_id), Space).await.unwrap();
     assert!(second != first && other != agent);
-    assert!(inbox(&mut ws, &first, 73).await.is_empty() && inbox(&mut ws, &second, 74).await.is_empty());
+    let folder = space_folder(&dir, &space_id);
+    assert!(folder.join("inbox/new").is_dir() && folder.join("inbox/cur").is_dir(), "{}", folder.display());
+    assert!(inbox(&folder).is_empty());
 
     // 7. Every tool an agent pane has: no whitelist, no empty setting sources, no dontAsk; the
-    // orchestrator brief follows the pane's own.
+    // orchestrator brief follows the pane's own and names its folder.
     attach_and_send(&mut ws, &agent, "show orchestrator").await;
     let text = turn_text(&mut ws).await;
     assert!(text.contains("tools=-") && text.contains("setting-sources=-") && text.contains("mode=-"), "{text:?}");
     assert!(!text.contains("Bash(wheel agent:*)"), "{text:?}");
     assert!(text.contains(&format!("You are the agent in pane {first}")), "the pane's own brief: {text:?}");
-    assert!(text.contains("You are an orchestrator") && text.contains(&format!("wheel inbox ack {first} <ids>")), "{text:?}");
+    assert!(text.contains("You are an orchestrator") && text.contains(&format!("Your folder is {}.", folder.display())), "{text:?}");
+    assert!(!text.contains("wheel inbox"), "no inbox command is left: {text:?}");
     assert!(text.contains("wheel perm answer <id> allow --confirmed"), "{text:?}");
     assert!(text.contains("allowed=Bash(wheel:*) denied=Bash(wheel perm answer:*)\n"), "a space orchestrator never answers a permission request unasked: {text:?}");
     assert!(text.contains("never wait on an agent's turn") && !text.contains("wait on, cancel"), "the orchestrator dispatches and never waits: {text:?}");
 
-    // Stopping closes the pane; its inbox goes with it.
+    // Stopping closes the pane.
     client_op(&mut ws, 75, ClientMsg::OrchestratorStop { req: Some(75), pane: first.clone() }).await;
     assert!(pane_in(&layout(&url).await, &first).is_none(), "the pane closed");
     send(&mut ws, ClientMsg::OrchestratorStop { req: Some(76), pane: first.clone() }).await;
@@ -5811,7 +5815,7 @@ async fn an_orchestrator_is_an_agent_pane_with_a_scope_and_an_inbox() {
             break;
         }
     }
-    assert!(inbox(&mut ws, &second, 77).await.is_empty(), "the other one runs on");
+    assert!(pane_in(&layout(&url).await, &second).is_some(), "the other one runs on");
 }
 
 /// Closing a space closes its orchestrator's pane, and a start in the closed space is refused.
@@ -5833,48 +5837,76 @@ async fn closing_a_space_ends_its_orchestrator() {
     assert!(refused.contains(&format!("no space {space_id}")), "{refused:?}");
 }
 
-/// The agents whose items wait in the inbox of the orchestrator in `pane`.
-async fn inbox_agents(ws: &mut Ws, pane: &str, req: u64) -> Vec<String> {
-    inbox(ws, pane, req).await.into_iter().map(|i| i.agent).collect()
+/// A daemon on the fake agent whose instance directory is `dir`, emptied first, so a test can
+/// read the orchestrator folders under it: the global one is `dir/orchestrator`.
+async fn start_daemon_in(dir: &std::path::Path) -> (String, common::Daemon) {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let (url, _, daemon) = start_daemon_with(env!("CARGO_BIN_EXE_wheel-fake-agent"), Some(dir.join("spaces.json"))).await;
+    (url, daemon)
 }
 
-/// Wait until the inbox of the orchestrator in `pane` holds an item about `agent`.
-async fn inbox_gets(ws: &mut Ws, pane: &str, agent: &str, req: u64) {
+/// The folder of space `space`'s orchestrators, under the instance directory `dir`.
+fn space_folder(dir: &std::path::Path, space: &str) -> std::path::PathBuf {
+    dir.join("orchestrator").join("spaces").join(space)
+}
+
+/// The events in the inbox of orchestrator folder `folder`, new and told, oldest first.
+fn inbox(folder: &std::path::Path) -> Vec<wheel_proto::InboxEvent> {
+    let mut files: Vec<std::path::PathBuf> = ["new", "cur"]
+        .iter()
+        .flat_map(|sub| std::fs::read_dir(folder.join("inbox").join(sub)).into_iter().flatten())
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_owned()));
+    // A file can move from new to cur between the listing and the read.
+    files.iter().filter_map(|p| std::fs::read(p).ok()).map(|b| serde_json::from_slice(&b).unwrap()).collect()
+}
+
+/// The agents the events in `folder`'s inbox are about, oldest first.
+fn inbox_agents(folder: &std::path::Path) -> Vec<String> {
+    inbox(folder).into_iter().map(|e| e.agent).collect()
+}
+
+/// Wait until `folder`'s inbox holds `n` events about `agent`.
+async fn inbox_gets(folder: &std::path::Path, agent: &str, n: usize) {
     for _ in 0..100 {
-        if inbox_agents(ws, pane, req).await.iter().any(|a| a == agent) {
+        if inbox_agents(folder).iter().filter(|a| *a == agent).count() >= n {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("no item about {agent} reached {pane}");
+    panic!("{} holds no {n} events about {agent}: {:?}", folder.display(), inbox(folder));
 }
 
-/// Each agent event goes to one orchestrator (wheel-eg4e.19.4): the first space orchestrator
-/// started in the agent's space, else the first global one; a space orchestrator's own events go
-/// to the first global one, and to nobody when none runs.
+/// Each agent event goes to one orchestrator (wheel-eg4e.19.4) and lands in its folder
+/// (wheel-eg4e.20.1): an agent's in its space's folder when a space orchestrator runs there,
+/// else in the global one's; a space orchestrator's own events in the global one's, and nowhere
+/// when none runs; a global orchestrator's own events nowhere.
 #[tokio::test(flavor = "multi_thread")]
 async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
     use wheel_proto::OrchestratorScope::{Global, Space};
-    let url = start_daemon().await;
+    let dir = std::env::temp_dir().join(format!("wheel-orchestrator-route-{}", std::process::id()));
+    let (url, _daemon) = start_daemon_in(&dir).await;
     let mut ws = connect(&url).await;
     let (here, here_pane) = space(&url, "/tmp").await;
     let (_, there_pane) = space(&url, "/tmp").await;
-    // A long pull, so no inbox message starts a turn in an orchestrator mid-check.
     let (o1, a1) = orchestrator(&mut ws, 200, Some(&here), Space).await.unwrap();
     let (o2, _) = orchestrator(&mut ws, 201, Some(&here), Space).await.unwrap();
+    let here_folder = space_folder(&dir, &here);
+    let global_folder = dir.join("orchestrator");
 
-    // 6. With no global orchestrator, a space orchestrator's finished turn reaches nobody.
+    // 6. With no global orchestrator, a space orchestrator's finished turn lands nowhere.
     let mut talk = connect(&url).await;
     attach(&mut talk, &a1, 202).await;
     reply(&mut talk, &a1, "hello").await;
 
-    // 3. A finished turn in a space with orchestrators reaches only the first started there.
+    // 3. A finished turn in a space with orchestrators lands once, in the space's folder.
     let mine = start_agent(&url, &here_pane, Some("hello")).await;
-    inbox_gets(&mut ws, &o1, &mine, 203).await;
-    assert_eq!(inbox_agents(&mut ws, &o1, 204).await, [mine.clone()], "o1 holds only this space's agent, not its own turn");
-    assert!(inbox_agents(&mut ws, &o2, 205).await.is_empty(), "the second space orchestrator gets nothing");
+    inbox_gets(&here_folder, &mine, 1).await;
+    assert_eq!(inbox_agents(&here_folder), [mine.clone()], "this space's agent, once, and not o1's own turn");
 
-    // A reload gives o1 a new agent but keeps its inbox and its place ahead of o2.
+    // A reload gives o1 a new agent; events still land once in the folder.
     let reloaded = client_op(&mut ws, 220, ClientMsg::PaneReload { req: Some(220), pane: o1.clone(), set: Default::default(), unset: Vec::new() }).await;
     assert!(!matches!(reloaded, ServerMsg::Error { .. }), "{reloaded:?}");
     let mut renamed = None;
@@ -5888,18 +5920,12 @@ async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
     let a1 = renamed.expect("the reload gave o1 a new agent");
     let mut talk = connect(&url).await;
     attach(&mut talk, &a1, 227).await;
-    assert_eq!(inbox_agents(&mut ws, &o1, 221).await, [mine.clone()], "the inbox outlived the reload");
     let mut child = connect(&url).await;
     attach(&mut child, &mine, 226).await;
     reply(&mut child, &mine, "hello after the reload").await;
-    for _ in 0..100 {
-        if inbox(&mut ws, &o1, 222).await.first().is_some_and(|i| i.count == 2) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(inbox(&mut ws, &o1, 223).await[0].count, 2, "o1 is still first in the space");
-    assert!(inbox_agents(&mut ws, &o2, 224).await.is_empty());
+    inbox_gets(&here_folder, &mine, 2).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(inbox_agents(&here_folder), [mine.clone(), mine.clone()], "one file per event, never one per orchestrator");
 
     // An orchestrator runs only as a chat.
     send(&mut ws, ClientMsg::PaneView { req: Some(225), pane: o2.clone(), to: Some(wheel_proto::PaneView::Terminal) }).await;
@@ -5914,26 +5940,26 @@ async fn each_agent_event_goes_to_the_narrowest_orchestrator() {
         }
     }
 
-    // 4. The same event in a space with no orchestrator reaches the first global one.
-    let (g1, ga1) = orchestrator(&mut ws, 206, None, Global).await.unwrap();
-    let (g2, _) = orchestrator(&mut ws, 207, None, Global).await.unwrap();
+    // 4. The same event in a space with no orchestrator lands in the global folder.
+    let (_g1, ga1) = orchestrator(&mut ws, 206, None, Global).await.unwrap();
+    let (_g2, _) = orchestrator(&mut ws, 207, None, Global).await.unwrap();
     let theirs = start_agent(&url, &there_pane, Some("hello")).await;
-    inbox_gets(&mut ws, &g1, &theirs, 208).await;
-    assert_eq!(inbox_agents(&mut ws, &o1, 209).await, [mine.clone()]);
+    inbox_gets(&global_folder, &theirs, 1).await;
+    assert_eq!(inbox_agents(&here_folder), [mine.clone(), mine.clone()]);
 
-    // 5. A space orchestrator's own finished turn reaches the global one: it reports up.
+    // 5. A space orchestrator's own finished turn lands in the global folder: it reports up.
     reply(&mut talk, &a1, "hello again").await;
-    inbox_gets(&mut ws, &g1, &a1, 210).await;
-    assert_eq!(inbox_agents(&mut ws, &o1, 211).await, [mine.clone()], "not its own space's orchestrators");
+    inbox_gets(&global_folder, &a1, 1).await;
+    assert_eq!(inbox_agents(&here_folder), [mine.clone(), mine.clone()], "not in its own space's folder");
 
-    // A global orchestrator's own turn reaches nobody, the other global one included.
+    // A global orchestrator's own turn lands nowhere.
     let mut up = connect(&url).await;
     attach(&mut up, &ga1, 212).await;
     reply(&mut up, &ga1, "hello").await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(inbox_agents(&mut ws, &g2, 213).await.is_empty());
-    let g1_agents = inbox_agents(&mut ws, &g1, 214).await;
-    assert!(g1_agents.contains(&theirs) && g1_agents.contains(&a1) && !g1_agents.contains(&ga1), "{g1_agents:?}");
+    let global = inbox_agents(&global_folder);
+    assert!(global.contains(&theirs) && global.contains(&a1) && !global.contains(&ga1), "{global:?}");
+    assert_eq!(global.len(), 2, "one event each: {global:?}");
 }
 
 /// Every space and session as `status` lists them.
@@ -6318,106 +6344,88 @@ async fn one_connection_owns_orchestrator_at_a_time() {
     }
 }
 
-/// The inbox of the orchestrator in `pane`.
-async fn inbox(ws: &mut Ws, pane: &str, req: u64) -> Vec<wheel_proto::InboxItem> {
-    send(ws, ClientMsg::InboxList { req: Some(req), pane: pane.into(), all: false }).await;
-    loop {
-        if let ServerMsg::InboxItems { req: r, items } = recv(ws).await {
-            if r == req {
-                return items;
-            }
-        }
-    }
-}
-
 /// The orchestrator's transcript as one string, to search.
 async fn transcript_text(url: &str, agent: &str) -> String {
     let mut peek = connect(url).await;
     format!("{:?}", attach(&mut peek, agent, 500).await)
 }
 
-/// Agent events queue in the orchestrator's inbox (wheel-eg4e.13): a child agent finishing adds an
-/// item and sends the orchestrator nothing, mid-turn or idle (wheel-eg4e.19.28); a listing marks
-/// the item told; a repeat is the same item; a reply reaches the item's agent and acks the item;
-/// another space's agents never get in.
+/// Agent events land in the orchestrator's folder and ride on the person's message
+/// (wheel-eg4e.20.1): a child agent finishing writes one file in `inbox/new` and sends the
+/// orchestrator nothing, mid-turn or idle; a repeat is a second file; what the orchestrator sends
+/// an agent writes a `dispatched` file; the person's next message to the orchestrator carries
+/// every new event after an `[Automated:` line and moves the files to `cur`; a message from an
+/// agent pane carries none; another space's agents never get in.
 #[tokio::test(flavor = "multi_thread")]
-async fn agent_events_queue_in_the_orchestrators_inbox() {
-    let url = start_daemon().await;
+async fn agent_events_land_in_the_folder_and_ride_on_the_persons_message() {
+    use wheel_proto::InboxKind;
+    let dir = std::env::temp_dir().join(format!("wheel-orchestrator-inbox-{}", std::process::id()));
+    let (url, _daemon) = start_daemon_in(&dir).await;
     let mut ws = connect(&url).await;
     let (space_id, pane) = space(&url, "/tmp").await;
     let (_, other_pane) = space(&url, "/tmp").await;
     let (orchestrator_pane, orchestrator) =
         orchestrator(&mut ws, 95, Some(&space_id), wheel_proto::OrchestratorScope::Space).await.unwrap();
+    let folder = space_folder(&dir, &space_id);
+    let new = |folder: &std::path::Path| std::fs::read_dir(folder.join("inbox/new")).unwrap().count();
     // The orchestrator is mid-conversation: a turn that takes 6 s.
     let mut talk = connect(&url).await;
     attach_and_send(&mut talk, &orchestrator, "hold first 6000").await;
     let mine = start_agent(&url, &pane, Some("hello")).await;
     let _theirs = start_agent(&url, &other_pane, Some("hello")).await;
 
-    let mut items = Vec::new();
-    for _ in 0..50 {
-        items = inbox(&mut ws, &orchestrator_pane, 96).await;
-        if !items.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(items.len(), 1, "only this space's agent: {items:?}");
-    let item = items[0].clone();
-    assert_eq!((item.agent.as_str(), item.kind, item.count), (mine.as_str(), wheel_proto::InboxKind::Finished, 1));
-    assert_eq!(item.text, format!("{mine} finished its turn"));
-    assert!(!item.told);
+    inbox_gets(&folder, &mine, 1).await;
+    let events = inbox(&folder);
+    assert_eq!(events.len(), 1, "only this space's agent: {events:?}");
+    assert_eq!((events[0].agent.as_str(), events[0].kind), (mine.as_str(), InboxKind::Finished));
+    assert_eq!(events[0].text, format!("{mine} finished its turn"));
+    assert_eq!(new(&folder), 1, "the file waits in new");
 
     // 1. Mid-turn, nothing reaches the orchestrator.
     let seen = transcript_text(&url, &orchestrator).await;
-    assert!(seen.contains("hold first 6000") && !seen.contains("Inbox:"), "{seen}");
+    assert!(seen.contains("hold first 6000") && !seen.contains("[Automated:"), "{seen}");
 
-    // 2. Its turn over and idle well past the old 15 s pull, it is still sent nothing: it reads the inbox.
+    // 2. Its turn over and idle, it is still sent nothing: the events wait for the person.
     let mut talk_done = connect(&url).await;
     transcript_when(&mut talk_done, &orchestrator, |events| format!("{events:?}").contains("echo: hold first 6000")).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     let seen = transcript_text(&url, &orchestrator).await;
-    assert!(!seen.contains("Inbox:"), "wheeld wrote into the orchestrator's chat: {seen}");
-    assert!(inbox(&mut ws, &orchestrator_pane, 97).await[0].told, "the first listing marked the item told");
+    assert!(!seen.contains("[Automated:"), "wheeld wrote into the orchestrator's chat: {seen}");
+    assert_eq!(new(&folder), 1);
 
-    // 3. The same event again is the same item.
+    // 3. The same event again is a second file; the orchestrator's own send writes a dispatch.
     send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(98), agent: mine.clone(), text: "hello again".into() }).await;
-    let mut items = Vec::new();
-    for _ in 0..50 {
-        items = inbox(&mut ws, &orchestrator_pane, 99).await;
-        if items.first().is_some_and(|i| i.count == 2) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert_eq!((items[0].id, items[0].count), (item.id, 2));
+    inbox_gets(&folder, &mine, 2).await;
+    send(&mut ws, ClientMsg::AgentSend { from: Some(orchestrator_pane.clone()), req: Some(99), agent: mine.clone(), text: "fix the parser\nthen test".into() }).await;
+    inbox_gets(&folder, &mine, 4).await;
+    let events = inbox(&folder);
+    let kinds: Vec<InboxKind> = events.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&InboxKind::Dispatched), "{events:?}");
+    let dispatched = events.iter().find(|e| e.kind == InboxKind::Dispatched).unwrap();
+    assert_eq!(dispatched.text, format!("sent {mine}: fix the parser"));
+    assert_eq!(new(&folder), 4);
 
-    // 4. A reply goes to the item's agent and acks the item.
-    send(&mut ws, ClientMsg::InboxReply { req: Some(100), pane: orchestrator_pane.clone(), id: item.id, text: "reply from the inbox".into() }).await;
-    loop {
-        match recv(&mut ws).await {
-            ServerMsg::AgentQueued { req: 100, agent, .. } => {
-                assert_eq!(agent, mine);
-                break;
-            }
-            ServerMsg::Error { req: Some(100), message, .. } => panic!("{message}"),
-            _ => {}
-        }
-    }
-    let mut watcher = connect(&url).await;
-    transcript_when(&mut watcher, &mine, |events| format!("{events:?}").contains("echo: reply from the inbox")).await;
-    let left = inbox(&mut ws, &orchestrator_pane, 101).await;
-    assert!(left.iter().all(|i| i.id != item.id), "{left:?}");
+    // 4. A message from an agent pane carries no events.
+    send(&mut ws, ClientMsg::AgentSend { from: Some(pane.clone()), req: Some(100), agent: orchestrator.clone(), text: "from an agent".into() }).await;
+    transcript_when(&mut talk_done, &orchestrator, |events| format!("{events:?}").contains("echo: from an agent")).await;
+    let seen = transcript_text(&url, &orchestrator).await;
+    assert!(!seen.contains("[Automated:"), "{seen}");
+    assert_eq!(new(&folder), 4);
 
-    // An ack of an id that names no item is refused.
-    send(&mut ws, ClientMsg::InboxAck { req: Some(102), pane: orchestrator_pane.clone(), ids: vec![999] }).await;
-    loop {
-        if let ServerMsg::Error { req: Some(102), message, .. } = recv(&mut ws).await {
-            assert_eq!(message, "no inbox item 999");
-            break;
-        }
-    }
+    // 5. The person's next message carries all four, oldest first, and moves them to cur.
+    send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(101), agent: orchestrator.clone(), text: "what happened".into() }).await;
+    transcript_when(&mut talk_done, &orchestrator, |events| format!("{events:?}").contains("[Automated: 4 inbox events from wheeld")).await;
+    let seen = transcript_text(&url, &orchestrator).await;
+    assert!(seen.contains(&format!("{mine} finished its turn")) && seen.contains(&format!("sent {mine}: fix the parser")), "{seen}");
+    assert_eq!(new(&folder), 0);
+    assert_eq!(std::fs::read_dir(folder.join("inbox/cur")).unwrap().count(), 4);
+    let carried = seen.matches("[Automated:").count();
+
+    // The next message carries nothing new.
+    send(&mut ws, ClientMsg::AgentSend { from: None, req: Some(102), agent: orchestrator.clone(), text: "anything else".into() }).await;
+    transcript_when(&mut talk_done, &orchestrator, |events| format!("{events:?}").contains("echo: anything else")).await;
+    let seen = transcript_text(&url, &orchestrator).await;
+    assert_eq!(seen.matches("[Automated:").count(), carried, "{seen}");
 }
 
 /// What `agent_card` answered: Ok, or the error's message.

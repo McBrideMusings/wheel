@@ -1645,10 +1645,12 @@ async fn handle(
             tracing::info!(%peer, %agent, chars = text.len(), from = ?from, "agent send");
             match state.resolve_agent(&agent).and_then(|a| {
                 let name = a.agent.name.clone();
-                state.orchestrator_dispatched(from.as_deref(), &name, &text);
+                let dispatch = text.clone();
                 let (text, attached) = state.orchestrator_attach(from.as_deref(), &name, text);
                 let turn = a.agent.send(text)?;
                 state.orchestrator_told(&name, &attached);
+                // Only a message the agent took is a dispatch.
+                state.orchestrator_dispatched(from.as_deref(), &name, &dispatch);
                 Ok((name, turn))
             }) {
                 Ok((agent, turn)) => {

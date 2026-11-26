@@ -180,7 +180,7 @@ async fn run_scripts(
         }
         let arg = match &run {
             Run::Start => "start".into(),
-            Run::File(path) => path.display().to_string(),
+            Run::File(path) => told_path(&dir, path).display().to_string(),
         };
         let Some(why) = run_once(&script, &dir, &arg, &runner.env).await else {
             tracing::info!(script = %script.display(), %arg, "on-event ran");
@@ -198,6 +198,15 @@ async fn run_scripts(
         if let Err(e) = inbox.write(&event) {
             tracing::warn!("cannot record the on-event failure: {e}");
         }
+    }
+}
+
+/// Where the file `path`, written in `new`, is now: in `cur` when a message took it before its
+/// run came up.
+fn told_path(dir: &Path, path: &Path) -> PathBuf {
+    match path.file_name() {
+        Some(name) if !path.exists() => dir.join("inbox").join("cur").join(name),
+        _ => path.to_path_buf(),
     }
 }
 
@@ -233,6 +242,19 @@ async fn run_once(script: &Path, dir: &Path, arg: &str, env: &[(String, String)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_names_the_file_where_it_is_now() {
+        let dir = std::env::temp_dir().join(format!("wheel-inbox-told-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("inbox/new")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox/cur")).unwrap();
+        let waiting = dir.join("inbox/new/a.json");
+        std::fs::write(&waiting, "{}").unwrap();
+        assert_eq!(told_path(&dir, &waiting), waiting);
+        std::fs::rename(&waiting, dir.join("inbox/cur/a.json")).unwrap();
+        assert_eq!(told_path(&dir, &waiting), dir.join("inbox/cur/a.json"));
+    }
 
     fn event(agent: &str, kind: InboxKind, text: &str, at_ms: u64) -> InboxEvent {
         InboxEvent { kind, agent: agent.into(), text: text.into(), at_ms, perm: None }
