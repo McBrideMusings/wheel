@@ -258,6 +258,8 @@ impl Client {
                     _ => return refuse(BAD, "on must be true or false"),
                 };
                 crate::appkit::live_resize::stand_in(set, cx);
+                // The global's observer reaches this window after the answer; the answer says the hold now.
+                self.set_live_resize(set.unwrap_or(false));
                 return ok(json!({"held": self.terms.hold.held()}));
             }
             "/ratio" => {

@@ -2598,7 +2598,7 @@ impl Client {
                 .child(if self.mode == "agents" { self.card_header_buttons(&p.leaf.id, cx) } else { self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx) })
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot_with(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()), spinner.clone())))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
-            .child(if matches!(p.leaf.kind.as_str(), "browser" | "agent") && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
+            .child(if (matches!(p.leaf.kind.as_str(), "browser" | "agent") && native) || (p.leaf.kind == "terminal" && p.leaf.term.is_some()) { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
             .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, self.field_element(&fields::FieldId::ArtifactSearch(p.leaf.id.clone()), &palette.query), r.w, r.h - TITLE, cx)))
     }
     /// A card's resize corner, over its panes and their views.

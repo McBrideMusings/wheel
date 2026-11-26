@@ -42,6 +42,8 @@ pub struct TermPane {
     anchor: Option<(u16, u16)>,
     /// A mouse report press is held: moves and the release go to the program.
     reporting: bool,
+    /// The body's bounds as the last paint laid it out, in window points: x, y, width, height.
+    drawn: std::rc::Rc<std::cell::Cell<Option<[f32; 4]>>>,
     /// Scrolled distance not yet a whole line.
     scroll_rest: f64,
 }
@@ -185,7 +187,7 @@ impl Client {
             }
             let look = self.terms.look(space.as_deref());
             let pane = self.terms.panes.entry(p.leaf.id.clone()).or_insert_with(|| TermPane {
-                term: term.clone(), space: space.clone(), font_size: None, body: [0.; 4], cell: CellMetrics { width: 1., height: 1. }, grid: (0, 0), grids: vec![], anchor: None, reporting: false, scroll_rest: 0.,
+                term: term.clone(), space: space.clone(), font_size: None, body: [0.; 4], cell: CellMetrics { width: 1., height: 1. }, grid: (0, 0), grids: vec![], anchor: None, reporting: false, scroll_rest: 0., drawn: Default::default(),
             });
             if pane.term != term {
                 pane.term = term.clone();
@@ -193,9 +195,10 @@ impl Client {
             }
             pane.space = space.clone();
             pane.cell = cell_for(window, &family(&look), pane.font_size.unwrap_or(look.font_size), look.line_height);
-            let h = (p.rect.h - TITLE).max(1.);
-            pane.body = [p.rect.x, p.rect.y + TITLE, p.rect.w, h];
-            let grid = vt::grid_for(f64::from(p.rect.w), f64::from(h), pane.cell);
+            // Until the first paint, the body is the pane under its title row; after it, the bounds
+            // the layout gave the element (inside the pane's border).
+            pane.body = pane.drawn.get().unwrap_or([p.rect.x, p.rect.y + TITLE, p.rect.w, (p.rect.h - TITLE).max(1.)]);
+            let grid = vt::grid_for(f64::from(pane.body[2]), f64::from(pane.body[3]), pane.cell);
             if pane.grid != grid {
                 pane.grid = grid;
                 pane.grids.push(grid);
@@ -508,7 +511,13 @@ impl Client {
         let handle = self.handle.clone();
         let weak = cx.entity().downgrade();
         let input_pane = id.clone();
+        let drawn = pane.drawn.clone();
         let paint = canvas(|_, _, _| (), move |bounds, (), window, cx| {
+            let laid = [f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)];
+            if drawn.replace(Some(laid)) != Some(laid) {
+                // The grid follows the drawn body: the next frame sizes it.
+                window.refresh();
+            }
             let (cw, ch) = (px(cell.width as f32), px(cell.height as f32));
             window.paint_quad(fill(bounds, rgb_hsla(frame.background)));
             let x0 = bounds.origin.x + px(PADDING_X as f32);
@@ -595,10 +604,11 @@ impl Client {
             }
         })
         .size_full();
-        let (down, moved, up, scrolled) = (id.clone(), id.clone(), id.clone(), id.clone());
+        let (down, moved, up, up_out, scrolled) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let el = div()
             .relative()
-            .size_full()
+            // The pane gives its body no height of its own: the space under the title, inside the 1 pt border.
+            .w_full().h(px((p.rect.h - TITLE - 2.).max(0.)))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                 this.term_mouse_down(&down, e);
@@ -612,6 +622,10 @@ impl Client {
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(move |this, e: &MouseUpEvent, _, cx| {
                 this.term_mouse_up(&up, e);
+                cx.notify();
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(move |this, e: &MouseUpEvent, _, cx| {
+                this.term_mouse_up(&up_out, e);
                 cx.notify();
             }))
             .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, _, cx| {

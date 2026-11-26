@@ -126,6 +126,12 @@ fn on_body(a: [f64; 4], r: Rect, kind: &str) -> bool {
     let top = if kind == "browser" { TITLE + CHROME } else { TITLE };
     (a[0] - f64::from(r.x)).abs() < 1.0 && (a[1] - f64::from(r.y + top)).abs() < 1.0 && (a[2] - f64::from(r.w)).abs() < 1.0 && (a[3] - f64::from(r.h - top)).abs() < 1.0
 }
+/// A body GPUI lays out inside pane `r`: under the title row, within the pane's 1 pt border on every edge.
+fn drawn_on_body(a: [f64; 4], r: Rect) -> bool {
+    let (x, y, w, h) = (f64::from(r.x), f64::from(r.y + TITLE), f64::from(r.w), f64::from(r.h - TITLE));
+    let near = |v: f64, want: f64| (v - want).abs() <= 2.0;
+    near(a[0], x) && near(a[1], y) && near(a[0] + a[2], x + w) && near(a[1] + a[3], y + h)
+}
 /// A point in empty pane `r`'s body that presses none of its chooser buttons: the body's top right corner, just under the
 /// title. The buttons start at the left and, in a narrow pane, fill the rest of the body.
 fn empty_body_point(r: Rect) -> [f64; 2] {
@@ -608,9 +614,10 @@ async fn layout_and_terminals(output: PathBuf, cx: &mut AsyncApp) -> Result<(Run
     let mut aligned: Vec<(String, bool)> = native_panes.iter().map(|(id, kind)| (id.clone(), on_body(frame(&before, id), rect_of(id), kind))).collect();
     aligned.extend(terms.iter().map(|t| {
         let body = &before_state["panes"][t.as_str()]["terminal"]["body"];
-        (t.to_string(), on_body([0, 1, 2, 3].map(|i| body[i].as_f64().unwrap_or(-1.)), rect_of(t), "terminal"))
+        (t.to_string(), drawn_on_body([0, 1, 2, 3].map(|i| body[i].as_f64().unwrap_or(-1.)), rect_of(t)))
     }));
-    ensure!(aligned.iter().all(|a| a.1), "native views or terminals not on their panes: {aligned:?}");
+    let bodies: Vec<(String, Value, [f32; 4])> = terms.iter().map(|t| (t.to_string(), before_state["panes"][t.as_str()]["terminal"]["body"].clone(), { let r = rect_of(t); [r.x, r.y, r.w, r.h] })).collect();
+    ensure!(aligned.iter().all(|a| a.1), "native views or terminals not on their panes: {aligned:?}; terminal bodies and pane rects: {bodies:?}");
     // Terminals are separate sessions: each shows only its own marker.
     let own: Vec<(String, bool, bool)> = terms.iter().map(|t| {
         let others = terms.iter().filter(|o| o != &t).any(|o| viewport(&before_state, t).contains(markers[o.as_str()].as_str().unwrap()));
