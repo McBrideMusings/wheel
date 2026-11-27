@@ -24,19 +24,19 @@ final class CarouselUITests: XCTestCase {
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40), "the title shows once paired")
 
         // Grid panes in reading order, then the popped window's: two grid pages, two popped pages with rings, then the tray page.
-        expectDots("[grid] grid popped popped tray")
+        expectPages("[grid] grid popped popped tray")
         shot("grid-page")
         sync("page-1")
         for (n, want) in ["grid [grid] popped popped tray", "grid grid [popped] popped tray", "grid grid popped [popped] tray"].enumerated() {
             swipeLeft()
-            expectDots(want)
+            expectPages(want)
             if n == 1 { shot("popped-page") }
             sync("page-\(n + 2)")
         }
 
         // The last page lists the backgrounded panes and nothing else.
         swipeLeft()
-        expectDots("grid grid popped popped [tray]")
+        expectPages("grid grid popped popped [tray]")
         let list = app.descendants(matching: .any)["tray list"]
         XCTAssertTrue(list.waitForExistence(timeout: 5), "the last page is the list")
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tray row '"))
@@ -56,7 +56,7 @@ final class CarouselUITests: XCTestCase {
         app.buttons["tray row \(tray[0])"].tap()
         XCTAssertTrue(app.buttons["tray back"].waitForExistence(timeout: 5), "the open pane has a back control")
         XCTAssertFalse(list.exists, "the list gives way to the pane")
-        expectDots("grid grid popped popped [tray]")
+        expectPages("grid grid popped popped [tray]")
         shot("last-page-pane-open")
         sync("tray-open")
         app.buttons["tray back"].tap()
@@ -64,7 +64,7 @@ final class CarouselUITests: XCTestCase {
         sync("tray-back")
 
         // The tray's mark carries the needs-you badge while a backgrounded pane needs the person.
-        expectDots("grid grid popped popped [tray!]")
+        expectPages("grid grid popped popped [tray!]")
         shot("last-page-needs-you")
         sync("needs-you")
 
@@ -75,21 +75,22 @@ final class CarouselUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 10), "the open pane left the tray: the list shows")
         XCTAssertEqual(rows.allElementsBoundByIndex.map { $0.identifier }, ["tray row \(tray[1])"])
         // The returned pane is a third grid page, and the phone stays on the last page.
-        expectDots("grid grid grid popped popped [tray]")
+        expectPages("grid grid grid popped popped [tray]")
         sync("left-tray")
 
         // With no backgrounded pane there is no last page (the script returns the last one).
-        let dots = app.descendants(matching: .any)["page dots"]
-        XCTAssertTrue(waitUntil { !((dots.value as? String) ?? "tray").contains("tray") }, "no tray mark, have '\(dots.value as? String ?? "nil")'")
+        let pages = app.descendants(matching: .any)["pages"]
+        XCTAssertTrue(waitUntil { !((pages.value as? String) ?? "tray").contains("tray") }, "no tray mark, have '\(pages.value as? String ?? "nil")'")
         XCTAssertFalse(list.exists, "the last page is gone")
         shot("no-backgrounded")
         sync("no-tray")
     }
 
-    private func expectDots(_ value: String) {
-        let dots = app.descendants(matching: .any)["page dots"]
-        XCTAssertTrue(dots.waitForExistence(timeout: 10), "the page dots show")
-        XCTAssertTrue(waitUntil { (dots.value as? String) == value }, "dots read '\(value)', have '\(dots.value as? String ?? "nil")'")
+    private func expectPages(_ value: String) {
+        let pages = app.descendants(matching: .any)["pages"]
+        XCTAssertTrue(pages.waitForExistence(timeout: 10), "the pages element is behind the top bar")
+        XCTAssertEqual(pages.label, "Pages")
+        XCTAssertTrue(waitUntil { (pages.value as? String) == value }, "pages read '\(value)', have '\(pages.value as? String ?? "nil")'")
     }
 
     /// A finger across the middle of the pager, away from the composer and the title.

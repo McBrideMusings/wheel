@@ -47,7 +47,7 @@ if step chat; then
   ack chat
 fi
 if step chrome; then
-  check "no agents sheet opened" noplog "agents sheet: eye tapped"
+  check "no panes list opened" noplog "panes list open"
   ack chrome
 fi
 if step keyboard; then

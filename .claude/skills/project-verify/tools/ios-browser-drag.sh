@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phone browser drags (wheel-zpa4.2.10.21): on a browser pane, left and right drags reach the page
-# and never change pane or go back; the dots bar and an agent page still change pane. Driven with
+# and never change pane or go back; the top bar and an agent page still change pane. Driven with
 # real drags by WheelPhoneUITests/BrowserDragUITests against this script's own wheeld. At each step
 # the test writes `$SYNC/step-<name>`; this script checks wheeld, the page and phone.log, then
 # acknowledges.
@@ -73,10 +73,10 @@ if step dragged-from-edge; then
   check "the edge drag did not go back: the page is still /two.html" sh -c "'$WHEEL' --url ws://127.0.0.1:$PORT/ws --token-file '$INST/token' pane where '$P1' --on phone 2>&1 | grep -q 'two.html'"
   ack dragged-from-edge
 fi
-if step handle; then
-  expect_phone "a drag along the dots bar moved the phone to $P2" "$P2"
-  check "phone.log has the dots bar's swipe" plog "page handle: swipe left, page $P2"
-  ack handle
+if step top-bar; then
+  expect_phone "a drag along the top bar moved the phone to $P2" "$P2"
+  check "phone.log has the top bar's swipe" plog "top bar: swipe left, page $P2"
+  ack top-bar
 fi
 if step agent-swipe; then
   expect_phone "a swipe on the agent page moved the phone back to $P1" "$P1"

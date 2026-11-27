@@ -18,13 +18,13 @@ final class PinUITests: XCTestCase {
         app.launch()
         allowNotifications()
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))
-        XCTAssertTrue(app.otherElements.matching(NSPredicate(format: "identifier == 'page dots' AND value == '[grid] grid grid'")).firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(pages("[grid] grid grid"), "three pages before any pin")
         XCTAssertFalse(sheet.exists, "no pins, no sheet")
 
         // 1, 2. Pinning the agent takes it out of the carousel and shows it as the sheet at low.
         pin()
         XCTAssertTrue(at("low"), "a pinned pane shows at low")
-        XCTAssertTrue(dots("[grid] grid"), "the pinned pane left the carousel")
+        XCTAssertTrue(pages("[grid] grid"), "the pinned pane left the carousel")
         let agent = try XCTUnwrap(menuValue, "the sheet names the agent")
         shot("low")
         sync("pinned")
@@ -46,7 +46,7 @@ final class PinUITests: XCTestCase {
         XCTAssertTrue(at("low"))
         drag(toFraction: 0)
         XCTAssertTrue(at("header"))
-        // 5. At its lowest the header stays at the bottom edge, with the pages and the dots bar above it; there is no
+        // 5. At its lowest the header stays at the bottom edge, with the pages above it; there is no
         // button to bring it back, and a drag up opens it at low.
         let low = app.otherElements["pin sheet header"]
         XCTAssertTrue(low.waitForExistence(timeout: 5), "the header stays on the screen")
@@ -54,8 +54,7 @@ final class PinUITests: XCTestCase {
         let bottom = app.windows.firstMatch.frame.maxY - 80
         XCTAssertTrue(waitFor { low.frame.maxY > bottom }, "the header sits at the bottom edge: \(low.frame)")
         XCTAssertFalse(app.buttons["sheet show"].exists, "no button to bring the sheet back")
-        let handle = app.otherElements["page handle"]
-        if handle.exists { XCTAssertLessThanOrEqual(handle.frame.maxY, low.frame.minY + 1, "the dots bar ends above the header: \(handle.frame) over \(low.frame)") }
+        XCTAssertFalse(app.otherElements["page handle"].exists, "the phone has no page handle")
         shot("header")
         sync("positions")
         drag(toFraction: 0.38)
@@ -64,7 +63,7 @@ final class PinUITests: XCTestCase {
 
         // 2. A terminal and a web pane pin too; with every pane pinned the carousel says so.
         pin()
-        XCTAssertTrue(dots(""), "one page left: no dots")
+        XCTAssertTrue(pages("[grid]"), "one page left")
         let terminal = try XCTUnwrap(menuValue, "the sheet names the terminal")
         sync("terminal")
         // Down to its header, the sheet's terminal stops streaming; dragged up again, it streams again.
@@ -102,9 +101,8 @@ final class PinUITests: XCTestCase {
         sync("unpinned")
 
         // 8. Pins survive a relaunch; the pairing code is spent, so the relaunch uses the saved credential.
-        app.terminate()
-        app.launchEnvironment.removeValue(forKey: "WHEEL_PAIR_JSON")
-        app.launch()
+        // The pairing code is spent; the relaunch connects with the credential the first launch saved.
+        app.relaunchFromKeychain()
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))
         XCTAssertTrue(at("low"), "the pins came back with the sheet")
         // The script closes the web pane here: a pinned pane that closes leaves the pins.
@@ -115,7 +113,7 @@ final class PinUITests: XCTestCase {
         XCTAssertFalse(menuRow("site").exists, "the closed pane left the menu")
         menuRow("Unpin").tap()
         XCTAssertTrue(waitFor { !self.sheet.exists }, "no pins, no sheet")
-        XCTAssertTrue(dots("[grid] grid") || dots("grid [grid]"), "both panes are pages again")
+        XCTAssertTrue(pages("[grid] grid") || pages("grid [grid]"), "both panes are pages again")
         sync("none")
     }
 
@@ -138,9 +136,9 @@ final class PinUITests: XCTestCase {
         app.otherElements.matching(NSPredicate(format: "identifier == 'pin sheet' AND value == %@", position)).firstMatch.waitForExistence(timeout: 5)
     }
 
-    private func dots(_ value: String) -> Bool {
-        if value.isEmpty { return waitFor { !self.app.otherElements["page dots"].exists } }
-        return app.otherElements.matching(NSPredicate(format: "identifier == 'page dots' AND value == %@", value)).firstMatch.waitForExistence(timeout: 5)
+    /// The `pages` element behind the top bar reads `value`.
+    private func pages(_ value: String) -> Bool {
+        app.otherElements.matching(NSPredicate(format: "identifier == 'pages' AND value == %@", value)).firstMatch.waitForExistence(timeout: 10)
     }
 
     /// The ⋯ on the page shown, then Pin.
