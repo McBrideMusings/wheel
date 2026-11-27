@@ -277,8 +277,7 @@ pub fn create_window(
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
-        // SAFETY: the handle is this window's content view, which lives until the window closes and `detach` runs.
-        unsafe { native.attach_to(handle.ns_view.as_ptr(), hidden, frames) };
+        native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
         // Every move and resize is saved with the window (saved.rs).
         cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
         if let Some([x, y, ..]) = frame {

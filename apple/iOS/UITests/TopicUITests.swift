@@ -19,7 +19,7 @@ final class TopicUITests: XCTestCase {
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
         pick("Orchestrator")
 
-        // No threads/current: the title, the mode menu, stands over the model alone.
+        // No threads/current: the title, the mode toggle, stands over the model alone.
         let title = app.buttons["mode"]
         XCTAssertTrue(waitFor(20) { title.value as? String == "Orchestrator" }, "the title reads Orchestrator: \(String(describing: title.value))")
         Thread.sleep(forTimeInterval: 2)
@@ -58,12 +58,11 @@ final class TopicUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", s)).firstMatch
     }
 
+    /// Toggle to `title` (Spaces or Orchestrator) with a tap on the mode button, and wait for it to show it.
     private func pick(_ title: String) {
-        app.buttons["mode"].tap()
-        let row = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the mode menu has \(title)")
-        row.tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch.waitForExistence(timeout: 5), "the button shows \(title)")
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch
+        if !shown.exists { app.buttons["mode"].tap() }
+        XCTAssertTrue(shown.waitForExistence(timeout: 5), "the button shows \(title)")
     }
 
     private func waitFor(_ seconds: TimeInterval = 10, _ condition: @escaping () -> Bool) -> Bool {

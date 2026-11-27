@@ -89,10 +89,7 @@ impl Native {
     }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
     /// active, deaf to the pointer. The bridge's own frames for this window go to `frames`.
-    ///
-    /// # Safety
-    /// `ns_view` must be a live `NSView` that outlives this `Native`: the bridge keeps and messages it.
-    pub unsafe fn attach_to(&self, ns_view: *mut c_void, hidden: bool, frames: fmpsc::UnboundedSender<String>) {
+    pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool, frames: fmpsc::UnboundedSender<String>) {
         let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden), on_emit) };
         self.window.set(window);
         self.ns_view.set(ns_view as usize);

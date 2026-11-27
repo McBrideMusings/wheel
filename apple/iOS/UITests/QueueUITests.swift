@@ -22,17 +22,19 @@ final class QueueUITests: XCTestCase {
         allowNotifications()
         XCTAssertTrue(app.buttons["mode"].waitForExistence(timeout: 40))
 
-        // Spaces mode has the agents eye and no tray.
-        XCTAssertTrue(app.buttons["agents"].waitForExistence(timeout: 20))
+        // Spaces mode has the panes button and no tray.
+        XCTAssertTrue(app.buttons["panes"].waitForExistence(timeout: 20))
         XCTAssertFalse(app.buttons["queue"].exists, "Spaces mode has no queue tray")
         pick("Orchestrator")
 
-        // The tray takes the eye's slot: two wait on the person, the most urgent a P0, so the badge is red.
+        // The tray sits between the title and the panes button: two wait on the person, the most urgent a P0, so the badge is red.
         let tray = app.buttons["queue"]
         XCTAssertTrue(tray.waitForExistence(timeout: 30), "Orchestrator mode shows the queue tray")
         XCTAssertTrue(waitFor { tray.value as? String == "2 red" }, "the badge reads 2 in red: \(String(describing: tray.value))")
-        XCTAssertFalse(app.buttons["agents"].exists, "the tray replaces the eye")
-        XCTAssertLessThan(tray.frame.maxX, app.buttons["Pane menu"].frame.minX + 1, "the tray sits left of the pane menu")
+        XCTAssertTrue(app.buttons["panes"].exists, "the panes button stays beside the tray")
+        XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
+        XCTAssertLessThan(app.buttons["panes"].frame.maxX, app.buttons["Pane menu"].frame.minX + 1, "the panes button sits left of the pane menu")
+        XCTAssertLessThan(tray.frame.maxX, app.buttons["panes"].frame.minX + 1, "the tray sits left of the panes button")
         shot("tray")
         sync("tray")
 
@@ -66,12 +68,11 @@ final class QueueUITests: XCTestCase {
 
     private func any(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
 
+    /// Toggle to `title` (Spaces or Orchestrator) with a tap on the mode button, and wait for it to show it.
     private func pick(_ title: String) {
-        app.buttons["mode"].tap()
-        let row = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the mode menu has \(title)")
-        row.tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch.waitForExistence(timeout: 5), "the button shows \(title)")
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch
+        if !shown.exists { app.buttons["mode"].tap() }
+        XCTAssertTrue(shown.waitForExistence(timeout: 5), "the button shows \(title)")
     }
 
     private func waitFor(_ seconds: TimeInterval = 10, _ condition: @escaping () -> Bool) -> Bool {

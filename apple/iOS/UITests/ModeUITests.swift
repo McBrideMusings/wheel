@@ -1,6 +1,6 @@
 import XCTest
 
-/// Drives the phone's mode menu with real taps against a wheeld that
+/// Drives the phone's mode toggle with real taps against a wheeld that
 /// `.claude/skills/project-verify/tools/ios-mode.sh` set up: one space holding two agent panes.
 /// The test writes `<sync>/step-<name>` after each step and waits for `<sync>/ack-<name>`, and writes the
 /// top bar's control rects to `<shots>/mode-rects-<state>.txt`. With `WHEEL_MODE_BASE` set it writes the launch
@@ -8,65 +8,55 @@ import XCTest
 final class ModeUITests: XCTestCase {
     private let env = ProcessInfo.processInfo.environment
     private var app: XCUIApplication!
-    /// The bar's controls whose rects must hold still: the title (the mode menu), the eye, search and the ⋯.
-    private let controls = ["mode", "agents", "search", "Pane menu"]
+    /// The bar's controls whose rects must hold still: the title (the mode toggle), the panes button and the ⋯.
+    private let controls = ["mode", "panes", "Pane menu"]
 
     override func setUp() { continueAfterFailure = false }
 
-    func testModeMenu() throws {
+    func testModeToggle() throws {
         let pair = try XCTUnwrap(env["WHEEL_PAIR_JSON"], "WHEEL_PAIR_JSON")
         app = .paired(pair)
         app.launch()
         allowNotifications()
-        // The ⋯, not the mode menu, so a base build from before the mode menu passes this too.
+        // The ⋯, not the mode toggle, so a base build from before the toggle passes this too.
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 40))
         let launch = rects("launch")
         shot("spaces")
         if env["WHEEL_MODE_BASE"] != nil { return }
         let mode = app.buttons["mode"]
-        XCTAssertTrue(mode.waitForExistence(timeout: 5), "the top bar has the mode menu")
+        XCTAssertTrue(mode.waitForExistence(timeout: 5), "the top bar has the mode toggle")
 
-        // 1. The title is the mode menu at the bar's left, showing Spaces, with the space switcher under it.
+        // 1. The title is the mode toggle at the bar's left, showing Spaces, with the space switcher under it; the
+        // panes button sits left of the ⋯, and the eye, search, page handle and page dots are gone.
         XCTAssertEqual(mode.value as? String, "Spaces")
-        XCTAssertLessThan(mode.frame.minX, 40, "the mode menu is the bar's title, at its left: \(mode.frame)")
+        XCTAssertLessThan(mode.frame.minX, 40, "the mode toggle is the bar's title, at its left: \(mode.frame)")
         let switcher = app.buttons["space switcher"]
         XCTAssertTrue(switcher.exists, "the space switcher is under the title")
         XCTAssertGreaterThan(switcher.frame.minY, mode.frame.maxY - 1, "the switcher sits under the title")
         XCTAssertTrue(switcher.label.hasPrefix("wheel, session "), "the switcher names the space: \(switcher.label)")
-        XCTAssertFalse(app.otherElements["mode body"].exists)
+        let panes = app.buttons["panes"]
+        XCTAssertTrue(panes.exists, "the panes button shows")
+        XCTAssertEqual(panes.value as? String, "2 panes", "the panes button counts the pages")
+        XCTAssertLessThan(panes.frame.maxX, app.buttons["Pane menu"].frame.minX + 1, "the panes button sits left of the ⋯")
+        for gone in ["agents", "search"] { XCTAssertFalse(app.buttons[gone].exists, "no \(gone) button") }
+        for gone in ["page handle", "page dots", "mode body"] { XCTAssertFalse(any(gone).exists, "no \(gone)") }
 
-        // 2. The menu lists exactly the three modes and nothing else; each pick shows its body and moves no control.
-        for (title, id) in [("Agents", "agents"), ("Orchestrator", "orchestrator"), ("Spaces", "spaces")] {
+        // 2. A tap toggles Spaces and Orchestrator with no menu, and no control moves.
+        for (title, id) in [("Orchestrator", "orchestrator"), ("Spaces", "spaces")] {
             mode.tap()
-            let row = menuRow(title)
-            XCTAssertTrue(row.waitForExistence(timeout: 5), "the menu has \(title)")
-            XCTAssertTrue(menuRow("Spaces").exists && menuRow("Agents").exists && menuRow("Orchestrator").exists, "the menu lists all three modes")
-            let rows = app.buttons.matching(NSPredicate(format: "label IN %@ AND identifier != 'agents' AND identifier != 'mode'", ["Spaces", "Agents", "Orchestrator"])).count
-            XCTAssertEqual(rows, 3, "the menu has exactly three mode rows")
-            XCTAssertFalse(app.buttons["new space"].exists || app.textFields["space search"].exists || app.buttons["new session"].exists,
-                           "the mode menu offers no space, search or session")
-            if id == "agents" { shot("menu") }
-            row.tap()
             XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch.waitForExistence(timeout: 5), "the button shows \(title)")
-            let body = app.descendants(matching: .any)["mode body"]
-            if id == "spaces" {
-                XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
-                XCTAssertFalse(body.exists, "Spaces shows the pages")
-            } else {
-                // With no space open on the orchestrator's folder, Orchestrator mode says where to open one.
-                let shown = id == "orchestrator" ? app.otherElements["no orchestrator"] : body
-                XCTAssertTrue(shown.waitForExistence(timeout: 5), "\(title) shows its body")
-                shot(id)
-            }
-            // Orchestrator mode has no eye and no search.
+            XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label IN %@ AND identifier != 'mode'", ["Spaces", "Agents", "Orchestrator"])).firstMatch.exists, "the toggle opens no menu")
             if id == "orchestrator" {
-                XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
+                // With no space open on the orchestrator's folder, Orchestrator mode says where to open one.
+                XCTAssertTrue(app.otherElements["no orchestrator"].waitForExistence(timeout: 5), "\(title) shows its body")
                 XCTAssertFalse(switcher.exists, "Orchestrator mode has no space switcher")
-                XCTAssertEqual(placed(rects(id), without: ["agents", "search"]), placed(launch, without: ["agents", "search"]), "the title and the ⋯ held their places in \(title)")
+                XCTAssertTrue(panes.exists, "Orchestrator mode keeps the panes button")
+                XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Orchestrator mode has no eye and no search")
             } else {
-                if id == "agents" { XCTAssertTrue(switcher.label.hasPrefix("Session "), "Agents mode's line names the session: \(switcher.label)") }
-                XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
+                XCTAssertTrue(switcher.waitForExistence(timeout: 5), "Spaces shows the space switcher")
             }
+            shot(id)
+            XCTAssertEqual(placed(rects(id)), placed(launch), "no control moved in \(title)")
             sync(id)
         }
 
@@ -90,34 +80,48 @@ final class ModeUITests: XCTestCase {
         }
         sync("keyboard")
 
-        // 3. Opening a pane from the eye's sheet in Agents shows Spaces again, with the pane.
-        mode.tap()
-        menuRow("Agents").tap()
-        XCTAssertTrue(app.descendants(matching: .any)["mode body"].waitForExistence(timeout: 5))
-        app.buttons["agents"].tap()
-        let tile = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'agentrow'")).firstMatch
-        XCTAssertTrue(tile.waitForExistence(timeout: 10), "the eye's sheet lists an agent")
-        tile.tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Spaces'")).firstMatch.waitForExistence(timeout: 5), "opening a pane shows Spaces")
-        XCTAssertFalse(app.descendants(matching: .any)["mode body"].exists)
+        // 3. The panes button swaps the page for the list; a row opens its pane and closes the list.
+        XCTAssertFalse(any("panes list").exists, "the list is closed")
+        panes.tap()
+        XCTAssertTrue(any("panes list").waitForExistence(timeout: 5), "the panes button opens the list")
+        XCTAssertTrue(panes.isSelected, "the button is selected while the list is open")
+        XCTAssertTrue((panes.value as? String ?? "").hasSuffix(", open"), "the value says open: \(panes.value as? String ?? "nil")")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pane row '"))
+        XCTAssertTrue(rows.element(boundBy: 1).waitForExistence(timeout: 5), "the list has a row per pane")
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.element(boundBy: 0).value as? String, "shown", "the first page is the one shown")
+        rows.element(boundBy: 1).tap()
+        XCTAssertTrue(waitGone(any("panes list")), "a row tap closes the list")
+        expectPages("grid [grid]")
+        XCTAssertFalse(panes.isSelected, "the button is not selected once the list closes")
         sync("opened")
 
-        // 4. The mode survives a relaunch.
+        // 4. Spaces -> Orchestrator -> Spaces returns to the same page.
         mode.tap()
-        menuRow("Agents").tap()
-        app.terminate()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.waitForExistence(timeout: 5))
+        mode.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Spaces'")).firstMatch.waitForExistence(timeout: 5))
+        expectPages("grid [grid]")
+        sync("roundtrip")
+
+        // 5. The mode survives a relaunch.
+        mode.tap()
         // The pairing code is spent; the relaunch connects with the credential the first launch saved.
-        app.launchEnvironment.removeValue(forKey: "WHEEL_PAIR_JSON")
-        app.launch()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Agents'")).firstMatch.waitForExistence(timeout: 40), "Agents restored after a relaunch")
+        app.relaunchFromKeychain()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.waitForExistence(timeout: 40), "Orchestrator restored after a relaunch")
         sync("relaunch")
         app.buttons["mode"].tap()
-        menuRow("Spaces").tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Spaces'")).firstMatch.waitForExistence(timeout: 5))
     }
 
-    /// A row of the open mode menu; the eye is also labelled Agents, so it is left out by its id.
-    private func menuRow(_ title: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
+    private func any(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
+
+    private func expectPages(_ value: String) {
+        let pages = any("pages")
+        XCTAssertTrue(pages.waitForExistence(timeout: 10), "the pages element is behind the top bar")
+        let deadline = Date().addingTimeInterval(15)
+        while (pages.value as? String) != value && Date() < deadline { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertEqual(pages.value as? String, value, "pages read '\(value)'")
     }
 
     private func waitGone(_ element: XCUIElement) -> Bool {
@@ -138,7 +142,6 @@ final class ModeUITests: XCTestCase {
     /// Each control's frame, one `<id> x y w h` line per control, written to the shots folder.
     private func rects(_ state: String) -> String {
         let lines = controls.map { id -> String in
-            // A control the mode drops (Orchestrator mode's eye) has no frame to read.
             let element = app.buttons[id].firstMatch
             let f = element.exists ? element.frame : .zero
             return "\(id) \(Int(f.minX)) \(Int(f.minY)) \(Int(f.width)) \(Int(f.height))"

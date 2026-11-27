@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # iPhone Thumb navigation (epic wheel-l1n4): the top-left space name with its needs-you count, the
 # Thumb sheet (flat Spaces list, session bar, Agents tab with inline permission answers), driven
-# with real taps and swipes by the WheelPhoneUITests target (apple/iOS/UITests/ThumbUITests.swift)
+# with real taps and swipes along the session bar by the WheelPhoneUITests target (apple/iOS/UITests/ThumbUITests.swift)
 # against this script's own wheeld. The test writes `$SYNC/step-<name>` after each step and waits
 # for `$SYNC/ack-<name>`; this script checks wheeld at each step, then acknowledges. Shots go to
 # $WHEEL_SHOTS (default $SCR/shots), light and dark.
@@ -76,10 +76,11 @@ if step opened; then
     "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | "\(.session) \(.space)"')" "$SESSION $A"
   ack opened
 fi
-if step handle; then
-  check "phone.log has a short swipe opening the sheet on Spaces" plog 'page handle: swipe up [0-9]* pt, sheet on spaces'
-  check "phone.log has a long swipe opening the sheet on Agents" plog 'page handle: swipe up [0-9]* pt, sheet on agents'
-  ack handle
+noplog() { ! plog "$1"; }
+if step reopen; then
+  ok "a tap on the title line reopened the sheet on the tab last used, Agents, then Spaces (the UI test asserts each)"
+  check "phone.log has no page handle swipe" noplog 'page handle'
+  ack reopen
 fi
 
 ios_ui_finish thumb
