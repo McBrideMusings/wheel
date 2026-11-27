@@ -7661,18 +7661,20 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     let rmid = held_motion!("the zoom button under Reduce Motion");
     draw(window, Some(output.join("client-grid-zoom-reduced-mid.png")), cx)?;
     let opacity = |s: &Value, p: &str| s["panes"][p]["opacity"].as_f64().unwrap_or(-1.);
-    let alpha = |s: &Value, p: &str| s["panes"][p]["bridge"]["alpha"].as_f64().unwrap_or(-1.);
+    // A native view fades and hides with its pane; a pane GPUI draws (the third, a terminal) is its opacity.
+    let alpha = |s: &Value, p: &str| if s["panes"][p]["native"] == true { s["panes"][p]["bridge"]["alpha"].as_f64().unwrap_or(-1.) } else { opacity(s, p) };
+    let hidden = |s: &Value, p: &str| if s["panes"][p]["native"] == true { s["panes"][p]["bridge"]["hidden"] == true } else { opacity(s, p) == 0. };
     ensure!(rmid["grid_motion"]["zoomed"] == grid_a.as_str(), "held at 0.3 of its length the reduced zoom's motion reads {}", rmid["grid_motion"]);
     ensure!(near(frame(&rmid, &grid_b), b_from) && near(frame(&rmid, &grid_c), c_from), "mid reduced zoom the others moved: {:?} {:?} from {b_from:?} {c_from:?}", frame(&rmid, &grid_b), frame(&rmid, &grid_c));
     let (o_mid, a_mid_alpha) = (opacity(&rmid, &grid_c), alpha(&rmid, &grid_c));
-    ensure!(o_mid > 0.05 && o_mid < 0.95 && (a_mid_alpha - o_mid).abs() < 0.2 && rmid["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+    ensure!(o_mid > 0.05 && o_mid < 0.95 && (a_mid_alpha - o_mid).abs() < 0.2 && !hidden(&rmid, &grid_c),
         "mid reduced zoom the third pane draws at {o_mid}, its view at alpha {a_mid_alpha}: {}", rmid["panes"][grid_c.as_str()]["bridge"]);
     hold_motion(None, cx)?;
     let rzoomed = until!("the reduced zoom finished", |s: &Value| s["grid_motion"]["moving"] == false && s["grid_motion"]["resizes_held"] == false && near(frame(s, &grid_a), zoom_area));
     for pane in [&grid_b, &grid_c] {
         ensure!(opacity(&rzoomed, pane) == 0., "{pane} draws at {} after the reduced zoom", opacity(&rzoomed, pane));
     }
-    ensure!(near(frame(&rzoomed, &grid_b), b_from) && near(frame(&rzoomed, &grid_c), c_from) && rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
+    ensure!(near(frame(&rzoomed, &grid_b), b_from) && near(frame(&rzoomed, &grid_c), c_from) && hidden(&rzoomed, &grid_c),
         "after the reduced zoom the others are at {:?} {:?}, the third view {}", frame(&rzoomed, &grid_b), frame(&rzoomed, &grid_c), rzoomed["panes"][grid_c.as_str()]["bridge"]);
     draw(window, Some(output.join("client-grid-zoomed-reduced.png")), cx)?;
     // A layout change while zoomed starts a layout motion, which is no fade: the covered panes stay out.
@@ -7686,7 +7688,7 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     hold_motion(Some(0.3), cx)?;
     set_ratio(if zsplit.ratio > 0.45 { 0.35 } else { 0.55 })?;
     let laid = held_motion!("the new ratio of the zoomed grid");
-    ensure!(opacity(&laid, &grid_c) == 0. && laid["panes"][grid_c.as_str()]["bridge"]["hidden"] == true,
+    ensure!(opacity(&laid, &grid_c) == 0. && hidden(&laid, &grid_c),
         "a layout change while zoomed showed the third pane at {}: {} {}", opacity(&laid, &grid_c), laid["grid_motion"], laid["panes"][grid_c.as_str()]["bridge"]);
     hold_motion(None, cx)?;
     until!("the layout motion ended", |s: &Value| s["grid_motion"]["moving"] == false);
@@ -7699,16 +7701,16 @@ async fn zoom(run: Run, mut debug: wheel_gpui::debug::Server, bearer: String, gr
     pump(&mut connection, 600, &mut layouts, window, cx).await?;
     let rback = state!();
     let o_back = opacity(&rback, &grid_c);
-    ensure!(rback["grid_motion"]["zoomed"].is_null() && o_back > 0.05 && o_back < 0.95 && rback["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+    ensure!(rback["grid_motion"]["zoomed"].is_null() && o_back > 0.05 && o_back < 0.95 && !hidden(&rback, &grid_c),
         "600 ms into the reduced unzoom the third pane draws at {o_back}: {} {}", rback["grid_motion"], rback["panes"][grid_c.as_str()]["bridge"]);
     let rdone = until!("the reduced unzoom finished", |s: &Value| s["grid_motion"]["moving"] == false && near(frame(s, &grid_a), a_from));
-    ensure!(opacity(&rdone, &grid_c) == 1. && alpha(&rdone, &grid_c) == 1. && rdone["panes"][grid_c.as_str()]["bridge"]["hidden"] == false,
+    ensure!(opacity(&rdone, &grid_c) == 1. && alpha(&rdone, &grid_c) == 1. && !hidden(&rdone, &grid_c),
         "after the reduced unzoom the third pane draws at {}, its view {}", opacity(&rdone, &grid_c), rdone["panes"][grid_c.as_str()]["bridge"]);
     unsafe { std::env::remove_var("WHEEL_SLOW_ANIMATIONS") };
     cx.update(|cx| wheel_gpui::appkit::motion::stand_in(None, cx));
     let mut zoom_report = zoom_report;
     zoom_report["reduced"] = json!({"others": [b_from, c_from], "mid": {"progress": rmid["grid_motion"]["progress"], "opacity": o_mid, "alpha": a_mid_alpha, "zoomed_pane": frame(&rmid, &grid_a)},
-        "zoomed": {"opacity": opacity(&rzoomed, &grid_c), "hidden": rzoomed["panes"][grid_c.as_str()]["bridge"]["hidden"]}, "unzoom_mid_opacity": o_back});
+        "zoomed": {"opacity": opacity(&rzoomed, &grid_c), "hidden": hidden(&rzoomed, &grid_c)}, "unzoom_mid_opacity": o_back});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, debug, zoom_report))
 }
 
