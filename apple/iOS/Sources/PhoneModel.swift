@@ -1215,12 +1215,13 @@ final class PhoneModel {
         earlier[pane]?.store ?? .none
     }
 
-    /// Give each agent pane the conversations it showed before its current one (the last of
-    /// `visited`); a server that cannot read a past conversation gets none drawn.
+    /// Give each agent pane in the orchestrator's space the conversations it showed before its
+    /// current one (the last of `visited`); any other agent pane draws its current conversation
+    /// alone, and a server that cannot read a past conversation gets none drawn.
     private func syncEarlier() {
         let reads = serverOffer.has("agent_conversation_history")
         var shown: [String: (agent: String, ids: [String])] = [:]
-        for space in spaces {
+        for space in spaces where space.id == orchestratorSpace?.id {
             for pane in space.allPanes {
                 if case let .agent(agent, _, visited) = pane.kind {
                     shown[pane.id] = (agent, reads ? Array(visited.dropLast()) : [])
@@ -2102,6 +2103,7 @@ final class PhoneModel {
         if let setting = list.first(where: { $0.key == "orchestrator.dir" }), setting.orchestratorDir != orchestratorDir {
             orchestratorDir = setting.orchestratorDir
             Log.info("orchestrator folder \(setting.orchestratorDir)")
+            syncEarlier()
             readTopic()
         }
         if let dots = list.first(where: { $0.key == "status.dots" }) {

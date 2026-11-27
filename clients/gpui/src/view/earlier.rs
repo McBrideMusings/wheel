@@ -13,11 +13,13 @@ const OP: &str = "agent_conversation_history";
 const EMPTY_H: f32 = 260.;
 
 impl Client {
-    /// Give each agent the conversations its pane showed before the current one; runs on every
-    /// layout. An agent no pane shows drops its store.
+    /// Give each agent pane in the orchestrator's space the conversations it showed before the
+    /// current one; runs on every layout and when the orchestrator's folder changes. Any other
+    /// agent pane draws its current conversation alone, and an agent no such pane shows drops its store.
     pub(super) fn sync_earlier(&mut self) {
         let reads = self.server_has(OP);
-        let shown: Vec<(String, Vec<String>)> = self.spaces.iter().flat_map(|s| s.all())
+        let orchestrator = self.orchestrator_space().map(str::to_owned);
+        let shown: Vec<(String, Vec<String>)> = self.spaces.iter().filter(|s| orchestrator.as_ref() == Some(&s.id)).flat_map(|s| s.all())
             .filter(|l| l.kind == "agent" && l.mirror.is_none())
             .filter_map(|l| Some((l.agent.clone()?, earlier_ids(&l.visited, reads).to_vec()))).collect();
         self.earlier.retain(|agent, _| shown.iter().any(|(a, _)| a == agent));
