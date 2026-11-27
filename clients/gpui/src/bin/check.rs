@@ -7208,8 +7208,10 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     let body_of = |f: [f64; 4]| [f[0], f[1] + f64::from(TITLE), f[2], f[3] - f64::from(TITLE)];
     let card_now = |s: &Value| four(&s["cards"][0]["frame"]);
     let term_body = |s: &Value| four(&s["panes"][grid_c.as_str()]["terminal"]["body"]);
+    // GPUI lays the terminal out inside the card's 1 pt border: each edge within 2 pt of the body.
+    let in_body = |a: [f64; 4], b: [f64; 4]| [a[0] - b[0], a[1] - b[1], (a[0] + a[2]) - (b[0] + b[2]), (a[1] + a[3]) - (b[1] + b[3])].iter().all(|d| d.abs() <= 2.0);
     let carded = until!("the popped pane in a card with its terminal drawn on the card's body", |s: &Value| s["cards"].as_array().is_some_and(|c| c.len() == 1)
-        && near(term_body(s), body_of(card_now(s))));
+        && in_body(term_body(s), body_of(card_now(s))));
     ensure!(carded["cards"][0]["panes"] == json!([grid_c]), "the card holds {}, not the popped pane", carded["cards"][0]["panes"]);
     let card_before = card_now(&carded);
     ensure!(near(frame(&carded, &grid_c), card_before), "the popped pane fills {:?}, not its card {card_before:?}", frame(&carded, &grid_c));
@@ -7246,7 +7248,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     native.call(json!({"op":"post_mouse","kind":"up","point":[header_at[0] + moved_by[0], header_at[1] + moved_by[1]]}));
     let want = [card_before[0] + moved_by[0], card_before[1] + moved_by[1], card_before[2], card_before[3]];
     let card_state = until!("the card moved by its header", |s: &Value| s["card_drag"].is_null() && near(card_now(s), want)
-        && near(term_body(s), body_of(want)));
+        && in_body(term_body(s), body_of(want)));
     let card_moved = card_now(&card_state);
     // Its corner resizes it.
     let corner = four(&card_state["cards"][0]["grip"]);
@@ -7274,7 +7276,7 @@ async fn pane_grid(run: Run, first_session_id: String, mut debug: wheel_gpui::de
     ensure!(ok, "wheel pane place failed: {err}");
     let placed_at = [area[0] + 40., area[1] + 40., 400., 260.];
     let placed = until!("the card at the frame wheel pane place set", |s: &Value| near(card_now(s), placed_at)
-        && near(term_body(s), body_of(placed_at)));
+        && in_body(term_body(s), body_of(placed_at)));
     let (ok, out, err) = run_pumped(&["pane", "ls", "--json"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok && near(listed(&out), [40., 40., 400., 260.]), "after pane place wheel pane ls --json lists {:?} ({err})", listed(&out));
     draw(window, Some(output.join("client-popped-card-placed.png")), cx)?;

@@ -42,8 +42,6 @@ pub struct TermPane {
     anchor: Option<(u16, u16)>,
     /// A mouse report press is held: moves and the release go to the program.
     reporting: bool,
-    /// The body's bounds as the last paint laid it out, in window points: x, y, width, height.
-    drawn: std::rc::Rc<std::cell::Cell<Option<[f32; 4]>>>,
     /// Scrolled distance not yet a whole line.
     scroll_rest: f64,
 }
@@ -86,6 +84,13 @@ fn cell_for(window: &Window, family: &str, points: f64, line_height: f64) -> Cel
     let advance = ts.advance(id, s, 'm').map(|a| f64::from(f32::from(a.width))).unwrap_or(points * 0.6);
     let line = f64::from(f32::from(ts.ascent(id, s))) + f64::from(f32::from(ts.descent(id, s))).abs();
     CellMetrics::from_face(advance * scale, line * scale, scale, line_height)
+}
+
+/// A terminal pane's body in window points (x, y, width, height): the pane under its title row,
+/// inside the 1 pt border `pane_element` draws on every edge. The grid is sized from this, so it
+/// is the end rect at once, never a frame behind the paint.
+fn body_of(r: Rect) -> [f32; 4] {
+    [r.x + 1., r.y + TITLE + 1., (r.w - 2.).max(1.), (r.h - TITLE - 2.).max(1.)]
 }
 
 fn family(look: &Look) -> String {
@@ -187,7 +192,7 @@ impl Client {
             }
             let look = self.terms.look(space.as_deref());
             let pane = self.terms.panes.entry(p.leaf.id.clone()).or_insert_with(|| TermPane {
-                term: term.clone(), space: space.clone(), font_size: None, body: [0.; 4], cell: CellMetrics { width: 1., height: 1. }, grid: (0, 0), grids: vec![], anchor: None, reporting: false, scroll_rest: 0., drawn: Default::default(),
+                term: term.clone(), space: space.clone(), font_size: None, body: [0.; 4], cell: CellMetrics { width: 1., height: 1. }, grid: (0, 0), grids: vec![], anchor: None, reporting: false, scroll_rest: 0.,
             });
             if pane.term != term {
                 pane.term = term.clone();
@@ -195,9 +200,7 @@ impl Client {
             }
             pane.space = space.clone();
             pane.cell = cell_for(window, &family(&look), pane.font_size.unwrap_or(look.font_size), look.line_height);
-            // Until the first paint, the body is the pane under its title row; after it, the bounds
-            // the layout gave the element (inside the pane's border).
-            pane.body = pane.drawn.get().unwrap_or([p.rect.x, p.rect.y + TITLE, p.rect.w, (p.rect.h - TITLE).max(1.)]);
+            pane.body = body_of(p.rect);
             let grid = vt::grid_for(f64::from(pane.body[2]), f64::from(pane.body[3]), pane.cell);
             if pane.grid != grid {
                 pane.grid = grid;
@@ -511,13 +514,7 @@ impl Client {
         let handle = self.handle.clone();
         let weak = cx.entity().downgrade();
         let input_pane = id.clone();
-        let drawn = pane.drawn.clone();
         let paint = canvas(|_, _, _| (), move |bounds, (), window, cx| {
-            let laid = [f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)];
-            if drawn.replace(Some(laid)) != Some(laid) {
-                // The grid follows the drawn body: the next frame sizes it.
-                window.refresh();
-            }
             let (cw, ch) = (px(cell.width as f32), px(cell.height as f32));
             window.paint_quad(fill(bounds, rgb_hsla(frame.background)));
             let x0 = bounds.origin.x + px(PADDING_X as f32);
@@ -607,8 +604,8 @@ impl Client {
         let (down, moved, up, up_out, scrolled) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let el = div()
             .relative()
-            // The pane gives its body no height of its own: the space under the title, inside the 1 pt border.
-            .w_full().h(px((p.rect.h - TITLE - 2.).max(0.)))
+            // The pane gives its body no height of its own.
+            .w_full().h(px(body_of(p.rect)[3]))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                 this.term_mouse_down(&down, e);
