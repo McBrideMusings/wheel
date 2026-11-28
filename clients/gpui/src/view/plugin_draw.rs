@@ -504,7 +504,7 @@ impl Draw<'_> {
                 let at = |k: &str| arg.get(k).and_then(Json::as_f64).unwrap_or(0.) as f32;
                 wrap().relative().left(px(at("x"))).top(px(at("y"))).child(el).into_any_element()
             }
-            "lineLimit" => match arg.as_u64() { Some(l) => wrap().line_clamp(l as usize).text_ellipsis().child(el).into_any_element(), None => return Err(el) },
+            "lineLimit" => match arg.as_f64().filter(|f| *f >= 1.) { Some(l) => wrap().line_clamp(l as usize).text_ellipsis().child(el).into_any_element(), None => return Err(el) },
             "fixedSize" => wrap().flex_none().whitespace_nowrap().child(el).into_any_element(),
             "help" => match arg.as_str() {
                 Some(t) => wrap().id(el_id(self.pane, &n.id, &format!("help{i}"))).child(el).tooltip(crate::tooltip::tip(t)).into_any_element(),
