@@ -1,0 +1,131 @@
+[
+ {
+  "name": "wheel.agent.status",
+  "params": {
+   "agent": "p1"
+  },
+  "stale": false,
+  "value": {
+   "agent": "w13627",
+   "state": {
+    "phase": "ready"
+   }
+  }
+ },
+ {
+  "name": "wheel.agent.transcript",
+  "params": {
+   "agent": "p1"
+  },
+  "stale": false,
+  "value": {
+   "agent": "w13627",
+   "events": [
+    {
+     "kind": "user",
+     "text": "A aaa'a aaaaa aaa aaaa aaaaa aaaaaaa. Aaaaa aaaa A aaaa aa aa, aa aaaa aa'a aaaa aaaaaaa aa aaaaaaaaa. Aa aaaaa aa aaaaa aaaaa aa aaaa aaaaaaaa.",
+     "turn": 1
+    },
+    {
+     "kind": "turn_start",
+     "turn": 1
+    },
+    {
+     "kind": "thought",
+     "text": ""
+    },
+    {
+     "detail": "aaaaa aaaa aaaaaa \"$AAAAA_AAAA\" \"Aaaa aaaa aaaaaaa\" ; aaaaa aaaa aa; aaaaa aaaaaaaa aa --aaaa | aaaaaa3 -a \"aaaaaa aaaa,aaa; a=aaaa.aaaa(aaa.aaaaa); [aaaaa(a) aaa a aa (a aa aaaaaaaaaa(a,aaaa) aaaa a.aaa('aaaaaaaaa',[])) aa 'aaaa' aa aaaa.a",
+     "id": "aaaaa_01Aa4aAaAAaa6aaaa9aAaAAA",
+     "kind": "tool_call",
+     "status": "pending",
+     "title": "Aaaa aaaa, aaaa aaaaa aaa aaaa aaaaaaaaa",
+     "tool_kind": "execute"
+    },
+    {
+     "content": [
+      {
+       "text": "a6056 a13397 aaaaa aaaa Aaaaaaa 9aa6: AAAA aaaaaaaa\na6056 a13532 aaaaa aaaa Aaaaa aaaaa aaaaaa\na6056 a13497 aaaaa aaaa aa8a.1: aaaaaa\na6056 a13623 aaaaa aaaa Aaaaaa aaaa-aaaaa aaaaaaa\na6056 a13626 aaaaa aaaa Aaaa aaaa aaaaaaa\na6056 a13158 a",
+       "type": "text"
+      }
+     ],
+     "id": "aaaaa_01Aa4aAaAAaa6aaaa9aAaAAA",
+     "kind": "tool_update",
+     "status": "completed"
+    },
+    {
+     "kind": "thought",
+     "text": ""
+    },
+    {
+     "detail": "aaaaa aaaaaa --aaaa | aaaaaa3 -a \"\naaaaaa aaaa,aaa; a=aaaa.aaaa(aaa.aaaaa)\naaa aaaa(a):\n  aa aaaaaaaaaa(a,aaaa):\n    aa a.aaa('aaaa')=='aaaaaa' aa 'aaaaaa' aa a aaa aaaaaaaaaa(a.aaa('aaaaaa'),(aaa,aaaa)): aaaaa(aaaa.aaaaa(a)[:600])\n    aaa ",
+     "id": "aaaaa_01AAAaAA5Aa2AA8AAAA69AAa",
+     "kind": "tool_call",
+     "status": "pending",
+     "title": "Aaaa aaaaaa aaaaa aaa aaaaaa AAA aaaa",
+     "tool_kind": "execute"
+    },
+    {
+     "content": [
+      {
+       "text": "AaaAaaaAaa:Aaaa aaaa aaaaa: [aa-aaaaaa-aaaaaaaaa-aaaaa] Aaaaaaa: aaaa aaaaaaa aaa a aaa aaaaaaa aaaaaaa aaa AAAAAAA \u2014 aaaaaa a aaaaa-aaaa aaaaaa (a.a. a --aaaa/-a aaaaa) aa aaaaaaaa aaaaaaa aaaa a aaaa aaaaaaa. Aaaa aaaaa-aaaa aaaa aa $(aaa",
+       "type": "text"
+      }
+     ],
+     "id": "aaaaa_01AAAaAA5Aa2AA8AAAA69AAa",
+     "kind": "tool_update",
+     "status": "failed"
+    },
+    {
+     "detail": "aaaaa aaaaaa --aaaa > /aaaaaaa/aaa/aaaaaa/aa.aaaa; aaaa -a '\"[^\"]*aaaa-aaaa[^\"]*\"' /aaaaaaa/aaa/aaaaaa/aa.aaaa | aaaa | aaaa -a | aaaa; aaaaa aaaaaa --aaaa 2>&1 | aaaa -30; aa ~/.aaaaa/aaaaaaa 2>/aaa/aaaa",
+     "id": "aaaaa_01AaAaA4aaaAaA5a3AAAaaaa",
+     "kind": "tool_call",
+     "status": "pending",
+     "title": "Aaaa aaaa-aaaa aaaaaaaaaa aaa aaaaaa aaaa",
+     "tool_kind": "execute"
+    },
+    {
+     "content": [
+      {
+       "text": "Aaaaaaa: aaaaaaaa aa Aaaa aaaa aaaaaaa, aaaa a aaaaaa aaaaaaa a aaaaa-aaaaaa.aaaa\n\nAaaaa: aaaaa aaaaaa [AAAAAAA] <AAAAAAA>\n\nAaaaaaaa:\n  aa       Aaaaa aaaaa aaaaaa aaaaaaa a aaaaa aaa aaa, aaaaaaa aaaa aaaaaaa aaaa aaaaa-aa, aaaa aaa aaaaa.",
+       "type": "text"
+      }
+     ],
+     "id": "aaaaa_01AaAaA4aaaAaA5a3AAAaaaa",
+     "kind": "tool_update",
+     "status": "completed"
+    },
+    {
+     "detail": "aa -aa ~/.aaaaa/aaaaaaa/aaaa-aaaa/; aaa ~/.aaaaa/aaaaaaa/aaaa-aaaa/aaaaa-aaaaaa.aaaa; aaaaa aaaaaa aaaa aaaa-aaaa 2>&1 | aaaa -40",
+     "id": "aaaaa_013aaAAAAa3AaaaA26a2AAAa",
+     "kind": "tool_call",
+     "status": "pending",
+     "title": "Aaaaaaa aaaa-aaaa aaaaaa aaa aaa aaaa",
+     "tool_kind": "execute"
+    },
+    {
+     "content": [
+      {
+       "text": "aaaaa 16\naaaaa-aa-a@ 6 aaaaaa  aaaaa  192 Aaa 20 16:42 .\naaaaa-aa-a@ 7 aaaaaa  aaaaa  224 Aaa 16 16:48 ..\n-aa-a--a--@ 1 aaaaaa  aaaaa  597 Aaa 20 16:42 Aaaaa.aaaa\naaaaa-aa-a@ 3 aaaaaa  aaaaa   96 Aaa 18 09:19 aaaaa\naaaaa-aa-a@ 4 aaaaaa  aaa",
+       "type": "text"
+      }
+     ],
+     "id": "aaaaa_013aaAAAAa3AaaaA26a2AAAa",
+     "kind": "tool_update",
+     "status": "completed"
+    }
+   ]
+  }
+ },
+ {
+  "name": "wheel.agent.requests",
+  "params": {
+   "agent": "p1"
+  },
+  "stale": false,
+  "value": {
+   "agent": "w13627",
+   "requests": []
+  }
+ }
+]

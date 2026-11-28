@@ -1,0 +1,37 @@
+[
+ {
+  "name": "kennel.routes",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "error": null,
+   "value": [
+    "Aaaaaa (~/.aaaaaa/aaaaaa/aaaaaa):",
+    "  ~/Aaaa                                        \u2192 aaaa",
+    "  ~/.aaaaa-aaaaaaaa/aaaaaa-aaaaa                \u2192 aaaa",
+    "  ~/.aaaaa-aaaaaaaa/aaaaaa-aaaaa                \u2192 aaaa",
+    "Aaaaaaaa (~/.aaaaaa/aaaaaa/aaaaaa.aaaa):",
+    "  aaaaaaaaa    aaaaaa=~/.aaaaaa-aaaaaaaaa",
+    "  aaaaaaaa     (aaaaa aaaa aa aaa aaaaaaa aaaa)",
+    "  aaaa         aaaaaa=~/.aaaaaa-aaaa  aaaaa=~/.aaaaa-aaaa"
+   ]
+  }
+ },
+ {
+  "name": "kennel.which",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "error": null,
+   "value": [
+    "aaaaaaa\t(aa aaaaa)",
+    "aaaaaa\tAAAAAA_AAAAAA_AAA aaaaa (aaaaaaa aaaa)",
+    "aaaaa\tAAAAA_AAAA aaaaa (aaaaaaa aaaa)"
+   ]
+  }
+ }
+]

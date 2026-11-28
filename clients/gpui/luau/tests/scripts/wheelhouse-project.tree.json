@@ -1,0 +1,1068 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 20,
+                    "weight" : "bold"
+                  }
+                }
+              ],
+              "text" : "wheel"
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                0,
+                0,
+                8,
+                0
+              ]
+            }
+          ],
+          "spacing" : 12
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 14,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "primary"
+                },
+                {
+                  "help" : "A aaaaaa aaaAA aaa aAA aaaaa aaaaaaaaaaa aaaaaaaaaaa: a aaaa aa aaaaa (aaaaaaaaa, aaaaa aaaaa, aaa aaaaa) aaa aaaaaaa, aaa aaaaa aaa aaaaaaa, aaa aaaaa aaaa aa a Aaaa aaaaaa.",
+                  "lineLimit" : 1
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "A aaaaaa aaaAA aaa aAA aaaaa aaaaaaaaaaa aaaaaaaaaaa: a aaaa aa aaaaa (aaaaaaaaa, aaaaa aaaaa, aaa aaaaa) aaa aaaaaaa, aaa aaaaa aaa aaaaaaa, aaa aaaaa aaaa aa a Aaaa aaaaaa."
+            },
+            {
+              "action" : {
+                "type" : "edit_vision"
+              },
+              "child" : {
+                "component" : "Text",
+                "text" : "Edit vision"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    2,
+                    5
+                  ]
+                },
+                {
+                  "pointerStyle" : "link"
+                }
+              ],
+              "variant" : "borderless"
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "height" : 32
+              }
+            }
+          ],
+          "spacing" : 12
+        },
+        {
+          "align" : "stretch",
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "frame" : {
+                "alignment" : "center",
+                "height" : 44
+              }
+            }
+          ],
+          "spacing" : 0
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "green"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "1089"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "Done"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "primary"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "2"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "In progress"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "green"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "510"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "Ready"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "orange"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "46"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "Blocked"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "0"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "Open"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 20,
+                            "weight" : "semibold"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "monospacedDigit" : true
+                        }
+                      ],
+                      "text" : "0"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 11,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "secondary"
+                        },
+                        {
+                          "lineLimit" : 1
+                        }
+                      ],
+                      "text" : "Deferred"
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 8
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "spacing" : 2
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 10
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "columns" : [
+                    {
+                      "key" : "id",
+                      "label" : "Epic",
+                      "width" : 110
+                    },
+                    {
+                      "key" : "title",
+                      "label" : "Title",
+                      "width" : "flex"
+                    },
+                    {
+                      "key" : "progress",
+                      "label" : "Done",
+                      "width" : 70
+                    },
+                    {
+                      "key" : "ready",
+                      "label" : "Ready",
+                      "width" : 90
+                    }
+                  ],
+                  "component" : "Table",
+                  "empty" : "No epics.",
+                  "foldAction" : {
+                    "type" : "noop"
+                  },
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "alignment" : "top",
+                        "height" : 346
+                      }
+                    },
+                    {
+                      "clipShape" : {
+                        "cornerRadius" : 0
+                      }
+                    }
+                  ],
+                  "rowAction" : {
+                    "type" : "noop"
+                  },
+                  "sections" : [
+                    {
+                      "count" : 12,
+                      "rows" : [
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-0but"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaaa aaaa aaa aaaa aaaaaa: aaaaaa aa aaaaa aa aaa aaaaaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "5\/17"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "12 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-0but",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-0but"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-0dxm"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaa aaaaaaaa AAA — aaaaaaa aaaaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "1\/2"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "1 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-0dxm",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-0dxm"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-0ee"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaaaaaa aaaaaaaa: aaaaa aaaa aaa-aaaa aaaaaaa aa aaaaaaaaa aaaaa aaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "1\/13"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "12 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-0ee",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-0ee"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-16sk"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaa aaaaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "1\/4"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "1 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-16sk",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-16sk"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-2aln"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaa-aaaaaa Aaaaa Aaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "18\/21"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "2 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-2aln",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-2aln"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-32cu"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaa aaaa: aaaaa-aa, aaaa aaaaaaa aa aaa aaaaa aaa aaaaaa aaa aaaaaa (AAA-0035)"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "2\/7"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "5 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-32cu",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-32cu"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-3mvm"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "AAAA aaaaaaaaaaa aaaa: aaaaaaaa aaa AAAaaAaaa aaaaa aaaa aaaaaaaa aaa aaaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "1\/1"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-3mvm",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-3mvm"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-4d1o"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "AAAA aaaa aaaa aaaaaaa: Aaaa aa Aaaa, AaaaaAA aaaa aaaaa aa AAAA"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "0\/7"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-4d1o",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-4d1o"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-4ltr"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "AAAA aaaaa aaa aaaaaaaa aaaa aaaaaaa-aa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "2\/2"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-4ltr",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-4ltr"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-4xon"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaa-aa aaaa aaaaaaaaa: aaaaaaaa.aa aaa aaaaa.aa, aaaaaa aaaaa .aaaaa\/ aaa aaaaaa aa aaa aaaaa"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "2\/5"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "2 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-4xon",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-4xon"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-7bjs"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaaa aaaaaa aaaa aaaa aaaaaa aaa aaaa, aaaaaa aa aaaaaaaaaaaa aaaaaaaa (aaaaaaaa aaaaaaa)"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "2\/10"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "8 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-7bjs",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-7bjs"
+                        },
+                        {
+                          "cells" : [
+                            {
+                              "key" : "id",
+                              "mono" : true,
+                              "text" : "wheel-9jv0"
+                            },
+                            {
+                              "key" : "title",
+                              "text" : "Aaaaaa aaa: aaaaa-aa aaaaa, aaaa aaaaaaa, aa aaa (AAA-0034)"
+                            },
+                            {
+                              "key" : "progress",
+                              "mono" : true,
+                              "tabular" : true,
+                              "text" : "2\/5"
+                            },
+                            {
+                              "key" : "ready",
+                              "text" : "3 ready",
+                              "tone" : "ok"
+                            }
+                          ],
+                          "collapsed" : false,
+                          "depth" : 0,
+                          "dim" : false,
+                          "id" : "wheel-9jv0",
+                          "kids" : 0,
+                          "menu" : [
+
+                          ],
+                          "path" : "wheel-9jv0"
+                        }
+                      ],
+                      "title" : "Epics"
+                    }
+                  ],
+                  "sort" : {
+                    "asc" : true,
+                    "key" : "id"
+                  }
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    18,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              ],
+              "spacing" : 8
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 8
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            18,
+            16,
+            48,
+            16
+          ]
+        }
+      ],
+      "spacing" : 0
+    }
+  ],
+  "component" : "Column"
+}

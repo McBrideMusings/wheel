@@ -1,0 +1,26 @@
+{
+  "memory" : {
+    "kind" : "memory",
+    "message" : "the script ran past its memory limit of 33554432 bytes"
+  },
+  "missing-module" : {
+    "kind" : "runtime",
+    "message" : "demo\/main.luau:1: require(\"lib\/none\"): the package has no lib\/none.luau"
+  },
+  "os-removed" : {
+    "kind" : "runtime",
+    "message" : "demo\/main.luau:1: attempt to index nil with 'time'"
+  },
+  "steps" : {
+    "kind" : "step_budget",
+    "message" : "the script ran past its step budget of 10000000"
+  },
+  "syntax" : {
+    "kind" : "syntax",
+    "message" : "demo\/main.luau:1: Expected identifier when parsing variable name, got 'end'"
+  },
+  "unknown-global" : {
+    "kind" : "runtime",
+    "message" : "demo\/main.luau:1: attempt to call a nil value"
+  }
+}

@@ -1,0 +1,4243 @@
+[
+ {
+  "name": "wheelhouse.diff",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "branch": "main",
+   "default": "origin/main",
+   "error": null,
+   "head": "b84ac3b5",
+   "name": "wheel",
+   "scopes": [
+    {
+     "base": "HEAD",
+     "commits": null,
+     "files": [
+      {
+       "add": 3,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "+",
+           "new": 1,
+           "old": null,
+           "text": "{"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "  \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "}"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".turnstilerc",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa1-aaaa-aaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa3-aaaaaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa4-aa-aaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa5-aaaaaaa-aaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa6-aaaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      }
+     ],
+     "fork": null,
+     "key": "uncommitted",
+     "label": "Uncommitted"
+    },
+    {
+     "base": "origin/main",
+     "commits": 0,
+     "files": [
+      {
+       "add": 3,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "+",
+           "new": 1,
+           "old": null,
+           "text": "{"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "  \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "}"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".turnstilerc",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa1-aaaa-aaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa3-aaaaaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa4-aa-aaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa5-aaaaaaa-aaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa6-aaaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaaaa.aaa",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": true,
+       "del": 0,
+       "hunks": [],
+       "old": null,
+       "path": "aaaa/aaaa-aaaa/aaaaaa/aa2-aaaa.aaa",
+       "status": "?",
+       "truncated": false
+      }
+     ],
+     "fork": "b84ac3b5d",
+     "key": "default",
+     "label": "Aaaaaa aa aaaa"
+    },
+    {
+     "base": "chore/remove-read-aloud",
+     "commits": 28,
+     "files": [
+      {
+       "add": 15,
+       "binary": false,
+       "del": 16,
+       "hunks": [
+        {
+         "header": "Aaa Aaaa aaa AAAA Aaa aaaaaa aa aaa aaa Aaaaa aaaaaaaaa. Aaaaa: `AAAAA_AAAAAA_AA",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 434,
+           "old": 434,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 435,
+           "old": 435,
+           "text": "**Aaa aaaaaa aaaaa** (aaa `aaaaaaaaaaaa_aaaa` aaaa aaaaa aaa aaaaaaaaaaaa aaaaaa aaaa `aaaaaaaa_aa`, aaaaa Aaaaaaaaaaaa aaaa aaa aaaa aaa aaaaa aaaaa (`aaaaaa-aaaaaaaaaaaa-aaaaa.aaa`), aaaa aaaa `aaaaa aaaaa aaa <aaa>` aaa `aaaaa aaaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 436,
+           "old": 436,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 437,
+           "text": "**Aaaaa aa aaa AAAA aaaaaaaaaa (`aaaaa-6aaa`, `aaaaaaa/aaaa/aaa/aaaa_aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaa.aa`).** Aaaaa aaaa aa aa aaaaa'a aaaaaaaaaa aaa a aaaa aaaaa aa aaaaaaa: `aaaa(a)` aaaaaaaaa, `aaaaa://` aaaaaaaaa, aaa aaaaaa'a `a"
+          },
+          {
+           "kind": "+",
+           "new": 437,
+           "old": null,
+           "text": "**Aaaaa aa aaa AAAA aaaaaaaaaa (`aaaaa-6aaa`, `aaaaaaa/aaaa/aaa/aaaa_aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaa.aa`).** Aaaaa aaaa aa aa aaaaa'a aaaaaaaaaa aaa a aaaa aaaaa aa aaaaaaa: `aaaa(a)` aaaaaaaaa, `aaaaa://` aaaaaaaaa, aaa aaaaaa'a `a"
+          },
+          {
+           "kind": " ",
+           "new": 438,
+           "old": 438,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 439,
+           "old": 439,
+           "text": "**Aaa Aaaaaa aaaaaaa (`aaaaa-0aaa.3`, `aaaaaaa/aaaa/aaa/aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaaa.aa`).** Aaa aaaaa'a `aaaaaa_aaaaaaa` aaaa, aaaaa aaaaa aaa aaaaa-aaa aaa aaaa aaaa, aaaaaaaa aaa aaaaaa aa Aaaaaa aaaa a aaaa aaaaa aaa aaaaaa "
+          },
+          {
+           "kind": " ",
+           "new": 440,
+           "old": 440,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaaa aa `aaaa -A \"Aaaaaaaaaaaaa: Aaaaaa $(aaa <aaaaa aaaa>)\" aaaa://1",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 448,
+           "old": 448,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 449,
+           "old": 449,
+           "text": "**Aaa aaaaaa aaaaaaaaa (`aaaaa-aaaa.3`, AaaaaaAaaaaaa.aaaaa, AaaaaaAaaaaaa.aaaaa, `aaaaa/Aaa/aaaaa-aaaaaa.aa`).** `aaaaa/aaaaa.aa` aaaa `aaaaa/Aaa/aaaaa-aaaaaa.aa` aaaa aaa aaaaaaaaa Aaaaa aaaaa aaa (`AAAAAAAAAAAAA=Aaaaaaa`, `AAAAAAA=aaaaa`"
+          },
+          {
+           "kind": " ",
+           "new": 450,
+           "old": 450,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 451,
+           "text": "**Aaa aaaaaa aaaaaaa (`aaaaa-aaaa.5`, AaaaaaAaaaaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaaaaa.aaaaa).** `aaaaaaa/aaaa/aaa/aaaaaaa.aa` aa aaa aaaa aaaaa (aaa aaaaaaaa, aaaa aaaaa, aaaaaaaaa aaa, aaa aaaa aaaaa a `aaaaaaa_aaaa` aa"
+          },
+          {
+           "kind": "+",
+           "new": 451,
+           "old": null,
+           "text": "**Aaa aaaaaa aaaaaaa (`aaaaa-aaaa.5`, AaaaaaAaaaaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaaaaa.aaaaa).** `aaaaaaa/aaaa/aaa/aaaaaaa.aa` aa aaa aaaa aaaaa (aaa aaaaaaaa, aaaa aaaaa, aaaaaaaaa aaa, aaa aaaa aaaaa a `aaaaaaa_aaaa` aa"
+          },
+          {
+           "kind": " ",
+           "new": 452,
+           "old": 452,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 453,
+           "old": 453,
+           "text": "**Aaa aaaaa aaa aaa aaa aaaaaa aaa (`aaaaa-aaaa.6`; AaaaaAaa.aaaaa, AaaaaaaAaaa.aaaaa, AaaaaAaaa, AaaaaaaaaaAaaaa, AaaaaAaaaa.aaaaa; AAA-0037, AAA-0034).** `aaaaaaa/aaaa/aaa/aaaaaa.aa` aaaa aaa aaa aaa: 38 aa aaaa, 28\u00d726 aaaaa aa a 6; aaa a"
+          },
+          {
+           "kind": " ",
+           "new": 454,
+           "old": 454,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaaa aa `aaaa -A \"Aaaaaaaaaaaaa: Aaaaaa $(aaa <aaaaa aaaa>)\" aaaa://1",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 458,
+           "old": 458,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 459,
+           "old": 459,
+           "text": "**Aaaaaa aaaaaaa (`aaaaa-aaaa.7.5.1`; AaaaaaAaaaaa.aaaaa, AaaaaaAaaaaaa.aaaaAaaaaa, AaaAaaaa+Aaaaaaa.aaaaa aaaaAaaaaa/aaAaAaaaaa/aaaaaAaaaaa/aaaaaAaaa/aaaaaaAaaaaaAaAaaaaa, AaaaaAaaa'a `aaaaaa`).** `aaaaaaa/aaaa/aaa/aaaa/aaaaaa.aa`: a aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 460,
+           "old": 460,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 461,
+           "text": "**Aaa aaaaaaaa aaaa (`aaaaa-aaaa.9`; AaaaaaaaAaaaa.aaaaa, AaaaaaaaAaaaaaaaaa.aaaaa, AaaAaaaa.aaaaaaaaAaaaaaaaaa(aaa:)/aaaaaaaAaaaaaaaa).** Aaa aaaaaa (`aaaaaaa/aaaa/aaaaaa/Aaaaaa.aaaaa`) aaaaa aaa Aaaaaaa aaaaaaaaaa aaa aaaaa, aaaa aaaa `Aa"
+          },
+          {
+           "kind": "+",
+           "new": 461,
+           "old": null,
+           "text": "**Aaa aaaaaaaa aaaa (`aaaaa-aaaa.9`; AaaaaaaaAaaaa.aaaaa, AaaaaaaaAaaaaaaaaa.aaaaa, AaaAaaaa.aaaaaaaaAaaaaaaaaa(aaa:)/aaaaaaaAaaaaaaaa).** Aaa AAAA aaaaaa aaaaa a aaaaaaaa aaaa aaaaaa (`aaaaaaa/aaaa/aaa/aaaa/aaaaaaaa.aa`); aaa aaaaaa (`aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 462,
+           "old": 462,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 463,
+           "old": 463,
+           "text": "**Aaaaaaaaaa aaa aaaaaaaa aaaaa (`aaaaa-aaaa.10.2`; AaaaaaaaaaAaaaa.aaaaa, AaaaAaaa.aaaaa AaaaaaaaaaAaaa, AaaaaaAaaa.aaaaa AaaaaAaaa, Aaaaaaaa.aaaaaaaaaaAaa).** `aaaaaaa/aaaa/aaa/aaaaa.aa` aa aaa aaaa aaaaa: `aaaaaaa` (aaa aaaaa'a aaaaaa aa"
+          },
+          {
+           "kind": " ",
+           "new": 464,
+           "old": 464,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaaa aa `aaaa -A \"Aaaaaaaaaaaaa: Aaaaaa $(aaa <aaaaa aaaa>)\" aaaa://1",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 478,
+           "old": 478,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 479,
+           "old": 479,
+           "text": "**Aaa aaaa aaa aaaa (`aaaaa-aaaa.7.4.1`; AaaaAaaAaaa.aaaaa `AaaaAaaAaaaa`, `AaaaAaaAaaaaaa`, `AaaaaaaAaaa`, `AaaaaAaa`; AaaaaaaAaaaaa.aaaaa `aaaaaaaaaaAaaaaa`, `aaaaaaAaaaaa`; AaaaaAaa.aaaaa'a aaaaa aaa aaaaaa).** `aaaaaaa/aaaa/aaa/aaaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 480,
+           "old": 480,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 481,
+           "text": "**Aaaa aaaaaa aaa aaaa (`aaaaa-aaaa.8.2`; AaaaAaaaaa.aaaaa, AaaAaaaa.aaaaaaAaaa/aaaaaaAaaa/aaaaAaaaaa/aaaaaaaAaaaaa/aaaaaa, AaaaaaAaaa.aaaaa AaaaaAaaa).** `aaaaaaa/aaaa/aaa/aaaaaa.aa` aaaaa aaa aaaa aaaaa: `AAAAAA` 0.22 a, `aaaaaaaa` (`AAAA"
+          },
+          {
+           "kind": "+",
+           "new": 481,
+           "old": null,
+           "text": "**Aaaa aaaaaa aaa aaaa (`aaaaa-aaaa.8.2`; AaaaAaaaaa.aaaaa, AaaAaaaa.aaaaaaAaaa/aaaaaaAaaa/aaaaAaaaaa/aaaaaaaAaaaaa/aaaaaa, AaaaaaAaaa.aaaaa AaaaaAaaa).** `aaaaaaa/aaaa/aaa/aaaaaa.aa` aaaaa aaa aaaa aaaaa: `AAAAAA` 0.22 a, `aaaaaaaa` (`AAAA"
+          },
+          {
+           "kind": " ",
+           "new": 482,
+           "old": 482,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 483,
+           "old": 483,
+           "text": "**Aaaa aaaaaa aaaaaaaaa aaa aaa aaa-aaaa aaaaaa (`aaaaa-aaaa.8.4.1`; AaaaaaAaaaaaaa.aaaaa, AaaaaaAaaa.aaaaa AaaaAaaaaa.aaa(aaaaa) aaa AaaaAaaaAaaaa, AaaaaaaaAaaaaa.aaaaa AaaaAaaaaaAaaaaaaa).** `aaaaaaa/aaaa/aaa/aaaa_aaaaaa.aa` aaaaa aaa aaa"
+          },
+          {
+           "kind": " ",
+           "new": 484,
+           "old": 484,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaaa aa `aaaa -A \"Aaaaaaaaaaaaa: Aaaaaa $(aaa <aaaaa aaaa>)\" aaaa://1",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 500,
+           "old": 500,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 501,
+           "old": 501,
+           "text": "**Aaaa aaaaa Aaaaaa Aaaaaa (`aaaaa-aaaa.8.6`; AaaaaaAaaa.aaaaa `AaaaaAaaa`).** `aaaaaaa/aaaa/aaa/aaaaaa/aaaaaa.aa` aaaaa aaa aaaaaa'a Aaaaaa Aaaaaa aa aaa aaa aaaaaa `AaaaaaAaaaaa`, aaaa aaaa aaa aaaaa aaaaaa aaaaa aaa aaaaaaaa aaaaaaa `AAA"
+          },
+          {
+           "kind": " ",
+           "new": 502,
+           "old": 502,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 503,
+           "text": "**Aaaaaaaa aaaaaaa aaaa aaaaaaa a aaaaaaa aaaa aaa a aaaaaa aaaaaa (`aaaaa-aaaa.8.7`; AaaAaaaa.aaaaa `aaaaaa`, `aaaaaaAaaaaaa`, `aaaaAaaaaa`).** `aaaaaaa/aaaa/aaa/aaaa/aaaa.aa` `aaaaaaa_aaaaaa` aa aaa aaaaaa'a aaaaaa aaaa aaa aaa aaaaaa'a `"
+          },
+          {
+           "kind": "+",
+           "new": 503,
+           "old": null,
+           "text": "**Aaaaaaaa aaaaaaa aaaa aaaaaaa a aaaaaaa aaaa aaa a aaaaaa aaaaaa (`aaaaa-aaaa.8.7`; AaaAaaaa.aaaaa `aaaaaa`, `aaaaaaAaaaaaa`, `aaaaAaaaaa`).** `aaaaaaa/aaaa/aaa/aaaa/aaaa.aa` `aaaaaaa_aaaaaa` aa aaa aaaaaa'a aaaaaa aaaa aaa aaaaaaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 504,
+           "old": 504,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 505,
+           "old": 505,
+           "text": "**Aaaaaaaa aaaaaaaaaaa (`aaaaa-aaaa.10.4.2`; AaaaaaaaAaaaaaaaaaa.aaaaa, Aaaaaaaa.aaaaa `aaaaaaaaAaaaaaa` aaa `AaaaaaaaaaAaaaa`, AaaaaaaaaaAaaaa.aaaaa `aaaaaAaaaaaaaaaa`).** `aaaaaaa/aaaa/aaa/aaaaaaaa.aa` aaaaa `aaaaaaa` (aaa aaaa, aaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 506,
+           "old": 506,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "A aaaa: aaaaa a aaaaaaaaa aaaaaa aaaa `[aaaaaa] aaaaaa = \"127.0.0.1:<aaaa>\"`, aa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 577,
+           "old": 577,
+           "text": "- `AAAAA_AAAAA_AAAAA=<aaaaa>`: aaa aaa aaa `aaaaaa aa aaaaa <aa>` aaa a `aaaaaa:` aaaa aaaa `aaaaaa` aaa aa aa."
+          },
+          {
+           "kind": " ",
+           "new": 578,
+           "old": 578,
+           "text": "- A aaaaaaa AAAA aaaaa `aaaa_aaa256` aa aaaaa: aaa aaa aaa `aaaaaaaaaaa aaaa aaa aaaaa aaa aaaaaa aaaaaaaaaaa`, aa `aaaaaa aaaa`, aaa aaa aaaaaa aaaaa \"Aaaa Aaa'a aaaaaaaaaaa aaaa aaa aaaaa\"."
+          },
+          {
+           "kind": " ",
+           "new": 579,
+           "old": 579,
+           "text": "- `aaaaa/aaa-aaaaaaa.aa` (aaaaa `AAAAA_AAA_AAA` = aaa aaaaa AaaaaAaaaa `Aaaaa.aaa`, a aaaa aaaaaaaaa; 15 aaaaaa) aaaa aaa aaaaa aaaaaaaaaa aaaa aaaaaaa aaa aaa aaaaaa: aaaa aaaa aaa aaa-aaaa aaaaa (`aaaaaa a1 aaaaaa; aaaaaaa aaa aaaaaaaaaa`"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 580,
+           "text": "- Aaaaaaaaaaa aaaa `aaaaa aaaaaa aa <aaaa> aaaaaaaaaa <aaa>`: aaaaaaaa aaaaa aaa aaaa aaaaa aaa aaaa, aaaaaaaaa aaaa aaaa aa aaa aaa aaa. Aaaaaaa aaa aaaaaaaaa aaaa `~/.aaaaaa/aaaaa/aaa aaaaaaa`."
+          },
+          {
+           "kind": "+",
+           "new": 580,
+           "old": null,
+           "text": "- Aaaaaaaaaaa aaaa `aaaaa aaaaaa aa <aaaa> aaaaaaaaaa <aaa>`: aaa aaaa aaaa aaaa aaa aaa aaa aa aaa aaaaaa aaaa aa aaaa aaaaaaaaaaaa. Aaaaaaa aaa aaaaaaaaa aaaa `~/.aaaaaa/aaaaa/aaa aaaaaaa`."
+          },
+          {
+           "kind": " ",
+           "new": 581,
+           "old": 581,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 582,
+           "old": 582,
+           "text": "## Aaaa aaaaaaaaaaaaa (aaaaa-aaa4.2.8)"
+          },
+          {
+           "kind": " ",
+           "new": 583,
+           "old": 583,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaa a aaaaaa aaaa'a Aaaa aaaaaa aaaaaa (`AaaaaaAaaaAaaa` aa AaaaaAA,",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 654,
+           "old": 654,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 655,
+           "old": 655,
+           "text": "Aaa aaaaa aaaa'a Aaa aaaaa aaaaa `aaaaa/aAA/Aaaaaaa/AaaAaaaaAaaaa.aaaaa`: a aaaaaa aaaaa aaaa aaa aaaaaa aaaaaaaaaaa aaa aaa aaaaaaaa aaaaa, aaaaaa aa `AaaaaaaAaaaaaa.aaaAaaaaAaaa` (aaa Aaa aaaaaaa'a aaaaaa, aaaaa aaa Aaaaaa aaa), aaa a aaa"
+          },
+          {
+           "kind": " ",
+           "new": 656,
+           "old": 656,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 657,
+           "text": "`aaaaa/aaa-aaaaaaa-aaaa.aa` (aaaaa `AAAAA_AAA_AAAAAAA_AAAA` = a aaaaa-aaa-aaaaaaa aa AaaaaAaaaa aaa a aaaa aaaaaaaaa; 13 aaaaaa) aaaaaa `AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa` aaaa aaaa aaaaa aaaaaaa aaa aaa aaaaaa: a aaaaa aaaaa aaaaa aaaa "
+          },
+          {
+           "kind": "+",
+           "new": 657,
+           "old": null,
+           "text": "`aaaaa/aaa-aaaaaaa-aaaa.aa` (aaaaa `AAAAA_AAA_AAAAAAA_AAAA` = a aaaaa-aaa-aaaaaaa aa AaaaaAaaaa aaa a aaaa aaaaaaaaa; 13 aaaaaa) aaaaaa `AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa` aaaa aaaa aaaaa aaaaaaa aaa aaa aaaaaa: a aaaaa aaaaa aaaaa aaaa "
+          },
+          {
+           "kind": " ",
+           "new": 658,
+           "old": 658,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 659,
+           "old": 659,
+           "text": "`aaaaa/aaa-aaa-aaaaa.aa` (aaaaa `AAAAA_AAA_AAA` = aaa aaaaa AaaaaAaaaa `Aaaaa.aaa` aaa a aaaa aaaaaaaaa; 8 aaaaaa) aaaaa aaa aaa aaaa aaa aaa aaaaaa aaaaa aaaa aaaaa `Aaaaaaaa/{aaaaa,aaaaa,aaaaa}` aaa `aaaaaa.aaaaa = ~/Aaaaaaaa`, aaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 660,
+           "old": 660,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa'a aaaaa (`aaaaa/aAA/Aaaaaaa/AaaaaAaaa.aaaaa`) aa aaa aaaaa aaaaa aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 675,
+           "old": 675,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 676,
+           "old": 676,
+           "text": "`aaaaaa` aaaaaa aaaa a aaaaaaa aa aaaa-aaaaa, aa aaa `AaaaaAaaaaAAAaaaa` aaaaaa (`aaaaa/aAA/AAAaaaa/AaaaaAaaaAAAaaaa.aaaaa`) aaaaaa aa aaaa aaaa aaaa. Aaaaa aa aaaa `aaaaaaaaaa -aaaaaaa Aaaaa.aaaaaaaaa -aaaaaa AaaaaAaaaa -aaaaaaaaaaa 'aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 677,
+           "old": 677,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 678,
+           "text": "**aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4).** Aaa aaaaaaaa'a aaa aaa aaaaa aaa aaaaa aaaaa'a aaaa aa aaa aaaa aaaa a \u25be aaa aa aaaaaa aaaaa aa aaaaaa aaaaaaa aaaaaa aaaaa aaaaa (`AaaaaAaaaa.aaaaaAaaAaaaa`; aaa aaaa aa aaaaa aa aaaa, aa aaa "
+          },
+          {
+           "kind": "+",
+           "new": 678,
+           "old": null,
+           "text": "**aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4).** Aaa aaaaaaaa'a aaa aaa aaaaa aaa aaaaa aaaaa'a aaaa aa aaa aaaa aaaa a \u25be aaa aa aaaaaa aaaaa aa aaaaaa aaaaaaa aaaaaa aaaaa aaaaa (`AaaaaAaaaa.aaaaaAaaAaaaa`; aaa aaaa aa aaaaa aa aaaa, aa aaa "
+          },
+          {
+           "kind": " ",
+           "new": 679,
+           "old": 679,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 680,
+           "text": "Aaa aaaaa'a aaaaaaa aaaaaaa (aaaaa-aaa4.2.5, `aaaaa/aAA/Aaaaaaa/AaaaaaaAaaaaaaAaaaa.aaaaa`) aaaaa aaaa aaa aaaaaaaaaa aaaaa aaaa aa aaa aaaa: a aaaaa aaaa a aaaaaa aaaaa aaaa AaaaaAaa'a `AaaaaaaAaaaaaa`, aaaaaaa aaaaa aaaaa, aaaaa aaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 680,
+           "old": 681,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 682,
+           "text": "**Aaaaaaaa aaaaa (aaaaa-a6a5.5, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `Aaaaa`, `AaaaaaaaaaaaAaaa`, `Aaaa`).** Aaaaa aaa aaa aaaa'a aaaaa aa aaaaaaa aaaaa, aaaa aaaa aaaaaa aaaaaa'a aaaaa; a aaaa aaaa, aaaaaaa aaaa aaaaa aaa aaaaa aaa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 681,
+           "old": null,
+           "text": "**Aaaaaaaa aaaaa (aaaaa-a6a5.5, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `Aaaaa`, `AaaaaaaaaaaaAaaa`, `aaaAaa`).** Aaaaa aaa aaa aaaa'a aaaaa aa aaaaaaa aaaaa, aaaa aaaa aaaaaa aaaaaa'a aaaaa; a aaaa aaaa, aaaaaaa aaaa aaaaa aaa aaaaa aaa aa"
+          },
+          {
+           "kind": " ",
+           "new": 682,
+           "old": 683,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 684,
+           "text": "**Aaaaa aaaaa aaaaa (aaaaa-a6a5.6, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `AaaaaaAaaaaa`, `aaaaa/aAA/Aaaaaaa/AaaaaaAaa.aaaaa` `AaaaaaAaaa`, `AaaaaAaaa`).** Aaa aaa aaa'a aaa (`aaaaaa`, aaaaaaaaaaaaa aaaaa `aaaaa aaa` aaaaa `AaaaaAaaaa.aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/AAAAA.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 5,
+       "binary": false,
+       "del": 5,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# Aaaaa aaaaaaa aaaaa (aaaaa-aaa4.2.10.21): aa a aaaaaaa aaaa, aaaa aaa aaaaa aaaaa aaaaa aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaa aaaaa aaaaaa aaaa aa aa aaaa; aaa aaaa aaa aaa aa aaaaa aaaa aaaaa aaaaaa aaaa. Aaaaaa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaa aaaaa aaaaaa aaaa aa aa aaaa; aaa aaa aaa aaa aa aaaaa aaaa aaaaa aaaaaa aaaa. Aaaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# aaaa aaaaa aa AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa, aaa aaaa aaa aaaaa.aaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "# aaaaaaaaaaaa."
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaa-aaaa-aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 73,
+           "old": 73,
+           "text": "  aaaaa \"aaa aaaa aaaa aaa aaa aa aaaa: aaa aaaa aa aaaaa /aaa.aaaa\" aa -a \"'$AAAAA' --aaa aa://127.0.0.1:$AAAA/aa --aaaaa-aaaa '$AAAA/aaaaa' aaaa aaaaa '$A1' --aa aaaaa 2>&1 | aaaa -a 'aaa.aaaa'\""
+          },
+          {
+           "kind": " ",
+           "new": 74,
+           "old": 74,
+           "text": "  aaa aaaaaaa-aaaa-aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 75,
+           "old": 75,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 76,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 77,
+           "text": "  aaaaaa_aaaaa \"a aaaa aaaaa aaa aaaa aaa aaaaa aaa aaaaa aa $A2\" \"$A2\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 78,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa'a aaaaa\" aaaa \"aaaa aaaaaa: aaaaa aaaa, aaaa $A2\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 79,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 76,
+           "old": null,
+           "text": "aa aaaa aaa-aaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 77,
+           "old": null,
+           "text": "  aaaaaa_aaaaa \"a aaaa aaaaa aaa aaa aaa aaaaa aaa aaaaa aa $A2\" \"$A2\""
+          },
+          {
+           "kind": "+",
+           "new": 78,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaa aaa'a aaaaa\" aaaa \"aaa aaa: aaaaa aaaa, aaaa $A2\""
+          },
+          {
+           "kind": "+",
+           "new": 79,
+           "old": null,
+           "text": "  aaa aaa-aaa"
+          },
+          {
+           "kind": " ",
+           "new": 80,
+           "old": 80,
+           "text": "fi"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa-aaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 1,
+       "binary": false,
+       "del": 1,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# Aaaaa aaaaaaaa aaaaa (aaaaa-a6a5.5): aaaa aaaaa aa aaaaaaa aaaaa, aaaa aaa aaaaaa aaaaaa'a aaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaa aaaa aaaa, aaaa aaa aaaa aaaa aaaaaaa aaaa aaa aaaaaaaaaaaa aaaaa, aaaaaa aaaa aaaa aaaaaa aaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaa aaaaa, aaaa aaa aaaa aaaa aaaaaaa aaaa aaa aaaaaaaaaaaa aaaaa, aaaaaa aaaa aaaa aaaaaa aaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# aaaa aa AaaaaAaaaaAAAaaaa/AaaaaaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa aaa aaaaa.aaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "#"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 12,
+       "binary": false,
+       "del": 3,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaaaaa aaaaaaaaaaaaa (aaaaa-aaaa.5.2): aa aaaaa aaaa aaaaa aaa aaaaaaaaaaaaa aa aaaaaa aaaaaa aaa aaaaaaa aaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaaa aa, aaaaaa, aaaa aaaaaa a aaaaaaa aaaa aaa aaaaa aaa a Aaaaaa aaaaaa. Aaaaaa Aaaa aaaaaaa aaaaaa aaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# aAA aaaaaaa aaaaaaaaaaaaa (aaaaa-aaaa.5.2): aa aaaaa aaaa aa aaa aaaaaaaaaaaa'a aaaaa aaaaa aaa aaaaaaaaaaaaa aa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaaaa aaa aaaaaaa aaa aaaaa aa, aaaaaa, aaaa aaaaaa a aaaaaaa aaaa aaa aaaaa aaa a Aaaaaa aaaaaa; aa aaaaa aaaa aa"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaa aaaaa aaaaa aaaaa aaaa. Aaa aaaaa'a aaaaaaaaa aa aaa aaaaaaa'a `aaaaaaaaaaaa.aaa`. Aaaaaa Aaaa aaaaaaa aaaaaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 4,
+           "text": "# AAAAAA_AAAAAA_AAA aaaa A0, A1, A2 aaa A3 aaa aaa aaaaa'a aaaaaaaaa; aaa aaaaaa aaaaaaa A0, A1, A2, aaaa A3 aa aaa aaaaa'a aaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 5,
+           "text": "# aaaaa aaaa, aa `aaaaaaa` aa [A0, A1, A2, A3], aaa aaaa aaaaaaa A0'a aaaaaaaaaa. Aaa AaaaaAaaaaAAAaaaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 6,
+           "text": "# (aaaaa/aAA/AAAaaaa/AaaaaaaAAAaaaa.aaaaa) aaaaaa aaaaa aaaaaaaa aa aaaa aaaaa, aaa aaaaa aaa aaaaaaa aaaa aaa aaaaa"
+          }
+         ]
+        },
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 12,
+           "old": 11,
+           "text": "# aaaaaa aaa aaa aaaaaaaaa (aaa aaaaaaa-aaaaaa \u00a7 aAA aaaaa aaaa). Aaa aaaa `aaa -a AAAAA_AAAAA -a AAAAA_AAAA`."
+          },
+          {
+           "kind": " ",
+           "new": 13,
+           "old": 12,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": " ",
+           "new": 14,
+           "old": 13,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "+",
+           "new": 15,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 16,
+           "old": 14,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 17,
+           "old": 15,
+           "text": "aaaaa -a \"$AAA/aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 18,
+           "old": 16,
+           "text": "AAA=\"$(aa \"$AAA/aaaa\" && aaa -A)\""
+          }
+         ]
+        },
+        {
+         "header": "aaaaaa_aaaa \"$A3\" \"aaa aaaa aaaaaa-aaaaaa aaaa\" >\"$AA/$A3.aaaaa\"",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 33,
+           "old": 31,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 34,
+           "old": 32,
+           "text": "AAAA=\"$(aaaa_aaaa)\"; AAAAA=\"$(AAAA=$((AAAA + 1)); aaaaa ! aaaa_aaaa \"$AAAA\"; aa AAAA=$((AAAA + 1)); aaaa; aaaa \"$AAAA\")\""
+          },
+          {
+           "kind": " ",
+           "new": 35,
+           "old": 33,
+           "text": "use_fake_agent"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 34,
+           "text": "aaaaaa '[aaaaaa]\\aaaaaaa = \"127.0.0.1:%a\"\\a' \"$AAAAA\" >>\"$AAAA/aaaaa.aaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 36,
+           "old": null,
+           "text": "aaaaaa '[aaaaaa]\\aaaaaaa = \"127.0.0.1:%a\"\\a[aaaaaaaaaaaa]\\aaaa = \"%a\"\\a' \"$AAAAA\" \"$AAA\" >>\"$AAAA/aaaaa.aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 37,
+           "old": 35,
+           "text": "aaaaa_aaaaaa --aaaaa-aaaa \"$AAA/aaaaaa.aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 38,
+           "old": 36,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 39,
+           "old": 37,
+           "text": "A=\"$(a aaaaa aaa \"$AAA\")\""
+          }
+         ]
+        },
+        {
+         "header": "a aaaa aaaaa \"$A\" aaaaa >/aaa/aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 42,
+           "old": 40,
+           "text": "aaaaaaa() { a aaaaa aa | aa -a --aaa a \"$A\" '[.aaaaaa[] | .aaaa | .. | aaaaaaa | aaaaaa(.aaaa? == \"aaaa\" aaa .aa == $a) | .aaaaaaa // []] | aaaaa // [] | aaaa(\",\")'; }"
+          },
+          {
+           "kind": " ",
+           "new": 43,
+           "old": 41,
+           "text": "aaa a aa \"$A0\" \"$A1\" \"$A2\" \"$A3\"; aa a aaaaa aaaaaa \"$A\" \"$a\" >/aaa/aaaa || aaaa \"aaaaaa $a\"; aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 44,
+           "old": 42,
+           "text": "aa \"aaaaaaa aa A0, A1, A2, A3\" \"$(aaaaaaa)\" \"$A0,$A1,$A2,$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 45,
+           "old": null,
+           "text": "# Aa aaaaa aaaa aa aa aaaaaaaa aaaaa, aaaaa aaaaaaa aaa aaaaa aaaaaaaaaaaaa."
+          },
+          {
+           "kind": "+",
+           "new": 46,
+           "old": null,
+           "text": "aaaaa -a \"$AAA/aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 47,
+           "old": null,
+           "text": "A2=\"$(a aaaaa aaa \"$AAA/aaaaa\")\""
+          },
+          {
+           "kind": "+",
+           "new": 48,
+           "old": null,
+           "text": "A2=\"$(a aaaaa aa | aa -a --aaa a \"$A2\" '.aaaaaa[] | aaaaaa(.aa==$a) | [.aaaa | .. | aaaaaa(.aaaa? == \"aaaa\")][0].aa')\""
+          },
+          {
+           "kind": "+",
+           "new": 49,
+           "old": null,
+           "text": "a aaaa aaaaa \"$A2\" aaaaa >/aaa/aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 50,
+           "old": null,
+           "text": "a aaaaa aaa \"$A2\" >/aaa/aaaa || aaaa \"aaa aaaaaaaaaaaa aa $A2\""
+          },
+          {
+           "kind": " ",
+           "new": 51,
+           "old": 43,
+           "text": "# A0 aaaaaa aaa aaaaa, aa a aaaaaaa aaaaaaaaaa aaaa."
+          },
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 44,
+           "text": "aa \"$AA/$A0.aaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 45,
+           "text": "aaaaaa '%a %a %a %a' \"$A0\" \"$A1\" \"$A2\" \"$A3\" >\"$AAAA/aaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 58,
+           "old": 50,
+           "text": "  aaaaa \"aaa aaaaa aaaaaa aaa aaaaaaa aaaaaaaaaaaaa\" aaaa \"aaaa $A aaaaaaa aaaaaaaaaaaaa: $A0,$A1,$A2\""
+          },
+          {
+           "kind": " ",
+           "new": 59,
+           "old": 51,
+           "text": "  aaaaa \"aaa aaaaa aaaa A1\" aaaa \"aaaa $A aaaaaaa $A1: [0-9]* aaaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 60,
+           "old": 52,
+           "text": "  aaaaa \"aaa aaaaa aaaaa A0\" aaaa \"aaaa $A aaaaaaa $A0: aaa aa aaa aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 61,
+           "old": null,
+           "text": "  aaaaa \"aaa aaaaaaaa aaaaa'a aaaa aaaaa aa aaaaaaa aaaaaaaaaaaaa\" aaaaaa \"aaaa $A2 aaaaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 62,
+           "old": 53,
+           "text": "  aaa aaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 63,
+           "old": 54,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 64,
+           "old": 55,
+           "text": "aa aaaa aaaaaaa; aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 18,
+       "binary": false,
+       "del": 12,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaa aaaa (aaaaa-0aaa.2, aaaaa-aaaa.5.5): aaa aaa aaa'a aaaaa aa aaa aaaa aaaa, aaaa aaa aaaaa aaaaaaaa aaaaa aa, aaaaaa aaaa aaaa aaaa aa aaa AaaaaAaaaaAAAaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# aAA aaaa aaaaaa (aaaaa-0aaa.2, aaaaa-a0aa): aaa aaa aaa'a aaaaa aa aaa aaaa aaaaaa (a aaa aaaaa Aaaaaa aaa Aaaaaaaaaaaa), aaaa aaa aaaaa aaaaaaaa aaaaa aa, aaa aaa aaaaa aaaaaa aaaaa aaa aaaaa aaaa, aaaaaa aaaa aaaa aaaa aa aaa AaaaaAaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 3,
+           "old": 3,
+           "text": "# aaaaaa (aaaaa/aAA/AAAaaaa/AaaaAAAaaaa.aaaaa) aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaa.aaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaaaaaaaa. Aaaaa aaa aaa aaa'a aaaaaaa aaaaa aa aa"
+          }
+         ]
+        },
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 11,
+           "old": 11,
+           "text": "# aa a aaaaa aaaa aaaaaa aaa aaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 12,
+           "old": 12,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": " ",
+           "new": 13,
+           "old": 13,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "+",
+           "new": 14,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 15,
+           "old": 14,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 16,
+           "old": 15,
+           "text": "AAAA=\"$(aaaa_aaaa)\"; AAAAA=\"$(AAAA=$((AAAA + 1)); aaaaa ! aaaa_aaaa \"$AAAA\"; aa AAAA=$((AAAA + 1)); aaaa; aaaa \"$AAAA\")\""
+          },
+          {
+           "kind": " ",
+           "new": 17,
+           "old": 16,
+           "text": "use_fake_agent"
+          }
+         ]
+        },
+        {
+         "header": "a aaaa aaaaa \"$A1\" aaaaa >/aaa/aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 26,
+           "old": 25,
+           "text": "a aaaa aaaaa \"$A2\" aaaaa >/aaa/aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 27,
+           "old": 26,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 28,
+           "old": 27,
+           "text": "aa [ -a \"${AAAAA_AAAA_AAAA:-}\" ]; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 28,
+           "text": "  aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaa AAAAA_AAAA_AAAA=1"
+          },
+          {
+           "kind": "+",
+           "new": 29,
+           "old": null,
+           "text": "  aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaaaa AAAAA_AAAA_AAAA=1"
+          },
+          {
+           "kind": " ",
+           "new": 30,
+           "old": 29,
+           "text": "  aaa_aa_aaaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 31,
+           "old": 30,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 31,
+           "text": "aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaa"
+          },
+          {
+           "kind": "+",
+           "new": 32,
+           "old": null,
+           "text": "aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 33,
+           "old": 32,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 33,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 34,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaaa Aaaaaa aa aaa aaaaa aaaaaa\" aaaa \"aaaa aaaaaaaa: aaaaaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 48,
+           "old": 49,
+           "text": "  aaa aaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 49,
+           "old": 50,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 50,
+           "old": 51,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 52,
+           "text": "  aaaaa \"aaaaaaa a aaaa aaaa aaa aaa'a aaaaa aa Aaaaaa aaaaaa Aaaaaa\" aaaa \"aaaa aaaaaa -> aaaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 51,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaaaa aaaa aaaaaaa\" aaaa \"aaaaa aaaa aaaa: 2 aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 52,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaa aaa\" aaaa \"aaaaa aaaa: aaaa $A2\""
+          },
+          {
+           "kind": "+",
+           "new": 53,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaaa aaaaaaa\" aaaa \"aaaaa aaaa aaaaaa: 2 aaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 54,
+           "old": 53,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 55,
+           "old": 54,
+           "text": "fi"
+          },
+          {
+           "kind": "+",
+           "new": 56,
+           "old": null,
+           "text": "aa aaaa aaaaaaaaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 57,
+           "old": null,
+           "text": "  aaaa \"aaaa aaaaaa\" ; aaaaaaa() { [ \"$(aaaa -a 'aaaa aaaaaa: aaaaaa -> aaaaaaaaaaaa' \"$AAAA\")\" -aa 2 ]; }"
+          },
+          {
+           "kind": "+",
+           "new": 58,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaaaa aaaaaa aa Aaaaaaaaaaaa\" aaaaaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 1,
+       "binary": false,
+       "del": 1,
+       "hunks": [
+        {
+         "header": "aa aaaa aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 47,
+           "old": 47,
+           "text": "  aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 48,
+           "old": 48,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 49,
+           "old": 49,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 50,
+           "text": "  aaaaa \"aa aaaaaa aaaaa aaaaaa\" aaaaaa \"aaaaaa aaaaa: aaa aaaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 50,
+           "old": null,
+           "text": "  aaaaa \"aa aaaaa aaaa aaaaaa\" aaaaaa \"aaaaa aaaa aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 51,
+           "old": 51,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 52,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 53,
+           "text": "aa aaaa aaaaaaaa; aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": false,
+       "del": 79,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "-",
+           "new": null,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaaaaa aaaaaaa (aaaaa-aaa4.2.5): aaa aaaaaa aaaaaa'a aaaaaaa aa aaa aaaaa, aaaaaa aaaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaaaAaaaaaaAAAaaaa.aaaaa) aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 5,
+           "text": "# aaa aaaaa.aaa aa aaaa aaaa, aaaa aaaaaaaaaaaa. Aaaaa aa aa $AAAAA_AAAAA (aaaaaaa $AAA/aaaaa)."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 6,
+           "text": "#"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 7,
+           "text": "# Aaaaa AAAAA_AAA_AAAAAAA_AAAA: a aaaaaaa aaaa aaaaaa aaaaaaa a `aaaaa-aaa-aaaaaaa` aa aaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 8,
+           "text": "# AaaaaAaaaa aaaaaa aaa aaa aaaaaaaaa (aaa aaaaaaa-aaaaaa \u00a7 aAA aaaaa aaaa). Aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 9,
+           "text": "# `aaa -a AAAAA_AAAAA -a AAAAA_AAAA`."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 10,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 11,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 12,
+           "text": ""
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa.aa",
+       "status": "D",
+       "truncated": false
+      },
+      {
+       "add": 30,
+       "binary": false,
+       "del": 15,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# Aaaaa aaaaa aaaaa (aaaaa-a6a5.6): aaa aaa aaaaaa'a aaaaa, aaa aaaaa'a aaaa aaaaa aaaaaa aa aaaa,"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# Aaaaa aaa Aaaa aaaaaaaa aaaa a aaaa, aaa a aaaa aaa aaaaaa aaa aaaaa aa a aaaaaaaaaaaa, a"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# aaaaaa-aaa aaa aaaaaaa aaaaa'a aaaaa, aaaaaa aaaa aaaa aaaa aa AaaaaAaaaaAAAaaaa/AaaaaAaaaaAAAaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 5,
+           "text": "# aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 6,
+           "text": "# aaaaaaa aaa aaaaaa aaaaaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# Aaaaa aaaaa aaaaaa aaa aaaa (aaaaa-a0aa): aaa aaaaaa'a aaaaaa aaa, aaa aaaa'a aaaa aaaa aaa aaaa aaaaa aaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaaaa aa aaaa aaaa aaa aaaaaaaaaaaa aaaa aaaaaa a aaaaaa, Aaaaa aaa Aaaa aaaaaaaa aaaa a aaaa, aaa a aaa aa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaa aaaaaa aaa aaaaa aa a aaaaaa-aaa, a aaaaaaaaaaaa aaa aaaaaaa aaaaa'a aaaa, aaaaaa aaaa aaaa aaaa aa"
+          },
+          {
+           "kind": "+",
+           "new": 5,
+           "old": null,
+           "text": "# AaaaaAaaaaAAAaaaa/AaaaaAaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 6,
+           "old": null,
+           "text": "# `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaaa aaa aaaaaa aaaaaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 7,
+           "text": "#"
+          }
+         ]
+        },
+        {
+         "header": "aaaaaa_aaaaa() {",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 52,
+           "text": "}"
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 53,
+           "text": "aaaaaaaaaa_aaa() { a aaaaa aaaa \"$1\" 2>/aaa/aaaa | aaaa -a -- \"$2\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 54,
+           "old": 54,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 55,
+           "text": "aaa_aa_aaaaa AaaaaAaaaaAAAaaaa/aaaaAaaaaAaaaa \"AAAAA_AAAAAA=$A1,$A2,$A3,$A4,$A5\""
+          },
+          {
+           "kind": "+",
+           "new": 55,
+           "old": null,
+           "text": "aaa_aa_aaaaa AaaaaAaaaAAAaaaa/aaaaAaaaaAaaa \"AAAAA_AAAAAA=$A1,$A2,$A3,$A4,$A5\""
+          },
+          {
+           "kind": "+",
+           "new": 56,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 57,
+           "old": 56,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 58,
+           "old": 57,
+           "text": "aa aaaa aaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 58,
+           "text": "  aa \"aa aaaaa aaaaa aaa aaaaaa: aaa aaa aaaaaaa aa aaaaa (aaa AA aaaa aaaaa aaa aaaaa)\""
+          },
+          {
+           "kind": "+",
+           "new": 59,
+           "old": null,
+           "text": "  aa \"aa aaaaa aaaaa aaa aaaaaa: aaa aaaaa aaaaaa aaaaaaa aa aaaaaa aaa (aaa AA aaaa aaaaa aaa aaaaa)\""
+          },
+          {
+           "kind": " ",
+           "new": 60,
+           "old": 59,
+           "text": "  a aaaaa aaaa \"$A4\" \"aaaaaaaaaa aaaaaaaaa\" >/aaa/aaaa &"
+          },
+          {
+           "kind": " ",
+           "new": 61,
+           "old": 60,
+           "text": "  aaaa_aaaaaa \"$A4\" aaaaa_aaa \"aaa aaaaaaaaaaaa aaaaa $A4 aaaaa aaa aaaaaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 88,
+           "old": 85,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 89,
+           "old": 86,
+           "text": "aa aaaa aaaa-aaaaaaaaaaaa; aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 90,
+           "old": 87,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaaaaaaaa aaaa aaaaa $A4 aa aaa aaaa aaaa\" \"$A4\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 88,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa\" aaaa \"aaaaaa aaaaa: aaaa $A4 aa $A/$A4\""
+          },
+          {
+           "kind": "+",
+           "new": 91,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa\" aaaa \"aaaaa aaaa: aaaa $A4 aa $A/$A4\""
+          },
+          {
+           "kind": " ",
+           "new": 92,
+           "old": 89,
+           "text": "  aaa aaaa-aaaaaaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 93,
+           "old": 90,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 94,
+           "old": 91,
+           "text": "aa aaaa aaaa-aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 92,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaa-aaa aaaa aaaaa $A3\" \"$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 95,
+           "old": null,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaa-aaa aaa aaaaa $A3\" \"$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 96,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaa aaa\" aaaa \"aaaaa aaaa: aaaa $A3\""
+          },
+          {
+           "kind": " ",
+           "new": 97,
+           "old": 93,
+           "text": "  aaa aaaa-aaaaaa"
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaa-aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 120,
+           "old": 105,
+           "text": "  aaa aaa-aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 121,
+           "old": 106,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 122,
+           "old": 107,
+           "text": "aa aaaa aaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 108,
+           "text": "  aa \"aaa aaaaa aaaa aa aaaaaa aaaa aa\""
+          },
+          {
+           "kind": "+",
+           "new": 123,
+           "old": null,
+           "text": "  aa \"aaa aaaa aaaa aa aaaaaa aaaa aa\""
+          },
+          {
+           "kind": " ",
+           "new": 124,
+           "old": 109,
+           "text": "  aaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 125,
+           "old": 110,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 111,
+           "text": "aaa_aa_aaaaaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 126,
+           "old": null,
+           "text": "aaa_aa_aaaaaa aaaaa"
+          }
+         ]
+        }
+       ],
+       "old": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaa-aaaaa.aa",
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaa-aaaa.aa",
+       "status": "R",
+       "truncated": false
+      },
+      {
+       "add": 6,
+       "binary": false,
+       "del": 5,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4): aaa aaa-aaaa aaaaa aaaa aaaa aaa aaaaa-aaa aaaaa, aaa"
+          },
+          {
+           "kind": " ",
+           "new": 3,
+           "old": 3,
+           "text": "# Aaaaa aaaaa (aaaa Aaaaaa aaaa, aaaaaaa aaa, Aaaaaa aaa aaaa aaaaaa aaaaaaaaaa aaaaaaa), aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# aaaa aaaa aaaa aaa aaaaaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaAAAaaaa.aaaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaaa aaaa aaaa aaa aaaaaa aaaaa aaa aaaaaaa aaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaAAAaaaa.aaaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "# aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa aa aaaa aaaa, aaaa aaaaaaaaaaaa. Aaaaa aa aa"
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 7,
+           "text": "# $AAAAA_AAAAA (aaaaaaa $AAA/aaaaa), aaaaa aaa aaaa."
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 76,
+           "old": 76,
+           "text": "    \"$(a aaaaaa aa --aaaa | aa -a '.[].aaaaaaa[] | aaaaaa(.aaaaaa==\"aaaaa\") | \"\\(.aaaaaaa) \\(.aaaaa)\"')\" \"$AAAAAAA $A\""
+          },
+          {
+           "kind": " ",
+           "new": 77,
+           "old": 77,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 78,
+           "old": 78,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 79,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 80,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaaa aaaaa aaaaaaa aaa aaaaa aa Aaaaaa\" aaaa 'aaaa aaaaaa: aaaaa aa [0-9]* aa, aaaaa aa aaaaaa'"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 81,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaa aaaaa aaaaaaa aaa aaaaa aa Aaaaaa\" aaaa 'aaaa aaaaaa: aaaaa aa [0-9]* aa, aaaaa aa aaaaaa'"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 82,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 79,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": "+",
+           "new": 80,
+           "old": null,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 81,
+           "old": null,
+           "text": "  aa \"a aaa aa aaa aaaaa aaaa aaaaaaaa aaa aaaaa aa aaa aaa aaaa aaaa, Aaaaaa, aaaa Aaaaaa (aaa AA aaaa aaaaaaa aaaa)\""
+          },
+          {
+           "kind": "+",
+           "new": 82,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aa aaaa aaaaaa aaaaa\" aaaaaa 'aaaa aaaaaa'"
+          },
+          {
+           "kind": "+",
+           "new": 83,
+           "old": null,
+           "text": "  aaa aaaaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 3,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "+",
+           "new": 1,
+           "old": null,
+           "text": "{"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "  \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "}"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".turnstilerc",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 3,
+       "binary": false,
+       "del": 3,
+       "hunks": [
+        {
+         "header": "Aaaaa aaa AAA aaaaa aaa aa aaa, aaa aaaa aa aaaaa aaaAA: aaaaaa aaaaaaaaa, aaaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 20,
+           "old": 20,
+           "text": "- Aaaaa aa aaaaa aaa aaaaaaaaaa aaaaa aaaaaaa, a aaaaa aaaaa aaa aaaaaaaa aaa aaa aaa aaa aaaa: a aaa (aaaaa, aaaaa aaaa a aaaaaaa'a aaaaaa aaa aaaa aaaaa aaaa aaaaaaa), aaa aaaa'a aaaa aa aaaaaaaa, aaa aaaaaa aaaaaa aaaa aa aaaaaaaaa (a aa"
+          },
+          {
+           "kind": " ",
+           "new": 21,
+           "old": 21,
+           "text": "- Aa aaaaa aaaa'a aaaaaa aaa a aaaaaaaaaaaaa aaaaaa (a aaaaa) aaaa aa Aaaa. Aa aaaaa a aaaaaaa: a aaaaaa aaaaa, \"Aaa aaaaaaaaaaaa\", aaaa aaaaa aaaaaaaaaaaa aaa aaaaa aaaaa aaa aaa aaaa'a aaaaaaaaa, aaaaaa aaaaa, aaa aaaaaaa aaa aaaaaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 22,
+           "old": 22,
+           "text": "- A aaa aaaa aaaaaa aaaaa aaa aaaa aaaa aa aaaaa; aaa aaaa aaa aaaaaa aaaa aaaa aaa aaaaa."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 23,
+           "text": "- **Aaaaa aaaa aaaa.** Aaa aaaaa'a aaaaa, aa aaa aaa aaa'a aaaa, aa aaa aaaa aaaa: aaa aaaaa aaaa'a aaaa aaa a \u2304 (\"Aaaaaa \u2304\"). A aaa aaaaa aaa aaaaa aaaaa (Aaaaaa, Aaaaaa, Aaaaaaaaaaaa, a aaaaa aa aaa aaaaa aaa) aaa aaaaaaa aaaa. Aaaaa aa a"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 24,
+           "text": "- **Aaaaaaaaaaaa aaaa.** Aa aaaaa aaa aaaaa aaaa aa aaa aaaaaaaaaaaa aaaaaa (aaa `aaaaaaaaaaaa.aaa` aaaaaaa) aaa aaaaa aaaaaa aaa; aaaa aa aaaa aaaaa aa aaaa \"Aaaa a aaaaa aaaa aa aaaaa aaaa aa <aaa>\". Aa aaa aaaaa aaa aaaa aa aaa aaaaaaaa'"
+          },
+          {
+           "kind": "+",
+           "new": 23,
+           "old": null,
+           "text": "- **Aaaaa aaaa aaaaaa.** Aaa aaaaa'a aaaaa, aa aaa aaa aaa'a aaaa, aa aaa aaaa aaaaaa: aaa aaaaa aaaa'a aaaa aaa a \u2304 (\"Aaaaaa \u2304\"). Aaa aaaaa aaa aaa aaaaa, aa a aaa aaaaa Aaaaaa aaa Aaaaaaaaaaaa aaaa aa aaaa, aaa aaaa aa Aaaaaa aa aaaaa aaa"
+          },
+          {
+           "kind": "+",
+           "new": 24,
+           "old": null,
+           "text": "- **Aaaaaaaaaaaa aaaa.** Aa aaaaa aaa aaaaa aaaa aa aaa aaaaaaaaaaaa aaaaaa (aaa `aaaaaaaaaaaa.aaa` aaaaaaa) aaa aaaaa aaaaaa aaa; aaaa aa aaaa aaaaa aa aaaa \"Aaaa a aaaaa aaaa aa aaaaa aaaa aa <aaa>\". Aa aaa aaaaa aaa aaaa aa aaa aaaaaaaa'"
+          },
+          {
+           "kind": " ",
+           "new": 25,
+           "old": 25,
+           "text": "- **Aaaaa aaaaaaa aaaa.** Aaa aaa aaaaa aaa aaaa: aaaa, aaaaaaa, Aaaa, Aaaaaa aaa aaa AAA aaa, aaaaa aaaaaa aaaaaaaa (aaaa 36 aa AA Aaaaaa aaaaaaa aaa a aaaaaaa-aaaaaa aaaa aaaaa aaaa aaaaa aaa aaaa), aaaa a aaaaaaaa. Aaaa aaa aaaaaaa aaaa "
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 26,
+           "text": "- **Aaaaa aaaaa aaaaa.** Aaa aaaaa'a aaa aaa aaa aa aaa aaaaaa, aaaa aa Aaaaaa, aaaa aa aaaa aa aaaaaa; aaa aaaaaa aaa aaaa aaaaa aa aaaa aaaaa aa aaaaa aa aaa aaaaa aaaaaaa aaaaa aaa aaaaaa. Aa aaaaa a aaaaa: aaaaa aaaaa aa aaa aaaaaaa aa "
+          },
+          {
+           "kind": "+",
+           "new": 26,
+           "old": null,
+           "text": "- **Aaaaa aaaaa aaaa.** Aaa aaaaa'a aaa aaa aaa a aaaaa aaaaaa aaaa aa aaa \u22ef: aaa aaaaaaa (`aaaaaa.aa.aaaaaa`) aaaa aaa aaaaaa aa aaaaa aa a aaaa aaaaa aaa aaa aaaaaa aaa aaaaa aa aaaaa aa aaaaa aa aaa aaaaa aaaaaaa aaaaa aaa aaaaaa. A aaa "
+          },
+          {
+           "kind": " ",
+           "new": 27,
+           "old": 27,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 28,
+           "old": 28,
+           "text": "## Aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": "DESIGN.md",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 17,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "aaaaaa AaaaaAaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 176,
+           "old": 176,
+           "text": "        aaaa = aaa aaaaa.aaaa(Aaaa.aaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 177,
+           "old": 177,
+           "text": "        #aaaaaa(Aaaa.aaaaa(aaaa).aaaaa?.aaaAaaaaa(\"Aa aaaaa aaa aaaa aaaa aaaaa'a aaaaaa. Aaaaaa aaaa aaaa: aaaaa aaaaaa aaaaaa\") == aaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 178,
+           "old": 178,
+           "text": "    }"
+          },
+          {
+           "kind": "+",
+           "new": 179,
+           "old": null,
+           "text": ""
+          },
+          {
+           "kind": "+",
+           "new": 180,
+           "old": null,
+           "text": "    @Aaaa aaaa aaaAaaaAaaaaAaaaaaAaaaaAaaAaaaAaaaaAaaaAaaaaaAaaa() aaaaaa {"
+          },
+          {
+           "kind": "+",
+           "new": 181,
+           "old": null,
+           "text": "        aaa aaaaa = (1...40).aaa { a aa"
+          },
+          {
+           "kind": "+",
+           "new": 182,
+           "old": null,
+           "text": "            #\"{\"aaaa\":\"a\\#(a)\",\"aaaaa_aaaa\":\"a1\",\"aaaaa\":\"a1\",\"aaa\":\"/a\",\"aa\":\"2026-11-16A16:40:09.123A\",\"aa_aaaaa\":\"4:40aa\",\"aaaaa\":\"Aaaa \\#(a)\",\"aaaa\":\"a\",\"aaaa_aaaaaa\":[],\"aaaaaa\":aaaa}\"#"
+          },
+          {
+           "kind": "+",
+           "new": 183,
+           "old": null,
+           "text": "        }"
+          },
+          {
+           "kind": "+",
+           "new": 184,
+           "old": null,
+           "text": "        aaa aaaaaaa = aaa Aaaa.aaaa(aaaaa: #\"{\"aaa\":\"/a\",\"aaaaa\":[\"# + aaaaa.aaaaaa(aaaaaaaaa: \",\") + \"]}\", aaaaaa: Aaaa.aaaaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 185,
+           "old": null,
+           "text": "        aaa aaaa = aaa aaaaaaa.aaaa(Aaaa.aaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 186,
+           "old": null,
+           "text": "        aaa aaaaaa = Aaaa.aaaaa(aaaa).aaaaaa { $0.aaaAaaaaa(\"Aaaa \") }"
+          },
+          {
+           "kind": "+",
+           "new": 187,
+           "old": null,
+           "text": "        #aaaaaa(aaaaaa.aaaaa == 30 && aaaaaa.aaaaa == \"Aaaa 1\" && aaaaaa.aaaa == \"Aaaa 30\")"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": "aaaaa/AaaaaAaaa/Aaaaa/AaaaaAaaaAaaaa/AaaaAaaaAaaaAaaaa.aaaaa",
+       "status": "M",
+       "truncated": false
+      }
+     ],
+     "fork": "452a5ab0b",
+     "key": "base0",
+     "label": "aa aaaaa/aaaaaa-aaaa-aaaaa"
+    },
+    {
+     "base": "aaaaaa/aaaa/aaaaa-4aaa.2-aaaa-aaaaaaaa-aaaaaaa",
+     "commits": 28,
+     "files": [
+      {
+       "add": 13,
+       "binary": false,
+       "del": 14,
+       "hunks": [
+        {
+         "header": "Aaaaa aaaaa aa aa aaaaa aaaa (AAA-0002), aaa aaaaa aaaaa aaaa aaaa Aaaaaa Aaaa a",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 237,
+           "old": 237,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 238,
+           "old": 238,
+           "text": "`/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa/aaaaaa/aaaaa/aaaaaa.aa` aaaaaa aaaaa aaaaaaa aaa aaaa aaaaa (32 aaaaa); `aaaaaa.aa`'a aaaa aaaaaa aaaaa aa aaaaa aaaa aaa aaa aaa aaaaaaa aaa aaaa aaa aaaaaa. **Aaaa** (`aaaaa.aaaaaa.aaaaaaa` aaaa aa aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 239,
+           "old": 239,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 240,
+           "text": "**Aaa aaaaa aaaa (aaaaa-a1aa.16, AAA-0055).** `aaaaa_aaaaa` aa aaaaaaa aaaaaaa aaa `aaaaa` aaaaa aaa aaa a Aaaaa aa aa aaaaa; aaaa aa, aaaa aaaa aa aaa aaaaa Aaaaaa aaaaa aaaaaaa `aaaaaa/aaa/aaaaa.aa` aa `AaaaAaaaaaAaaaaa` aaaaaaaaaaAaaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 240,
+           "old": null,
+           "text": "**Aaa aaaaa aaaaa (aaaaa-aa8a.1, AAA-0055, AAA-0059).** `aaaaa_aaaaa` aa aaaaaaa aaaaaaa aaa `aaaaa` aaaaa, aaa a Aaaaa aaaaa (`aaaaa aaa aa aaaaa aaaa`) aaa aaa a aa aaaaa (`aa aaa aa aaaaa aaaa`). Aaaa aa, aaaaaa aaaaaa a aaaaa aaaaa aaa "
+          },
+          {
+           "kind": " ",
+           "new": 241,
+           "old": 241,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 242,
+           "old": 242,
+           "text": "**Aaaaa aaaaaa aaa `[[aaaa]]` (aaaaa-aaaa.2, AAA-0054; `aaaaaa/aaa/aaaaa.aa`, `aaaaaa/aaa/aaaaa_aaaaaa.aa`).** aaaaaa aaaa aaaa `[[aaaa]]` aaaaaaa aa aaa aaaaaaa'a `aaaaa.aaaa` aa aaa aaaaa aaaaaa aa aaaaa, aaaa aaa aaaaa aa AAAA; aa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 243,
+           "old": 243,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa Aaaa aaa AAAA Aaa aaaaaa aa aaa aaa Aaaaa aaaaaaaaa. Aaaaa: `AAAAA_AAAAAA_AA",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 434,
+           "old": 434,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 435,
+           "old": 435,
+           "text": "**Aaa aaaaaa aaaaa** (aaa `aaaaaaaaaaaa_aaaa` aaaa aaaaa aaa aaaaaaaaaaaa aaaaaa aaaa `aaaaaaaa_aa`, aaaaa Aaaaaaaaaaaa aaaa aaa aaaa aaa aaaaa aaaaa (`aaaaaa-aaaaaaaaaaaa-aaaaa.aaa`), aaaa aaaa `aaaaa aaaaa aaa <aaa>` aaa `aaaaa aaaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 436,
+           "old": 436,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 437,
+           "text": "**Aaaaa aa aaa AAAA aaaaaaaaaa (`aaaaa-6aaa`, `aaaaaaa/aaaa/aaa/aaaa_aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaa.aa`).** Aaaaa aaaa aa aa aaaaa'a aaaaaaaaaa aaa a aaaa aaaaa aa aaaaaaa: `aaaa(a)` aaaaaaaaa, `aaaaa://` aaaaaaaaa, aaa aaaaaa'a `a"
+          },
+          {
+           "kind": "+",
+           "new": 437,
+           "old": null,
+           "text": "**Aaaaa aa aaa AAAA aaaaaaaaaa (`aaaaa-6aaa`, `aaaaaaa/aaaa/aaa/aaaa_aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaa.aa`).** Aaaaa aaaa aa aa aaaaa'a aaaaaaaaaa aaa a aaaa aaaaa aa aaaaaaa: `aaaa(a)` aaaaaaaaa, `aaaaa://` aaaaaaaaa, aaa aaaaaa'a `a"
+          },
+          {
+           "kind": " ",
+           "new": 438,
+           "old": 438,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 439,
+           "old": 439,
+           "text": "**Aaa Aaaaaa aaaaaaa (`aaaaa-0aaa.3`, `aaaaaaa/aaaa/aaa/aaaaa.aa`, `aaaaaaa/aaaa/aaa/aaaa/aaaaaa.aa`).** Aaa aaaaa'a `aaaaaa_aaaaaaa` aaaa, aaaaa aaaaa aaa aaaaa-aaa aaa aaaa aaaa, aaaaaaaa aaa aaaaaa aa Aaaaaa aaaa a aaaa aaaaa aaa aaaaaa "
+          },
+          {
+           "kind": " ",
+           "new": 440,
+           "old": 440,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaaa aa `aaaa -A \"Aaaaaaaaaaaaa: Aaaaaa $(aaa <aaaaa aaaa>)\" aaaa://1",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 448,
+           "old": 448,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 449,
+           "old": 449,
+           "text": "**Aaa aaaaaa aaaaaaaaa (`aaaaa-aaaa.3`, AaaaaaAaaaaaa.aaaaa, AaaaaaAaaaaaa.aaaaa, `aaaaa/Aaa/aaaaa-aaaaaa.aa`).** `aaaaa/aaaaa.aa` aaaa `aaaaa/Aaa/aaaaa-aaaaaa.aa` aaaa aaa aaaaaaaaa Aaaaa aaaaa aaa (`AAAAAAAAAAAAA=Aaaaaaa`, `AAAAAAA=aaaaa`"
+          },
+          {
+           "kind": " ",
+           "new": 450,
+           "old": 450,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 451,
+           "text": "**Aaa aaaaaa aaaaaaa (`aaaaa-aaaa.5`, AaaaaaAaaaaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaaaaa.aaaaa).** `aaaaaaa/aaaa/aaa/aaaaaaa.aa` aa aaa aaaa aaaaa (aaa aaaaaaaa, aaaa aaaaa, aaaaaaaaa aaa, aaa aaaa aaaaa a `aaaaaaa_aaaa` aa"
+          },
+          {
+           "kind": "+",
+           "new": 451,
+           "old": null,
+           "text": "**Aaa aaaaaa aaaaaaa (`aaaaa-aaaa.5`, AaaaaaAaaaaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaa.aaaaa, AaaaaAaaaaaa.aaaaa).** `aaaaaaa/aaaa/aaa/aaaaaaa.aa` aa aaa aaaa aaaaa (aaa aaaaaaaa, aaaa aaaaa, aaaaaaaaa aaa, aaa aaaa aaaaa a `aaaaaaa_aaaa` aa"
+          },
+          {
+           "kind": " ",
+           "new": 452,
+           "old": 452,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 453,
+           "old": 453,
+           "text": "**Aaa aaaaa aaa aaa aaa aaaaaa aaa (`aaaaa-aaaa.6`; AaaaaAaa.aaaaa, AaaaaaaAaaa.aaaaa, AaaaaAaaa, AaaaaaaaaaAaaaa, AaaaaAaaaa.aaaaa; AAA-0037, AAA-0034).** `aaaaaaa/aaaa/aaa/aaaaaa.aa` aaaa aaa aaa aaa: 38 aa aaaa, 28\u00d726 aaaaa aa a 6; aaa a"
+          },
+          {
+           "kind": " ",
+           "new": 454,
+           "old": 454,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "A aaaa: aaaaa a aaaaaaaaa aaaaaa aaaa `[aaaaaa] aaaaaa = \"127.0.0.1:<aaaa>\"`, aa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 577,
+           "old": 577,
+           "text": "- `AAAAA_AAAAA_AAAAA=<aaaaa>`: aaa aaa aaa `aaaaaa aa aaaaa <aa>` aaa a `aaaaaa:` aaaa aaaa `aaaaaa` aaa aa aa."
+          },
+          {
+           "kind": " ",
+           "new": 578,
+           "old": 578,
+           "text": "- A aaaaaaa AAAA aaaaa `aaaa_aaa256` aa aaaaa: aaa aaa aaa `aaaaaaaaaaa aaaa aaa aaaaa aaa aaaaaa aaaaaaaaaaa`, aa `aaaaaa aaaa`, aaa aaa aaaaaa aaaaa \"Aaaa Aaa'a aaaaaaaaaaa aaaa aaa aaaaa\"."
+          },
+          {
+           "kind": " ",
+           "new": 579,
+           "old": 579,
+           "text": "- `aaaaa/aaa-aaaaaaa.aa` (aaaaa `AAAAA_AAA_AAA` = aaa aaaaa AaaaaAaaaa `Aaaaa.aaa`, a aaaa aaaaaaaaa; 15 aaaaaa) aaaa aaa aaaaa aaaaaaaaaa aaaa aaaaaaa aaa aaa aaaaaa: aaaa aaaa aaa aaa-aaaa aaaaa (`aaaaaa a1 aaaaaa; aaaaaaa aaa aaaaaaaaaa`"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 580,
+           "text": "- Aaaaaaaaaaa aaaa `aaaaa aaaaaa aa <aaaa> aaaaaaaaaa <aaa>`: aaaaaaaa aaaaa aaa aaaa aaaaa aaa aaaa, aaaaaaaaa aaaa aaaa aa aaa aaa aaa. Aaaaaaa aaa aaaaaaaaa aaaa `~/.aaaaaa/aaaaa/aaa aaaaaaa`."
+          },
+          {
+           "kind": "+",
+           "new": 580,
+           "old": null,
+           "text": "- Aaaaaaaaaaa aaaa `aaaaa aaaaaa aa <aaaa> aaaaaaaaaa <aaa>`: aaa aaaa aaaa aaaa aaa aaa aaa aa aaa aaaaaa aaaa aa aaaa aaaaaaaaaaaa. Aaaaaaa aaa aaaaaaaaa aaaa `~/.aaaaaa/aaaaa/aaa aaaaaaa`."
+          },
+          {
+           "kind": " ",
+           "new": 581,
+           "old": 581,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 582,
+           "old": 582,
+           "text": "## Aaaa aaaaaaaaaaaaa (aaaaa-aaa4.2.8)"
+          },
+          {
+           "kind": " ",
+           "new": 583,
+           "old": 583,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa aaaa a aaaaaa aaaa'a Aaaa aaaaaa aaaaaa (`AaaaaaAaaaAaaa` aa AaaaaAA,",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 654,
+           "old": 654,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 655,
+           "old": 655,
+           "text": "Aaa aaaaa aaaa'a Aaa aaaaa aaaaa `aaaaa/aAA/Aaaaaaa/AaaAaaaaAaaaa.aaaaa`: a aaaaaa aaaaa aaaa aaa aaaaaa aaaaaaaaaaa aaa aaa aaaaaaaa aaaaa, aaaaaa aa `AaaaaaaAaaaaaa.aaaAaaaaAaaa` (aaa Aaa aaaaaaa'a aaaaaa, aaaaa aaa Aaaaaa aaa), aaa a aaa"
+          },
+          {
+           "kind": " ",
+           "new": 656,
+           "old": 656,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 657,
+           "text": "`aaaaa/aaa-aaaaaaa-aaaa.aa` (aaaaa `AAAAA_AAA_AAAAAAA_AAAA` = a aaaaa-aaa-aaaaaaa aa AaaaaAaaaa aaa a aaaa aaaaaaaaa; 13 aaaaaa) aaaaaa `AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa` aaaa aaaa aaaaa aaaaaaa aaa aaa aaaaaa: a aaaaa aaaaa aaaaa aaaa "
+          },
+          {
+           "kind": "+",
+           "new": 657,
+           "old": null,
+           "text": "`aaaaa/aaa-aaaaaaa-aaaa.aa` (aaaaa `AAAAA_AAA_AAAAAAA_AAAA` = a aaaaa-aaa-aaaaaaa aa AaaaaAaaaa aaa a aaaa aaaaaaaaa; 13 aaaaaa) aaaaaa `AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa` aaaa aaaa aaaaa aaaaaaa aaa aaa aaaaaa: a aaaaa aaaaa aaaaa aaaa "
+          },
+          {
+           "kind": " ",
+           "new": 658,
+           "old": 658,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 659,
+           "old": 659,
+           "text": "`aaaaa/aaa-aaa-aaaaa.aa` (aaaaa `AAAAA_AAA_AAA` = aaa aaaaa AaaaaAaaaa `Aaaaa.aaa` aaa a aaaa aaaaaaaaa; 8 aaaaaa) aaaaa aaa aaa aaaa aaa aaa aaaaaa aaaaa aaaa aaaaa `Aaaaaaaa/{aaaaa,aaaaa,aaaaa}` aaa `aaaaaa.aaaaa = ~/Aaaaaaaa`, aaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 660,
+           "old": 660,
+           "text": ""
+          }
+         ]
+        },
+        {
+         "header": "Aaa aaaaa'a aaaaa (`aaaaa/aAA/Aaaaaaa/AaaaaAaaa.aaaaa`) aa aaa aaaaa aaaaa aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 675,
+           "old": 675,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 676,
+           "old": 676,
+           "text": "`aaaaaa` aaaaaa aaaa a aaaaaaa aa aaaa-aaaaa, aa aaa `AaaaaAaaaaAAAaaaa` aaaaaa (`aaaaa/aAA/AAAaaaa/AaaaaAaaaAAAaaaa.aaaaa`) aaaaaa aa aaaa aaaa aaaa. Aaaaa aa aaaa `aaaaaaaaaa -aaaaaaa Aaaaa.aaaaaaaaa -aaaaaa AaaaaAaaaa -aaaaaaaaaaa 'aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 677,
+           "old": 677,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 678,
+           "text": "**aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4).** Aaa aaaaaaaa'a aaa aaa aaaaa aaa aaaaa aaaaa'a aaaa aa aaa aaaa aaaa a \u25be aaa aa aaaaaa aaaaa aa aaaaaa aaaaaaa aaaaaa aaaaa aaaaa (`AaaaaAaaaa.aaaaaAaaAaaaa`; aaa aaaa aa aaaaa aa aaaa, aa aaa "
+          },
+          {
+           "kind": "+",
+           "new": 678,
+           "old": null,
+           "text": "**aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4).** Aaa aaaaaaaa'a aaa aaa aaaaa aaa aaaaa aaaaa'a aaaa aa aaa aaaa aaaa a \u25be aaa aa aaaaaa aaaaa aa aaaaaa aaaaaaa aaaaaa aaaaa aaaaa (`AaaaaAaaaa.aaaaaAaaAaaaa`; aaa aaaa aa aaaaa aa aaaa, aa aaa "
+          },
+          {
+           "kind": " ",
+           "new": 679,
+           "old": 679,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 680,
+           "text": "Aaa aaaaa'a aaaaaaa aaaaaaa (aaaaa-aaa4.2.5, `aaaaa/aAA/Aaaaaaa/AaaaaaaAaaaaaaAaaaa.aaaaa`) aaaaa aaaa aaa aaaaaaaaaa aaaaa aaaa aa aaa aaaa: a aaaaa aaaa a aaaaaa aaaaa aaaa AaaaaAaa'a `AaaaaaaAaaaaaa`, aaaaaaa aaaaa aaaaa, aaaaa aaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 680,
+           "old": 681,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 682,
+           "text": "**Aaaaaaaa aaaaa (aaaaa-a6a5.5, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `Aaaaa`, `AaaaaaaaaaaaAaaa`, `Aaaa`).** Aaaaa aaa aaa aaaa'a aaaaa aa aaaaaaa aaaaa, aaaa aaaa aaaaaa aaaaaa'a aaaaa; a aaaa aaaa, aaaaaaa aaaa aaaaa aaa aaaaa aaa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 681,
+           "old": null,
+           "text": "**Aaaaaaaa aaaaa (aaaaa-a6a5.5, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `Aaaaa`, `AaaaaaaaaaaaAaaa`, `aaaAaa`).** Aaaaa aaa aaa aaaa'a aaaaa aa aaaaaaa aaaaa, aaaa aaaa aaaaaa aaaaaa'a aaaaa; a aaaa aaaa, aaaaaaa aaaa aaaaa aaa aaaaa aaa aa"
+          },
+          {
+           "kind": " ",
+           "new": 682,
+           "old": 683,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 684,
+           "text": "**Aaaaa aaaaa aaaaa (aaaaa-a6a5.6, `aaaaa/aAA/Aaaaaaa/AaaaaAaaaaaaa.aaaaa` `AaaaaaAaaaaa`, `aaaaa/aAA/Aaaaaaa/AaaaaaAaa.aaaaa` `AaaaaaAaaa`, `AaaaaAaaa`).** Aaa aaa aaa'a aaa (`aaaaaa`, aaaaaaaaaaaaa aaaaa `aaaaa aaa` aaaaa `AaaaaAaaaa.aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/AAAAA.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 5,
+       "binary": false,
+       "del": 5,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# Aaaaa aaaaaaa aaaaa (aaaaa-aaa4.2.10.21): aa a aaaaaaa aaaa, aaaa aaa aaaaa aaaaa aaaaa aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaa aaaaa aaaaaa aaaa aa aa aaaa; aaa aaaa aaa aaa aa aaaaa aaaa aaaaa aaaaaa aaaa. Aaaaaa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaa aaaaa aaaaaa aaaa aa aa aaaa; aaa aaa aaa aaa aa aaaaa aaaa aaaaa aaaaaa aaaa. Aaaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# aaaa aaaaa aa AaaaaAaaaaAAAaaaa/AaaaaaaAaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa, aaa aaaa aaa aaaaa.aaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "# aaaaaaaaaaaa."
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaa-aaaa-aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 73,
+           "old": 73,
+           "text": "  aaaaa \"aaa aaaa aaaa aaa aaa aa aaaa: aaa aaaa aa aaaaa /aaa.aaaa\" aa -a \"'$AAAAA' --aaa aa://127.0.0.1:$AAAA/aa --aaaaa-aaaa '$AAAA/aaaaa' aaaa aaaaa '$A1' --aa aaaaa 2>&1 | aaaa -a 'aaa.aaaa'\""
+          },
+          {
+           "kind": " ",
+           "new": 74,
+           "old": 74,
+           "text": "  aaa aaaaaaa-aaaa-aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 75,
+           "old": 75,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 76,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 77,
+           "text": "  aaaaaa_aaaaa \"a aaaa aaaaa aaa aaaa aaa aaaaa aaa aaaaa aa $A2\" \"$A2\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 78,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa'a aaaaa\" aaaa \"aaaa aaaaaa: aaaaa aaaa, aaaa $A2\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 79,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 76,
+           "old": null,
+           "text": "aa aaaa aaa-aaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 77,
+           "old": null,
+           "text": "  aaaaaa_aaaaa \"a aaaa aaaaa aaa aaa aaa aaaaa aaa aaaaa aa $A2\" \"$A2\""
+          },
+          {
+           "kind": "+",
+           "new": 78,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaa aaa'a aaaaa\" aaaa \"aaa aaa: aaaaa aaaa, aaaa $A2\""
+          },
+          {
+           "kind": "+",
+           "new": 79,
+           "old": null,
+           "text": "  aaa aaa-aaa"
+          },
+          {
+           "kind": " ",
+           "new": 80,
+           "old": 80,
+           "text": "fi"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa-aaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 1,
+       "binary": false,
+       "del": 1,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# Aaaaa aaaaaaaa aaaaa (aaaaa-a6a5.5): aaaa aaaaa aa aaaaaaa aaaaa, aaaa aaa aaaaaa aaaaaa'a aaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaa aaaa aaaa, aaaa aaa aaaa aaaa aaaaaaa aaaa aaa aaaaaaaaaaaa aaaaa, aaaaaa aaaa aaaa aaaaaa aaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaa aaaaa, aaaa aaa aaaa aaaa aaaaaaa aaaa aaa aaaaaaaaaaaa aaaaa, aaaaaa aaaa aaaa aaaaaa aaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# aaaa aa AaaaaAaaaaAAAaaaa/AaaaaaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa aaa aaaaa.aaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "#"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 12,
+       "binary": false,
+       "del": 3,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaaaaa aaaaaaaaaaaaa (aaaaa-aaaa.5.2): aa aaaaa aaaa aaaaa aaa aaaaaaaaaaaaa aa aaaaaa aaaaaa aaa aaaaaaa aaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaaa aa, aaaaaa, aaaa aaaaaa a aaaaaaa aaaa aaa aaaaa aaa a Aaaaaa aaaaaa. Aaaaaa Aaaa aaaaaaa aaaaaa aaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# aAA aaaaaaa aaaaaaaaaaaaa (aaaaa-aaaa.5.2): aa aaaaa aaaa aa aaa aaaaaaaaaaaa'a aaaaa aaaaa aaa aaaaaaaaaaaaa aa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaaaa aaa aaaaaaa aaa aaaaa aa, aaaaaa, aaaa aaaaaa a aaaaaaa aaaa aaa aaaaa aaa a Aaaaaa aaaaaa; aa aaaaa aaaa aa"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaa aaaaa aaaaa aaaaa aaaa. Aaa aaaaa'a aaaaaaaaa aa aaa aaaaaaa'a `aaaaaaaaaaaa.aaa`. Aaaaaa Aaaa aaaaaaa aaaaaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 4,
+           "text": "# AAAAAA_AAAAAA_AAA aaaa A0, A1, A2 aaa A3 aaa aaa aaaaa'a aaaaaaaaa; aaa aaaaaa aaaaaaa A0, A1, A2, aaaa A3 aa aaa aaaaa'a aaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 5,
+           "text": "# aaaaa aaaa, aa `aaaaaaa` aa [A0, A1, A2, A3], aaa aaaa aaaaaaa A0'a aaaaaaaaaa. Aaa AaaaaAaaaaAAAaaaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 6,
+           "text": "# (aaaaa/aAA/AAAaaaa/AaaaaaaAAAaaaa.aaaaa) aaaaaa aaaaa aaaaaaaa aa aaaa aaaaa, aaa aaaaa aaa aaaaaaa aaaa aaa aaaaa"
+          }
+         ]
+        },
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 12,
+           "old": 11,
+           "text": "# aaaaaa aaa aaa aaaaaaaaa (aaa aaaaaaa-aaaaaa \u00a7 aAA aaaaa aaaa). Aaa aaaa `aaa -a AAAAA_AAAAA -a AAAAA_AAAA`."
+          },
+          {
+           "kind": " ",
+           "new": 13,
+           "old": 12,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": " ",
+           "new": 14,
+           "old": 13,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "+",
+           "new": 15,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 16,
+           "old": 14,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 17,
+           "old": 15,
+           "text": "aaaaa -a \"$AAA/aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 18,
+           "old": 16,
+           "text": "AAA=\"$(aa \"$AAA/aaaa\" && aaa -A)\""
+          }
+         ]
+        },
+        {
+         "header": "aaaaaa_aaaa \"$A3\" \"aaa aaaa aaaaaa-aaaaaa aaaa\" >\"$AA/$A3.aaaaa\"",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 33,
+           "old": 31,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 34,
+           "old": 32,
+           "text": "AAAA=\"$(aaaa_aaaa)\"; AAAAA=\"$(AAAA=$((AAAA + 1)); aaaaa ! aaaa_aaaa \"$AAAA\"; aa AAAA=$((AAAA + 1)); aaaa; aaaa \"$AAAA\")\""
+          },
+          {
+           "kind": " ",
+           "new": 35,
+           "old": 33,
+           "text": "use_fake_agent"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 34,
+           "text": "aaaaaa '[aaaaaa]\\aaaaaaa = \"127.0.0.1:%a\"\\a' \"$AAAAA\" >>\"$AAAA/aaaaa.aaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 36,
+           "old": null,
+           "text": "aaaaaa '[aaaaaa]\\aaaaaaa = \"127.0.0.1:%a\"\\a[aaaaaaaaaaaa]\\aaaa = \"%a\"\\a' \"$AAAAA\" \"$AAA\" >>\"$AAAA/aaaaa.aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 37,
+           "old": 35,
+           "text": "aaaaa_aaaaaa --aaaaa-aaaa \"$AAA/aaaaaa.aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 38,
+           "old": 36,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 39,
+           "old": 37,
+           "text": "A=\"$(a aaaaa aaa \"$AAA\")\""
+          }
+         ]
+        },
+        {
+         "header": "a aaaa aaaaa \"$A\" aaaaa >/aaa/aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 42,
+           "old": 40,
+           "text": "aaaaaaa() { a aaaaa aa | aa -a --aaa a \"$A\" '[.aaaaaa[] | .aaaa | .. | aaaaaaa | aaaaaa(.aaaa? == \"aaaa\" aaa .aa == $a) | .aaaaaaa // []] | aaaaa // [] | aaaa(\",\")'; }"
+          },
+          {
+           "kind": " ",
+           "new": 43,
+           "old": 41,
+           "text": "aaa a aa \"$A0\" \"$A1\" \"$A2\" \"$A3\"; aa a aaaaa aaaaaa \"$A\" \"$a\" >/aaa/aaaa || aaaa \"aaaaaa $a\"; aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 44,
+           "old": 42,
+           "text": "aa \"aaaaaaa aa A0, A1, A2, A3\" \"$(aaaaaaa)\" \"$A0,$A1,$A2,$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 45,
+           "old": null,
+           "text": "# Aa aaaaa aaaa aa aa aaaaaaaa aaaaa, aaaaa aaaaaaa aaa aaaaa aaaaaaaaaaaaa."
+          },
+          {
+           "kind": "+",
+           "new": 46,
+           "old": null,
+           "text": "aaaaa -a \"$AAA/aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 47,
+           "old": null,
+           "text": "A2=\"$(a aaaaa aaa \"$AAA/aaaaa\")\""
+          },
+          {
+           "kind": "+",
+           "new": 48,
+           "old": null,
+           "text": "A2=\"$(a aaaaa aa | aa -a --aaa a \"$A2\" '.aaaaaa[] | aaaaaa(.aa==$a) | [.aaaa | .. | aaaaaa(.aaaa? == \"aaaa\")][0].aa')\""
+          },
+          {
+           "kind": "+",
+           "new": 49,
+           "old": null,
+           "text": "a aaaa aaaaa \"$A2\" aaaaa >/aaa/aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 50,
+           "old": null,
+           "text": "a aaaaa aaa \"$A2\" >/aaa/aaaa || aaaa \"aaa aaaaaaaaaaaa aa $A2\""
+          },
+          {
+           "kind": " ",
+           "new": 51,
+           "old": 43,
+           "text": "# A0 aaaaaa aaa aaaaa, aa a aaaaaaa aaaaaaaaaa aaaa."
+          },
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 44,
+           "text": "aa \"$AA/$A0.aaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 45,
+           "text": "aaaaaa '%a %a %a %a' \"$A0\" \"$A1\" \"$A2\" \"$A3\" >\"$AAAA/aaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 58,
+           "old": 50,
+           "text": "  aaaaa \"aaa aaaaa aaaaaa aaa aaaaaaa aaaaaaaaaaaaa\" aaaa \"aaaa $A aaaaaaa aaaaaaaaaaaaa: $A0,$A1,$A2\""
+          },
+          {
+           "kind": " ",
+           "new": 59,
+           "old": 51,
+           "text": "  aaaaa \"aaa aaaaa aaaa A1\" aaaa \"aaaa $A aaaaaaa $A1: [0-9]* aaaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 60,
+           "old": 52,
+           "text": "  aaaaa \"aaa aaaaa aaaaa A0\" aaaa \"aaaa $A aaaaaaa $A0: aaa aa aaa aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 61,
+           "old": null,
+           "text": "  aaaaa \"aaa aaaaaaaa aaaaa'a aaaa aaaaa aa aaaaaaa aaaaaaaaaaaaa\" aaaaaa \"aaaa $A2 aaaaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 62,
+           "old": 53,
+           "text": "  aaa aaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 63,
+           "old": 54,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 64,
+           "old": 55,
+           "text": "aa aaaa aaaaaaa; aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 18,
+       "binary": false,
+       "del": 12,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaa aaaa (aaaaa-0aaa.2, aaaaa-aaaa.5.5): aaa aaa aaa'a aaaaa aa aaa aaaa aaaa, aaaa aaa aaaaa aaaaaaaa aaaaa aa, aaaaaa aaaa aaaa aaaa aa aaa AaaaaAaaaaAAAaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# aAA aaaa aaaaaa (aaaaa-0aaa.2, aaaaa-a0aa): aaa aaa aaa'a aaaaa aa aaa aaaa aaaaaa (a aaa aaaaa Aaaaaa aaa Aaaaaaaaaaaa), aaaa aaa aaaaa aaaaaaaa aaaaa aa, aaa aaa aaaaa aaaaaa aaaaa aaa aaaaa aaaa, aaaaaa aaaa aaaa aaaa aa aaa AaaaaAaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 3,
+           "old": 3,
+           "text": "# aaaaaa (aaaaa/aAA/AAAaaaa/AaaaAAAaaaa.aaaaa) aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 4,
+           "old": 4,
+           "text": "# `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaa.aaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaaaaaaaa. Aaaaa aaa aaa aaa'a aaaaaaa aaaaa aa aa"
+          }
+         ]
+        },
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 11,
+           "old": 11,
+           "text": "# aa a aaaaa aaaa aaaaaa aaa aaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 12,
+           "old": 12,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": " ",
+           "new": 13,
+           "old": 13,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "+",
+           "new": 14,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 15,
+           "old": 14,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 16,
+           "old": 15,
+           "text": "AAAA=\"$(aaaa_aaaa)\"; AAAAA=\"$(AAAA=$((AAAA + 1)); aaaaa ! aaaa_aaaa \"$AAAA\"; aa AAAA=$((AAAA + 1)); aaaa; aaaa \"$AAAA\")\""
+          },
+          {
+           "kind": " ",
+           "new": 17,
+           "old": 16,
+           "text": "use_fake_agent"
+          }
+         ]
+        },
+        {
+         "header": "a aaaa aaaaa \"$A1\" aaaaa >/aaa/aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 26,
+           "old": 25,
+           "text": "a aaaa aaaaa \"$A2\" aaaaa >/aaa/aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 27,
+           "old": 26,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 28,
+           "old": 27,
+           "text": "aa [ -a \"${AAAAA_AAAA_AAAA:-}\" ]; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 28,
+           "text": "  aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaa AAAAA_AAAA_AAAA=1"
+          },
+          {
+           "kind": "+",
+           "new": 29,
+           "old": null,
+           "text": "  aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaaaa AAAAA_AAAA_AAAA=1"
+          },
+          {
+           "kind": " ",
+           "new": 30,
+           "old": 29,
+           "text": "  aaa_aa_aaaaaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 31,
+           "old": 30,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 31,
+           "text": "aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaa"
+          },
+          {
+           "kind": "+",
+           "new": 32,
+           "old": null,
+           "text": "aaa_aa_aaaaa AaaaAAAaaaa/aaaaAaaaAaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 33,
+           "old": 32,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 33,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 34,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaaa Aaaaaa aa aaa aaaaa aaaaaa\" aaaa \"aaaa aaaaaaaa: aaaaaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 48,
+           "old": 49,
+           "text": "  aaa aaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 49,
+           "old": 50,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 50,
+           "old": 51,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 52,
+           "text": "  aaaaa \"aaaaaaa a aaaa aaaa aaa aaa'a aaaaa aa Aaaaaa aaaaaa Aaaaaa\" aaaa \"aaaa aaaaaa -> aaaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 51,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaaaa aaaa aaaaaaa\" aaaa \"aaaaa aaaa aaaa: 2 aaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 52,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaa aaa\" aaaa \"aaaaa aaaa: aaaa $A2\""
+          },
+          {
+           "kind": "+",
+           "new": 53,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaaaaaa aaa aaaa aaaaaaa\" aaaa \"aaaaa aaaa aaaaaa: 2 aaaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 54,
+           "old": 53,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 55,
+           "old": 54,
+           "text": "fi"
+          },
+          {
+           "kind": "+",
+           "new": 56,
+           "old": null,
+           "text": "aa aaaa aaaaaaaaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 57,
+           "old": null,
+           "text": "  aaaa \"aaaa aaaaaa\" ; aaaaaaa() { [ \"$(aaaa -a 'aaaa aaaaaa: aaaaaa -> aaaaaaaaaaaa' \"$AAAA\")\" -aa 2 ]; }"
+          },
+          {
+           "kind": "+",
+           "new": 58,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaaaa aaaaaa aa Aaaaaaaaaaaa\" aaaaaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 1,
+       "binary": false,
+       "del": 1,
+       "hunks": [
+        {
+         "header": "aa aaaa aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 47,
+           "old": 47,
+           "text": "  aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 48,
+           "old": 48,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 49,
+           "old": 49,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 50,
+           "text": "  aaaaa \"aa aaaaaa aaaaa aaaaaa\" aaaaaa \"aaaaaa aaaaa: aaa aaaaaa\""
+          },
+          {
+           "kind": "+",
+           "new": 50,
+           "old": null,
+           "text": "  aaaaa \"aa aaaaa aaaa aaaaaa\" aaaaaa \"aaaaa aaaa aaaa\""
+          },
+          {
+           "kind": " ",
+           "new": 51,
+           "old": 51,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 52,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 53,
+           "text": "aa aaaa aaaaaaaa; aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaaaaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 0,
+       "binary": false,
+       "del": 79,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "-",
+           "new": null,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# aAA aaaaaaa aaaaaaa (aaaaa-aaa4.2.5): aaa aaaaaa aaaaaa'a aaaaaaa aa aaa aaaaa, aaaaaa aaaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# aaaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaaaAaaaaaaAAAaaaa.aaaaa) aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 5,
+           "text": "# aaa aaaaa.aaa aa aaaa aaaa, aaaa aaaaaaaaaaaa. Aaaaa aa aa $AAAAA_AAAAA (aaaaaaa $AAA/aaaaa)."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 6,
+           "text": "#"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 7,
+           "text": "# Aaaaa AAAAA_AAA_AAAAAAA_AAAA: a aaaaaaa aaaa aaaaaa aaaaaaa a `aaaaa-aaa-aaaaaaa` aa aaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 8,
+           "text": "# AaaaaAaaaa aaaaaa aaa aaa aaaaaaaaa (aaa aaaaaaa-aaaaaa \u00a7 aAA aaaaa aaaa). Aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 9,
+           "text": "# `aaa -a AAAAA_AAAAA -a AAAAA_AAAA`."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 10,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa.aa\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 11,
+           "text": "aaaaaa \"$(aaaaaaa \"${AAAA_AAAAAA[0]}\")/aaa-aa-aaa.aa\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 12,
+           "text": ""
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaaa.aa",
+       "status": "D",
+       "truncated": false
+      },
+      {
+       "add": 30,
+       "binary": false,
+       "del": 15,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 2,
+           "text": "# Aaaaa aaaaa aaaaa (aaaaa-a6a5.6): aaa aaa aaaaaa'a aaaaa, aaa aaaaa'a aaaa aaaaa aaaaaa aa aaaa,"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 3,
+           "text": "# Aaaaa aaa Aaaa aaaaaaaa aaaa a aaaa, aaa a aaaa aaa aaaaaa aaa aaaaa aa a aaaaaaaaaaaa, a"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# aaaaaa-aaa aaa aaaaaaa aaaaa'a aaaaa, aaaaaa aaaa aaaa aaaa aa AaaaaAaaaaAAAaaaa/AaaaaAaaaaAAAaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 5,
+           "text": "# aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 6,
+           "text": "# aaaaaaa aaa aaaaaa aaaaaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "# Aaaaa aaaaa aaaaaa aaa aaaa (aaaaa-a0aa): aaa aaaaaa'a aaaaaa aaa, aaa aaaa'a aaaa aaaa aaa aaaa aaaaa aaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "# aaaaaa aa aaaa aaaa aaa aaaaaaaaaaaa aaaa aaaaaa a aaaaaa, Aaaaa aaa Aaaa aaaaaaaa aaaa a aaaa, aaa a aaa aa aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaa aaaaaa aaa aaaaa aa a aaaaaa-aaa, a aaaaaaaaaaaa aaa aaaaaaa aaaaa'a aaaa, aaaaaa aaaa aaaa aaaa aa"
+          },
+          {
+           "kind": "+",
+           "new": 5,
+           "old": null,
+           "text": "# AaaaaAaaaaAAAaaaa/AaaaaAaaaAAAaaaa aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aa aaaa aaaa aaa aaaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 6,
+           "old": null,
+           "text": "# `$AAAA/aaaa-<aaaa>`; aaaa aaaaaa aaaaaaa aaa aaaaaa aaaaaa, aaaa aaaaaaaaaaaa."
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 7,
+           "text": "#"
+          }
+         ]
+        },
+        {
+         "header": "aaaaaa_aaaaa() {",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 52,
+           "old": 52,
+           "text": "}"
+          },
+          {
+           "kind": " ",
+           "new": 53,
+           "old": 53,
+           "text": "aaaaaaaaaa_aaa() { a aaaaa aaaa \"$1\" 2>/aaa/aaaa | aaaa -a -- \"$2\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 54,
+           "old": 54,
+           "text": ""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 55,
+           "text": "aaa_aa_aaaaa AaaaaAaaaaAAAaaaa/aaaaAaaaaAaaaa \"AAAAA_AAAAAA=$A1,$A2,$A3,$A4,$A5\""
+          },
+          {
+           "kind": "+",
+           "new": 55,
+           "old": null,
+           "text": "aaa_aa_aaaaa AaaaaAaaaAAAaaaa/aaaaAaaaaAaaa \"AAAAA_AAAAAA=$A1,$A2,$A3,$A4,$A5\""
+          },
+          {
+           "kind": "+",
+           "new": 56,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": " ",
+           "new": 57,
+           "old": 56,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 58,
+           "old": 57,
+           "text": "aa aaaa aaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 58,
+           "text": "  aa \"aa aaaaa aaaaa aaa aaaaaa: aaa aaa aaaaaaa aa aaaaa (aaa AA aaaa aaaaa aaa aaaaa)\""
+          },
+          {
+           "kind": "+",
+           "new": 59,
+           "old": null,
+           "text": "  aa \"aa aaaaa aaaaa aaa aaaaaa: aaa aaaaa aaaaaa aaaaaaa aa aaaaaa aaa (aaa AA aaaa aaaaa aaa aaaaa)\""
+          },
+          {
+           "kind": " ",
+           "new": 60,
+           "old": 59,
+           "text": "  a aaaaa aaaa \"$A4\" \"aaaaaaaaaa aaaaaaaaa\" >/aaa/aaaa &"
+          },
+          {
+           "kind": " ",
+           "new": 61,
+           "old": 60,
+           "text": "  aaaa_aaaaaa \"$A4\" aaaaa_aaa \"aaa aaaaaaaaaaaa aaaaa $A4 aaaaa aaa aaaaaa\""
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 88,
+           "old": 85,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 89,
+           "old": 86,
+           "text": "aa aaaa aaaa-aaaaaaaaaaaa; aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 90,
+           "old": 87,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaaaaaaaa aaaa aaaaa $A4 aa aaa aaaa aaaa\" \"$A4\""
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 88,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa\" aaaa \"aaaaaa aaaaa: aaaa $A4 aa $A/$A4\""
+          },
+          {
+           "kind": "+",
+           "new": 91,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaaa aaa\" aaaa \"aaaaa aaaa: aaaa $A4 aa $A/$A4\""
+          },
+          {
+           "kind": " ",
+           "new": 92,
+           "old": 89,
+           "text": "  aaa aaaa-aaaaaaaaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 93,
+           "old": 90,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 94,
+           "old": 91,
+           "text": "aa aaaa aaaa-aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 92,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaa-aaa aaaa aaaaa $A3\" \"$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 95,
+           "old": null,
+           "text": "  aaaaaa_aaaaa \"aaa aaaaaa-aaa aaa aaaaa $A3\" \"$A3\""
+          },
+          {
+           "kind": "+",
+           "new": 96,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aaa aaa aaa\" aaaa \"aaaaa aaaa: aaaa $A3\""
+          },
+          {
+           "kind": " ",
+           "new": 97,
+           "old": 93,
+           "text": "  aaa aaaa-aaaaaa"
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaa-aaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 120,
+           "old": 105,
+           "text": "  aaa aaa-aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 121,
+           "old": 106,
+           "text": "fi"
+          },
+          {
+           "kind": " ",
+           "new": 122,
+           "old": 107,
+           "text": "aa aaaa aaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 108,
+           "text": "  aa \"aaa aaaaa aaaa aa aaaaaa aaaa aa\""
+          },
+          {
+           "kind": "+",
+           "new": 123,
+           "old": null,
+           "text": "  aa \"aaa aaaa aaaa aa aaaaaa aaaa aa\""
+          },
+          {
+           "kind": " ",
+           "new": 124,
+           "old": 109,
+           "text": "  aaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 125,
+           "old": 110,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 111,
+           "text": "aaa_aa_aaaaaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 126,
+           "old": null,
+           "text": "aaa_aa_aaaaaa aaaaa"
+          }
+         ]
+        }
+       ],
+       "old": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaaa-aaaaa.aa",
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaa-aaaa.aa",
+       "status": "R",
+       "truncated": false
+      },
+      {
+       "add": 6,
+       "binary": false,
+       "del": 5,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 1,
+           "old": 1,
+           "text": "#!/aaa/aaa/aaa aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 2,
+           "old": 2,
+           "text": "# aAaaaa Aaaaa aaaaaaaaaa (aaaa aaaaa-a1a4): aaa aaa-aaaa aaaaa aaaa aaaa aaa aaaaa-aaa aaaaa, aaa"
+          },
+          {
+           "kind": " ",
+           "new": 3,
+           "old": 3,
+           "text": "# Aaaaa aaaaa (aaaa Aaaaaa aaaa, aaaaaaa aaa, Aaaaaa aaa aaaa aaaaaa aaaaaaaaaa aaaaaaa), aaaaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 4,
+           "text": "# aaaa aaaa aaaa aaa aaaaaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaAAAaaaa.aaaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 4,
+           "old": null,
+           "text": "# aaaa aaaa aaaa aaa aaaaaa aaaaa aaa aaaaaaa aaa aa aaa AaaaaAaaaaAAAaaaa aaaaaa (aaaaa/aAA/AAAaaaa/AaaaaAAAaaaa.aaaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 5,
+           "old": 5,
+           "text": "# aaaaaaa aaaa aaaaaa'a aaa aaaaaa. Aaa aaaa aaaaaa `$AAAA/aaaa-<aaaa>` aaaaa aaaa aaaa aaa aaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 6,
+           "old": 6,
+           "text": "# aaa `$AAAA/aaa-<aaaa>`; aaaa aaaaaa aaaaaa aaaaaa aa aaaa aaaa, aaaa aaaaaaaaaaaa. Aaaaa aa aa"
+          },
+          {
+           "kind": " ",
+           "new": 7,
+           "old": 7,
+           "text": "# $AAAAA_AAAAA (aaaaaaa $AAA/aaaaa), aaaaa aaa aaaa."
+          }
+         ]
+        },
+        {
+         "header": "aa aaaa aaaaaa; aaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 76,
+           "old": 76,
+           "text": "    \"$(a aaaaaa aa --aaaa | aa -a '.[].aaaaaaa[] | aaaaaa(.aaaaaa==\"aaaaa\") | \"\\(.aaaaaaa) \\(.aaaaa)\"')\" \"$AAAAAAA $A\""
+          },
+          {
+           "kind": " ",
+           "new": 77,
+           "old": 77,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": " ",
+           "new": 78,
+           "old": 78,
+           "text": "fi"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 79,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 80,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaaa aaaaa aaaaaaa aaa aaaaa aa Aaaaaa\" aaaa 'aaaa aaaaaa: aaaaa aa [0-9]* aa, aaaaa aa aaaaaa'"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 81,
+           "text": "  aaaaa \"aaaaa.aaa aaa a aaaa aaaaa aaaaaaa aaa aaaaa aa Aaaaaa\" aaaa 'aaaa aaaaaa: aaaaa aa [0-9]* aa, aaaaa aa aaaaaa'"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 82,
+           "text": "  aaa aaaaaa"
+          },
+          {
+           "kind": "+",
+           "new": 79,
+           "old": null,
+           "text": "aaaaaa() { ! aaaa \"$1\"; }"
+          },
+          {
+           "kind": "+",
+           "new": 80,
+           "old": null,
+           "text": "aa aaaa aaaaaa; aaaa"
+          },
+          {
+           "kind": "+",
+           "new": 81,
+           "old": null,
+           "text": "  aa \"a aaa aa aaa aaaaa aaaa aaaaaaaa aaa aaaaa aa aaa aaa aaaa aaaa, Aaaaaa, aaaa Aaaaaa (aaa AA aaaa aaaaaaa aaaa)\""
+          },
+          {
+           "kind": "+",
+           "new": 82,
+           "old": null,
+           "text": "  aaaaa \"aaaaa.aaa aaa aa aaaa aaaaaa aaaaa\" aaaaaa 'aaaa aaaaaa'"
+          },
+          {
+           "kind": "+",
+           "new": 83,
+           "old": null,
+           "text": "  aaa aaaaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".aaaaaa/aaaaaa/aaaaaaa-aaaaaa/aaaaa/aaa-aaaaa.aa",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 3,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "",
+         "lines": [
+          {
+           "kind": "+",
+           "new": 1,
+           "old": null,
+           "text": "{"
+          },
+          {
+           "kind": "+",
+           "new": 2,
+           "old": null,
+           "text": "  \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+          },
+          {
+           "kind": "+",
+           "new": 3,
+           "old": null,
+           "text": "}"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": ".turnstilerc",
+       "status": "?",
+       "truncated": false
+      },
+      {
+       "add": 3,
+       "binary": false,
+       "del": 3,
+       "hunks": [
+        {
+         "header": "Aaaaa aaa AAA aaaaa aaa aa aaa, aaa aaaa aa aaaaa aaaAA: aaaaaa aaaaaaaaa, aaaaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 20,
+           "old": 20,
+           "text": "- Aaaaa aa aaaaa aaa aaaaaaaaaa aaaaa aaaaaaa, a aaaaa aaaaa aaa aaaaaaaa aaa aaa aaa aaa aaaa: a aaa (aaaaa, aaaaa aaaa a aaaaaaa'a aaaaaa aaa aaaa aaaaa aaaa aaaaaaa), aaa aaaa'a aaaa aa aaaaaaaa, aaa aaaaaa aaaaaa aaaa aa aaaaaaaaa (a aa"
+          },
+          {
+           "kind": " ",
+           "new": 21,
+           "old": 21,
+           "text": "- Aa aaaaa aaaa'a aaaaaa aaa a aaaaaaaaaaaaa aaaaaa (a aaaaa) aaaa aa Aaaa. Aa aaaaa a aaaaaaa: a aaaaaa aaaaa, \"Aaa aaaaaaaaaaaa\", aaaa aaaaa aaaaaaaaaaaa aaa aaaaa aaaaa aaa aaa aaaa'a aaaaaaaaa, aaaaaa aaaaa, aaa aaaaaaa aaa aaaaaa, aaaa"
+          },
+          {
+           "kind": " ",
+           "new": 22,
+           "old": 22,
+           "text": "- A aaa aaaa aaaaaa aaaaa aaa aaaa aaaa aa aaaaa; aaa aaaa aaa aaaaaa aaaa aaaa aaa aaaaa."
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 23,
+           "text": "- **Aaaaa aaaa aaaa.** Aaa aaaaa'a aaaaa, aa aaa aaa aaa'a aaaa, aa aaa aaaa aaaa: aaa aaaaa aaaa'a aaaa aaa a \u2304 (\"Aaaaaa \u2304\"). A aaa aaaaa aaa aaaaa aaaaa (Aaaaaa, Aaaaaa, Aaaaaaaaaaaa, a aaaaa aa aaa aaaaa aaa) aaa aaaaaaa aaaa. Aaaaa aa a"
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 24,
+           "text": "- **Aaaaaaaaaaaa aaaa.** Aa aaaaa aaa aaaaa aaaa aa aaa aaaaaaaaaaaa aaaaaa (aaa `aaaaaaaaaaaa.aaa` aaaaaaa) aaa aaaaa aaaaaa aaa; aaaa aa aaaa aaaaa aa aaaa \"Aaaa a aaaaa aaaa aa aaaaa aaaa aa <aaa>\". Aa aaa aaaaa aaa aaaa aa aaa aaaaaaaa'"
+          },
+          {
+           "kind": "+",
+           "new": 23,
+           "old": null,
+           "text": "- **Aaaaa aaaa aaaaaa.** Aaa aaaaa'a aaaaa, aa aaa aaa aaa'a aaaa, aa aaa aaaa aaaaaa: aaa aaaaa aaaa'a aaaa aaa a \u2304 (\"Aaaaaa \u2304\"). Aaa aaaaa aaa aaa aaaaa, aa a aaa aaaaa Aaaaaa aaa Aaaaaaaaaaaa aaaa aa aaaa, aaa aaaa aa Aaaaaa aa aaaaa aaa"
+          },
+          {
+           "kind": "+",
+           "new": 24,
+           "old": null,
+           "text": "- **Aaaaaaaaaaaa aaaa.** Aa aaaaa aaa aaaaa aaaa aa aaa aaaaaaaaaaaa aaaaaa (aaa `aaaaaaaaaaaa.aaa` aaaaaaa) aaa aaaaa aaaaaa aaa; aaaa aa aaaa aaaaa aa aaaa \"Aaaa a aaaaa aaaa aa aaaaa aaaa aa <aaa>\". Aa aaa aaaaa aaa aaaa aa aaa aaaaaaaa'"
+          },
+          {
+           "kind": " ",
+           "new": 25,
+           "old": 25,
+           "text": "- **Aaaaa aaaaaaa aaaa.** Aaa aaa aaaaa aaa aaaa: aaaa, aaaaaaa, Aaaa, Aaaaaa aaa aaa AAA aaa, aaaaa aaaaaa aaaaaaaa (aaaa 36 aa AA Aaaaaa aaaaaaa aaa a aaaaaaa-aaaaaa aaaa aaaaa aaaa aaaaa aaa aaaa), aaaa a aaaaaaaa. Aaaa aaa aaaaaaa aaaa "
+          },
+          {
+           "kind": "-",
+           "new": null,
+           "old": 26,
+           "text": "- **Aaaaa aaaaa aaaaa.** Aaa aaaaa'a aaa aaa aaa aa aaa aaaaaa, aaaa aa Aaaaaa, aaaa aa aaaa aa aaaaaa; aaa aaaaaa aaa aaaa aaaaa aa aaaa aaaaa aa aaaaa aa aaa aaaaa aaaaaaa aaaaa aaa aaaaaa. Aa aaaaa a aaaaa: aaaaa aaaaa aa aaa aaaaaaa aa "
+          },
+          {
+           "kind": "+",
+           "new": 26,
+           "old": null,
+           "text": "- **Aaaaa aaaaa aaaa.** Aaa aaaaa'a aaa aaa aaa a aaaaa aaaaaa aaaa aa aaa \u22ef: aaa aaaaaaa (`aaaaaa.aa.aaaaaa`) aaaa aaa aaaaaa aa aaaaa aa a aaaa aaaaa aaa aaa aaaaaa aaa aaaaa aa aaaaa aa aaaaa aa aaa aaaaa aaaaaaa aaaaa aaa aaaaaa. A aaa "
+          },
+          {
+           "kind": " ",
+           "new": 27,
+           "old": 27,
+           "text": ""
+          },
+          {
+           "kind": " ",
+           "new": 28,
+           "old": 28,
+           "text": "## Aaaa"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": "DESIGN.md",
+       "status": "M",
+       "truncated": false
+      },
+      {
+       "add": 17,
+       "binary": false,
+       "del": 0,
+       "hunks": [
+        {
+         "header": "aaaaaa AaaaaAaa",
+         "lines": [
+          {
+           "kind": " ",
+           "new": 176,
+           "old": 176,
+           "text": "        aaaa = aaa aaaaa.aaaa(Aaaa.aaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 177,
+           "old": 177,
+           "text": "        #aaaaaa(Aaaa.aaaaa(aaaa).aaaaa?.aaaAaaaaa(\"Aa aaaaa aaa aaaa aaaa aaaaa'a aaaaaa. Aaaaaa aaaa aaaa: aaaaa aaaaaa aaaaaa\") == aaaa)"
+          },
+          {
+           "kind": " ",
+           "new": 178,
+           "old": 178,
+           "text": "    }"
+          },
+          {
+           "kind": "+",
+           "new": 179,
+           "old": null,
+           "text": ""
+          },
+          {
+           "kind": "+",
+           "new": 180,
+           "old": null,
+           "text": "    @Aaaa aaaa aaaAaaaAaaaaAaaaaaAaaaaAaaAaaaAaaaaAaaaAaaaaaAaaa() aaaaaa {"
+          },
+          {
+           "kind": "+",
+           "new": 181,
+           "old": null,
+           "text": "        aaa aaaaa = (1...40).aaa { a aa"
+          },
+          {
+           "kind": "+",
+           "new": 182,
+           "old": null,
+           "text": "            #\"{\"aaaa\":\"a\\#(a)\",\"aaaaa_aaaa\":\"a1\",\"aaaaa\":\"a1\",\"aaa\":\"/a\",\"aa\":\"2026-11-16A16:40:09.123A\",\"aa_aaaaa\":\"4:40aa\",\"aaaaa\":\"Aaaa \\#(a)\",\"aaaa\":\"a\",\"aaaa_aaaaaa\":[],\"aaaaaa\":aaaa}\"#"
+          },
+          {
+           "kind": "+",
+           "new": 183,
+           "old": null,
+           "text": "        }"
+          },
+          {
+           "kind": "+",
+           "new": 184,
+           "old": null,
+           "text": "        aaa aaaaaaa = aaa Aaaa.aaaa(aaaaa: #\"{\"aaa\":\"/a\",\"aaaaa\":[\"# + aaaaa.aaaaaa(aaaaaaaaa: \",\") + \"]}\", aaaaaa: Aaaa.aaaaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 185,
+           "old": null,
+           "text": "        aaa aaaa = aaa aaaaaaa.aaaa(Aaaa.aaaa)"
+          },
+          {
+           "kind": "+",
+           "new": 186,
+           "old": null,
+           "text": "        aaa aaaaaa = Aaaa.aaaaa(aaaa).aaaaaa { $0.aaaAaaaaa(\"Aaaa \") }"
+          },
+          {
+           "kind": "+",
+           "new": 187,
+           "old": null,
+           "text": "        #aaaaaa(aaaaaa.aaaaa == 30 && aaaaaa.aaaaa == \"Aaaa 1\" && aaaaaa.aaaa == \"Aaaa 30\")"
+          }
+         ]
+        }
+       ],
+       "old": null,
+       "path": "aaaaa/AaaaaAaaa/Aaaaa/AaaaaAaaaAaaaa/AaaaAaaaAaaaAaaaa.aaaaa",
+       "status": "M",
+       "truncated": false
+      }
+     ],
+     "fork": "f534cacf8",
+     "key": "base1",
+     "label": "aa aaaaaa/aaaa/aaaaa-4aaa.2-aaaa-aaaaaaaa-aaaaaaa"
+    }
+   ],
+   "top": "/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa"
+  }
+ }
+]

@@ -1,0 +1,152 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "font" : {
+            "design" : "default",
+            "size" : 12,
+            "weight" : "regular"
+          }
+        },
+        {
+          "foregroundStyle" : "secondary"
+        },
+        {
+          "padding" : [
+            10,
+            2,
+            8,
+            2
+          ]
+        }
+      ],
+      "text" : "1 open issues · 0 dependencies"
+    },
+    {
+      "canvasKey" : "graph",
+      "commands" : [
+        [
+          "translate",
+          0,
+          0
+        ],
+        [
+          "set",
+          "fillStyle",
+          "fill"
+        ],
+        [
+          "beginPath"
+        ],
+        [
+          "roundRect",
+          20,
+          20,
+          210,
+          30,
+          6
+        ],
+        [
+          "fill"
+        ],
+        [
+          "set",
+          "strokeStyle",
+          "ok"
+        ],
+        [
+          "set",
+          "lineWidth",
+          1
+        ],
+        [
+          "beginPath"
+        ],
+        [
+          "roundRect",
+          20,
+          20,
+          210,
+          30,
+          6
+        ],
+        [
+          "stroke"
+        ],
+        [
+          "set",
+          "font",
+          "bold 10px monospace"
+        ],
+        [
+          "set",
+          "fillStyle",
+          "ok"
+        ],
+        [
+          "fillText",
+          "wheel-h3z5.26",
+          28,
+          32
+        ],
+        [
+          "set",
+          "font",
+          "11px sans-serif"
+        ],
+        [
+          "set",
+          "fillStyle",
+          "fg"
+        ],
+        [
+          "fillText",
+          "Aaaaaaaaa aaaaaa aaaaaaaa…",
+          28,
+          44
+        ]
+      ],
+      "component" : "Canvas",
+      "height" : 520,
+      "modifiers" : [
+        {
+          "clipShape" : {
+            "cornerRadius" : 0
+          }
+        }
+      ],
+      "pointerAction" : {
+        "type" : "pointer"
+      }
+    },
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "font" : {
+            "design" : "default",
+            "size" : 12,
+            "weight" : "regular"
+          }
+        },
+        {
+          "foregroundStyle" : "secondary"
+        },
+        {
+          "padding" : [
+            10,
+            2,
+            0,
+            2
+          ]
+        }
+      ],
+      "text" : "drag to pan · hover to highlight · click to open"
+    }
+  ],
+  "component" : "Column",
+  "spacing" : 0
+}

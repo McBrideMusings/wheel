@@ -1,0 +1,26 @@
+[
+ {
+  "name": "wheelhouse.issues",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "error": null,
+   "issues": [],
+   "name": "wheel",
+   "now": 1795831252,
+   "problems": [],
+   "scripts": [
+    {
+     "label": "Iterate",
+     "name": "iterate"
+    },
+    {
+     "label": "Swarm",
+     "name": "swarm"
+    }
+   ]
+  }
+ }
+]

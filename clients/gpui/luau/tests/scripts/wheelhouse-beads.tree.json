@@ -1,0 +1,1231 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "action" : {
+                    "key" : "status",
+                    "type" : "list.filter",
+                    "value" : "ready"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "green"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "1"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Ready"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "status",
+                    "type" : "list.filter",
+                    "value" : "in progress"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "0"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Active"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "status",
+                    "type" : "list.filter",
+                    "value" : "blocked"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "0"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Blocked"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "status",
+                    "type" : "list.filter",
+                    "value" : "done"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "primary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "10"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Closed"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Column",
+              "spacing" : 0
+            },
+            {
+              "component" : "Column",
+              "spacing" : 0
+            },
+            {
+              "component" : "Column",
+              "spacing" : 0
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 0
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "TextField",
+              "label" : "Search",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity",
+                    "minWidth" : 120
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "list.query"
+              },
+              "value" : "",
+              "variant" : "shortText"
+            },
+            {
+              "children" : [
+                {
+                  "component" : "ChoicePicker",
+                  "displayStyle" : "chips",
+                  "modifiers" : [
+                    {
+                      "fixedSize" : {
+                        "horizontal" : true
+                      }
+                    }
+                  ],
+                  "on_change" : {
+                    "type" : "set_view"
+                  },
+                  "options" : [
+                    {
+                      "label" : "List",
+                      "value" : "list"
+                    },
+                    {
+                      "label" : "Epics",
+                      "value" : "epics"
+                    },
+                    {
+                      "label" : "Depends on",
+                      "value" : "deps"
+                    },
+                    {
+                      "label" : "Unlocks",
+                      "value" : "unlocks"
+                    },
+                    {
+                      "label" : "Focus",
+                      "value" : "focus"
+                    },
+                    {
+                      "label" : "Graph",
+                      "value" : "graph"
+                    }
+                  ],
+                  "value" : [
+                    "list"
+                  ],
+                  "variant" : "mutuallyExclusive"
+                },
+                {
+                  "component" : "ChoicePicker",
+                  "displayStyle" : "menu",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "on_change" : {
+                    "type" : "set_view"
+                  },
+                  "options" : [
+                    {
+                      "label" : "List",
+                      "value" : "list"
+                    },
+                    {
+                      "label" : "Epics",
+                      "value" : "epics"
+                    },
+                    {
+                      "label" : "Depends on",
+                      "value" : "deps"
+                    },
+                    {
+                      "label" : "Unlocks",
+                      "value" : "unlocks"
+                    },
+                    {
+                      "label" : "Focus",
+                      "value" : "focus"
+                    },
+                    {
+                      "label" : "Graph",
+                      "value" : "graph"
+                    }
+                  ],
+                  "value" : [
+                    "list"
+                  ],
+                  "variant" : "mutuallyExclusive"
+                }
+              ],
+              "component" : "ViewThatFits",
+              "in" : "horizontal",
+              "modifiers" : [
+                {
+                  "layoutPriority" : 1
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                8,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any status ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "status",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "in progress",
+                          "on_change" : {
+                            "item" : "in progress",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "ready",
+                          "on_change" : {
+                            "item" : "ready",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "blocked",
+                          "on_change" : {
+                            "item" : "blocked",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "open",
+                          "on_change" : {
+                            "item" : "open",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "deferred",
+                          "on_change" : {
+                            "item" : "deferred",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "done",
+                          "on_change" : {
+                            "item" : "done",
+                            "key" : "status",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any type ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "type",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "bug  6",
+                          "on_change" : {
+                            "item" : "bug",
+                            "key" : "type",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "task  5",
+                          "on_change" : {
+                            "item" : "task",
+                            "key" : "type",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any label ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "label",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "client  8",
+                          "on_change" : {
+                            "item" : "client",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "mac  7",
+                          "on_change" : {
+                            "item" : "mac",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "daemon  3",
+                          "on_change" : {
+                            "item" : "daemon",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "lead  3",
+                          "on_change" : {
+                            "item" : "lead",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "terminal  3",
+                          "on_change" : {
+                            "item" : "terminal",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "wheelkit  2",
+                          "on_change" : {
+                            "item" : "wheelkit",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "cli  1",
+                          "on_change" : {
+                            "item" : "cli",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "design  1",
+                          "on_change" : {
+                            "item" : "design",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "ios  1",
+                          "on_change" : {
+                            "item" : "ios",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "protocol  1",
+                          "on_change" : {
+                            "item" : "protocol",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "spaces  1",
+                          "on_change" : {
+                            "item" : "spaces",
+                            "key" : "label",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any priority ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "pri",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "P0  11",
+                          "on_change" : {
+                            "item" : "0",
+                            "key" : "pri",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "P1  0",
+                          "on_change" : {
+                            "item" : "1",
+                            "key" : "pri",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "P2  0",
+                          "on_change" : {
+                            "item" : "2",
+                            "key" : "pri",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "P3  0",
+                          "on_change" : {
+                            "item" : "3",
+                            "key" : "pri",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "P4  0",
+                          "on_change" : {
+                            "item" : "4",
+                            "key" : "pri",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "action" : {
+                    "type" : "list.clear"
+                  },
+                  "child" : {
+                    "component" : "Text",
+                    "text" : "Clear"
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        2,
+                        5
+                      ]
+                    },
+                    {
+                      "disabled" : true
+                    },
+                    {
+                      "opacity" : 0
+                    }
+                  ],
+                  "variant" : "borderless"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 6
+            },
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 12,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "Actions ⌄"
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "action" : {
+                        "copy" : {
+                          "text" : "wheel-h3z5.26"
+                        }
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Copy IDs"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "pointerStyle" : "link"
+                        },
+                        {
+                          "help" : "Copy the 1 listed ids, space separated"
+                        },
+                        {
+                          "accessibilityLabel" : "Copy the 1 listed ids, space separated"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    },
+                    {
+                      "action" : {
+                        "script" : "iterate",
+                        "type" : "list.run"
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Iterate  1"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "pointerStyle" : "link"
+                        },
+                        {
+                          "help" : "Iterate over the 1 listed beads"
+                        },
+                        {
+                          "accessibilityLabel" : "Iterate over the 1 listed beads"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    },
+                    {
+                      "action" : {
+                        "script" : "swarm",
+                        "type" : "list.run"
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Swarm  1"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "pointerStyle" : "link"
+                        },
+                        {
+                          "help" : "Swarm over the 1 listed beads"
+                        },
+                        {
+                          "accessibilityLabel" : "Swarm over the 1 listed beads"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    }
+                  ],
+                  "component" : "Column",
+                  "spacing" : 6
+                }
+              ],
+              "component" : "Popover"
+            }
+          ],
+          "component" : "Row",
+          "justify" : "spaceBetween",
+          "modifiers" : [
+            {
+              "padding" : [
+                4,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 16
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "columns" : [
+                {
+                  "key" : "id",
+                  "label" : "ID",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 56
+                },
+                {
+                  "key" : "title",
+                  "label" : "Title",
+                  "sortable" : true,
+                  "tree" : true
+                },
+                {
+                  "key" : "type",
+                  "label" : "Type",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 56
+                },
+                {
+                  "key" : "unlocks",
+                  "label" : "Unlocks",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 28
+                },
+                {
+                  "key" : "status",
+                  "label" : "Status",
+                  "sortable" : true,
+                  "width" : 84
+                },
+                {
+                  "key" : "pri",
+                  "label" : "Priority",
+                  "sortable" : true,
+                  "width" : 24
+                },
+                {
+                  "key" : "updated",
+                  "label" : "Updated",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 30
+                }
+              ],
+              "component" : "Table",
+              "empty" : "Nothing matches the search and filters.",
+              "foldAction" : {
+                "type" : "toggle_path"
+              },
+              "rowAction" : {
+                "type" : "select_bead"
+              },
+              "sections" : [
+                {
+                  "count" : 1,
+                  "rows" : [
+                    {
+                      "cells" : [
+                        {
+                          "key" : "id",
+                          "mono" : true,
+                          "text" : "h3z5.26",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "title",
+                          "text" : "Aaaaaaaaa aaaaaa aaaaaaaa aa aaaa aaa aaaaaaa aaaa"
+                        },
+                        {
+                          "key" : "type",
+                          "text" : "bug",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "unlocks",
+                          "sort" : 0,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "sort" : 2,
+                          "text" : "ready",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "pri",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : "P0",
+                          "tone" : "bad"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1794366099,
+                          "text" : "17d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "wheel-h3z5.26",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "bead" : "wheel-h3z5.26",
+                            "type" : "press"
+                          },
+                          "label" : "Implement"
+                        }
+                      ],
+                      "path" : "wheel-h3z5.26"
+                    }
+                  ],
+                  "title" : ""
+                }
+              ],
+              "selectAction" : {
+                "type" : "list.select"
+              },
+              "selected" : [
+
+              ],
+              "sort" : {
+                "asc" : true,
+                "key" : "status"
+              },
+              "sortAction" : {
+                "type" : "list.sort"
+              }
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 8
+        },
+        {
+          "component" : "Modal",
+          "dismissAction" : {
+            "type" : "close_detail"
+          },
+          "presented" : false
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            18,
+            16,
+            48,
+            16
+          ]
+        }
+      ],
+      "spacing" : 8
+    }
+  ],
+  "component" : "Column"
+}

@@ -609,7 +609,9 @@ fn compile(lua: &Lua, source: &str, name: &str) -> mlua::Result<Function> {
 /// The text a failure carries: the script's own message, without the wrapping mlua adds.
 fn message(e: &mlua::Error) -> String {
     match e {
-        mlua::Error::RuntimeError(m) | mlua::Error::MemoryError(m) => m.clone(),
+        // mlua's call handler appends Luau's traceback to a runtime error; WheelLuau's message has none.
+        mlua::Error::RuntimeError(m) => m.rfind("\nstack traceback:\n").map_or(m.as_str(), |at| &m[..at]).to_owned(),
+        mlua::Error::MemoryError(m) => m.clone(),
         mlua::Error::SyntaxError { message, .. } => message.clone(),
         mlua::Error::CallbackError { cause, .. } => message(cause),
         mlua::Error::WithContext { cause, .. } => message(cause),

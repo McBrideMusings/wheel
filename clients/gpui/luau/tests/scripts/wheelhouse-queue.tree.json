@@ -1,0 +1,122 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                }
+              ],
+              "text" : "AAAAA AAA · 0"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                12,
+                0,
+                4,
+                0
+              ]
+            }
+          ],
+          "spacing" : 2
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                }
+              ],
+              "text" : "AAAAA AAA AAAAAA · 0"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                12,
+                0,
+                4,
+                0
+              ]
+            }
+          ],
+          "spacing" : 2
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                }
+              ],
+              "text" : "FINISHED · 0"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                12,
+                0,
+                4,
+                0
+              ]
+            }
+          ],
+          "spacing" : 2
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            12,
+            16,
+            32,
+            16
+          ]
+        }
+      ],
+      "spacing" : 0
+    }
+  ],
+  "component" : "Column"
+}

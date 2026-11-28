@@ -1,0 +1,355 @@
+[
+ {
+  "name": "wheelhouse.beads",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "beads": [
+    {
+     "blocked_by": [],
+     "description": "Aaaaaa (2026-11-21), aa a aaaaaaaaaa aa aaa aaaaaaaaaaaa aaaaa aa aaa aaaa aaa aaaaaaaa aa: \"aaaa aa aaaaaaaa ... Aaa aaaaaa aaaa aa aaaaaaaaa aaa aaaaaaa aaa aaa A'a aaaaaaaaa aaaaa aaaaaaaa aa aaaa aaaaaaaaa aa. A aaaa aa aaa aa aaaaaaa.\"",
+     "epic": false,
+     "id": "wheel-eg4e.19.30",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "daemon",
+      "design",
+      "ios"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-eg4e.19",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "aAaaaa aaa aaaaa: aaa aaaa aaaaa aaaaaaa aaaaa aaaaaa",
+     "updated": "2026-11-21T21:21:59Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "Aaaaaa.aaaaa aaaaaaaAaaaAaaa (aa055459) aaaa Aaa/Aaaa/Aaaaa aaaa aaa 0; AAAA'a aaa aaaaaaaa aaaaaaa aaaaa: aaa aaaaaaaa_aaaa_aaaa (aaaa_aaaaa aaaaaaaa.aa:1401) aaaaa aaa aaaa aaaa aaa aaa aaa aa aaaaaa, aaaa aaaaa aaaaa aa :1411. Aaaaa \u2318A/\u2318",
+     "epic": false,
+     "id": "wheel-53st",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "mac"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": null,
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "\u2318A/\u2318A/\u2318A aaaa aaa AAAA aaaaaa: Aaaaa Aaaa aaaa aaaaa aaaaaaaa AAAA'a aaaaaaaa_aaaa_aaaa",
+     "updated": "2026-11-15T22:57:39Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "aaaaaa (2026-11-01): 'A aaa'a aaaa aa aaaa a aaa aa aaaaaaa aaaaaa aaaaaaa aaaaaaaa aaa aaaaaa aaaaaa aaa, aaa A aaa'a aaa aaa aaaaa aaaaa aaaa aa aaaa aa aaaaaaa aaaaaa aaaaaaa aaa aaaaaaa aaaa aaaaaaa aa aaa aaaa aa aaaaaa aaaaaaaa'. Aaaa",
+     "epic": false,
+     "id": "wheel-fd11",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "mac",
+      "spaces"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": null,
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "Aaaaa aaa aaaa: aaaaaaaa a aaa aaaaa aaa aaaaaa; Aaaa aa Aaaaaa aaaaaaa aaaaaa",
+     "updated": "2026-11-01T15:24:19Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "## Aaaaaa\n\naaaaa-a3a5\n\n## Aaaaaaaa\n\naaa\n\n## Aaaaaaa\n\nA aaaa'a aaaaaaa aaaaa (\"Aaaaaa aaa 13a 9a\") aaaaaaaa aaa aaaaa'a aaa aaaaaaaa aa aaa aaaaaa. Aaaaa aaaaaaa aaa aaaaa aaaaaa aaaa aaaa aa aaa aaaa aaaa; aaaa aaa aaaa aaaa aaaaaaa aaaaaaa",
+     "epic": false,
+     "id": "wheel-h3z5.33",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "mac",
+      "wheelkit"
+     ],
+     "owner": "me",
+     "parent": "wheel-h3z5",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "Aaaaa aaaaaaa aaa aaaaa aaaaaa aaaaaaa aaa aaaa aaaa; aaaa aaa aaaa aaaaaaa aaaaaaaa aaaaaaaaa",
+     "updated": "2026-10-30T01:08:56Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "Aaaaaa (2026-10-29, aaaaaaaaaa /Aaaaa/aaaaaa/Aaaaaaa/Aaaaaaaaaaa Aaaaaaa/AaaaaAaaa/aaaaa/aaaaa_A900a4aaAA/Aaaaaa.2026.10.29.14.02.53.aaa): \"Aaa aaa aaaa aa aaaa aaaaaaaa aaaaaaa aaaaaaaaa aaaa aaaa? Aa aaaa aaa aaa aa aa aaaa a aaaaaaaa aaa",
+     "epic": false,
+     "id": "wheel-h3z5.27",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "mac",
+      "terminal"
+     ],
+     "owner": "me",
+     "parent": "wheel-h3z5",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "A aaaaaaaa'a aaaaa aaaa aaa aaa aaaaa'a aaaa aaaaaa aaaaa aaaa a aaaa aaaaa aaaaaa",
+     "updated": "2026-10-30T01:14:29Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "Aaaaaa'a aaaaa (2026-10-29): \"Aaaaaaaaa aaaaaaa aaaa aa aaaaaa aaaaaaa aaaa. Aa aa aaaaaa aaaaa aaaa aa aa aaaa aa aa aaaaa aaaaaaa aaa AA aa aa aaaaaaaa aaaaaa aaaa aa aa aaaaa a aaaaaa aaa aaa aaaaaaa aaaaa aa aaaaaa aa aaaaaaaaa. Aaa aaa",
+     "epic": false,
+     "id": "wheel-h3z5.26",
+     "kind": "bug",
+     "labels": [
+      "client",
+      "mac",
+      "wheelkit"
+     ],
+     "owner": "me",
+     "parent": "wheel-h3z5",
+     "priority": 0,
+     "ready": true,
+     "status": "open",
+     "title": "Aaaaaaaaa aaaaaa aaaaaaaa aa aaaa aaa aaaaaaa aaaa",
+     "updated": "2026-11-11T03:01:39Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "AaaaaAA aaaaaaaaaa aaa AAA aaaaaaa (aaaaaaaaa aaaa, aaaa aaaaa), aaa aaaaaa aaaaaaaa (aaaaaaaaaaa, / aaaaaa) aaa aaa Aaaaaaa-aa-aaa aaaa aaaa Aaaaaaa/Aaaa. Aaaa aaaaaaaaaa aaaaaaaaa aaaaa aaaaaa aaaaa aaaaa.",
+     "epic": false,
+     "id": "wheel-0co.5",
+     "kind": "task",
+     "labels": [
+      "client",
+      "lead",
+      "mac"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-0co",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "Aaa aaa: aaaaaa aaaa aaaaaaaaaa, aaaaaaaa aaa Aaaaaaa aaaa",
+     "updated": "2026-10-28T14:02:35Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "aaaaa/ aaa aaaaaaaa: AaaaaAaa (aaaaaaaa aaaaaa, aaaaaa) aaa aaa Aaa aaa. Aaaaa aaaAA aaaaaaa aaa AAAAAA.aa. Aaaaaaaa aaaa aaaaaaa aaaaaa AAA aaaaa aaaa aaaaaaaaaa (aaaa-aaaaaaa AA). Aaaaaaaaaa aaa aaaaaaaaaa aa aaaaaa.",
+     "epic": false,
+     "id": "wheel-0co.4",
+     "kind": "task",
+     "labels": [
+      "client",
+      "lead",
+      "mac",
+      "terminal"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-0co",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "Aaa aaa aaaaa: aaaaaaaa aaaa aaaa + aaa aaaaaaaaaa aaaaaaaa",
+     "updated": "2026-10-28T14:02:35Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "Aaaaa aaaaaa-aaaaa-aaa aaaa aaaaa aaaa aaa aaaaa-aaaaaa-aaaaaaaa aaaaa; aaaaa aaa aaaa aaaa aa aaaaaaaaaaaa aaaaaa aaaaaaa. Aaaaa aaaaaaa aaaaaaa (aaaa, aaaa aaaaa, aaaa) aa aaaaa aaaaaaaa aaaaaa; aaaa aaaaaaa/aaaaaaa_aaaaaaaaaa aaaa a aaaa",
+     "epic": false,
+     "id": "wheel-0co.3",
+     "kind": "task",
+     "labels": [
+      "daemon",
+      "lead"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-0co",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "aaaaaa: aaaa AAA aaaaaaa aaaa aaaaaaaaaa aaaaaaa",
+     "updated": "2026-10-28T14:02:35Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "aaa/ aaaaaa aaaaaaaa aaa aaaa AaaAaaaaa aaaaaaaa: aaaaaa, aaaa aaaa/aaaa/aaaa, aaaa aaaa/aaaa, aaaa aaaa/aaaaaa. Aaaa aa aaa aaaaaaaaaaaa aaaaaaa aaaaa aaaaa aaaaa aaaaaa.",
+     "epic": false,
+     "id": "wheel-0co.2",
+     "kind": "task",
+     "labels": [
+      "cli"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-0co",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "aaaaa AAA aaaa aaa aaaaaa aaaaaa",
+     "updated": "2026-10-28T14:02:35Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "Aaaa aaaaa aaaaaa/ (aaaaa, aaaa aa, aaaaaaaa-aaa). AAAA aaaaaaaa: aaaa.aaaa/aaaaaa/aaaaa/aaaaaa aaaa aaaaaaa, aaaa.aaaaaa aaaaaa. Aaaaa a aaaa aaaa aaaaaa aaa AAA aaa aaaaaaa aa aa a aaaaaa aa aaaaaa aa a aaaaaaaaaa aaaaaa aaaa aaa aaaaaa. ",
+     "epic": false,
+     "id": "wheel-0co.1",
+     "kind": "task",
+     "labels": [
+      "daemon",
+      "protocol",
+      "terminal"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": "wheel-0co",
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "aaaaaa: AAA aaaa AaaAaaaaa aaaa aaaaaa aa aaaaaa",
+     "updated": "2026-10-28T14:02:35Z"
+    },
+    {
+     "blocked_by": [],
+     "description": "aaaaaa aaaa aaa AAA aaa aaa AAA aaaa aaaaaaa; aaa Aaa aaa aaaaa aaa aaaaaaaa aaaa aaaaaa aaa aaaaaaaa aaaa; aaaaaaaa aaa aaaaaaaaaaa aaa aaa aaaaaaaaaa aaaa. Aaaaaa aaa AAA aaa AAA aaaaa aaaaaaa aaa aaaaaa (AAA-0001, AAA-0002).",
+     "epic": true,
+     "id": "wheel-0co",
+     "kind": "epic",
+     "labels": [
+      "cli",
+      "client",
+      "daemon"
+     ],
+     "owner": "3522175+AaAaaaaAaaaaaa@aaaaa.aaaaaaa.aaaaaa.aaa",
+     "parent": null,
+     "priority": 0,
+     "ready": false,
+     "status": "closed",
+     "title": "Aaaaaaa aaaaaaaa: aaaaaa + aaaa + aaa aaaaaaaa aa aaa Aaa",
+     "updated": "2026-10-28T14:02:35Z"
+    }
+   ],
+   "buttons": {
+    "closed": "Closed",
+    "epic": {
+     "focus": {
+      "label": "Focus",
+      "run": null
+     },
+     "resume": {
+      "label": "Resume",
+      "run": "aaa -aa\na=$(aaaaa aaaa aaa \"$AAAAA_AAAA\" \"aaaaaa --aaaaaa $AAAAAAAAAAAA\")\naaaa \"$a\"\n"
+     },
+     "start": {
+      "label": "Swarm",
+      "run": "aaa -aa\na=$(aaaaa aaaa aaaaa \"$AAAAA_AAAA\" aaaaa)\naaaaa aaaa aaaaa \"$a\" aaaaa --aaaaaaa \"aaaaa aaaa:$AAAA_AA\"\naaaa \"$a\"\n"
+     }
+    },
+    "task": {
+     "focus": {
+      "label": "Focus",
+      "run": null
+     },
+     "resume": {
+      "label": "Resume",
+      "run": "aaa -aa\naa=$(aaa aaaaaaaa aaaa --aaaaaaaaa | aaa -a a=\"aaaa/aaaaa/$AAAA_AA\" '/^aaaaaaaa /{a=aaaaaa($0,10)} $0==\"aaaaaa \" a{aaaaa a}')\naa [ -a \"$aa\" ]; aaaa\n  aa=\"$AAAA/.aaaaaaaaa/$(aaaaaaaa \"$AAA\")/$(aaaaaa %a \"$AAAA_AA\" | aa / -)\"\n  aa aaa"
+     },
+     "start": {
+      "label": "Implement",
+      "run": "aaa -aa\naa=$(aaa aaaaaaaa aaaa --aaaaaaaaa | aaa -a a=\"aaaa/aaaaa/$AAAA_AA\" '/^aaaaaaaa /{a=aaaaaa($0,10)} $0==\"aaaaaa \" a{aaaaa a}')\naa [ -a \"$aa\" ]; aaaa\n  aa=\"$AAAA/.aaaaaaaaa/$(aaaaaaaa \"$AAA\")/$(aaaaaa %a \"$AAAA_AA\" | aa / -)\"\n  aa aaa"
+     }
+    }
+   },
+   "error": null,
+   "has_repo": true,
+   "name": "wheel",
+   "now": 1795831243,
+   "path": "/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa",
+   "pressing": [],
+   "problems": [],
+   "records": {},
+   "scripts": [
+    {
+     "label": "Iterate",
+     "name": "iterate"
+    },
+    {
+     "label": "Swarm",
+     "name": "swarm"
+    }
+   ]
+  }
+ },
+ {
+  "name": "wheel.panes",
+  "params": [],
+  "stale": false,
+  "value": [
+   {
+    "id": "p13397",
+    "kind": "agent",
+    "space": "s1"
+   },
+   {
+    "id": "p13623",
+    "kind": "agent",
+    "space": "s1"
+   },
+   {
+    "id": "p1",
+    "kind": "agent",
+    "space": "s1"
+   },
+   {
+    "id": "p11478",
+    "kind": "terminal",
+    "space": "s1"
+   },
+   {
+    "id": "p11613",
+    "kind": "web",
+    "space": "s1"
+   },
+   {
+    "id": "p11596",
+    "kind": "web",
+    "space": "s1"
+   },
+   {
+    "id": "p12177",
+    "kind": "agent",
+    "space": "s1"
+   },
+   {
+    "id": "p13667",
+    "kind": "plugin",
+    "space": "s1"
+   },
+   {
+    "id": "p12397",
+    "kind": "agent",
+    "space": "s10096"
+   },
+   {
+    "id": "p13163",
+    "kind": "web",
+    "space": "s10096"
+   },
+   {
+    "id": "p12899",
+    "kind": "agent",
+    "space": "s10881"
+   },
+   {
+    "id": "p12699",
+    "kind": "browser",
+    "space": "s10881"
+   }
+  ]
+ }
+]

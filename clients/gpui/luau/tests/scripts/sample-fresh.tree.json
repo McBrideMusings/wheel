@@ -1,0 +1,37 @@
+{
+  "children" : [
+    {
+      "component" : "Text",
+      "text" : "Count 0",
+      "variant" : "h2"
+    },
+    {
+      "action" : {
+        "type" : "add"
+      },
+      "child" : {
+        "component" : "Text",
+        "text" : "Add one"
+      },
+      "component" : "Button"
+    },
+    {
+      "component" : "TextField",
+      "label" : "Name",
+      "on_change" : {
+        "type" : "name"
+      },
+      "value" : ""
+    },
+    {
+      "component" : "Text",
+      "text" : "Type a name"
+    }
+  ],
+  "component" : "Column",
+  "modifiers" : [
+    {
+      "padding" : 16
+    }
+  ]
+}
