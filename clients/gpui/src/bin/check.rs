@@ -5926,6 +5926,18 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     }
     ensure!(components(&seen).iter().any(|c| c["type"] == "Map") && seen["error"].is_null(), "the web embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
     report.insert("web_embeds".into(), web_embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
+    // The gallery again, for its four VideoStreams playing in GPUI's own slots.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "gallery", "--plugin-pane", "gallery"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin gallery: {err}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if texts(&seen).iter().any(|t| t == "Wheel's own component") {
+            break;
+        }
+    }
+    ensure!(texts(&seen).iter().any(|t| t == "Wheel's own component") && seen["error"].is_null(), "the gallery pane never drew again: error {} texts {:?}", seen["error"], texts(&seen));
+    report.insert("stream_embeds".into(), stream_embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
@@ -6008,13 +6020,11 @@ fn press_recorded(window: ClientWindow, pane: &str, id: &str, cx: &mut AsyncApp)
     draw(window, None, cx)
 }
 
-/// The components a pane script names that GPUI's preview draws as nothing until the embeds are ported (wheel-4d1o.5).
-const PLUGIN_EMBEDS: [&str; 1] = ["VideoStream"];
 
 /// Plugin pane `pane`, showing plugin pane `name`, drawn by GPUI beside the bridge's view
 /// (wheel-4d1o.3): previewed, waited on until its tree holds the bridge's components, its page cut
 /// to `gpui-plugin-<name>.png` beside the bridge's `client-plugin-<name>.png`, and the preview
-/// ended. The embeds GPUI does not draw yet are listed, never failed on: their texts still match.
+/// ended.
 #[allow(clippy::too_many_arguments)]
 async fn plugin_beside_bridge(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {name}");
@@ -6030,11 +6040,8 @@ async fn plugin_beside_bridge(connection: &mut Connection, layouts: &mut usize, 
     let (ours, png) = pictured?;
     let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
     ensure!(bytes > 0, "GPUI's picture of the {name} plugin pane is empty: {}", png.display());
-    let mut embeds: Vec<&str> = ours.iter().filter_map(|(_, kind, _)| PLUGIN_EMBEDS.iter().find(|e| **e == kind.as_str()).copied()).collect();
-    embeds.sort_unstable();
-    embeds.dedup();
-    eprintln!("wheel-gpui: {name} in GPUI matches the bridge: {} components, embeds drawn as nothing {embeds:?}", ours.len());
-    Ok(json!({"matched": true, "components": ours.len(), "picture": png, "picture_bytes": bytes, "embeds": embeds}))
+    eprintln!("wheel-gpui: {name} in GPUI matches the bridge: {} components", ours.len());
+    Ok(json!({"matched": true, "components": ours.len(), "picture": png, "picture_bytes": bytes}))
 }
 
 /// Sends one pointer event to the window through GPUI, as `gpui_click` does.
@@ -6507,6 +6514,178 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
     let left: Vec<&String> = keys.iter().filter(|k| !native.embed_facts(k).is_null()).collect();
     let out = steps?;
     ensure!(left.is_empty(), "ending the preview left the embeds' slots open: {left:?}");
+    Ok(out)
+}
+
+/// GPUI's own `ui.VideoStream` (wheel-4d1o.6), on a fresh preview of plugin pane `pane` showing the
+/// gallery: each of its four `gallery.demo` streams asks wheeld for its socket, reads and decodes
+/// the backend's 320x180 H.264 in its native slot (at least 10 frames, its size read from the
+/// slot's own state, never compared with a drawn rect), and the first one's slot lies on the rect
+/// the embed drew at. A click at that slot's middle, posted to the view the window's hit test
+/// reaches there, and a key typed while it holds the keyboard reach the backend, whose
+/// `gallery.input` feed GPUI's preview then shows: the click at (160, 90) in the video's pixels,
+/// button 0, and the key `q` going up. A click on the `input = false` stream sends nothing. The
+/// page is cut to `gpui-plugin-gallery-stream.png` with each shown stream's last frame laid over
+/// its slot, beside the bridge's `client-plugin-gallery-stream.png`.
+async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for the gallery's streams");
+    let mut keys = vec![];
+    let steps = async {
+        let began = std::time::Instant::now();
+        plugin_preview_matches(connection, layouts, window, native, pane, "gallery streams", cx).await?;
+        let nums = |v: &Value| -> Vec<f64> { v.as_array().into_iter().flatten().filter_map(Value::as_f64).collect() };
+        // The gallery's VideoStreams, top to bottom as drawn.
+        let streams = |e: &Value| {
+            let mut s: Vec<Value> = e.as_object().into_iter().flatten().filter(|(_, v)| v["component"] == "VideoStream" && v["stream"] == "gallery.demo").map(|(_, v)| v.clone()).collect();
+            s.sort_by(|a, b| nums(&a["bounds"]).get(1).partial_cmp(&nums(&b["bounds"]).get(1)).unwrap_or(std::cmp::Ordering::Equal));
+            s
+        };
+        let decoding = |v: &Value| v["slot"]["stream"]["frames"].as_u64() >= Some(10) && v["slot"]["stream"]["video"] == json!([320, 180]);
+        let input_text = |window: ClientWindow, cx: &mut AsyncApp| -> Result<Vec<String>> {
+            Ok(plugin_entries(&plugin_preview(window, pane, cx)?).into_iter().map(|(_, _, t)| t).filter(|t| t.contains(" events; last: ") || t == "no input yet").collect())
+        };
+        macro_rules! until {
+            ($what:expr, $ok:expr) => {{
+                let mut now = Value::Null;
+                for _ in 0..150 {
+                    draw(window, None, cx)?;
+                    pump(connection, 100, layouts, window, cx).await?;
+                    draw(window, None, cx)?;
+                    now = plugin_preview(window, pane, cx)?["embeds"].clone();
+                    if $ok(&now) {
+                        break;
+                    }
+                }
+                ensure!($ok(&now), "GPUI's video streams: {}: {now}", $what);
+                now
+            }};
+        }
+        // The first stream at the top of the page: its whole rect inside the body.
+        let body = plugin_body(window, pane, cx)?;
+        let first = until!("the gallery should draw four gallery.demo VideoStreams", |e: &Value| streams(e).len() == 4 && streams(e).iter().all(|v| nums(&v["bounds"]).len() == 4 && nums(&v["bounds"])[3] > 0.));
+        let top = nums(&streams(&first)[0]["bounds"])[1] - f64::from(body.1) - 8.;
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, top as f32))?, "the gallery is not previewed");
+        let playing = until!("each of the four streams should decode at least 10 frames of 320x180 in its slot", |e: &Value| streams(e).len() == 4 && streams(e).iter().all(decoding));
+        let all = streams(&playing);
+        keys.extend(all.iter().filter_map(|v| v["key"].as_str().map(str::to_owned)));
+        let shown = &all[0];
+        let (b, f) = (nums(&shown["bounds"]), nums(&shown["slot"]["frame_top"]));
+        ensure!(b.len() == 4 && f.len() == 4 && b[2] > 0. && (b[3] - 200.).abs() < 0.5 && b.iter().zip(&f).all(|(a, c)| (a - c).abs() < 0.5) && shown["slot"]["hidden"] == false,
+            "the first stream's slot should lie on its 200-point rect: bounds {b:?} slot {f:?} hidden {}", shown["slot"]["hidden"]);
+        ensure!(b[1] >= f64::from(body.1) - 0.5 && b[1] + b[3] <= f64::from(body.1 + body.3) + 0.5, "the first stream should lie inside the page's body {body:?}: {b:?}");
+        ensure!(shown["input"] == true && shown["slot"]["stream"]["input"] == true && shown["slot"]["stream"]["note"].is_null() && shown["slot"]["stream"]["socket"].is_string(),
+            "the first stream should take input, show no note and name its socket: {}", shown["slot"]["stream"]);
+        let quiet = all.iter().find(|v| v["input"] == false).cloned().ok_or_else(|| anyhow::anyhow!("the gallery has no input = false stream: {all:?}"))?;
+        let quiet_gain = all.iter().find_map(|v| v["slot"]["stream"]["gain"].as_f64().filter(|g| (g - 0.25).abs() < 0.001));
+        ensure!(quiet_gain.is_some() && all.iter().any(|v| v["slot"]["stream"]["fills"] == true), "one stream should play at 0.25 and one fill its frame: {all:?}");
+        // The click, at the middle of the first stream's slot, through the view the window's hit test reaches.
+        let middle = [b[0] + b[2] / 2., b[1] + b[3] / 2.];
+        let hit = native.call(json!({"op":"hit","point":middle}));
+        ensure!(hit["class"] == "WheelStreamView" && hit["pane"] == shown["key"], "the middle of the first stream should hit its view: {hit}");
+        let before = input_text(window, cx)?;
+        native.call(json!({"op":"post_mouse","kind":"down","point":middle}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":middle}));
+        let mut pointer = vec![];
+        for _ in 0..100 {
+            pump(connection, 100, layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            pointer = input_text(window, cx)?;
+            if pointer.iter().any(|t| t.contains("last: pointer") && t.contains(r#""kind":"up""#)) {
+                break;
+            }
+        }
+        ensure!(pointer.iter().any(|t| t.contains("last: pointer") && t.contains(r#""button":0"#) && t.contains(r#""kind":"up""#) && t.contains(r#""x":160"#) && t.contains(r#""y":90"#)),
+            "a click at the middle of GPUI's stream should reach the backend at (160, 90): before {before:?}, now {pointer:?}");
+        // The press gave the stream's view the keyboard: a key typed now goes to the backend.
+        let key = shown["key"].as_str().unwrap_or_default().to_owned();
+        let focused = native.embed_facts(&key)["focused"].clone();
+        ensure!(focused == true, "the clicked stream's view should hold the keyboard: {}", native.embed_facts(&key));
+        native.call(json!({"op":"post_key","text":"q","code":12}));
+        let mut typed = vec![];
+        for _ in 0..100 {
+            pump(connection, 100, layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            typed = input_text(window, cx)?;
+            if typed.iter().any(|t| t.contains("last: key") && t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)) {
+                break;
+            }
+        }
+        ensure!(typed.iter().any(|t| t.contains("last: key") && t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)), "the key typed on GPUI's stream never reached the backend: {typed:?}");
+        let sent = native.embed_facts(&key)["stream"]["inputs"].as_u64().unwrap_or(0);
+        ensure!(sent >= 4, "the stream should count the click's two events and the key's two as sent: {}", native.embed_facts(&key)["stream"]);
+        // The picture, before the page scrolls to the quiet stream.
+        let shots = output.join("gpui-plugin-gallery-stream");
+        shot(native, &shots, cx).await?;
+        let frame_png = output.join("gpui-plugin-gallery-stream-frame.png");
+        draw(window, Some(frame_png.clone()), cx)?;
+        let picture = output.join("gpui-plugin-gallery-stream.png");
+        let mut laid = 0;
+        {
+            let mut frame = image::open(&frame_png)?.to_rgba8();
+            let width = window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?;
+            let scale = f64::from(frame.width()) / f64::from(width.max(1.));
+            let now = plugin_preview(window, pane, cx)?["embeds"].clone();
+            for v in streams(&now).iter().filter(|v| v["slot"]["hidden"] == false) {
+                let f = nums(&v["slot"]["frame_top"]);
+                let path = shots.join(format!("{}-stream.png", v["key"].as_str().unwrap_or_default().replace('/', "_")));
+                let Ok(still) = image::open(&path) else { continue };
+                let still = still.to_rgba8();
+                // The picture as the layer places it: fitted inside the slot, or filling it and cut at its edges.
+                let fills = v["slot"]["stream"]["fills"] == true;
+                let (sw, sh) = (f64::from(still.width()), f64::from(still.height()));
+                let s = if fills { (f[2] / sw).max(f[3] / sh) } else { (f[2] / sw).min(f[3] / sh) };
+                let (w, h) = (sw * s, sh * s);
+                let (x, y) = (f[0] + (f[2] - w) / 2., f[1] + (f[3] - h) / 2.);
+                let mut slot = image::RgbaImage::from_pixel((f[2] * scale) as u32, (f[3] * scale) as u32, image::Rgba([0, 0, 0, 255]));
+                let still = image::imageops::resize(&still, (w * scale) as u32, (h * scale) as u32, image::imageops::FilterType::Triangle);
+                image::imageops::overlay(&mut slot, &still, ((x - f[0]) * scale) as i64, ((y - f[1]) * scale) as i64);
+                // Only the part of the slot inside the page's body shows.
+                let (top, bottom) = (f64::from(body.1).max(f[1]), f64::from(body.1 + body.3).min(f[1] + f[3]));
+                if bottom > top {
+                    let part = image::imageops::crop_imm(&slot, 0, ((top - f[1]) * scale) as u32, slot.width(), ((bottom - top) * scale) as u32).to_image();
+                    image::imageops::overlay(&mut frame, &part, (f[0] * scale) as i64, (top * scale) as i64);
+                    laid += 1;
+                }
+            }
+            let s = scale as f32;
+            image::imageops::crop_imm(&frame, (body.0 * s) as u32, (body.1 * s) as u32, (body.2 * s) as u32, (body.3 * s) as u32).to_image().save(&picture)?;
+        }
+        ensure!(laid >= 1, "no stream's picture was laid over GPUI's page: {}", shots.display());
+        // The input = false stream: its view takes the press, and sends nothing.
+        let quiet_key = quiet["key"].as_str().unwrap_or_default().to_owned();
+        let qb = nums(&quiet["bounds"]);
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, (top + qb[1] - b[1]) as f32))?, "the gallery is not previewed");
+        let placed = until!("scrolled to it, the input = false stream's slot should lie on its rect", |e: &Value| {
+            let q = e.as_object().into_iter().flatten().find(|(_, v)| v["key"] == quiet_key.as_str()).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+            let (b, f) = (nums(&q["bounds"]), nums(&q["slot"]["frame_top"]));
+            b.len() == 4 && f.len() == 4 && b.iter().zip(&f).all(|(a, c)| (a - c).abs() < 0.5) && q["slot"]["hidden"] == false
+        });
+        let q = placed.as_object().into_iter().flatten().find(|(_, v)| v["key"] == quiet_key.as_str()).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+        let qb = nums(&q["bounds"]);
+        let quiet_middle = [qb[0] + qb[2] / 2., qb[1] + qb[3] / 2.];
+        let hit = native.call(json!({"op":"hit","point":quiet_middle}));
+        ensure!(hit["class"] == "WheelStreamView" && hit["pane"] == quiet_key.as_str(), "the middle of the input = false stream should hit its view: {hit}");
+        let count_before = input_text(window, cx)?;
+        native.call(json!({"op":"post_mouse","kind":"down","point":quiet_middle}));
+        native.call(json!({"op":"post_mouse","kind":"up","point":quiet_middle}));
+        for _ in 0..10 {
+            pump(connection, 100, layouts, window, cx).await?;
+            draw(window, None, cx)?;
+        }
+        let count_after = input_text(window, cx)?;
+        let quiet_facts = native.embed_facts(&quiet_key)["stream"].clone();
+        ensure!(quiet_facts["inputs"] == 0 && quiet_facts["input"] == false && count_after == count_before,
+            "the input = false stream should send nothing: {quiet_facts}; the backend saw {count_before:?} then {count_after:?}");
+        let out = json!({"stream_embeds_ms": began.elapsed().as_millis() as u64, "streams": all.iter().map(|v| v["slot"]["stream"].clone()).collect::<Vec<_>>(),
+            "first": {"bounds": b, "slot": f}, "click": pointer, "key": typed, "quiet": quiet_facts, "pictures": [picture, output.join("client-plugin-gallery-stream.png")]});
+        eprintln!("wheel-gpui: video streams in GPUI: {out}");
+        Ok::<Value, anyhow::Error>(out)
+    }.await;
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    let left: Vec<&String> = keys.iter().filter(|k| !native.embed_facts(k).is_null()).collect();
+    let out = steps?;
+    ensure!(left.is_empty(), "ending the preview left the streams' slots open: {left:?}");
     Ok(out)
 }
 
