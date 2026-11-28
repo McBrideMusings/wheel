@@ -228,11 +228,11 @@ impl ViewTree {
             props.insert(key.clone(), v);
         }
         let mut rows = Vec::new();
-        if pane.component == "Table" {
-            if let Some(sections) = props.remove("sections") {
-                let s = self.table_rows(pass, sections, &node.id, &old_rows, &mut rows);
-                props.insert("sections".into(), s);
-            }
+        if pane.component == "Table"
+            && let Some(sections) = props.remove("sections")
+        {
+            let s = self.table_rows(pass, sections, &node.id, &old_rows, &mut rows);
+            props.insert("sections".into(), s);
         }
         if pane.component == "TextField" || props.contains_key("on_change") {
             let value = props.remove("value");
@@ -405,10 +405,10 @@ impl ViewTree {
         self.touched.clear();
         let Some(mut node) = self.nodes.remove(id) else { return false };
         if prop == "value" && (node.component == "TextField" || node.props.contains_key("on_change")) {
-            if let Some(v) = &value {
-                if !opt_eq(Some(v), node.given.as_ref()) {
-                    self.write(&mut node, v.clone());
-                }
+            if let Some(v) = &value
+                && !opt_eq(Some(v), node.given.as_ref())
+            {
+                self.write(&mut node, v.clone());
             }
             node.given = value;
         } else if !opt_eq(node.props.get(prop), value.as_ref()) {
@@ -444,10 +444,10 @@ impl ViewTree {
     /// other `action` table goes to the script.
     pub fn activate(&self, id: &str) -> Option<Raised> {
         let node = self.nodes.get(id)?;
-        if let Some(Json::Object(action)) = node.props.get("action") {
-            if let Some(text) = action.get("copy").and_then(|c| c.get("text")).and_then(Json::as_str) {
-                return Some(Raised::Copy(text.to_owned()));
-            }
+        if let Some(Json::Object(action)) = node.props.get("action")
+            && let Some(text) = action.get("copy").and_then(|c| c.get("text")).and_then(Json::as_str)
+        {
+            return Some(Raised::Copy(text.to_owned()));
         }
         if node.action("action").is_empty() {
             return None;

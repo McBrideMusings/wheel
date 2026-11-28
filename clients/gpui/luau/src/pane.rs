@@ -377,10 +377,10 @@ impl PluginPane {
     /// Holds a pointer on node `id`, or takes it away with None. False when the view has no
     /// node `id`.
     pub fn hover(&mut self, id: Option<&str>) -> bool {
-        if let Some(id) = id {
-            if self.tree.node(id).is_none() {
-                return false;
-            }
+        if let Some(id) = id
+            && self.tree.node(id).is_none()
+        {
+            return false;
         }
         self.tree.hover_held = id.map(str::to_owned);
         true
