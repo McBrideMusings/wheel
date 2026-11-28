@@ -5901,6 +5901,19 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     }
     ensure!(texts(&seen).iter().any(|t| t == "Show alert"), "the dialogs pane never drew: error {} texts {:?}", seen["error"], texts(&seen));
     report.insert("dialogs".into(), dialogs_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
+    // The fixture's `embeds` plugin draws a Terminal and an AgentChat naming the panes its two fields hold.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "embeds", "--plugin-pane", "embeds"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin embeds: {err}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if components(&seen).iter().any(|c| c["type"] == "AgentChat") {
+            break;
+        }
+    }
+    ensure!(components(&seen).iter().any(|c| c["type"] == "AgentChat") && seen["error"].is_null(), "the embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
+    draw(window, Some(output.join("client-plugin-embeds.png")), cx)?;
+    report.insert("embeds".into(), json!({"gpui_embeds": embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?}));
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
@@ -5984,7 +5997,7 @@ fn press_recorded(window: ClientWindow, pane: &str, id: &str, cx: &mut AsyncApp)
 }
 
 /// The components a pane script names that GPUI's preview draws as nothing until the embeds are ported (wheel-4d1o.5).
-const PLUGIN_EMBEDS: [&str; 5] = ["Terminal", "AgentChat", "WebView", "VideoStream", "Map"];
+const PLUGIN_EMBEDS: [&str; 3] = ["WebView", "VideoStream", "Map"];
 
 /// Plugin pane `pane`, showing plugin pane `name`, drawn by GPUI beside the bridge's view
 /// (wheel-4d1o.3): previewed, waited on until its tree holds the bridge's components, its page cut
@@ -6151,6 +6164,175 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
     }.await;
     window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
     draw(window, None, cx)?;
+    steps
+}
+
+/// One character typed through GPUI's key dispatch, with the text it types.
+fn typed(c: char) -> gpui::Keystroke {
+    gpui::Keystroke { modifiers: Default::default(), key: if c == ' ' { "space".into() } else { c.to_lowercase().to_string() }, key_char: Some(c.to_string()) }
+}
+
+/// GPUI's own Terminal and AgentChat embeds (wheel-4d1o.5) on a fresh preview of the fixture's
+/// `embeds` plugin pane `pane`, against real panes: a terminal pane made in the Plugins space's
+/// background (so only the embed draws it) and the fixture's agent pane, named through the page's
+/// two fields. Case 1: both resolve, attach and draw at a size that is not zero; a GPUI click on
+/// the terminal gives it the keyboard, `echo embed-ok` typed through GPUI's key dispatch reaches
+/// the term, and the grid sent is the embed's. Case 2: a message typed into the AgentChat's
+/// composer and sent with Return raises a request whose card the embed draws, and a GPUI click on
+/// its Allow answers it. The notes: no pane named, a pane with no terminal, a pane holding no
+/// agent, the terminal pane emptied and closed. Case 4: the pane made a terminal again under its
+/// id attaches its new term.
+#[allow(clippy::too_many_arguments)]
+async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    let agent_pane = std::env::var("WHEEL_CLIENT_AGENT_PANE")?;
+    let (ok, out, err) = run_pumped(&["pane", "split", pane, "--background"], connection, layouts, window, cx).await?;
+    ensure!(ok, "wheel pane split {pane} --background failed: {err}");
+    let term_pane = out.lines().last().unwrap_or_default().trim().to_owned();
+    let (ok, _, err) = run_pumped(&["pane", "kind", &term_pane, "terminal"], connection, layouts, window, cx).await?;
+    ensure!(ok, "wheel pane kind {term_pane} terminal failed: {err}");
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for embeds");
+    let steps = async {
+        let began = std::time::Instant::now();
+        plugin_preview_matches(connection, layouts, window, native, pane, "embeds", cx).await?;
+        let comps = plugin_preview(window, pane, cx)?["components"].clone();
+        let field = |label: &str| comps.as_array().into_iter().flatten().find(|c| c["type"] == "TextField" && c["label"] == label)
+            .and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the embeds pane has no {label} field: {comps}"));
+        let (term_field, agent_field) = (field("Terminal pane")?, field("Agent pane")?);
+        // An embed's entry in the preview's `embeds`, by its component.
+        let embed = |e: &Value, component: &str| e.as_object().into_iter().flatten().find(|(_, v)| v["component"] == component).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+        let rect = |v: &Value, k: &str| -> Vec<f32> { v[k].as_array().into_iter().flatten().filter_map(Value::as_f64).map(|f| f as f32).collect() };
+        let sized = |v: &Value| { let r = rect(v, "bounds"); r.len() == 4 && r[2] > 0. && r[3] > 0. };
+        let set = |id: &str, value: &str, cx: &mut AsyncApp| -> Result<()> {
+            ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, id, json!(value), cx))?, "the embeds pane has no field {id}");
+            Ok(())
+        };
+        macro_rules! until {
+            ($what:expr, $ok:expr) => {{
+                let mut now = Value::Null;
+                for _ in 0..150 {
+                    draw(window, None, cx)?;
+                    pump(connection, 100, layouts, window, cx).await?;
+                    draw(window, None, cx)?;
+                    now = plugin_preview(window, pane, cx)?["embeds"].clone();
+                    if $ok(&now) {
+                        break;
+                    }
+                }
+                ensure!($ok(&now), "GPUI's embeds: {}: {now}", $what);
+                now
+            }};
+        }
+        until!("both embeds should say they name no pane", |e: &Value| embed(e, "Terminal")["note"] == "Terminal names no pane" && embed(e, "AgentChat")["note"] == "AgentChat names no pane");
+        let unnamed = output.join("gpui-plugin-embeds-unnamed.png");
+        let body = plugin_body(window, pane, cx)?;
+        cut_picture(window, body, body, &unnamed, cx)?;
+        // Case 1: the terminal and the agent, attached and drawn.
+        set(&term_field, &term_pane, cx)?;
+        set(&agent_field, &agent_pane, cx)?;
+        let drawn = until!("both embeds should attach and draw at a size that is not zero", |e: &Value| {
+            let (t, a) = (embed(e, "Terminal"), embed(e, "AgentChat"));
+            t["attached"] == true && sized(&t) && t["grid"][0].as_u64().unwrap_or(0) > 0 && t["grid"][1].as_u64().unwrap_or(0) > 0 && a["attached"] == true && sized(&a) && a["draws"].as_u64().unwrap_or(0) > 0
+        });
+        let (t, a) = (embed(&drawn, "Terminal"), embed(&drawn, "AgentChat"));
+        let (tb, ab) = (rect(&t, "bounds"), rect(&a, "bounds"));
+        ensure!((tb[3] - 160.).abs() < 0.5 && (ab[3] - 360.).abs() < 0.5, "the embeds drew {}x{} and {}x{}, not 160 and 360 tall", tb[2], tb[3], ab[2], ab[3]);
+        // Side by side in a Row, each takes half the width the row is offered.
+        ensure!((tb[2] - ab[2]).abs() < 1. && tb[2] > body.2 / 3., "the embeds should share the page's width ({}) evenly: {} and {}", body.2, tb[2], ab[2]);
+        ensure!(rect(&t, "body").iter().zip(&tb).all(|(a, b)| (a - b).abs() < 0.5), "the terminal's body {:?} should be the embed's rect {tb:?}", rect(&t, "body"));
+        let agent = a["agent"].as_str().unwrap_or_default().to_owned();
+        let composer = window.update(cx, |c, _, _| c.control_bounds(&agent, "draft"))?.ok_or_else(|| anyhow::anyhow!("the AgentChat embed drew no composer for {agent}"))?;
+        ensure!(composer.1 >= ab[1] && composer.1 + composer.3 <= ab[1] + ab[3] + 0.5, "the composer {composer:?} lies outside the AgentChat embed {ab:?}");
+        let png = output.join("gpui-plugin-embeds.png");
+        cut_picture(window, body, body, &png, cx)?;
+        // A click gives the terminal the keyboard, and keys typed through GPUI reach its term.
+        gpui_click(window.into(), gpui::point(gpui::px(tb[0] + tb[2] / 2.), gpui::px(tb[1] + tb[3] / 2.)), gpui::MouseButton::Left, cx)?;
+        until!("a click on the Terminal embed should give it the keyboard", |e: &Value| embed(e, "Terminal")["focused"] == true);
+        let keys: Vec<gpui::Keystroke> = "echo embed-ok".chars().map(typed).chain([chord("enter")]).collect();
+        press(window, &keys, cx)?;
+        let typed_in = until!("`echo embed-ok` typed through GPUI should reach the term", |e: &Value| embed(e, "Terminal")["viewport"].as_str().is_some_and(|v| v.matches("embed-ok").count() >= 2));
+        let t = embed(&typed_in, "Terminal");
+        // The grid sent is the one the embed's size gives once it holds the keyboard.
+        let sent = until!("the grid sent should be the embed's grid", |e: &Value| { let t = embed(e, "Terminal"); !t["sent"].is_null() && t["sent"] == t["grid"] });
+        let grid = embed(&sent, "Terminal")["grid"].clone();
+        // Case 2: the agent's conversation and composer, live in the page.
+        let replies = |cx: &mut AsyncApp| -> Result<String> { Ok(window.update(cx, |c, _, _| c.transcripts.get(&agent).map(|t| t.rows.iter().filter_map(|r| match &r.kind { Kind::Reply(x) => Some(x.clone()), _ => None }).collect::<Vec<_>>().join("\n")).unwrap_or_default())?) };
+        let mut ready = false;
+        for _ in 0..300 {
+            pump(connection, 100, layouts, window, cx).await?;
+            ready = window.update(cx, |c, _, _| c.transcripts.get(&agent).is_some_and(|t| t.state == "ready"))?;
+            if ready {
+                break;
+            }
+        }
+        ensure!(ready, "the embedded agent {agent} never read ready");
+        let before = replies(cx)?.matches("permission: allow").count();
+        gpui_click(window.into(), gpui::point(gpui::px(composer.0 + composer.2 / 2.), gpui::px(composer.1 + composer.3 / 2.)), gpui::MouseButton::Left, cx)?;
+        until!("a click on the AgentChat's composer should give it the keyboard", |e: &Value| embed(e, "AgentChat")["focused"] == true);
+        let text = "permission described";
+        press(window, &text.chars().map(typed).collect::<Vec<_>>(), cx)?;
+        let draft = window.update(cx, |c, _, _| c.draft(&agent))?;
+        ensure!(draft == text, "typing into the AgentChat's composer left the draft {draft:?}");
+        press(window, &[chord("enter")], cx)?;
+        let (mut allow, mut perm) = (None, Value::Null);
+        for _ in 0..300 {
+            pump(connection, 100, layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            perm = window.update(cx, |c, _, _| c.perm_card_json(&agent_pane))?;
+            let id = perm["buttons"].as_array().and_then(|b| b.iter().find(|b| b["prominent"] == true)).and_then(|b| b["id"].as_str()).unwrap_or_default().to_owned();
+            allow = window.update(cx, |c, _, _| c.control_bounds(&agent, &format!("perm:{id}")))?.filter(|b| b.1 >= ab[1] && b.1 < ab[1] + ab[3]);
+            if allow.is_some() {
+                break;
+            }
+        }
+        let allow = allow.ok_or_else(|| anyhow::anyhow!("the message sent from the embed raised no card inside it: request {perm}"))?;
+        let waiting = output.join("gpui-plugin-embeds-waiting.png");
+        cut_picture(window, body, body, &waiting, cx)?;
+        gpui_click(window.into(), gpui::point(gpui::px(allow.0 + allow.2 / 2.), gpui::px(allow.1 + allow.3 / 2.)), gpui::MouseButton::Left, cx)?;
+        let mut answered = false;
+        for _ in 0..300 {
+            pump(connection, 100, layouts, window, cx).await?;
+            draw(window, None, cx)?;
+            let gone = window.update(cx, |c, _, _| !c.perms.iter().any(|p| p.agent == agent))?;
+            if gone && replies(cx)?.matches("permission: allow").count() > before {
+                answered = true;
+                break;
+            }
+        }
+        ensure!(answered, "Allow on the embed's card left the request: {}", window.update(cx, |c, _, _| c.perm_card_json(&agent_pane))?);
+        // The notes: a pane with no terminal and a pane holding no agent.
+        set(&term_field, &agent_pane, cx)?;
+        set(&agent_field, &term_pane, cx)?;
+        until!("the embeds should name what their panes lack", |e: &Value| embed(e, "Terminal")["note"] == format!("Pane {agent_pane} has no terminal").as_str() && embed(e, "AgentChat")["note"] == format!("Pane {term_pane} holds no agent").as_str());
+        let notes = output.join("gpui-plugin-embeds-notes.png");
+        cut_picture(window, body, body, &notes, cx)?;
+        set(&term_field, &term_pane, cx)?;
+        let back = until!("the Terminal embed should attach again", |e: &Value| embed(e, "Terminal")["attached"] == true);
+        let first_term = embed(&back, "Terminal")["term"].as_str().unwrap_or_default().to_owned();
+        // Case 4: the pane emptied is gone from the targets; made a terminal again it attaches its new term.
+        let (ok, _, err) = run_pumped(&["pane", "kind", &term_pane, "empty"], connection, layouts, window, cx).await?;
+        ensure!(ok, "wheel pane kind {term_pane} empty failed: {err}");
+        until!("the emptied pane should read gone", |e: &Value| embed(e, "Terminal")["note"] == format!("Pane {term_pane} is gone").as_str());
+        let detached = window.update(cx, |c, _, _| !c.terms.models.contains_key(&first_term))?;
+        ensure!(detached, "the emptied pane's term {first_term} stayed attached");
+        let (ok, _, err) = run_pumped(&["pane", "kind", &term_pane, "terminal"], connection, layouts, window, cx).await?;
+        ensure!(ok, "wheel pane kind {term_pane} terminal again failed: {err}");
+        let again = until!("the pane made a terminal again should attach its new term", |e: &Value| { let t = embed(e, "Terminal"); t["attached"] == true && t["term"].as_str().is_some_and(|s| s != first_term) && sized(&t) });
+        let second_term = embed(&again, "Terminal")["term"].as_str().unwrap_or_default().to_owned();
+        let (ok, _, err) = run_pumped(&["pane", "close", &term_pane], connection, layouts, window, cx).await?;
+        ensure!(ok, "wheel pane close {term_pane} failed: {err}");
+        until!("the closed pane should read gone", |e: &Value| embed(e, "Terminal")["note"] == format!("Pane {term_pane} is gone").as_str());
+        let detached = window.update(cx, |c, _, _| !c.terms.models.contains_key(&second_term))?;
+        ensure!(detached, "the closed pane's term {second_term} stayed attached");
+        let out = json!({"embeds_ms": began.elapsed().as_millis() as u64, "terminal": {"pane": term_pane, "bounds": tb, "grid": grid, "viewport_has": "embed-ok", "terms": [first_term, second_term], "focused": t["focused"]},
+            "agent": {"pane": agent_pane, "agent": agent, "bounds": ab, "answered": answered}, "pictures": [unnamed, png, waiting, notes]});
+        eprintln!("wheel-gpui: embeds in GPUI: {out}");
+        Ok::<Value, anyhow::Error>(out)
+    }.await;
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    if steps.is_err() {
+        let _ = run_pumped(&["pane", "close", &term_pane], connection, layouts, window, cx).await;
+    }
     steps
 }
 

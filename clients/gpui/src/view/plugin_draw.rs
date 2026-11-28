@@ -137,11 +137,11 @@ pub(super) fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
 }
 
 /// Whether node `n` takes the width it is offered, as its SwiftUI view does: a Column (WheelUI
-/// frames it to the full width), a Card, a Canvas, a field, a horizontal Divider, a List, a bar, and a Row
+/// frames it to the full width), a Card, a Canvas, an embed of a pane, a field, a horizontal Divider, a List, a bar, and a Row
 /// a justify spacer pushes to its edges.
 fn takes_width(n: &ViewNode) -> bool {
     match n.component.as_str() {
-        "Column" | "Card" | "Canvas" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
+        "Column" | "Card" | "Canvas" | "Terminal" | "AgentChat" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
         "Gauge" => !matches!(n.string("style"), Some("accessoryCircular" | "accessoryCircularCapacity")),
         "Divider" => n.string("axis") != Some("vertical"),
         "ProgressView" => n.number("value").is_some(),
@@ -155,8 +155,9 @@ impl Client {
     pub(super) fn plugin_element(&mut self, pane: &str, w: f32, h: f32, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         self.flush_plugin_copies(cx);
         self.sync_plugin_fields(pane, window, cx);
+        let w = self.plugin_previews.get(pane)?.width.unwrap_or(w);
+        self.sync_plugin_embeds(pane, w, window, cx);
         let host = self.plugin_previews.get(pane)?;
-        let w = host.width.unwrap_or(w);
         host.drawn.set(w);
         host.viewport.set(h);
         let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols, width: w };
@@ -293,6 +294,7 @@ impl Draw<'_> {
                 greedy(boxed, outer).into_any_element()
             }
             "List" => self.list(n, inner, outer, cx),
+            "Terminal" | "AgentChat" => self.embed(n, outer, cx),
             "Icon" => {
                 let name = symbol_name(n.string("name").unwrap_or(""));
                 title::symbol(self.symbols, name, inner.size, inner.color >> 8).unwrap_or_else(|| div().into_any_element())

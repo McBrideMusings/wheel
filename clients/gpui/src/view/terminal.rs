@@ -89,7 +89,7 @@ fn cell_for(window: &Window, family: &str, points: f64, line_height: f64) -> Cel
 /// A terminal pane's body in window points (x, y, width, height): the pane under its title row,
 /// inside the 1 pt border `pane_element` draws on every edge. The grid is sized from this, so it
 /// is the end rect at once, never a frame behind the paint.
-fn body_of(r: Rect) -> [f32; 4] {
+pub(super) fn body_of(r: Rect) -> [f32; 4] {
     [r.x + 1., r.y + TITLE + 1., (r.w - 2.).max(1.), (r.h - TITLE - 2.).max(1.)]
 }
 
@@ -168,8 +168,9 @@ impl Client {
         self.terms.hold.set_live_resize(on);
     }
 
-    /// Every drawn terminal pane gets a model (attached on first sight) and its grid; the grid goes
-    /// to wheeld unless a move holds it; a term no space shows any more is detached.
+    /// Every drawn terminal pane, and every Terminal embed of a drawn plugin pane (under its own
+    /// key), gets a model (attached on first sight) and its grid; the grid goes to wheeld unless a
+    /// move holds it; a term no space shows and no embed draws any more is detached.
     pub(super) fn sync_terms(&mut self, layers: &[Layer], window: &Window) {
         self.terms.hold.set_moving(self.resizes_wanted());
         let dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
@@ -185,13 +186,16 @@ impl Client {
         let space = self.space_id.clone();
         let mut out = vec![];
         let mut drawn: Vec<String> = vec![];
-        for p in layers.iter().flat_map(|l| l.leaves.iter()) {
-            let Some(term) = p.leaf.term.clone().filter(|_| p.leaf.kind == "terminal") else { continue };
-            if self.quarantine.isolates_pane(&p.leaf.id) {
-                continue;
-            }
+        // Each drawn terminal: its pane or embed key, its body in window points, and its term.
+        let mut sites: Vec<(String, [f32; 4], String)> = layers.iter().flat_map(|l| l.leaves.iter())
+            .filter(|p| p.leaf.kind == "terminal" && !self.quarantine.isolates_pane(&p.leaf.id))
+            .filter_map(|p| Some((p.leaf.id.clone(), body_of(p.rect), p.leaf.term.clone()?))).collect();
+        let hosts = self.embed_hosts(layers.iter().flat_map(|l| l.leaves.iter()));
+        sites.extend(self.embed_terms(&hosts));
+        let embedded: HashSet<String> = sites.iter().map(|(_, _, term)| term.clone()).collect();
+        for (id, body, term) in sites {
             let look = self.terms.look(space.as_deref());
-            let pane = self.terms.panes.entry(p.leaf.id.clone()).or_insert_with(|| TermPane {
+            let pane = self.terms.panes.entry(id.clone()).or_insert_with(|| TermPane {
                 term: term.clone(), space: space.clone(), font_size: None, body: [0.; 4], cell: CellMetrics { width: 1., height: 1. }, grid: (0, 0), grids: vec![], anchor: None, reporting: false, scroll_rest: 0.,
             });
             if pane.term != term {
@@ -200,7 +204,7 @@ impl Client {
             }
             pane.space = space.clone();
             pane.cell = cell_for(window, &family(&look), pane.font_size.unwrap_or(look.font_size), look.line_height);
-            pane.body = body_of(p.rect);
+            pane.body = body;
             let grid = vt::grid_for(f64::from(pane.body[2]), f64::from(pane.body[3]), pane.cell);
             if pane.grid != grid {
                 pane.grid = grid;
@@ -215,12 +219,12 @@ impl Client {
                 out.push(model.attach());
                 self.terms.models.insert(term.clone(), model);
             }
-            drawn.push(p.leaf.id.clone());
+            drawn.push(id);
         }
         // A mirrored term takes the grid of the pane with the keyboard, else the first drawn.
         if !self.terms.hold.held() {
             let mut sized: HashSet<String> = HashSet::new();
-            let first = self.focus.current.iter().filter(|f| drawn.contains(f)).cloned().chain(drawn.iter().cloned()).collect::<Vec<_>>();
+            let first = self.keyboard_target().into_iter().filter(|f| drawn.contains(f)).chain(drawn.iter().cloned()).collect::<Vec<_>>();
             for id in first {
                 let Some(pane) = self.terms.panes.get(&id) else { continue };
                 if !sized.insert(pane.term.clone()) {
@@ -234,7 +238,7 @@ impl Client {
             }
         }
         // Focus reports: the pane holding the keyboard now, against the last frame's.
-        let keyboard = self.focus.current.clone().filter(|f| drawn.contains(f) && self.handle.is_focused(window));
+        let keyboard = self.keyboard_target().filter(|f| drawn.contains(f) && self.handle.is_focused(window));
         if keyboard != self.terms.focused {
             for (pane, gained) in [(self.terms.focused.clone(), false), (keyboard.clone(), true)] {
                 if let Some(model) = pane.and_then(|p| self.terms.panes.get(&p)).and_then(|p| self.terms.models.get(&p.term)) {
@@ -248,7 +252,7 @@ impl Client {
             self.terms.blink_from = Some(Instant::now());
         }
         if !self.awaiting_layout {
-            let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).filter_map(|l| l.term.as_deref()).collect();
+            let alive: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).filter_map(|l| l.term.as_deref()).chain(embedded.iter().map(String::as_str)).collect();
             let gone: Vec<String> = self.terms.models.keys().filter(|t| !alive.contains(t.as_str())).cloned().collect();
             for term in gone {
                 if let Some(model) = self.terms.models.remove(&term) {
@@ -257,7 +261,7 @@ impl Client {
                 self.terms.texts.remove(&term);
                 self.terms.sent_grids.remove(&term);
             }
-            let panes: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| l.id.as_str()).collect();
+            let panes: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).map(|l| l.id.as_str()).chain(drawn.iter().map(String::as_str)).collect();
             self.terms.panes.retain(|id, _| panes.contains(id.as_str()));
         }
         for msg in out {
@@ -484,10 +488,10 @@ impl Client {
         true
     }
 
-    /// A terminal pane's body: the model's viewport drawn cell by cell, its cursor, the input
-    /// method's text, and the mouse, scroll and drop handlers.
-    pub(super) fn term_element(&mut self, p: &Placed, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
-        let id = p.leaf.id.clone();
+    /// Terminal pane or embed `id`'s body, `height` tall: the model's viewport drawn cell by cell,
+    /// its cursor, the input method's text, and the mouse, scroll and drop handlers.
+    pub(super) fn term_element(&mut self, id: &str, height: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let id = id.to_owned();
         let Some(pane) = self.terms.panes.get(&id).cloned() else { return div() };
         let look = self.terms.look(pane.space.as_deref());
         let dark = self.terms.dark;
@@ -605,7 +609,7 @@ impl Client {
         let el = div()
             .relative()
             // The pane gives its body no height of its own.
-            .w_full().h(px(body_of(p.rect)[3]))
+            .w_full().h(px(height))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| {
                 this.term_mouse_down(&down, e);

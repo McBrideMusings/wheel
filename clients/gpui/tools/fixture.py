@@ -222,6 +222,24 @@ def fixture():
             '    })\n'
             'end\n'
             'return { init = init, update = update, view = view }\n')
+        # A plugin whose page embeds a terminal and an agent pane by id, each id typed into a field,
+        # so the check names the panes it makes (ADR-0042).
+        (root / 'plugins/embeds/panes').mkdir(parents=True)
+        (root / 'plugins/embeds/wheel-plugin.toml').write_text('[plugin]\nid = "embeds"\nversion = "0.1.0"\n\n[[pane]]\nid = "embeds"\ntitle = "Embeds"\nscript = "panes/embeds.luau"\n')
+        (root / 'plugins/embeds/panes/embeds.luau').write_text(
+            'local function init(previous) return previous or { term = "", agent = "" } end\n'
+            'local function update(state, msg)\n'
+            '    if msg.type == "set" then state[msg.which] = msg.value end\n'
+            '    return state\n'
+            'end\n'
+            'local function view(state, data)\n'
+            '    return ui.Column({\n'
+            '        ui.TextField{ label = "Terminal pane", value = state.term, variant = "shortText", on_change = { type = "set", which = "term" } },\n'
+            '        ui.TextField{ label = "Agent pane", value = state.agent, variant = "shortText", on_change = { type = "set", which = "agent" } },\n'
+            '        ui.Row{ ui.Terminal{ pane = state.term, height = 160 }, ui.AgentChat{ pane = state.agent, height = 360 }, align = "start" },\n'
+            '    })\n'
+            'end\n'
+            'return { init = init, update = update, view = view }\n')
         # Two plugins whose script fails to load: one with a long error, one with a short one.
         for name, source in [('errlong1', 'error("' + 'a very long script failure, '*12 + '")\n'), ('errshort', 'error("x")\n')]:
             (root / f'plugins/{name}/panes').mkdir(parents=True)

@@ -63,8 +63,8 @@ impl Client {
         if e.is_held {
             return false;
         }
-        let Some(pane) = self.focus.current.clone() else { return false };
-        let Some((_, perm)) = self.perm_for_pane(&pane) else { return false };
+        let Some((agent, _)) = self.focused_agent() else { return false };
+        let Some((_, perm)) = perms::waiting(&self.perms, &agent) else { return false };
         let draft_empty = self.drafts.get(&perm.agent).is_none_or(|d| d.trim().is_empty()) && !self.holds_attachments(&perm.agent);
         let Some(answer) = Answer::for_key(&k.key, k.modifiers.platform, k.modifiers.shift || k.modifiers.control || k.modifiers.alt, draft_empty) else { return false };
         let Some(option) = answer.option(perm) else { return false };

@@ -44,6 +44,12 @@ pub struct PluginHost {
     pub(super) viewport: std::cell::Cell<f32>,
     /// Each Canvas's camera, pointer, replayed commands and reported size, by node id.
     pub(super) canvases: RefCell<HashMap<String, Rc<RefCell<super::plugin_canvas::CanvasView>>>>,
+    /// Each Terminal and AgentChat embed's state, by node id, and the embed holding the keyboard
+    /// while the pane has it.
+    pub(super) embeds: HashMap<String, super::plugin_embeds::Embed>,
+    pub(super) focused_embed: Option<String>,
+    /// The embeds' bodies built for this frame's draw (`sync_plugin_embeds`), taken as it places them.
+    pub(super) embed_els: RefCell<HashMap<String, gpui::AnyElement>>,
 }
 
 /// The child a ViewThatFits drew, at what width, and that child's height there.
@@ -127,6 +133,10 @@ impl PluginHost {
         self.fits.borrow_mut().retain(|id, _| tree.node(id).is_some());
         self.tables.borrow_mut().retain(|id, _| tree.node(id).is_some());
         self.canvases.borrow_mut().retain(|id, _| tree.node(id).is_some_and(|n| n.component == "Canvas"));
+        self.embeds.retain(|id, e| tree.node(id).is_some_and(|n| n.component == e.component));
+        if self.focused_embed.as_ref().is_some_and(|id| !self.embeds.contains_key(id)) {
+            self.focused_embed = None;
+        }
     }
 
     pub(super) fn table_scroll(&self, id: &str) -> gpui::UniformListScrollHandle {
@@ -519,6 +529,7 @@ impl Client {
             }).collect::<serde_json::Map<_, _>>(),
             "pending_feeds": host.feed_reqs.values().map(|(f, p)| format!("{f} {p}")).collect::<Vec<_>>(),
             "canvases": host.canvases.borrow().iter().map(|(id, c)| (id.clone(), c.borrow().json())).collect::<serde_json::Map<_, _>>(),
+            "embeds": self.plugin_embeds_json(pane),
             "menu": self.plugin_menu.open.as_ref().filter(|(p, _)| p == pane).map(|_| self.plugin_menu.built.clone()),
         })
     }

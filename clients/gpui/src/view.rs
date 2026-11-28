@@ -38,6 +38,7 @@ mod plugin;
 mod plugin_canvas;
 mod plugin_controls;
 mod plugin_draw;
+mod plugin_embeds;
 mod procs;
 mod queue;
 mod topic;
@@ -1765,19 +1766,32 @@ impl Client {
             self.overrides.insert(split.clone(), drag_ratio(*horizontal, *parent, x, y));
         }
     }
-    /// Attach to every agent pane's agent once per connection, so its transcript streams in.
-    fn sync_agents(&mut self, leaves: &[Placed]) {
-        for p in leaves {
-            if let Some(agent) = p.leaf.agent.as_ref().filter(|_| p.leaf.kind == "agent") {
-                if self.link == Link::Up && self.attached.insert(agent.clone()) {
-                    self.transcripts.entry(agent.clone()).or_default();
-                    self.send(&ClientMsg::AgentAttach { req: None, agent: agent.clone() });
-                }
+    /// Attach to every drawn agent once per connection, so its transcript streams in.
+    fn sync_agents(&mut self, agents: impl IntoIterator<Item = String>) {
+        for agent in agents {
+            if self.link == Link::Up && self.attached.insert(agent.clone()) {
+                self.transcripts.entry(agent.clone()).or_default();
+                self.send(&ClientMsg::AgentAttach { req: None, agent });
             }
         }
     }
-    /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws.
+    /// The agents of `leaves`' agent panes.
+    fn agents_of<'a>(leaves: impl IntoIterator<Item = &'a Placed>) -> Vec<String> {
+        leaves.into_iter().filter(|p| p.leaf.kind == "agent").filter_map(|p| p.leaf.agent.clone()).collect()
+    }
+    /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws. An
+    /// embed's key (`<host>#<node>`) gives it to the embed, inside its plugin pane.
     fn focus_pane(&mut self, pane: &str) {
+        for host in self.plugin_previews.values_mut() {
+            host.focused_embed = None;
+        }
+        let pane = match pane.split_once('#') {
+            Some((host, node)) if self.plugin_previews.contains_key(host) => {
+                self.plugin_previews.get_mut(host).unwrap().focused_embed = Some(node.to_owned());
+                host
+            }
+            _ => pane,
+        };
         // An address edit ends when the keyboard goes to another pane.
         if self.address_edit.as_ref().is_some_and(|(p, _)| p != pane) {
             self.address_edit = None;
@@ -1992,8 +2006,11 @@ impl Client {
             let pane = leaf.id.clone();
             return self.term_key(&pane, e, cx);
         }
-        let agent = focused.filter(|l| l.kind == "agent").and_then(|l| l.agent);
-        let Some(agent) = agent else { return false };
+        // A Terminal embed holding the keyboard types into its term.
+        if let Some(embed) = self.keyboard_target().filter(|t| t.contains('#') && self.terms.panes.contains_key(t)) {
+            return self.term_key(&embed, e, cx);
+        }
+        let Some((agent, _)) = self.focused_agent() else { return false };
         // Files or an image on the pasteboard attach as chips; text pastes in the input.
         if k.modifiers.platform && !k.modifiers.control && !k.modifiers.alt && !k.modifiers.shift && k.key == "v" {
             return self.attach_pasted(&agent, cx);
@@ -2320,7 +2337,7 @@ impl Client {
         let column = agent.and_then(|a| self.columns.get(a).map(|c| (a.to_owned(), c.state.clone()))).map(|(a, state)| {
             list(state, cx.processor(move |this, ix, _, cx| this.column_item(&a, ix, cx))).size_full()
         });
-        let focused = self.focus.current.as_ref() == Some(&p.leaf.id);
+        let focused = self.keyboard_target().as_ref() == Some(&p.leaf.id);
         let items = footer_items(&self.footer_items_for(self.space_id.as_deref()), t.unwrap_or(&EMPTY), Some(&p.leaf), &self.agents);
         // The pane's padding and its 1 px border on each side.
         let (items, more) = fit_footer(window, items, r.w - 2. * PAD - 2.);
@@ -2435,7 +2452,7 @@ impl Client {
             }
             // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
             "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
-            "terminal" if p.leaf.term.is_some() => self.term_element(p, window, cx),
+            "terminal" if p.leaf.term.is_some() => self.term_element(&p.leaf.id, terminal::body_of(r)[3], window, cx),
             "plugin" if self.plugin_previews.contains_key(&p.leaf.id) => {
                 let el = self.plugin_element(&p.leaf.id, r.w, r.h - TITLE, window, cx);
                 // `body` records where the page lies, for the check's pictures.
@@ -2694,8 +2711,10 @@ impl Render for Client {
         self.sync_card_views();
         // On the Agents surface every agent of the session is drawn, so each is attached.
         let cards = if self.mode == "agents" && !space_held && !server_stopped { self.agent_cards() } else { vec![] };
-        self.sync_agents(&leaves);
-        self.sync_agents(&cards.iter().map(|c| Placed { leaf: c.leaf.clone(), rect: c.rect }).collect::<Vec<_>>());
+        self.sync_agents(Self::agents_of(&leaves));
+        self.sync_agents(cards.iter().filter(|c| c.leaf.kind == "agent").filter_map(|c| c.leaf.agent.clone()).collect::<Vec<_>>());
+        let hosts = self.embed_hosts(&leaves);
+        self.sync_agents(self.embed_agents(&hosts));
         self.frames += 1;
         self.settle_selection();
         if let Some((agent, address, command)) = self.links.pending.take() {
