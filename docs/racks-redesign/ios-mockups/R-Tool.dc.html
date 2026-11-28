@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R11 Tool call detail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit;cursor:pointer}
+a{color:#8E9199}a:hover{color:#F2F3F5}
+</style>
+</helmet>
+<div style="width:393px;height:852px;position:relative;overflow:hidden;background:#0E111A;color:#F2F3F5;font-family:Inter,system-ui,sans-serif">
+<div aria-hidden="true" style="position:absolute;inset:0;opacity:0.35">
+<div style="padding:58px 14px 10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #181B21">
+<span style="width:44px;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C"></span>
+<span style="flex:1;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:14px;font-weight:600">ios-redesign</span><span style="font-size:12px;color:#8E9199">wheel · Claude Code</span></span>
+<span style="width:84px;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C"></span>
+</div>
+<div style="padding:16px 20px;font-size:17px;line-height:26px;display:flex;flex-direction:column;gap:12px">
+<span style="color:#8E9199;font-size:16px">&gt;_&#160;&#160;swift test --filter Composer ›</span>
+<span>All 14 tests pass. Pushing ios-composer next, then I'll open the PR and move model and effort into one chip.</span>
+<span style="color:#8E9199;font-size:16px">Ran 2 commands ›</span>
+</div>
+</div>
+<div aria-hidden="true" style="position:absolute;inset:0;background:rgba(0,0,0,0.45)"></div>
+<section role="dialog" aria-label="Bash tool call" style="position:absolute;left:0;right:0;top:56px;bottom:0;background:#14171D;border-top:1px solid #23262C;border-radius:34px 34px 0 0;display:flex;flex-direction:column;overflow:hidden">
+<div style="display:flex;justify-content:center;padding-top:8px"><span style="width:44px;height:5px;border-radius:3px;background:#3A3D44"></span></div>
+<div style="position:relative;height:64px;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #1F2228">
+<a href="R-Chat.dc.html" aria-label="Close" style="position:absolute;left:14px;top:8px;width:46px;height:46px;border-radius:23px;background:#1A1D23;border:1px solid #2A2D33;display:flex;align-items:center;justify-content:center;color:#F2F3F5"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M2 2l12 12M14 2L2 14"></path></svg></a>
+<h2 style="margin:0;font-size:18px;font-weight:600">Bash</h2>
+</div>
+<div style="flex:1;overflow:hidden;padding:16px 20px 0 20px;display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;padding:3px 9px;border-radius:10px;background:#163B24;color:#4ADE80">Completed</span><span style="font-size:13px;color:#8E9199">38s · exit 0 · ~/Projects/wheel</span></div>
+<p style="margin:0;font-size:18px;line-height:25px">Run the composer tests after the trailing-button change</p>
+<div style="display:flex;align-items:center;margin-top:6px"><span style="flex:1;font-size:15px;color:#8E9199">Command</span><button aria-label="Copy command" style="width:40px;height:40px;border:none;background:transparent;color:#C9CCD1;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"></path></svg></button></div>
+<div style="background:#1E2025;border:1px solid #23262C;border-radius:20px;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:20px;color:#B8BBC1"><span style="color:#C9CCD1">swift</span> test <span style="color:#7FB2FF">--filter</span> Composer <span style="color:#7FB2FF">--parallel</span></div>
+<div style="display:flex;align-items:center;margin-top:6px"><span style="flex:1;font-size:15px;color:#8E9199">Output</span><button aria-label="Copy output" style="width:40px;height:40px;border:none;background:transparent;color:#C9CCD1;display:flex;align-items:center;justify-content:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"></path></svg></button></div>
+<div style="background:#0B0D12;border:1px solid #23262C;border-radius:20px;padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:19px;color:#C9CCD1;white-space:pre-line">Test Suite 'ComposerTests' started
+<span style="color:#4ADE80">✔</span> testTrailingButtonStopWhileWorking (0.012s)
+<span style="color:#4ADE80">✔</span> testTrailingButtonSendWithDraft (0.009s)
+<span style="color:#4ADE80">✔</span> testTrailingButtonVoiceWhenIdle (0.008s)
+<span style="color:#4ADE80">✔</span> testPendingPermissionHidesVoice (0.011s)
+<span style="color:#8E9199">… 10 more</span>
+Executed 14 tests, with 0 failures (0.412s)</div>
+<a href="R-Terminal.dc.html" style="height:46px;border-radius:23px;background:#1E2025;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;color:#F2F3F5;font-size:15px;margin-top:4px"><span style="font-family:'JetBrains Mono',monospace;font-size:13px">&gt;_</span>Rerun in a terminal pane</a>
+</div>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":393,"height":852}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

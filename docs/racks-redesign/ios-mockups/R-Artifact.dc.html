@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R9 Artifact pane</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit;cursor:pointer}
+a{color:#8E9199}a:hover{color:#F2F3F5}
+</style>
+</helmet>
+<div style="width:393px;height:852px;position:relative;overflow:hidden;background:#0E111A;color:#F2F3F5;font-family:Inter,system-ui,sans-serif;display:flex;flex-direction:column"><article aria-label="Composer decisions document" style="position:absolute;inset:0;background:#0E111A;padding:116px 20px 90px 20px;display:flex;flex-direction:column;gap:12px;overflow:hidden">
+<h1 style="margin:0;font-size:22px;line-height:28px;font-weight:700">Composer · open decisions</h1>
+<p style="margin:0;font-size:15px;line-height:22px;color:#C9CCD1">Two choices block the composer rewrite. Tap an option to answer; long-press any line to comment back to the agent.</p>
+<div style="background:#1E2025;border-radius:20px;padding:14px;display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:4px;background:#FF9F0A"></span><span style="font-size:13px;font-weight:600;color:#FF9F0A">D1 · open</span></div>
+<span style="font-size:16px;font-weight:600">Where do model, effort and permission live?</span>
+<button style="height:44px;border-radius:14px;border:1px solid #2E3137;background:transparent;color:#C9CCD1;font-size:14px;text-align:left;padding:0 14px">A · Row under the composer</button>
+<button aria-pressed="true" style="height:44px;border-radius:14px;border:1.5px solid #3B82F6;background:#16203A;color:#F2F3F5;font-size:14px;text-align:left;padding:0 14px;display:flex;align-items:center">B · One chip that opens a sheet<span style="margin-left:auto;color:#3B82F6">✓</span></button>
+</div>
+<div style="background:#1E2025;border-radius:20px;padding:14px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:4px;background:#FF9F0A"></span><span style="font-size:13px;font-weight:600;color:#FF9F0A">D2 · open</span><span style="margin-left:auto;font-size:12px;color:#8E9199;background:#2A2D33;border-radius:10px;padding:2px 8px">1 comment</span></div>
+<span style="font-size:16px;font-weight:600">Voice button while a permission is pending?</span>
+<div style="background:#0E111A;border-radius:12px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:18px;color:#B8BBC1;white-space:pre">trailing = pending  ? .none
+         : working  ? .stop
+         : hasDraft ? .send : .voice</div>
+</div>
+<div style="background:#1E2025;border-radius:20px;padding:14px;display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:center;gap:8px"><span style="font-size:13px;font-weight:600;color:#4ADE80">D0 · decided</span></div>
+<span style="font-size:16px;font-weight:600">One trailing button, state-driven</span>
+<span style="font-size:14px;color:#8E9199">Stop while working, send with a draft, voice when idle.</span>
+</div>
+</article><div style="position:absolute;left:10px;right:10px;top:56px;display:flex;align-items:center;gap:8px">
+<a href="R-Home.dc.html" aria-label="Back to home" style="width:44px;height:44px;border-radius:22px;border:1px solid #2A2D33;background:rgba(26,29,35,0.88);color:#F2F3F5;display:flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;padding:0;box-shadow:0 8px 24px rgba(0,0,0,0.35)"><svg width="11" height="18" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M10 2L2 10l8 8"></path></svg></a>
+<div style="flex:1;height:44px;border-radius:22px;background:rgba(26,29,35,0.88);border:1px solid #2A2D33;box-shadow:0 8px 24px rgba(0,0,0,0.35);display:flex;align-items:center;gap:8px;padding:0 10px 0 4px;color:#8E9199;min-width:0"><button aria-label="Back, unavailable" style="width:34px;height:36px;border-radius:18px;border:none;background:transparent;color:#4A4D54;display:flex;align-items:center;justify-content:center;flex:none;padding:0"><svg width="11" height="18" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M10 2L2 10l8 8"></path></svg></button><button aria-label="Forward, unavailable" style="width:34px;height:36px;border-radius:18px;border:none;background:transparent;color:#4A4D54;display:flex;align-items:center;justify-content:center;flex:none;padding:0"><svg width="11" height="18" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M2 2l8 8-8 8"></path></svg></button><span style="width:4px"></span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"></path><path d="M9 12h7M9 16h5"></path></svg><label style="flex:1;font-size:15px;font-weight:500;color:#F2F3F5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Composer decisions</label></div>
+<button aria-label="More: reload, open on Mac, share, export" style="width:44px;height:44px;border-radius:22px;background:rgba(26,29,35,0.88);border:1px solid #2A2D33;box-shadow:0 8px 24px rgba(0,0,0,0.35);color:#F2F3F5;font-size:15px;letter-spacing:2px;flex:none">•••</button>
+</div><nav aria-label="Panes" style="position:absolute;left:0;right:0;bottom:30px;display:flex;justify-content:center"><dc-import name="PanePill" space="wheel" active="artifact" floating="{{ true }}" hint-size="218px,36px"></dc-import></nav>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":393,"height":852}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

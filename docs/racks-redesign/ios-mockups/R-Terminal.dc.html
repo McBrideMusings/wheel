@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R4 Terminal pane</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit;cursor:pointer}
+a{color:#8E9199}a:hover{color:#F2F3F5}
+</style>
+</helmet>
+<div style="width:393px;height:852px;position:relative;overflow:hidden;background:#0E111A;color:#F2F3F5;font-family:Inter,system-ui,sans-serif;display:flex;flex-direction:column">
+
+<header style="padding:58px 14px 10px 14px;display:flex;align-items:center;gap:12px">
+<a href="R-Home.dc.html" aria-label="Back" style="width:46px;height:46px;border-radius:23px;background:#1A1D23;border:1px solid #23262C;display:flex;align-items:center;justify-content:center;color:#F2F3F5"><svg width="12" height="20" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M10 2L2 10l8 8"></path></svg></a>
+<div style="width:34px;height:34px;border-radius:9px;background:#2B2E35;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:13px;color:#7EE07E">&gt;_</div>
+<button style="flex:1;display:flex;flex-direction:column;align-items:flex-start;background:transparent;border:none;color:#F2F3F5;padding:0;min-height:44px;justify-content:center">
+<span style="font-size:18px;font-weight:600">zsh <span style="color:#6E727A;font-weight:400">~</span></span>
+<span style="font-size:14px;color:#8E9199">game-port ⌄</span></button>
+<button aria-label="More" style="width:46px;height:46px;border-radius:23px;background:#1A1D23;border:1px solid #23262C;color:#F2F3F5;font-size:16px;letter-spacing:2px">•••</button>
+</header>
+
+<section aria-label="Terminal" style="flex:1;position:relative;padding:4px 10px;font-family:'JetBrains Mono',monospace;font-size:12.5px;line-height:19px;color:#D5D8DD;white-space:pre-line;overflow:hidden">me@studio:~/Projects/game-port$ cmake --build build -j8
+[204/640] Compiling src/Render/M2Batch.cpp
+[205/640] Compiling src/Render/M2Renderer.cpp
+<span style="color:#FF9F0A">warning: 'MTLVertexDescriptor' stride mismatch
+  --&gt; M2Renderer.cpp:418:22</span>
+[206/640] Compiling src/Render/WMOGroup.cpp
+[207/640] Compiling src/Render/Terrain/MCNK.cpp
+[208/640] Compiling src/World/ObjectMgr.cpp
+[209/640] Compiling src/World/Spline.cpp
+[210/640] Linking libwowrender.a
+[211/640] Compiling src/Net/WorldSocket.cpp
+[212/640] Compiling src/Net/AuthCrypt.cpp
+[213/640] Compiling src/UI/FrameXML.cpp
+[214/640] Compiling src/UI/Lua/LuaBridge.cpp
+<span style="display:inline-block;width:8px;height:16px;border:1.5px solid #3B82F6;vertical-align:middle"></span>
+<div aria-label="Pane layout: 2 of 2" style="position:absolute;right:12px;top:6px;width:72px;height:50px;border-radius:12px;background:#15181F;border:1px solid #23262C;display:flex;gap:3px;padding:5px;box-sizing:border-box"><span style="flex:1;border-radius:4px;background:#3A3D44"></span><span style="flex:1;border-radius:4px;background:#3B82F6"></span></div>
+</section>
+
+
+<nav aria-label="Panes in game-port" style="display:flex;justify-content:center;padding:8px 0 30px 0"><dc-import name="PanePill" space="game-port" active="terminal" hint-size="218px,36px"></dc-import></nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":393,"height":852}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
