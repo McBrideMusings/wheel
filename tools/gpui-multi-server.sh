@@ -7,6 +7,9 @@
 #   - A's `wheel client ls` lists one client holding both A windows, B's lists one holding B's;
 #   - closing one A window drops only its view from A's list and leaves B's alone;
 #   - killing B leaves only B's window Down, drawn at link_opacity 0.5, and A's windows connected.
+#   - (wheel-2aln.18) relaunched with B's credential gone from the Keychain, the app leaves B's
+#     saved window closed and keeps its record in windows.json; relaunched with B unpaired, it
+#     drops the record.
 #   - the session menu (wheel-2aln.9): with one server today's rows then Add Server… and no mark;
 #     with two a heading per server, the session button's mark and Settings naming the server;
 #     pressing B's session moves the window to B (B lists it, A drops it, windows.json names B);
@@ -72,12 +75,18 @@ B_ID=$(on "$T/b" "$BL" status --json | field "d['host']['id']")
 SA=$(on "$T/a" "$AL" space new "$T" --name only-on-a)
 SB=$(on "$T/b" "$BL" space new "$T" --name only-on-b)
 
-WHEEL_HIDDEN=1 WHEEL_DEBUG_PORT=$DEBUG WHEEL_URL="ws://127.0.0.1:$AL/ws" WHEEL_TOKEN_FILE="$T/a/support/token" \
-  WHEEL_GPUI_SERVERS_FILE="$T/servers.json" WHEEL_GPUI_WINDOWS_FILE="$T/windows.json" \
-  WHEEL_GPUI_BRIDGE="$APP/Contents/MacOS/libWheelGpuiBridge.dylib" \
-  "$APP/Contents/MacOS/wheel-gpui" --space "$SA" > "$T/app.out" 2>&1 &
-PIDS+=($!)
-for _ in $(seq 1 100); do debug GET /state > /dev/null 2>&1 && break; sleep 0.2; done
+# launch_app <log> [args…]: the hidden app on A, its pid in APP_PID, waited on until its debug server answers.
+launch_app() {
+  local log=$1; shift
+  WHEEL_HIDDEN=1 WHEEL_DEBUG_PORT=$DEBUG WHEEL_URL="ws://127.0.0.1:$AL/ws" WHEEL_TOKEN_FILE="$T/a/support/token" \
+    WHEEL_GPUI_SERVERS_FILE="$T/servers.json" WHEEL_GPUI_WINDOWS_FILE="$T/windows.json" \
+    WHEEL_GPUI_BRIDGE="$APP/Contents/MacOS/libWheelGpuiBridge.dylib" \
+    "$APP/Contents/MacOS/wheel-gpui" "$@" > "$log" 2>&1 &
+  APP_PID=$!
+  PIDS+=($APP_PID)
+  for _ in $(seq 1 100); do debug GET /state > /dev/null 2>&1 && break; sleep 0.2; done
+}
+launch_app "$T/app.out" --space "$SA"
 W1=$(debug GET /state | field "d['window']")
 
 # One server: today's rows plus Add Server…, no heading, the icon-only session button.
@@ -189,5 +198,25 @@ S1=$(debug GET "/state?window=$W1"); S2=$(debug GET "/state?window=$W2")
 [ -n "${SHOTS:-}" ] && debug POST "/window/snapshot?window=$W2&path=$SHOTS/b-down.png" > /dev/null
 echo "$S2" | field "d['connection']" | grep -q unreachable && [ "$(echo "$S2" | field "d['link_opacity']")" = 0.5 ] && pass "B's window reads Down at link_opacity 0.5" || fail "B's window: $(echo "$S2" | field "d['connection'], d['link_opacity']")"
 [ "$(echo "$S1" | field "d['connection']")" = connected ] && [ "$(echo "$S1" | field "d['link_opacity']")" = 1.0 ] && pass "A's window stays connected at link_opacity 1.0" || fail "A's window: $(echo "$S1" | field "d['connection'], d['link_opacity']")"
+
+# Relaunch with B's credential unreadable: B's saved window stays closed, and its record stays in
+# windows.json through the writes the relaunch makes. Then unpaired: the record goes.
+# saved_on_b: how many of windows.json's main windows name B.
+saved_on_b() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(sum(1 for w in d.get('windows', []) if w.get('server') == sys.argv[2]))" "$T/windows.json" "$B_ID" 2>/dev/null; }
+BEFORE=$(saved_on_b)
+kill "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null
+security delete-generic-password -s "Wheel App Server" -a "$B_ID" > /dev/null 2>&1
+launch_app "$T/app-no-credential.out"
+debug POST "/action?id=new-window" > /dev/null
+for _ in $(seq 1 50); do [ "$(debug GET /state | field "len(d['window_info']['windows']['windows'])")" -ge 2 ] && break; sleep 0.2; done
+sleep 1
+grep -q "a saved window on $B_ID stays closed" "$T/app-no-credential.out" && [ "$(debug GET /state | field "sum(1 for w in d['window_info']['windows']['windows'] if w.get('server') == '$B_ID')")" = 0 ] && pass "with B's credential unreadable, B's saved window stays closed" || fail "no-credential launch: $(grep 'saved window' "$T/app-no-credential.out"), windows $(debug GET /state | field "d['window_info']['windows']['windows']")"
+[ "$BEFORE" -ge 1 ] && [ "$(saved_on_b)" = "$BEFORE" ] && pass "windows.json keeps B's $BEFORE record(s) through the relaunch's writes" || fail "B's records went from $BEFORE to $(saved_on_b): $(head -c 600 "$T/windows.json")"
+kill "$APP_PID" 2>/dev/null; wait "$APP_PID" 2>/dev/null
+echo '[]' > "$T/servers.json"
+launch_app "$T/app-unpaired.out"
+debug POST "/action?id=new-window" > /dev/null
+sleep 2
+grep -q "a saved window on $B_ID is dropped" "$T/app-unpaired.out" && [ "$(saved_on_b)" = 0 ] && pass "with B unpaired, windows.json drops B's records" || fail "unpaired launch: $(grep 'saved window' "$T/app-unpaired.out"), B records $(saved_on_b)"
 
 [ "$FAILS" -eq 0 ] && echo "ALL PASS" || { echo "$FAILS FAILED"; exit 1; }

@@ -18,6 +18,8 @@ struct AgentRow: Identifiable {
     let space: SpaceInfo
     let status: PaneStatus?
     let perm: PermInfo?
+    /// The pane runs backgrounded, shown nowhere.
+    let backgrounded: Bool
     var id: String { pane }
 
     /// Where the row sorts: waiting on a permission, then stopped, working, done, idle.
@@ -40,7 +42,8 @@ extension PhoneModel {
                 default: return nil
                 }
                 return AgentRow(pane: pane.id, agent: agent, harness: harness, space: space,
-                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent })
+                                status: space.paneStatuses[pane.id], perm: perms.first { $0.agent == agent },
+                                backgrounded: space.site(of: pane.id) == .backgrounded)
             }
         }
         return StatusRank.allCases.flatMap { rank in rows.filter { $0.rank == rank } }
@@ -51,8 +54,7 @@ extension PhoneModel {
 }
 
 /// Every agent of the shown session as one flat column of full-width tiles, most in need first.
-/// The eye button's sheet shows it for the whole session; the title menu's Agents tab shows it too,
-/// narrowed by its filter. A tile carries no status dot and nothing an agent declares through the
+/// The title menu's Agents tab shows it, narrowed by its filter. A tile carries no status dot and nothing an agent declares through the
 /// person's own skills: only its pane's status, its conversation's title, its chat and its request.
 struct AgentsList: View {
     let model: PhoneModel
@@ -72,14 +74,28 @@ struct AgentsList: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 24)
                         .accessibilityIdentifier("no agents")
                 }
-                ForEach(rows) { row in
-                    AgentTile(model: model, row: row, chat: model.chats[row.agent], place: place, done: done)
-                }
+                AgentTiles(model: model, rows: rows, place: place, done: done)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
         }
         .accessibilityIdentifier("agents list")
         .onAppear { Log.info("\(place) \(scope == .all ? "all" : "this space"): \(rows.map { "\($0.agent)=\($0.rank.title)" }.joined(separator: ", "))") }
+    }
+}
+
+/// The agents' tiles in the order given. `showsState` puts each one's state, and a backgrounded tag, where the space
+/// would be: the panes list lists one space's agents.
+struct AgentTiles: View {
+    let model: PhoneModel
+    let rows: [AgentRow]
+    let place: String
+    var showsState = false
+    let done: () -> Void
+
+    var body: some View {
+        ForEach(rows) { row in
+            AgentTile(model: model, row: row, chat: model.chats[row.agent], place: place, showsState: showsState, done: done)
+        }
     }
 }
 
@@ -92,6 +108,7 @@ private struct AgentTile: View {
     let row: AgentRow
     let chat: AgentChat?
     let place: String
+    let showsState: Bool
     let done: () -> Void
 
     private var needsYou: Bool { row.rank == .needsYou }
@@ -104,13 +121,25 @@ private struct AgentTile: View {
                     HStack(spacing: 8) {
                         AgentLogo(agent: row.harness, tint: needsYou ? .orange : nil).frame(width: 18, height: 18)
                         if let chat { ChatTitle(chat: chat, fallback: row.agent) } else { Text(row.agent).font(.body.weight(.semibold)) }
+                        if showsState, row.backgrounded {
+                            Text("backgrounded").font(.caption2).foregroundStyle(.secondary)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.quaternary))
+                                .accessibilityIdentifier("tile backgrounded")
+                        }
                         Spacer(minLength: 8)
                         if row.rank == .working {
                             ProgressView().controlSize(.small).accessibilityIdentifier("working spinner")
                         }
-                        Label(row.space.name, systemImage: "folder")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .labelStyle(SpaceLabelStyle())
+                        if showsState {
+                            Text(row.rank.title).font(.caption)
+                                .foregroundStyle(needsYou ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary))
+                                .accessibilityIdentifier("tile state")
+                        } else {
+                            Label(row.space.name, systemImage: "folder")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .labelStyle(SpaceLabelStyle())
+                        }
                     }
                     .lineLimit(1)
                     if let chat { LastMessage(chat: chat, lines: needsYou ? 3 : 2) }

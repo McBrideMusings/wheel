@@ -22,11 +22,11 @@ enum TitleMenuRequest: Equatable {
     case forget(server: ObjectIdentifier)
 }
 
-/// The phone's title, at the bar's left: the mode menu ("Spaces ⌄"), which only switches modes, and the context line
-/// under it. In Spaces mode the line is the shown space and page, with the space's dots and how many agents wait for the
-/// person in any space, and a tap opens the space switcher; in Agents mode it is the shown session and opens the same
-/// switcher; in Orchestrator mode the carousel's `detail` stands there (the topic, then the model or the page's name).
-/// The count has a reserved slot, blank at zero, so the name never moves.
+/// The phone's title, at the bar's left: the mode toggle ("Spaces ⌄"), a tap on which swaps Spaces and Orchestrator,
+/// and the context line under it. In Spaces mode the line is the shown space and page, with the space's dots and how
+/// many agents wait for the person in any space, and a tap opens the space switcher; in Orchestrator mode the
+/// carousel's `detail` stands there (the topic, then the model or the page's name). The count has a reserved slot,
+/// blank at zero, so the name never moves.
 struct TitleButton: View {
     let model: PhoneModel
     /// The space switcher's sheet.
@@ -41,7 +41,7 @@ struct TitleButton: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ModeMenu(mode: model.mode) { model.setMode($0) }
+            ModeToggle(mode: model.mode) { model.setMode($0) }
                 .frame(height: Self.rowHeight)
                 .alignmentGuide(.titleRow) { $0[VerticalAlignment.center] }
             if model.mode == WindowMode.orchestrator {
@@ -54,16 +54,15 @@ struct TitleButton: View {
 
     private var contextLine: some View {
         let waiting = model.needsYouCount
-        let spaces = model.mode == WindowMode.spaces
         let session = model.shownSession?.name ?? "No session"
         return Button { open = true } label: {
             HStack(spacing: 4) {
-                Image(systemName: spaces ? "folder" : "rectangle.stack").font(.caption)
+                Image(systemName: "folder").font(.caption)
                 // The space and the page are two texts, so the space's name stays put as the page changes.
-                Text(spaces ? name : session).lineLimit(1)
-                if spaces, let pageName { Text("· \(pageName)").lineLimit(1).truncationMode(.middle) }
+                Text(name).lineLimit(1)
+                if let pageName { Text("· \(pageName)").lineLimit(1).truncationMode(.middle) }
                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
-                if spaces, let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
+                if let space = model.activeSpace { SpaceDots(space: space, shown: model.statusDots) }
                 Text(waiting > 0 ? "\(waiting)" : "")
                     .font(.footnote.weight(.semibold).monospacedDigit())
                     .foregroundStyle(.orange)
@@ -77,7 +76,7 @@ struct TitleButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(.tint)
         .accessibilityIdentifier("space switcher")
-        .accessibilityLabel(spaces ? "\(name), session \(session)" : "Session \(session)")
+        .accessibilityLabel("\(name), session \(session)")
         .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
     }
 
@@ -85,23 +84,18 @@ struct TitleButton: View {
     private static let rowHeight: CGFloat = 22
 }
 
-/// The bar's title: the shown mode's name and a ⌄; a tap opens the three modes, a check on the shown one (M11, S3).
-private struct ModeMenu: View {
+/// The bar's title: the shown mode's name and a ⌄. The phone has two modes, so a tap swaps Spaces and Orchestrator
+/// with no menu.
+private struct ModeToggle: View {
     let mode: String
     let pick: (String) -> Void
 
     var body: some View {
         let shown = WindowMode.entry(mode)
-        Menu {
-            Picker("Mode", selection: Binding(get: { mode }, set: { new in
-                Log.info("mode menu: picked \(new)")
-                pick(new)
-            })) {
-                ForEach(WindowMode.menu, id: \.id) { entry in
-                    Text(entry.title).tag(entry.id)
-                }
-            }
-            .pickerStyle(.inline)
+        Button {
+            let next = mode == WindowMode.orchestrator ? WindowMode.spaces : WindowMode.orchestrator
+            Log.info("mode toggle: \(mode) -> \(next)")
+            pick(next)
         } label: {
             HStack(spacing: 4) {
                 Text(shown.title).font(.headline).lineLimit(1)
@@ -110,8 +104,7 @@ private struct ModeMenu: View {
             .foregroundStyle(.primary)
             .contentShape(Rectangle())
         }
-        // A menu's label wears the accent; the title reads as a title, as Spaces mode's name did.
-        .tint(.primary)
+        .buttonStyle(.plain)
         .accessibilityLabel("Mode")
         .accessibilityValue(shown.title)
         .accessibilityIdentifier("mode")

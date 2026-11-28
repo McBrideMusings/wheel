@@ -17,7 +17,7 @@ pub mod pairing;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub use finder::TextFinder;
-pub use ops::{op_of, ops, Mismatch, Offer, Refused, BREAKS, COMPAT};
+pub use ops::{offered, op_of, ops, Mismatch, Offer, Refused, BREAKS, COMPAT, EVENTS};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -842,10 +842,11 @@ pub enum ClientMsg {
         req: Option<u64>,
         key: String,
     },
-    /// Name the agent voice mode talks to (an agent or an agent pane), or none to clear it. Each turn of
-    /// that agent then carries the voice line, asking for short spoken replies, as hidden context (ADR-0055).
-    /// Refused unless this connection holds the `voice` lease, and for an agent with no way to take the
-    /// line; cleared when the lease leaves this connection. Replies `ok`.
+    /// Name the agent voice mode talks to (an agent or an agent pane), or none to clear it. wheeld then
+    /// runs a voice agent that speaks for it, streamed to this connection as `voice_said`, and each turn
+    /// of the agent carries the voice line as hidden context (ADR-0055, ADR-0059). Refused unless this
+    /// connection holds the `voice` lease, and for an agent whose harness has no voice mode; cleared
+    /// when the lease leaves this connection or the agent ends. Replies `ok`.
     AgentVoice {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         req: Option<u64>,
@@ -2283,6 +2284,9 @@ pub enum ServerMsg {
         /// The agent voice mode talks to (`agent_voice`), whose turns carry the voice line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voice: Option<String>,
+        /// The voice agent speaking for `voice` while it runs (ADR-0059).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice_agent: Option<VoiceAgentInfo>,
         uptime_secs: u64,
         log_path: String,
         terms: Vec<TermInfo>,
@@ -2311,7 +2315,7 @@ pub enum ServerMsg {
         refreshes: Vec<RefreshInfo>,
         /// Every coding agent's usage as the strip and the Usage window show it.
         #[serde(default)]
-        usage_board: UsageBoard,
+        usage_board: Box<UsageBoard>,
         /// Every agent the daemon knows, with whether its program was found, sorted by name.
         #[serde(default)]
         agents: Vec<AgentInfo>,
@@ -2538,6 +2542,20 @@ pub enum ServerMsg {
     Lease {
         key: String,
         owner: Option<String>,
+    },
+    /// What the voice agent says for the voiced agent `agent` (ADR-0059), sent as it streams to the
+    /// connection that holds the `voice` lease: `text` is a chunk to append, spoken for the voiced
+    /// agent's turn `turn`, and `ms` the milliseconds since the person's message of that turn was
+    /// sent. `done` (with no text) ends what it says for one message or reply. Never part of the
+    /// voiced agent's transcript.
+    VoiceSaid {
+        agent: String,
+        turn: u64,
+        #[serde(default)]
+        text: String,
+        ms: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        done: bool,
     },
     /// One step of an agent's conversation. `text` events are chunks: append each to the last.
     /// An agent that ends sends an `error` with no `turn`, then nothing more.
@@ -2910,6 +2928,9 @@ pub enum ServerMsg {
         /// What each turn of a Claude agent carries, hidden, while voice mode talks to it (ADR-0055).
         #[serde(default)]
         voice_line: String,
+        /// The brief of the voice agent that speaks for it then (ADR-0059).
+        #[serde(default)]
+        voice_brief: String,
     },
     /// The path `GuidancePath` made.
     GuidancePath {
@@ -3204,6 +3225,7 @@ impl ServerMsg {
             | ServerMsg::AgentTitle { .. }
             | ServerMsg::PermRequested { .. }
             | ServerMsg::Lease { .. }
+            | ServerMsg::VoiceSaid { .. }
             | ServerMsg::PermResolved { .. }
             | ServerMsg::Spaces { .. }
             | ServerMsg::SpaceFocused { .. }
@@ -4457,6 +4479,14 @@ pub struct AgentInfo {
     /// The skills in the agent's home, which a composer offers after the agent's skill prefix.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillInfo>,
+}
+
+/// The voice agent speaking for the voiced agent (ADR-0059): its harness, model and process.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoiceAgentInfo {
+    pub harness: String,
+    pub model: String,
+    pub pid: u32,
 }
 
 /// One of the person's guidance files: the one for every agent (`agent` unset) or for one agent.

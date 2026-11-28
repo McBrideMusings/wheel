@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# iOS mode menu (wheel-0but.2, wheel-zxts.5.5): the top bar's title is the mode menu, with the space switcher under it, driven with real taps by the WheelPhoneUITests
+# iOS mode toggle (wheel-0but.2, wheel-v0aj): the top bar's title is the mode toggle (a tap swaps Spaces and Orchestrator), with the space switcher under it, and the panes button opens the panes list, driven with real taps by the WheelPhoneUITests
 # target (apple/iOS/UITests/ModeUITests.swift) against this script's own wheeld. The test writes
 # `$SYNC/step-<name>` after each step and waits for `$SYNC/ack-<name>`; this script checks phone.log, then
 # acknowledges. Shots and the bar's control rects go to
@@ -11,6 +11,7 @@
 # of a build from before the change.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
+noplog() { ! plog "$1"; }
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
@@ -25,23 +26,21 @@ w pane start "$P1" agent >/dev/null
 w pane start "$P2" agent >/dev/null
 
 if [ -n "${WHEEL_MODE_BASE:-}" ]; then
-  ios_ui_start ModeUITests/testModeMenu WHEEL_MODE_BASE=1
+  ios_ui_start ModeUITests/testModeToggle WHEEL_MODE_BASE=1
   ios_ui_finish mode
 fi
-ios_ui_start ModeUITests/testModeMenu
+ios_ui_start ModeUITests/testModeToggle
 
-if step agents; then
-  check "phone.log restored Spaces at the first launch" plog "mode restored: spaces"
-  check "phone.log records the pick" plog "mode menu: picked agents"
-  check "phone.log records the change" plog "mode spaces -> agents"
-  ack agents
-fi
 if step orchestrator; then
-  check "phone.log records Orchestrator" plog "mode agents -> orchestrator"
+  check "phone.log restored Spaces at the first launch" plog "mode restored: spaces"
+  check "phone.log records the toggle" plog "mode toggle: spaces -> orchestrator"
+  check "phone.log records the change" plog "mode spaces -> orchestrator"
   ack orchestrator
 fi
 if step spaces; then
+  check "phone.log records the toggle back" plog "mode toggle: orchestrator -> spaces"
   check "phone.log records Spaces" plog "mode orchestrator -> spaces"
+  check "phone.log has no mode menu pick" noplog "mode menu: picked"
   ack spaces
 fi
 if step keyboard; then
@@ -49,11 +48,18 @@ if step keyboard; then
   ack keyboard
 fi
 if step opened; then
-  check "opening a pane from the eye's sheet in Agents showed Spaces" plog "mode agents -> spaces"
+  check "phone.log records the panes list opening" plog "panes list open: 2 panes"
+  check "phone.log records the row tap" plog "panes list: open $P2"
+  check "phone.log records the list closing" plog "panes list closed: 2 panes"
   ack opened
 fi
+if step roundtrip; then
+  plog "mode toggle" ; toggles() { [ "$(grep -c 'mode toggle: spaces -> orchestrator' "$PLOG")" -ge 2 ]; }
+  check "phone.log has a second toggle to Orchestrator" toggles
+  ack roundtrip
+fi
 if step relaunch; then
-  check "phone.log restored Agents after the relaunch" plog "mode restored: agents"
+  check "phone.log restored Orchestrator after the relaunch" plog "mode restored: orchestrator"
   ack relaunch
 fi
 ios_ui_finish mode

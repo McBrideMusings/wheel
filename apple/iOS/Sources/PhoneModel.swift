@@ -47,9 +47,12 @@ final class PhoneModel {
     /// The page Orchestrator mode shows: a pane of the orchestrator's space, nil for the chat. Saved with the view.
     private(set) var orchestratorPage: String?
 
-    /// Show another mode, as the mode menu's row does.
+    /// The modes the phone shows: Agents mode is the Mac's alone.
+    static let phoneModes = [WindowMode.spaces, WindowMode.orchestrator]
+
+    /// Show the other mode, as the mode toggle does.
     func setMode(_ new: String) {
-        guard WindowMode.builtIn.contains(new) else {
+        guard Self.phoneModes.contains(new) else {
             Log.info("mode \(new): no such mode")
             return
         }
@@ -1215,12 +1218,13 @@ final class PhoneModel {
         earlier[pane]?.store ?? .none
     }
 
-    /// Give each agent pane the conversations it showed before its current one (the last of
-    /// `visited`); a server that cannot read a past conversation gets none drawn.
+    /// Give each agent pane in the orchestrator's space the conversations it showed before its
+    /// current one (the last of `visited`); any other agent pane draws its current conversation
+    /// alone, and a server that cannot read a past conversation gets none drawn.
     private func syncEarlier() {
         let reads = serverOffer.has("agent_conversation_history")
         var shown: [String: (agent: String, ids: [String])] = [:]
-        for space in spaces {
+        for space in spaces where space.id == orchestratorSpace?.id {
             for pane in space.allPanes {
                 if case let .agent(agent, _, visited) = pane.kind {
                     shown[pane.id] = (agent, reads ? Array(visited.dropLast()) : [])
@@ -1524,7 +1528,7 @@ final class PhoneModel {
     /// a saved pane to the space's first page.
     private func restoreView() {
         let saved = pairing.flatMap { UserDefaults.standard.dictionary(forKey: Self.viewKey($0)) as? [String: String] } ?? [:]
-        mode = saved["mode"].flatMap { WindowMode.builtIn.contains($0) ? $0 : nil } ?? WindowMode.spaces
+        mode = saved["mode"].flatMap { Self.phoneModes.contains($0) ? $0 : nil } ?? WindowMode.spaces
         // Checked against every space: the orchestrator's folder may not be listed yet, and the carousel shows the chat
         // for a page its space does not hold.
         orchestratorPage = saved["orchestratorPage"].flatMap { page in spaces.contains { $0.allPanes.contains { $0.id == page } } ? page : nil }
@@ -2102,6 +2106,7 @@ final class PhoneModel {
         if let setting = list.first(where: { $0.key == "orchestrator.dir" }), setting.orchestratorDir != orchestratorDir {
             orchestratorDir = setting.orchestratorDir
             Log.info("orchestrator folder \(setting.orchestratorDir)")
+            syncEarlier()
             readTopic()
         }
         if let dots = list.first(where: { $0.key == "status.dots" }) {

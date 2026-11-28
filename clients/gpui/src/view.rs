@@ -714,6 +714,7 @@ impl Client {
                                             self.show_orchestrator_space();
                                             self.follow_orchestrator();
                                             self.sync_queue();
+                                            self.sync_earlier();
                                             self.read_topic();
                                         }
                                     }

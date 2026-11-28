@@ -110,27 +110,36 @@ impl crate::server::AppState {
         self.leases.gone(peer, |k, o| self.lease_changed(k, o));
     }
 
-    /// Name the agent voice mode talks to, or clear it; only the `voice` holder may (ADR-0055).
-    pub(crate) fn agent_voice(&self, agent: Option<&str>, peer: SocketAddr) -> Result<(), String> {
+    /// Name the agent voice mode talks to, or clear it; only the `voice` holder may (ADR-0055). A
+    /// named agent gets a voice agent speaking for it to `out`, the holder's connection (ADR-0059).
+    pub(crate) fn agent_voice(
+        &self,
+        agent: Option<&str>,
+        peer: SocketAddr,
+        out: &tokio::sync::mpsc::Sender<wheel_proto::ServerMsg>,
+    ) -> Result<(), String> {
         let agent = agent.map(|a| self.resolve_agent(a).map(|r| r.agent)).transpose()?;
-        if let Some(agent) = &agent {
-            if !matches!(agent.harness(), crate::resume::Harness::Claude | crate::resume::Harness::Pi) {
-                return Err(format!("{} has no way to take the voice line", agent.harness().title()));
+        // Checked before the voice agent starts, so a refusal starts nothing.
+        self.leases.while_held("voice", peer, || {})?;
+        let next = match agent {
+            Some(agent) => {
+                let voice = crate::voice_agent::VoiceAgent::start(&agent, out.clone())?;
+                Some(Voiced { peer, agent, voice })
             }
-        }
-        // Checked under the table's lock, so a takeover cannot land between the check and the mark.
-        self.leases.while_held("voice", peer, || {
-            self.set_voiced(agent.map(|a| (peer, a)));
-        })
+            None => None,
+        };
+        // Checked again under the table's lock, so a takeover cannot land between the check and
+        // the mark; a voice agent started for a lost lease is dropped, which ends it.
+        self.leases.while_held("voice", peer, || self.set_voiced(next))
     }
 
     /// Move the voice line to `next`, turning it off on the agent that had it.
-    fn set_voiced(&self, next: Option<(SocketAddr, std::sync::Arc<crate::agent::Agent>)>) {
+    fn set_voiced(&self, next: Option<Voiced>) {
         let mut voiced = self.voiced.lock().unwrap();
         voice_off(voiced.take());
-        if let Some((peer, agent)) = &next {
-            agent.set_voice(true);
-            tracing::info!(agent = %agent.name, %peer, "voice line on");
+        if let Some(v) = &next {
+            v.agent.set_voice(true);
+            tracing::info!(agent = %v.agent.name, peer = %v.peer, pid = v.voice.pid, "voice line on");
         }
         *voiced = next;
     }
@@ -138,7 +147,7 @@ impl crate::server::AppState {
     /// Turn the voice line off when the voiced agent and its connection match `pred`.
     fn clear_voiced_if(&self, pred: impl FnOnce(&SocketAddr, &std::sync::Arc<crate::agent::Agent>) -> bool) {
         let mut voiced = self.voiced.lock().unwrap();
-        if voiced.as_ref().is_some_and(|(p, a)| pred(p, a)) {
+        if voiced.as_ref().is_some_and(|v| pred(&v.peer, &v.agent)) {
             voice_off(voiced.take());
         }
     }
@@ -159,10 +168,19 @@ impl crate::server::AppState {
     }
 }
 
-fn voice_off(was: Option<(SocketAddr, std::sync::Arc<crate::agent::Agent>)>) {
-    if let Some((peer, agent)) = was {
+/// The agent voice mode talks to, the connection that named it, and the voice agent speaking for
+/// it there.
+pub(crate) struct Voiced {
+    pub peer: SocketAddr,
+    pub agent: std::sync::Arc<crate::agent::Agent>,
+    pub voice: crate::voice_agent::VoiceAgent,
+}
+
+/// Turn the voice line off on the agent that had it; dropping its voice agent ends that process.
+fn voice_off(was: Option<Voiced>) {
+    if let Some(Voiced { peer, agent, voice }) = was {
         agent.set_voice(false);
-        tracing::info!(agent = %agent.name, %peer, "voice line off");
+        tracing::info!(agent = %agent.name, %peer, pid = voice.pid, "voice line off");
     }
 }
 

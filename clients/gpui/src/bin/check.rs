@@ -3228,52 +3228,18 @@ async fn conversations(run: Run, agent_pane: String, agent_name: String, cli_pat
         }
     }
     ensure!(resumed_rows > 0, "resuming {old_id}: popover {}, rows {:?}", convs_now(cx)?, rows(cx)?.1.iter().take(4).map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>());
-    // Earlier conversations (wheel-zxts.6.3): back in the old conversation, the new one is drawn
-    // above it, read from the store and titled with its message; its Resume goes back to it, and
-    // the old one's Resume returns.
+    // Earlier conversations draw only in the orchestrator's space: this pane, in an ordinary
+    // space and back in the old conversation with the new one visited, draws none
+    // (`orchestrator_mode` checks the dividers and Resume).
     let earlier_report = {
-        let earlier_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(pane_now(cx)?["earlier"].clone()) };
         let mut earlier = Value::Null;
-        for _ in 0..100 {
+        for _ in 0..20 {
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
             draw(window, None, cx)?;
-            earlier = earlier_now(cx)?;
-            if earlier[0]["read"] == true {
-                break;
-            }
+            earlier = pane_now(cx)?["earlier"].clone();
+            ensure!(earlier.as_array().is_some_and(Vec::is_empty), "the pane in an ordinary space drew earlier conversations: {earlier}");
         }
-        let listed_new = earlier.as_array().is_some_and(|e| e.len() == 1) && earlier[0]["id"] == new_id.as_str();
-        ensure!(listed_new && earlier[0]["title"] == "in the new one" && earlier[0]["rows"].as_u64().unwrap_or(0) >= 2 && earlier[0]["resume"] == true,
-            "the pane in {old_id} should draw {new_id} above it, read and titled `in the new one`: {earlier}");
-        window.update(cx, |c, _, _| c.reveal_top(&agent_name))?;
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        draw(window, Some(output.join("client-earlier-conversations.png")), cx)?;
-        let mut switched = vec![];
-        for (id, text) in [(new_id.clone(), "in the new one"), (old_id.clone(), "show tools")] {
-            let mut at = None;
-            for _ in 0..50 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                window.update(cx, |c, _, _| c.reveal_top(&agent_name))?;
-                draw(window, None, cx)?;
-                at = window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("resume:{id}")))?;
-                if at.is_some() {
-                    break;
-                }
-            }
-            press(&native, at.ok_or_else(|| anyhow::anyhow!("no Resume drawn for {id}: {}", earlier_now(cx).unwrap_or_default()))?);
-            let mut done = false;
-            for _ in 0..200 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                let (state, held) = rows(cx)?;
-                if state == "ready" && held.iter().any(|r| matches!(&r.kind, Kind::User { text: t, .. } if t == text)) && earlier_now(cx)?.as_array().is_some_and(|e| e.iter().all(|p| p["id"] != id.as_str())) {
-                    done = true;
-                    break;
-                }
-            }
-            ensure!(done, "Resume on {id} did not put the pane back in it: rows {:?}, earlier {}", rows(cx)?.1.iter().take(4).map(|r| format!("{:?}", r.kind)).collect::<Vec<_>>(), earlier_now(cx)?);
-            switched.push(id);
-        }
-        json!({"listed": earlier, "resumed": switched})
+        json!({"ordinary": earlier})
     };
     // A Codex pane (wheel-fake-agent app-server) streams a reply to a message typed into it.
     let wheel = |args: &[&str]| -> Result<String> {
@@ -7037,6 +7003,38 @@ async fn orchestrator_mode(run: Run, grid: String, mut debug: wheel_gpui::debug:
         }
     }
     ensure!(read.contains(&asked), "the press never reached the orchestrator's chat as {asked:?}: {read}");
+    // Earlier conversations (wheel-zxts.6.3): in a fresh conversation the orchestrator's pane draws
+    // the one it left above it, read from the store; its Resume goes back to it.
+    let agent = state!()["panes"][pane.as_str()]["agent"].as_str().unwrap_or_default().to_owned();
+    let (ok, out, err) = run_pumped(&["agent", "conversations", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel agent conversations {pane} failed: {err}");
+    let (ok, _, err) = run_pumped(&["agent", "new", &pane], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "wheel agent new {pane} failed: {err}");
+    let earlier = until!("the left conversation drawn above the orchestrator's new one", |s: &Value| {
+        let e = &s["panes"][pane.as_str()]["earlier"];
+        e.as_array().is_some_and(|e| e.len() == 1) && e[0]["read"] == true && e[0]["resume"] == true && e[0]["rows"].as_u64().unwrap_or(0) >= 1
+    })["panes"][pane.as_str()]["earlier"].clone();
+    let left = earlier[0]["id"].as_str().unwrap_or_default().to_owned();
+    ensure!(out.contains(&left), "the earlier conversation {left} is not one `wheel agent conversations` listed: {out}");
+    let mut resume_at = None;
+    for _ in 0..50 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        window.update(cx, |c, _, _| c.reveal_top(&agent))?;
+        draw(window, None, cx)?;
+        resume_at = window.update(cx, |c, _, _| c.control_bounds(&agent, &format!("resume:{left}")))?;
+        if resume_at.is_some() {
+            break;
+        }
+    }
+    draw(window, Some(output.join("client-earlier-conversations.png")), cx)?;
+    let resume_at = resume_at.ok_or_else(|| anyhow::anyhow!("no Resume drawn for {left}: {earlier}"))?;
+    let p = [f64::from(resume_at.0 + resume_at.2 / 2.), f64::from(resume_at.1 + resume_at.3 / 2.)];
+    native.call(json!({"op":"post_mouse","kind":"down","point":p}));
+    native.call(json!({"op":"post_mouse","kind":"up","point":p}));
+    until!("Resume putting the orchestrator's pane back in the left conversation", |s: &Value| {
+        let e = &s["panes"][pane.as_str()]["earlier"];
+        e.as_array().is_some_and(|e| e.len() == 1 && e[0]["id"] != left.as_str())
+    });
     let (ok, _, err) = run_pumped(&["pane", "close", &queue_pane], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "wheel pane close {queue_pane} failed: {err}");
     let tray_at = tray["frame"].clone();

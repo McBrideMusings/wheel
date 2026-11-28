@@ -69,6 +69,15 @@ impl Default for Saved {
     }
 }
 
+/// The saved windows launch left closed because their paired wheeld could not be reached (its
+/// credential unreadable, or turned off): every write keeps them until a launch finds that wheeld
+/// unpaired.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Held {
+    pub windows: Vec<SavedWindow>,
+    pub littles: Vec<SavedLittle>,
+}
+
 /// One window launch opens.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Launch {
@@ -109,6 +118,12 @@ impl Saved {
         });
         Self { restore, windows: windows.collect(), littles: littles.collect(), last_closed: registry.last_closed }
     }
+    /// These windows with `held` after them; a held window is never the focused one.
+    pub fn keeping(mut self, held: &Held) -> Self {
+        self.windows.extend(held.windows.iter().map(|w| SavedWindow { focused: false, ..w.clone() }));
+        self.littles.extend(held.littles.iter().cloned());
+        self
+    }
     /// What launch opens (AppModel.openLaunchWindows): every saved window and little window with
     /// the setting on; one window on the focused window's session and space with it off
     /// (WindowLayout.collapse); one with no session yet when none was saved.
@@ -144,6 +159,7 @@ struct Writer {
     restore: bool,
     quitting: bool,
     started: bool,
+    held: Held,
 }
 
 thread_local! {
@@ -166,13 +182,13 @@ pub fn begin(file: Option<PathBuf>, restore: bool) -> bool {
 
 /// Write the windows now, unless the app is quitting or keeps no file.
 pub fn save() {
-    let Some((file, restore)) = WRITER.with(|w| {
+    let Some((file, restore, held)) = WRITER.with(|w| {
         let w = w.borrow();
-        (!w.quitting).then(|| w.file.clone().map(|f| (f, w.restore))).flatten()
+        (!w.quitting).then(|| w.file.clone().map(|f| (f, w.restore, w.held.clone()))).flatten()
     }) else {
         return;
     };
-    let saved = crate::windows::with(|r| Saved::of(r, restore));
+    let saved = crate::windows::with(|r| Saved::of(r, restore).keeping(&held));
     if let Err(error) = saved.write(&file) {
         eprintln!("wheel-gpui: the windows were not saved to {}: {error}", file.display());
     }
@@ -181,6 +197,11 @@ pub fn save() {
 /// Stop writing: the app is quitting, or launch failed and must leave the file as it found it.
 pub fn stop() {
     WRITER.with(|w| w.borrow_mut().quitting = true);
+}
+
+/// Keep `held` in every write from now on, in place of what was held before.
+pub fn hold(held: Held) {
+    WRITER.with(|w| w.borrow_mut().held = held);
 }
 
 /// "Restore windows at launch" as it stands.
@@ -252,6 +273,20 @@ mod tests {
         assert_eq!(Saved::load(Some(&file)), saved);
         let _ = std::fs::remove_file(&file);
         assert_eq!(Saved::load(None), Saved::default());
+    }
+
+    #[test]
+    fn a_held_window_stays_in_the_file_and_is_never_the_focused_one() {
+        let mut registry = Registry::default();
+        registry.put(Record { id: "w1".into(), session: Some("n1".into()), ..Default::default() });
+        registry.focused = Some("w1".into());
+        let away = SavedWindow { server: Some("dev".into()), focused: true, ..window("n2", "s2", true, [0., 0., 1., 1.]) };
+        let little = SavedLittle { server: Some("dev".into()), space: "s3".into(), pinned: false, frame: None };
+        let saved = Saved::of(&registry, true).keeping(&Held { windows: vec![away.clone()], littles: vec![little.clone()] });
+        assert_eq!(saved.windows.len(), 2);
+        assert!(saved.windows[0].focused);
+        assert_eq!(saved.windows[1], SavedWindow { focused: false, ..away });
+        assert_eq!(saved.littles, vec![little]);
     }
 
     #[test]

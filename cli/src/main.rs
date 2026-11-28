@@ -347,7 +347,8 @@ enum GuidanceCommand {
     /// Print what an agent is given when its pane starts: Wheel's brief, then the person's
     /// guidance for every agent, then the agent's own. The real brief has the pane's artifacts
     /// and seat line between Wheel's brief and the guidance; they differ per pane and are not here. For
-    /// Claude it ends with the voice line each turn carries while voice mode talks to the agent.
+    /// Claude it ends with the voice line each turn carries while voice mode talks to the agent, and
+    /// the brief of the voice agent that speaks for it then.
     Show {
         /// The agent (claude, codex, pi); without it only the guidance for every agent follows the brief.
         #[arg(long)]
@@ -1456,9 +1457,10 @@ enum AgentCommand {
         follow: bool,
     },
     /// Talk to an agent in voice mode until this command is stopped: take the `voice` lease and
-    /// name the agent, so each of its turns carries the voice line asking for short spoken replies
-    /// (ADR-0055). Prints the agent's name once it is set, and ends with an error when another
-    /// connection takes the lease. Claude and pi agents only.
+    /// name the agent, so wheeld runs a voice agent that speaks for it (ADR-0059). Prints the
+    /// agent's name once it is set, then each sentence the voice agent says, after the
+    /// milliseconds since the person's message of that turn was sent, and ends with an error when
+    /// another connection takes the lease. Claude agents only.
     Voice {
         /// An agent pane's id or its agent name.
         agent: String,
@@ -3331,12 +3333,56 @@ async fn agent_voice(conn: &mut Conn, agent: String) -> Result<(), Fail> {
     };
     simple(conn, |req| ClientMsg::AgentVoice { req: Some(req), agent: Some(agent.clone()) }).await?;
     println!("{agent}");
+    let mut sentences = Sentences::default();
     loop {
-        if let Some(ServerMsg::Lease { key, owner: now }) = conn.recv(Duration::from_secs(3600)).await? {
-            if key == "voice" && now.as_deref() != Some(owner.as_str()) {
+        match conn.recv(Duration::from_secs(3600)).await? {
+            Some(ServerMsg::Lease { key, owner: now }) if key == "voice" && now.as_deref() != Some(owner.as_str()) => {
                 return Err(Fail::Other(format!("another connection took the voice lease ({})", now.unwrap_or_default())));
             }
+            Some(ServerMsg::VoiceSaid { turn, text, ms, done, .. }) => {
+                for sentence in sentences.push(turn, &text, done) {
+                    println!("{ms}ms turn {turn}: {sentence}");
+                }
+            }
+            _ => {}
         }
+    }
+}
+
+/// Streamed speech cut into finished sentences: one ends at `.`, `!` or `?` followed by
+/// whitespace, or at a line break; what is left is a sentence once its stream is done. An
+/// interrupted turn's stream never gets `done`, so a new turn drops its half sentence.
+#[derive(Default)]
+struct Sentences(String, Option<u64>);
+
+impl Sentences {
+    fn push(&mut self, turn: u64, text: &str, done: bool) -> Vec<String> {
+        if self.1.replace(turn) != Some(turn) {
+            self.0.clear();
+        }
+        self.0.push_str(text);
+        let mut out = Vec::new();
+        loop {
+            let chars: Vec<(usize, char)> = self.0.char_indices().collect();
+            let end = chars.windows(2).find_map(|w| match (w[0].1, w[1].1) {
+                ('.' | '!' | '?', next) if next.is_whitespace() => Some(w[1].0),
+                ('\n', _) => Some(w[0].0),
+                _ => None,
+            });
+            let Some(end) = end else { break };
+            let sentence = self.0[..end].trim().to_owned();
+            self.0 = self.0[end..].trim_start().to_owned();
+            if !sentence.is_empty() {
+                out.push(sentence);
+            }
+        }
+        if done {
+            let rest = std::mem::take(&mut self.0);
+            if !rest.trim().is_empty() {
+                out.push(rest.trim().to_owned());
+            }
+        }
+        out
     }
 }
 
@@ -7189,7 +7235,7 @@ async fn run() -> ExitCode {
             Command::Guidance(GuidanceCommand::Show { agent }) => {
                 let req = conn.req();
                 let voiced = agent.as_deref().is_none_or(|a| a == "claude");
-                let ServerMsg::Guidance { given, voice_line, .. } = conn
+                let ServerMsg::Guidance { given, voice_line, voice_brief, .. } = conn
                     .call(ClientMsg::GuidanceLs { req: Some(req), agent }, req)
                     .await?
                 else {
@@ -7198,6 +7244,9 @@ async fn run() -> ExitCode {
                 print!("{given}");
                 if voiced && !voice_line.is_empty() {
                     print!("\nWhile voice mode talks to a Claude agent, each of its turns also carries, hidden from the transcript:\n{voice_line}");
+                }
+                if voiced && !voice_brief.is_empty() {
+                    print!("\nThe voice agent that speaks for it then is briefed:\n{voice_brief}");
                 }
                 Ok(())
             }
@@ -7283,6 +7332,26 @@ async fn run() -> ExitCode {
             eprintln!("wheel: {fail}");
             ExitCode::from(fail.code())
         }
+    }
+}
+
+#[cfg(test)]
+mod sentence_tests {
+    #[test]
+    fn streamed_speech_prints_each_sentence_once_it_ends() {
+        let mut s = super::Sentences::default();
+        assert!(s.push(1, "Checking the ", false).is_empty());
+        assert_eq!(s.push(1, "build. It fail", false), ["Checking the build."]);
+        assert_eq!(s.push(1, "ed on v1.2 too!\nNext", false), ["It failed on v1.2 too!"]);
+        assert_eq!(s.push(1, "", true), ["Next"]);
+        assert!(s.push(1, "", true).is_empty());
+    }
+
+    #[test]
+    fn an_interrupted_turns_half_sentence_never_leads_the_next() {
+        let mut s = super::Sentences::default();
+        assert!(s.push(2, "Half of a", false).is_empty());
+        assert_eq!(s.push(3, "New one.", true), ["New one."]);
     }
 }
 

@@ -77,6 +77,11 @@
 //! "write mid-turn" answers with a long text block whose stream events stop after the first few
 //! words (the whole message carries all of it), a tool call, and a closing text `closing words`.
 //!
+//! Started as a voice agent (`--tools ""`), it answers every prompt with one sentence instead:
+//! `Voice says: <the prompt's second line>.`, streamed a word at a time, after 3 s of nothing when
+//! the prompt contains "slow voice" (an `interrupt` meanwhile ends the turn with nothing said), and
+//! with `--no-session-persistence` it keeps no transcript.
+//!
 //! "write rewritten" streams `See a.rs, then go.` and sends a whole message reading
 //! `See /w/a.rs , then go.`, as a display hook leaves it.
 //!
@@ -124,8 +129,9 @@ const MODELS: [(&str, &str, &str); 3] = [
 const WINDOW: u64 = 200_000;
 
 /// The flags `claude --print` takes that carry a value.
-const VALUED: [&str; 15] = [
+const VALUED: [&str; 16] = [
     "--settings",
+    "--system-prompt",
     "--resume-session-at",
     "--tools",
     "--setting-sources",
@@ -158,6 +164,9 @@ fn store_dir() -> PathBuf {
     home.join("projects").join(project)
 }
 
+/// Set by `--no-session-persistence`: nothing is written to the store.
+static EPHEMERAL: AtomicBool = AtomicBool::new(false);
+
 fn transcript(id: &str) -> PathBuf {
     store_dir().join(format!("{id}.jsonl"))
 }
@@ -165,6 +174,9 @@ fn transcript(id: &str) -> PathBuf {
 /// Append one entry to conversation `id`'s transcript, creating it on the first. A user or
 /// assistant entry gets a `uuid`, as Claude Code gives each message one.
 fn keep(id: &str, mut entry: Value) {
+    if EPHEMERAL.load(Ordering::SeqCst) {
+        return;
+    }
     entry["sessionId"] = json!(id);
     if matches!(entry["type"].as_str(), Some("user" | "assistant")) && entry["uuid"].is_null() {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -506,6 +518,8 @@ struct Args {
     permission_mode: Option<String>,
     /// The `--settings` JSON, whose `permissions.ask` names the tools a "guarded" call asks for.
     settings: Option<String>,
+    /// Started with `--tools ""`, as wheeld starts a voice agent.
+    voice_agent: bool,
 }
 
 async fn answer(turn: &mut Turn, args: &Args, text: &str) {
@@ -514,6 +528,14 @@ async fn answer(turn: &mut Turn, args: &Args, text: &str) {
         keep(&turn.session, entry.clone());
         turn.line(entry);
     };
+    if args.voice_agent {
+        if text.contains("slow voice") && !turn.pause(3000).await {
+            return out_of_time(turn);
+        }
+        let said = text.lines().nth(1).unwrap_or(text).trim().trim_end_matches(['.', '!', '?']);
+        turn.say(&format!("Voice says: {said}."));
+        return;
+    }
     if let Some(dump) = &args.replay {
         if !replay(turn, dump, args.replay_secs).await {
             out_of_time(turn);
@@ -966,6 +988,7 @@ async fn main() {
         model: None,
         permission_mode: None,
         settings: None,
+        voice_agent: false,
     };
     let mut words = all.into_iter().skip(1);
     while let Some(word) = words.next() {
@@ -994,6 +1017,8 @@ async fn main() {
             ("--model", Some(model)) => args.model = Some(model),
             ("--permission-mode", Some(mode)) => args.permission_mode = Some(mode),
             ("--settings", Some(settings)) => args.settings = Some(settings),
+            ("--tools", Some(tools)) => args.voice_agent = tools.is_empty(),
+            ("--no-session-persistence", _) => EPHEMERAL.store(true, Ordering::SeqCst),
             _ => {}
         }
     }

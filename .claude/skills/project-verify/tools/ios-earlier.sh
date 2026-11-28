@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# iOS earlier conversations (wheel-zxts.5.2): an agent pane draws the conversations it showed before its current one
-# above it, dimmed, each behind a divider with its title and a Resume button. Claude Code fixture stores under
+# iOS earlier conversations (wheel-zxts.5.2): an agent pane in the orchestrator's space draws the conversations it showed
+# before its current one above it, dimmed, each behind a divider with its title and a Resume button; an agent pane in
+# any other space draws none. The space's directory is the fixture's `orchestrator.dir`. Claude Code fixture stores under
 # CLAUDE_CONFIG_DIR hold C0, C1, C2 and C3 for the space's directory; the script resumes C0, C1, C2, then C3 in the space's one
 # agent pane, so `visited` is [C0, C1, C2, C3], and then deletes C0's transcript. The WheelPhoneUITests target
 # (apple/iOS/UITests/EarlierUITests.swift) checks three dividers in that order, the first one missing from the store
@@ -11,6 +12,7 @@
 # scheme for the simulator (see project-verify § iOS title menu). Run with `env -u WHEEL_SPACE -u WHEEL_PANE`.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/ios-ui-lib.sh"
+noplog() { ! plog "$1"; }
 
 mkdir -p "$SCR/proj"
 DIR="$(cd "$SCR/proj" && pwd -P)"
@@ -31,7 +33,7 @@ claude_line "$C3" "why does deploy-client hang" >"$CP/$C3.jsonl"
 
 PORT="$(pick_port)"; RPORT="$(PORT=$((PORT + 1)); while ! port_free "$PORT"; do PORT=$((PORT + 1)); done; echo "$PORT")"
 use_fake_agent
-printf '[remote]\nlisten = "127.0.0.1:%s"\n' "$RPORT" >>"$INST/wheel.toml"
+printf '[remote]\nlisten = "127.0.0.1:%s"\n[orchestrator]\ndir = "%s"\n' "$RPORT" "$DIR" >>"$INST/wheel.toml"
 start_daemon --state-file "$SCR/spaces.json"
 
 S="$(w space new "$DIR")"
@@ -40,6 +42,12 @@ w pane start "$P" agent >/dev/null
 visited() { w space ls | jq -r --arg p "$P" '[.spaces[] | .root | .. | objects | select(.node? == "pane" and .id == $p) | .visited // []] | first // [] | join(",")'; }
 for c in "$C0" "$C1" "$C2" "$C3"; do w agent resume "$P" "$c" >/dev/null || fail "resume $c"; done
 eq "visited is C0, C1, C2, C3" "$(visited)" "$C0,$C1,$C2,$C3"
+# An agent pane in an ordinary space, moved through two fresh conversations.
+mkdir -p "$SCR/other"
+S2="$(w space new "$SCR/other")"
+P2="$(w space ls | jq -r --arg s "$S2" '.spaces[] | select(.id==$s) | [.root | .. | select(.node? == "pane")][0].id')"
+w pane start "$P2" agent >/dev/null
+w agent new "$P2" >/dev/null || fail "new conversation in $P2"
 # C0 leaves the store, as a deleted transcript does.
 rm "$CP/$C0.jsonl"
 printf '%s %s %s %s' "$C0" "$C1" "$C2" "$C3" >"$SYNC/ids"
@@ -50,6 +58,7 @@ if step dividers; then
   check "the phone listed the earlier conversations" plog "pane $P earlier conversations: $C0,$C1,$C2"
   check "the phone read C1" plog "pane $P earlier $C1: [0-9]* events"
   check "the store lacks C0" plog "pane $P earlier $C0: not in the store"
+  check "the ordinary space's pane lists no earlier conversations" noplog "pane $P2 earlier"
   ack dividers
 fi
 if step resumed; then

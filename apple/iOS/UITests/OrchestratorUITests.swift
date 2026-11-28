@@ -29,11 +29,11 @@ final class OrchestratorUITests: XCTestCase {
         sync("before")
 
         // The script opened a space on the folder with an agent pane; its chat is the first page, with no pin
-        // sheet, no page dots and no agent header row.
+        // sheet, the chat as the only page and no agent header row.
         XCTAssertTrue(chat.waitForExistence(timeout: 30), "the orchestrator's chat is the first page")
         XCTAssertTrue(waitFor { !self.any("no orchestrator").exists }, "the empty state gives way to the chat")
         XCTAssertFalse(any("pin sheet").exists, "no pin sheet in Orchestrator mode")
-        XCTAssertFalse(any("page dots").exists, "no page dots in Orchestrator mode")
+        XCTAssertEqual(any("pages").value as? String, "[grid]", "the chat is the only page")
         XCTAssertFalse(chat.buttons["agent-header"].exists, "the chat has no agent header row")
         XCTAssertEqual(shownPage, "Orchestrator", "the chat is the shown page, with no page name under the title")
         XCTAssertTrue(chat.staticTexts["Message"].exists, "the composer says Message")
@@ -41,14 +41,15 @@ final class OrchestratorUITests: XCTestCase {
         shot("chat")
         sync("chat")
 
-        // One global orchestrator: the title is the mode menu with no space switcher under it, there is no eye, no
-        // search and no page handle, and the ⋯ holds its place.
-        XCTAssertEqual(title.value as? String, "Orchestrator", "the title is the mode menu on Orchestrator")
+        // One global orchestrator: the title is the mode toggle with no space switcher under it, the panes button sits
+        // left of the ⋯, there is no eye, no search and no page handle, and the ⋯ holds its place.
+        XCTAssertEqual(title.value as? String, "Orchestrator", "the title is the mode toggle on Orchestrator")
         XCTAssertFalse(app.buttons["space switcher"].exists, "no space switcher in Orchestrator mode")
+        XCTAssertTrue(app.buttons["panes"].exists, "Orchestrator mode has the panes button")
         XCTAssertFalse(app.buttons["agents"].exists, "Orchestrator mode has no eye")
         XCTAssertFalse(app.buttons["search"].exists, "Orchestrator mode has no search (wheel-eg4e.19.27)")
         let here = (title.frame, app.buttons["Pane menu"].frame)
-        XCTAssertFalse(app.otherElements["page handle"].exists, "Orchestrator mode has no page handle")
+        XCTAssertFalse(any("page handle").exists || any("page dots").exists, "Orchestrator mode has no page handle or dots")
         // The model menu is on the composer's row (design M10), the pane's only one, between the + and the mic.
         XCTAssertTrue(chat.buttons["model menu"].waitForExistence(timeout: 10), "the model menu is in the chat")
         XCTAssertEqual(app.buttons.matching(identifier: "model menu").count, 1, "one model menu on the screen")
@@ -73,11 +74,10 @@ final class OrchestratorUITests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "the composer raised the keyboard")
         let hide = app.buttons["hide keyboard"]
         XCTAssertTrue(waitFor { hide.isEnabled }, "the keyboard button is enabled while the keyboard is up")
-        // The composer sits on the keyboard: no page handle between them. XCUITest's keyboard frame starts under the
+        // The composer sits on the keyboard. XCUITest's keyboard frame starts under the
         // suggestion bar, so the script compares the chat's bottom with the top the app's keyboard notification gave.
         Thread.sleep(forTimeInterval: 1)
-        XCTAssertFalse(app.otherElements["page handle"].exists, "no page handle while the keyboard is up")
-        measure("keyboard-up")
+                measure("keyboard-up")
         try? "\(Int(chat.frame.maxY.rounded()))".write(toFile: "\(env["WHEEL_SYNC_DIR"] ?? "")/chat-bottom", atomically: true, encoding: .utf8)
         sync("keyboard")
         shot("keyboard")
@@ -159,7 +159,7 @@ final class OrchestratorUITests: XCTestCase {
         sync("fullscreen")
 
         // The orchestrator opens a pane in its space: it is a page after the chat, a swipe shows it under its own name,
-        // and still no dots show. One left swipe from the chat shows the space's first pane (design M9).
+        // and the pages element counts two. One left swipe from the chat shows the space's first pane (design M9).
         sync("spawn")
         swipePage()
         XCTAssertTrue(waitFor { self.shownPage != "Orchestrator" }, "a left swipe from the chat shows the first pane")
@@ -171,8 +171,8 @@ final class OrchestratorUITests: XCTestCase {
             swipes += 1
         }
         XCTAssertEqual(shownPage, "notes", "a swipe shows the pane the orchestrator opened, named under the title")
-        XCTAssertEqual(title.value as? String, "Orchestrator", "the title stays the mode menu on a pane page")
-        XCTAssertFalse(any("page dots").exists, "no page dots with two pages")
+        XCTAssertEqual(title.value as? String, "Orchestrator", "the title stays the mode toggle on a pane page")
+        XCTAssertEqual((any("pages").value as? String ?? "").split(separator: " ").count, 2, "two pages: \(any("pages").value as? String ?? "nil")")
         XCTAssertFalse(chat.isHittable, "the chat is off screen")
         // The floating button (wheel-eg4e.19.34): on every page but the chat, its value the orchestrator's state. A
         // drag to the left edge snaps it to the left; a tap shows the chat.
@@ -230,9 +230,10 @@ final class OrchestratorUITests: XCTestCase {
         // The orchestrator's space is an ordinary space: Spaces mode lists it in the title menu.
         pick("Spaces")
         XCTAssertTrue(app.buttons["Pane menu"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["agents"].exists, "Spaces mode keeps the eye")
-        XCTAssertEqual(title.frame.minX, here.0.minX, accuracy: 0.5, "the mode menu holds its place across the modes")
-        XCTAssertEqual(title.frame.midY, here.0.midY, accuracy: 0.5, "the mode menu holds its row across the modes")
+        XCTAssertTrue(app.buttons["panes"].exists, "Spaces mode has the panes button")
+        XCTAssertFalse(app.buttons["agents"].exists || app.buttons["search"].exists, "Spaces mode has no eye and no search")
+        XCTAssertEqual(title.frame.minX, here.0.minX, accuracy: 0.5, "the mode toggle holds its place across the modes")
+        XCTAssertEqual(title.frame.midY, here.0.midY, accuracy: 0.5, "the mode toggle holds its row across the modes")
         XCTAssertEqual(app.buttons["Pane menu"].frame, here.1, "the ⋯ holds its place across the modes")
         app.buttons["space switcher"].tap()
         XCTAssertTrue(app.buttons["space wheel"].waitForExistence(timeout: 10), "the title menu lists the first space")
@@ -262,10 +263,8 @@ final class OrchestratorUITests: XCTestCase {
             out += 1
         }
         XCTAssertEqual(shownPage, "notes", "the notes page shows before the relaunch")
-        app.terminate()
         // The pairing code is spent; the relaunch connects with the credential the first launch saved.
-        app.launchEnvironment.removeValue(forKey: "WHEEL_PAIR_JSON")
-        app.launch()
+        app.relaunchFromKeychain()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == 'Orchestrator'")).firstMatch.waitForExistence(timeout: 40), "Orchestrator mode restored")
         XCTAssertTrue(waitFor { self.shownPage == "notes" }, "the relaunch shows the notes page: \(shownPage)")
         XCTAssertTrue(float.waitForExistence(timeout: 5), "the floating button is over the notes page")
@@ -278,7 +277,7 @@ final class OrchestratorUITests: XCTestCase {
 
     private var chat: XCUIElement { app.otherElements["orchestrator chat"] }
     private var float: XCUIElement { app.buttons["orchestrator float"] }
-    /// The bar's title: the mode menu.
+    /// The bar's title: the mode toggle.
     private var title: XCUIElement { app.buttons["mode"] }
     /// The shown page's name under the title, "Orchestrator" on the chat, which shows none.
     private var shownPage: String {
@@ -288,13 +287,11 @@ final class OrchestratorUITests: XCTestCase {
 
     private func any(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
 
-    /// Pick `title` from the mode menu and wait for the button to show it.
+    /// Toggle to `title` (Spaces or Orchestrator) with a tap on the mode button, and wait for it to show it.
     private func pick(_ title: String) {
-        app.buttons["mode"].tap()
-        let row = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'agents' AND identifier != 'mode'", title)).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5), "the mode menu has \(title)")
-        row.tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch.waitForExistence(timeout: 5), "the button shows \(title)")
+        let shown = app.buttons.matching(NSPredicate(format: "identifier == 'mode' AND value == %@", title)).firstMatch
+        if !shown.exists { app.buttons["mode"].tap() }
+        XCTAssertTrue(shown.waitForExistence(timeout: 5), "the button shows \(title)")
     }
 
     /// Close the keyboard with the composer's button and wait until it is gone.
