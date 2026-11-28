@@ -6166,22 +6166,6 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             ensure!(hovered.is_array(), "moving over hit {} should hover the scene: {hovered}", hit["id"]);
             let body = plugin_body(window, pane, cx)?;
             cut_picture(window, body, body, &hover_png, cx)?;
-            if name == "beads" {
-                let before = plugin_preview(window, pane, cx)?["state"].clone();
-                gpui_input(window.into(), mouse("down", at(cx0, cy0), false), cx)?;
-                gpui_input(window.into(), mouse("up", at(cx0, cy0), false), cx)?;
-                let mut after = before.clone();
-                for _ in 0..50 {
-                    draw(window, None, cx)?;
-                    pump(connection, 50, layouts, window, cx).await?;
-                    after = plugin_preview(window, pane, cx)?["state"].clone();
-                    if after != before {
-                        break;
-                    }
-                }
-                ensure!(after != before, "a click on Beads hit {} reached no script state", hit["id"]);
-                out["beads_click"] = json!({"hit": hit["id"], "sel": after["sel"]});
-            }
             draw(window, None, cx)?;
             let cam = |cx: &mut AsyncApp| -> Result<Value> { Ok(plugin_preview(window, pane, cx)?["canvases"][&id]["camera"].clone()) };
             let s0 = cam(cx)?;
@@ -6198,6 +6182,23 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             let fitted = cam(cx)?;
             ensure!(fitted["auto"] == true, "Fit should fit the scene again: {fitted}");
             out["scene"] = json!({"hit": hit["id"], "zoom": [s0["s"], zoomed["s"]], "fit": fitted["auto"]});
+            if name == "beads" {
+                // Last: a click opens the bead's detail card, a Modal whose scrim covers the scene.
+                let before = plugin_preview(window, pane, cx)?["state"].clone();
+                gpui_input(window.into(), mouse("down", at(cx0, cy0), false), cx)?;
+                gpui_input(window.into(), mouse("up", at(cx0, cy0), false), cx)?;
+                let mut after = before.clone();
+                for _ in 0..50 {
+                    draw(window, None, cx)?;
+                    pump(connection, 50, layouts, window, cx).await?;
+                    after = plugin_preview(window, pane, cx)?["state"].clone();
+                    if after != before {
+                        break;
+                    }
+                }
+                ensure!(after != before, "a click on Beads hit {} reached no script state", hit["id"]);
+                out["beads_click"] = json!({"hit": hit["id"], "detail": after["detail"]});
+            }
         }
         eprintln!("wheel-gpui: {name}'s Canvas in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
