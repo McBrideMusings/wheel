@@ -1,9 +1,10 @@
 //! The native pane host of one window (wheel-kq6t.1): a slot view per native pane, a subview of
-//! GPUI's content view that the bridge adds the pane's content to (its WKWebView, browser or plugin
-//! view). Here each slot is placed, hidden, faded and masked around the cards and the overlay drawn
-//! over it, given the keyboard, and reached by the check's synthetic pointer. A press that lands in
-//! a slot reaches the GPUI view as a `pressed` frame, since GPUI never sees it.
-use super::main_thread;
+//! GPUI's content view that holds the pane's content: a browser or a plain web page made here
+//! (`web.rs`), or what the bridge adds (an artifact page, a plugin view). Here each slot is placed,
+//! hidden, faded and masked around the cards and the overlay drawn over it, given the keyboard,
+//! and reached by the check's synthetic pointer. A press that lands in a slot reaches the GPUI
+//! view as a `pressed` frame, since GPUI never sees it.
+use super::{main_thread, web::Pages};
 use block2::RcBlock;
 use futures::channel::mpsc::UnboundedSender;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::AnyObject};
@@ -11,6 +12,7 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSR
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSProcessInfo, NSRect, NSSize};
 use objc2_quartz_core::CAShapeLayer;
+use objc2_web_kit::WKWebView;
 use serde_json::{Map, Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -141,6 +143,8 @@ pub struct PaneHost {
     mouse_target: RefCell<Option<Retained<NSView>>>,
     mouse_number: Cell<isize>,
     press_monitor: RefCell<Option<Retained<AnyObject>>>,
+    /// The browsers and plain web pages in this window's slots.
+    pages: Rc<Pages>,
 }
 
 impl PaneHost {
@@ -150,6 +154,7 @@ impl PaneHost {
         let root = unsafe { Retained::retain(root.cast::<NSView>()) }.expect("the window's content view");
         let host = Rc::new(Self {
             root,
+            pages: Pages::new(frames.clone()),
             frames,
             slots: RefCell::default(),
             overlay: Cell::new(None),
@@ -213,6 +218,11 @@ impl PaneHost {
         self.overlay.get().into_iter().chain(slot.ivars().holes_top.borrow().iter().map(|a| self.rect_from_top(*a))).collect()
     }
 
+    /// The WKWebView a slot holds, made here or by the bridge.
+    fn web_view(slot: &Slot) -> Option<Retained<WKWebView>> {
+        slot.subviews().firstObject().and_then(|v| v.downcast::<WKWebView>().ok())
+    }
+
     /// The view the window's hit test reaches at `point` (the window's top left).
     fn view_at(&self, point: NSPoint) -> Option<Retained<NSView>> {
         let superview = unsafe { self.root.superview() };
@@ -268,6 +278,7 @@ impl Host for PaneHost {
     }
 
     fn close(&self, pane: &str) {
+        self.pages.close(pane);
         if let Some(slot) = self.slots.borrow_mut().remove(pane) {
             slot.removeFromSuperview();
         }
@@ -278,6 +289,7 @@ impl Host for PaneHost {
             // SAFETY: the monitor `addLocalMonitorForEventsMatchingMask_handler` returned.
             unsafe { NSEvent::removeMonitor(&monitor) };
         }
+        self.pages.close_all();
         for (_, slot) in self.slots.borrow_mut().drain() {
             slot.removeFromSuperview();
         }
@@ -355,6 +367,48 @@ impl Host for PaneHost {
             })
             .collect();
         (panes, self.overlay.get().map(top))
+    }
+
+    fn open_page(&self, pane: &str, browser: bool, url: &str, remote: bool) {
+        self.slot(pane);
+        let Some(slot) = self.slots.borrow().get(pane).cloned() else { return };
+        self.pages.open(pane, &slot, browser, url, remote);
+    }
+
+    fn close_page(&self, pane: &str) {
+        self.pages.close(pane);
+    }
+
+    fn browser(&self, pane: &str, action: &str, value: &Value) {
+        self.pages.browser(pane, action, value);
+    }
+
+    fn reload(&self, pane: &str) -> bool {
+        self.pages.reload(pane)
+    }
+
+    fn render(&self, id: u64, pane: &str, full: bool) -> bool {
+        let Some(view) = self.slots.borrow().get(pane).and_then(|s| Self::web_view(s)) else { return false };
+        self.pages.render(id, &view, full);
+        true
+    }
+
+    fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
+        self.pages.inspect(id, pane, action, arg);
+    }
+
+    fn snapshot(&self, directory: &str) {
+        self.pages.clear_waiting();
+        let shown: Vec<(String, Retained<WKWebView>)> =
+            self.slots.borrow().iter().filter(|(_, s)| !s.isHidden()).filter_map(|(id, s)| Self::web_view(s).map(|v| (id.clone(), v))).collect();
+        for (pane, view) in shown {
+            self.pages.snapshot_to(&pane, &view, directory);
+        }
+    }
+
+    fn pages(&self) -> (Map<String, Value>, Value) {
+        let responder = self.root.window().and_then(|w| w.firstResponder()).and_then(|r| r.downcast::<NSView>().ok());
+        self.pages.report(responder.as_deref())
     }
 }
 

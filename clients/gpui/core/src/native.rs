@@ -1,9 +1,11 @@
 //! Rust side of native/Bridge.swift: loads the bridge library and speaks its JSON command ABI.
-//! The bridge makes each native pane's content (a WKWebView, a browser, a plugin pane's view) and
-//! adds it to the slot view the window's [`Host`] made for the pane; the host places, masks and
-//! focuses the slots. All calls run on the main thread. The bridge also speaks first: a
+//! The window's [`Host`] makes a slot view per native pane and places, masks and focuses it; it
+//! also makes browser panes and plain web panes itself (WKWebViews from Rust), and draws and
+//! snapshots every WKWebView in a slot. The bridge adds the rest of the native panes' content (an
+//! artifact page, a plugin pane's view) to their slots. All calls run on the main thread. A
 //! browser pane's state, its reports for wheeld and the answers to the daemon requests the view
-//! relayed arrive as frames through the callback `attach` is given, each read as a [`Frame`].
+//! relayed arrive as frames on the window's channel, from the host or through the callback
+//! `attach` is given, each read as a [`Frame`].
 use anyhow::{Context as _, Result};
 use futures::channel::mpsc as fmpsc;
 use serde::{Deserialize, Serialize};
@@ -98,6 +100,25 @@ pub trait Host {
     fn hit(&self, point: [f64; 2]) -> (Option<String>, Option<String>);
     /// Each slot's facts by pane (`frame_top`, `hidden`, `alpha`, `masked`, `holes`, `mask_rects`) and the overlay's rect.
     fn facts(&self) -> (serde_json::Map<String, Value>, Option<[f64; 4]>);
+    /// Show a browser on `url` (`browser`), else a web pane on the plain URL `url`, in `pane`'s
+    /// slot. Opening a browser again makes `url` its home; a web pane again on another URL loads it.
+    /// `remote` says wheeld runs on another machine, so a file page names a path this Mac lacks.
+    fn open_page(&self, pane: &str, browser: bool, url: &str, remote: bool);
+    /// Drop `pane`'s browser or web page, keeping its slot.
+    fn close_page(&self, pane: &str);
+    /// One of a browser's actions (see [`Native::browser`]), with its fields in `value`.
+    fn browser(&self, pane: &str, action: &str, value: &Value);
+    /// `pane_reload` on a browser or web page; false when `pane` holds neither.
+    fn reload(&self, pane: &str) -> bool;
+    /// `render_pane` `id` when `pane`'s slot holds a WKWebView, answered with a frame; false when it holds none.
+    fn render(&self, id: u64, pane: &str, full: bool) -> bool;
+    /// `inspect_pane` `id` on a browser's page, answered with a frame.
+    fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>);
+    /// The check's snapshot of every shown WKWebView, each written to `<directory>/<pane>-web.png`.
+    fn snapshot(&self, directory: &str);
+    /// Each page's status entry by pane (`kind`, `url`, `loads` and the rest), and the window's own
+    /// (`snapshots_pending`, `snapshots_waiting`, `logs`, `errors`).
+    fn pages(&self) -> (serde_json::Map<String, Value>, Value);
 }
 
 /// One synthesized pointer event (the check's and the debug route's `post_mouse`). A context menu
@@ -199,13 +220,44 @@ impl Native {
                 let (class, pane) = h.hit(point);
                 json!({"class": class.unwrap_or_else(|| "nil".into()), "pane": pane})
             }
+            (Some("open"), Some(h)) => {
+                let pane = value["pane"].as_str().unwrap_or_default();
+                let browser = value["kind"] == "browser";
+                if browser || (value["kind"] == "web" && value["artifact"].is_null()) {
+                    self.bridge_call(json!({"op":"close","pane":pane}));
+                    h.open_page(pane, browser, value["url"].as_str().unwrap_or(if browser { "about:blank" } else { "" }), value["remote"] == true);
+                    return self.status();
+                }
+                h.close_page(pane);
+                self.with_facts(self.bridge_call(value))
+            }
+            (Some("close"), Some(h)) => {
+                h.close_page(value["pane"].as_str().unwrap_or_default());
+                self.with_facts(self.bridge_call(value))
+            }
+            (Some("browser"), Some(h)) => {
+                h.browser(value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), &value);
+                self.status()
+            }
+            (Some("reload"), Some(h)) if h.reload(value["pane"].as_str().unwrap_or_default()) => self.status(),
+            (Some("render"), Some(h)) if h.render(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["full"] == true) => self.status(),
+            (Some("inspect"), Some(h)) => {
+                h.inspect(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), value["arg"].as_str());
+                self.status()
+            }
+            (Some("snapshot"), Some(h)) => {
+                h.snapshot(value["directory"].as_str().unwrap_or_default());
+                self.status()
+            }
             _ => self.with_facts(self.bridge_call(value)),
         }
     }
-    /// The bridge's reply with each pane's slot facts and the overlay folded in, where it lists panes.
+    /// The bridge's reply with the host's pages and each pane's slot facts and the overlay folded in, where it lists panes.
     fn with_facts(&self, mut reply: Value) -> Value {
         let Some(host) = self.host() else { return reply };
         if let Some(panes) = reply.get_mut("panes").and_then(Value::as_object_mut) {
+            let (pages, own) = host.pages();
+            panes.extend(pages);
             let (facts, overlay) = host.facts();
             for (pane, entry) in panes.iter_mut() {
                 if let (Some(into), Some(Value::Object(from))) = (entry.as_object_mut(), facts.get(pane)) {
@@ -213,6 +265,16 @@ impl Native {
                 }
             }
             reply["overlay"] = json!(overlay);
+            for key in ["snapshots_pending", "snapshots_waiting"] {
+                reply[key] = own[key].clone();
+            }
+            for key in ["logs", "errors"] {
+                let mine = own[key].as_array().cloned().unwrap_or_default();
+                match reply[key].as_array_mut() {
+                    Some(list) => list.extend(mine),
+                    None => reply[key] = Value::Array(mine),
+                }
+            }
         }
         reply
     }
@@ -229,7 +291,7 @@ impl Native {
     pub fn status(&self) -> Value {
         self.call(json!({"op":"status"}))
     }
-    /// Show an artifact page in a WKWebView for `pane`; opening it again with a new URL navigates.
+    /// Show the page at `url` in a WKWebView for `pane`; opening it again with a new URL navigates.
     pub fn open_web(&self, pane: &str, url: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","url":url,"slot":self.slot(pane)}));
     }
@@ -249,10 +311,9 @@ impl Native {
     pub fn open_agent_view(&self, pane: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
     }
-    /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
-    /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
-    /// names a path this Mac does not have. Opening it again sends the pane to `url` as the daemon
-    /// would.
+    /// Show a browser pane on `url` (ADR-0005), made by the window's host. `remote` says wheeld
+    /// runs on another machine, so a file page names a path this Mac does not have. Opening it
+    /// again makes `url` the pane's home.
     pub fn open_browser(&self, pane: &str, url: &str, remote: bool) {
         self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote,"slot":self.slot(pane)}));
     }
@@ -266,11 +327,11 @@ impl Native {
         }
         self.call(value);
     }
-    /// wheeld's `render_pane` `id`: the bridge draws `pane` and answers through a frame.
+    /// wheeld's `render_pane` `id`: the host draws a WKWebView, the bridge a plugin pane, and either answers through a frame.
     pub fn render(&self, id: u64, pane: &str, full: bool) {
         self.call(json!({"op":"render","id":id,"pane":pane,"full":full}));
     }
-    /// wheeld's `inspect_pane` `id`: the bridge runs `action` on `pane`'s page (or, for `open`, sends the pane's browser to the page `arg`) and answers through a frame.
+    /// wheeld's `inspect_pane` `id`: the host runs `action` on `pane`'s browser page (or, for `open`, sends the browser to the page `arg`) and answers through a frame.
     pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
         self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
     }
@@ -318,7 +379,7 @@ impl Native {
     }
 }
 
-/// A browser pane's chrome state, as the bridge last emitted it (WheelUI's `BrowserPane`).
+/// A browser pane's chrome state, as the host last sent it.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct BrowserState {
     pub pane: String,
@@ -341,8 +402,8 @@ pub struct Failure {
     pub message: String,
 }
 
-/// What the bridge says on its own: a browser pane's state (`browser`), its reports for wheeld
-/// (`typed`, `console`), or the answer to a daemon request the view relayed.
+/// What the host or the bridge says on its own: a browser pane's state (`browser`), its reports
+/// for wheeld (`typed`, `console`), or the answer to a daemon request the view relayed.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Frame {

@@ -2,12 +2,14 @@
 //! where its windows sit on screen. Each piece is a typed Rust call on the main thread, never an op of the Swift bridge's JSON ABI.
 pub mod clipboard;
 pub mod dialogs;
+pub mod film;
 pub mod images;
 pub mod live_resize;
 pub mod motion;
 pub mod pane_host;
 pub mod read_aloud;
 pub mod status_item;
+pub mod web;
 pub mod window;
 
 pub use dialogs::{Alert, Answer, Dialogs, MenuItem};

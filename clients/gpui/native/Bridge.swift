@@ -9,10 +9,11 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-// The native half of the GPUI client: real WKWebView and plugin views, one per pane id, each in
-// the slot view the Rust pane host made for the pane (clients/gpui/src/appkit/pane_host.rs), which
-// places, masks and focuses it. Every C entrypoint is called on the main thread. Panes are opened
-// and closed by JSON commands; the Rust side owns what each pane is.
+// The native half of the GPUI client: artifact pages' WKWebViews and plugin views, one per pane id,
+// each in the slot view the Rust pane host made for the pane (clients/gpui/src/appkit/pane_host.rs),
+// which places, masks and focuses it; browser and plain web panes are made there too (web.rs).
+// Every C entrypoint is called on the main thread. Panes are opened and closed by JSON commands;
+// the Rust side owns what each pane is.
 
 @MainActor final class PaneHost {
     let id: String
@@ -38,10 +39,6 @@ import WheelUI
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
-    /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
-    /// GPUI view draws the chrome from the state the bridge emits on every change.
-    var browser: BrowserPane?
-    var browserChanges: AnyCancellable?
     init(id: String, kind: String, slot: NSView) { self.id = id; self.kind = kind; self.slot = slot }
     var content: NSView { pluginView ?? web! }
 }
@@ -363,15 +360,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pluginBackoff: UInt64 = 1
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
-    /// What the browser models logged, the last 200 lines, for the check's report.
-    var logs: [String] = []
-    func log(_ line: String) {
-        logs.append(line)
-        if logs.count > 200 { logs.removeFirst(logs.count - 200) }
-    }
     var heldBeforeKey: String?
-    /// The panes whose WKWebView snapshot has not answered yet.
-    var snapshotsPending: Set<String> = []
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
@@ -397,8 +386,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return event
         }
     }
-    /// Send one JSON object to the Rust side: a browser pane's state or report, or the answer to a
-    /// daemon request the Rust side relayed.
+    /// Send one JSON object to the Rust side: a plugin pane's state, or the answer to a daemon
+    /// request the Rust side relayed.
     func emit(_ value: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
         string.withCString { emitter(window, $0) }
@@ -709,8 +698,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let kind = value["kind"] as! String
         let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
         if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
-            if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
-            if kind == "browser", let url = value["url"] as? String { existing.browser?.homeIs(url) }
             return
         }
         close(id)
@@ -754,34 +741,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             requestSource(host)
             return
         }
-        if kind == "browser" {
-            // The model asks what typed text means and relays the page's console through the Rust
-            // side, which owns the connection to wheeld; it reports no navigation.
-            let browser = BrowserPane(pane: id, url: value["url"] as? String ?? "about:blank", daemonIsRemote: value["remote"] as? Bool == true,
-                log: { [weak self] in self?.log($0) },
-                ask: { [weak self] in self?.emit(["event": "typed", "pane": id, "text": $0]) },
-                console: { [weak self] reset, entries in
-                    let list = entries.map { e -> [String: Any] in
-                        var o: [String: Any] = ["time": e.time, "level": e.level, "text": e.text]
-                        if let url = e.url { o["url"] = url }
-                        if let line = e.line { o["line"] = line }
-                        return o
-                    }
-                    self?.emit(["event": "console", "pane": id, "reset": reset, "entries": list])
-                })
-            host.browser = browser
-            host.web = browser.view
-            host.url = browser.url
-            host.slot.addSubview(browser.view)
-            // Every change of the chrome's state goes to the GPUI view once the change has landed.
-            host.browserChanges = browser.objectWillChange.receive(on: RunLoop.main).sink { [weak self, weak host] _ in
-                guard let self, let host else { return }
-                self.emit(self.browserState(host))
-            }
-            panes[id] = host
-            emit(browserState(host))
-            return
-        }
         if kind == "web" {
             let config = WKWebViewConfiguration()
             let artifact = (value["artifact"] as? String).flatMap { name in (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)).map { ArtifactRef(scope: $0, name: name) } }
@@ -805,39 +764,12 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 host.pageURL = page
                 host.url = page.absoluteString
                 web.load(URLRequest(url: page))
-            } else if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
+            }
         }
         panes[id] = host
     }
-    /// What the GPUI view draws a browser pane's chrome from.
-    func browserState(_ host: PaneHost) -> [String: Any] {
-        guard let b = host.browser else { return [:] }
-        var o: [String: Any] = ["event": "browser", "pane": host.id, "url": b.url, "address": b.address, "title": b.title, "loading": b.loading,
-            "progress": b.progress, "can_go_back": b.canGoBack, "can_go_forward": b.canGoForward]
-        if let f = b.failure { o["failure"] = ["address": f.address, "message": f.message] }
-        return o
-    }
-    /// `back`, `forward`, `reload`, `stop`, `clear_failure`, `open` (typed text), `opened` and
-    /// `refused` (the daemon's answers to typed text), `home_is` (the pane's home in the layout) and `go_home`.
-    func browser(_ value: [String: Any]) {
-        guard let host = panes[value["pane"] as! String], let browser = host.browser else { return }
-        switch value["action"] as? String {
-        case "back": browser.back()
-        case "forward": browser.forward()
-        case "reload": browser.reload()
-        case "stop": browser.stop()
-        case "clear_failure": browser.clearFailure()
-        case "open": browser.open(typed: value["text"] as? String ?? "")
-        case "opened": browser.opened(value["url"] as? String ?? "")
-        case "refused": browser.refused(typed: value["text"] as? String ?? "", value["message"] as? String ?? "")
-        case "home_is": browser.homeIs(value["url"] as? String ?? "")
-        case "go_home": browser.goHome()
-        default: break
-        }
-    }
-    /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
-    /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a plugin pane is its view's pixels.
+    /// `render_pane` relayed by the Rust side for a plugin pane: its view's pixels as a PNG,
+    /// answered through `emit` with `rendered` or `refused`. The pane host draws a WKWebView pane itself.
     func render(_ value: [String: Any]) {
         let id = value["id"] as! UInt64
         let pane = value["pane"] as! String
@@ -858,7 +790,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 guard let self else { return }
                 var parts: [(NSRect, NSImage)] = []
                 for web in Self.subviews(of: view, ofType: WKWebView.self) where !web.isHiddenOrHasHiddenAncestor && !web.bounds.isEmpty {
-                    if case let .success(image) = await BrowserInspect.shotPage(web, full: false) { parts.append((view.convert(web.bounds, from: web), image)) }
+                    if let image = await Self.shot(web) { parts.append((view.convert(web.bounds, from: web), image)) }
                 }
                 for terminal in Self.subviews(of: view, ofType: DropTerminalView.self) where !terminal.isHiddenOrHasHiddenAncestor && !terminal.bounds.isEmpty {
                     if let image = self.terminalPixels(terminal) { parts.append((view.convert(terminal.bounds, from: terminal), image)) }
@@ -876,15 +808,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 guard let png = rep.representation(using: .png, properties: [:]) else { self.emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
                 self.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
             }
-        } else if let web = host.web {
-            Task { @MainActor [weak self] in
-                switch await BrowserInspect.shotPage(web, full: value["full"] as? Bool == true) {
-                case let .success(image):
-                    guard let png = BrowserInspect.png(image) else { self?.emit(["answer": "refused", "id": id, "message": "the drawing could not be encoded as a PNG"]); return }
-                    self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-                case let .failure(refusal): self?.emit(["answer": "refused", "id": id, "message": refusal.message])
-                }
-            }
         } else {
             emit(["answer": "refused", "id": id, "message": "the GPUI client draws this pane itself; its picture is not served yet"])
         }
@@ -893,45 +816,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     static func subviews<T: NSView>(of view: NSView, ofType: T.Type) -> [T] {
         view.subviews.flatMap { ($0 as? T).map { [$0] } ?? subviews(of: $0, ofType: T.self) }
     }
-    /// `inspect_pane` relayed by the Rust side, on a browser pane's page: answered through `emit`
-    /// with `inspected`, `rendered`, `recorded` or `refused`.
-    func inspect(_ value: [String: Any]) {
-        let id = value["id"] as! UInt64
-        let pane = value["pane"] as! String
-        let arg = value["arg"] as? String
-        guard let browser = panes[pane]?.browser else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
-        // `where` reads the page this browser is on and changes nothing.
-        if value["action"] as? String == "where" {
-            emit(["answer": "inspected", "id": id, "text": BrowserInspect.place(url: browser.url, title: browser.title)])
-            return
-        }
-        // `open` sends this browser to a page; the rest run in the page.
-        if value["action"] as? String == "open" {
-            guard let arg, !arg.isEmpty else { emit(["answer": "refused", "id": id, "message": "open needs a page"]); return }
-            browser.opened(arg)
-            emit(["answer": "inspected", "id": id, "text": ""])
-            return
-        }
-        let web = browser.view
-        Task { @MainActor [weak self] in
-            switch await BrowserInspect.run(value["action"] as? String ?? "", arg: arg, in: web) {
-            case let .text(text): self?.emit(["answer": "inspected", "id": id, "text": text])
-            case let .png(png): self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-            case let .film(film): self?.emit(["answer": "recorded", "id": id, "mov": film.mov.base64EncodedString(), "frames": film.frames, "millis": film.millis])
-            case let .refused(message): self?.emit(["answer": "refused", "id": id, "message": message])
-            }
-        }
+    /// The part of `web` in view as WebKit draws it, or nil when it drew nothing.
+    static func shot(_ web: WKWebView) async -> NSImage? {
+        await withCheckedContinuation { continuation in web.takeSnapshot(with: nil) { image, _ in continuation.resume(returning: image) } }
     }
-    /// `pane_reload`: a browser reloads the page it is on, a plugin pane runs its script again from the top, and an
-    /// artifact page opens its address again rather than `WKWebView.reload()`, which does nothing when the first load
-    /// never committed (the daemon was down).
+    /// `pane_reload`: a plugin pane runs its script again from the top, and an artifact page opens its address again
+    /// rather than `WKWebView.reload()`, which does nothing when the first load never committed (the daemon was down).
     func reload(_ id: String) {
         guard let host = panes[id] else { return }
-        if let browser = host.browser {
-            host.reloads += 1
-            browser.reload()
-            return
-        }
         if let plugin = host.plugin {
             host.reloads += 1
             plugin.restart()
@@ -1146,14 +1038,13 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let host = panes.values.first(where: { $0.web === webView }) else { return }
-        // A browser pane's view answers to its model's delegate, not this one.
         host.loads.append(webView.title ?? "")
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak host] result, _ in
             MainActor.assumeIsolated { host?.text = result as? String }
         }
     }
     /// An artifact page stays inside its pane's folder on the daemon; a link anywhere else opens in
-    /// the default browser (WebPane.swift's rules). A browser pane's view navigates freely.
+    /// the default browser (WebPane.swift's rules).
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let host = panes.values.first(where: { $0.web === webView }), let page = host.pageURL else { return .allow }
         guard let target = action.request.url else { return .cancel }
@@ -1182,10 +1073,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
         return NSImage(cgImage: cg, size: CGSize(width: width, height: height))
     }
-    func png(_ image: NSImage?, _ path: String) -> Bool {
-        guard let tiff = image?.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-        do { try png.write(to: URL(fileURLWithPath: path)); return true } catch { errors.append(error.localizedDescription); return false }
-    }
 
     // MARK: commands
     func command(_ value: [String: Any]) -> [String: Any] {
@@ -1193,9 +1080,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "open": open(value)
         case "close": close(value["pane"] as! String)
         case "reload": reload(value["pane"] as! String)
-        case "browser": browser(value)
         case "render": render(value)
-        case "inspect": inspect(value)
         case "pane_targets":
             var targets: [String: [String: String]] = [:]
             for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }
@@ -1297,26 +1182,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             guard let item = Self.menuItem(NSApp.mainMenu, key: key, modifiers: .command), let action = item.action else { return ["sent": false, "item": NSNull()] }
             guard let target = Self.target(for: action, from: root.window), Self.validates(target, item) else { return ["sent": false, "item": item.title] }
             return ["sent": NSApp.sendAction(action, to: target, from: item), "item": item.title, "target": String(describing: type(of: target))]
-        case "snapshot":
-            let directory = value["directory"] as! String
-            snapshotsPending = []
-            for host in panes.values where !host.slot.isHidden {
-                if let web = host.web, web.url == nil || web.url?.absoluteString == "about:blank" {
-                    // A view showing no page has nothing for WebKit to snapshot, and its snapshot can
-                    // go unanswered: AppKit draws it instead.
-                    if let rep = web.bitmapImageRepForCachingDisplay(in: web.bounds) {
-                        web.cacheDisplay(in: web.bounds, to: rep)
-                        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: "\(directory)/\(host.id)-web.png")) }
-                    }
-                } else if let web = host.web {
-                    snapshotsPending.insert(host.id)
-                    web.takeSnapshot(with: nil) { image, error in
-                        _ = self.png(image, "\(directory)/\(host.id)-web.png")
-                        if let error { self.errors.append(error.localizedDescription) }
-                        self.snapshotsPending.remove(host.id)
-                    }
-                }
-            }
         default: break
         }
         return status()
@@ -1324,25 +1189,18 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
     func status() -> [String: Any] {
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
-            "snapshots_pending": snapshotsPending.count,
-            "snapshots_waiting": snapshotsPending.sorted(),
             "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
             "app_active": NSApp.isActive, "native_subviews": root.subviews.count,
-            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends, "logs": logs]
+            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends]
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
             // Where the slot sits and what is cut out of it the Rust pane host adds.
             var entry: [String: Any] = ["kind": host.kind,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
-            if let b = host.browser {
-                entry["url"] = b.url; entry["title"] = b.title; entry["loading"] = b.loading; entry["can_go_back"] = b.canGoBack
-                entry["can_go_forward"] = b.canGoForward; entry["status"] = b.status ?? NSNull(); entry["text"] = b.text ?? ""
-                entry["failure"] = b.failure.map { ["address": $0.address, "message": $0.message] } ?? NSNull()
-                entry["loads"] = host.loads
-            } else if host.kind == "web" {
+            if host.kind == "web" {
                 entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
                 entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
             } else if let p = host.plugin {
