@@ -245,7 +245,8 @@ impl Draw<'_> {
                 _ => {}
             }
         }
-        let body = self.component(n, Env { in_row: false, ..inner }, env, cx);
+        // Inside the node's own wrapper, a column, a greedy piece stretches across; only the wrapper sits in the parent.
+        let body = self.component(n, Env { in_row: false, ..inner }, Env { in_row: false, ..env }, cx);
         let (modified, wide) = self.modify(n, body, env, cx);
         // A borderless Button lights up under the pointer unless a `hoverEffect` modifier says otherwise.
         let lit = n.component == "Button" && n.string("variant") == Some("borderless") && !n.modifiers().any(|m| m.contains_key("hoverEffect")) && !inner.disabled;
@@ -452,7 +453,7 @@ impl Draw<'_> {
             }
             el = match self.modifier(n, i, name, arg, el, env, inner_wide, cx) {
                 Ok(e) => e,
-                Err(e) => div().relative().when(wide, |d| greedy(d, env)).child(e).child(div().absolute().top_0().right_0().text_size(px(10.)).text_color(rgba(pane_color("red").unwrap())).child(format!("⚠︎ {name}"))).into_any_element(),
+                Err(e) => div().relative().when(wide, |d| greedy(d, Env { in_row: false, ..env })).child(e).child(div().absolute().top_0().right_0().text_size(px(10.)).text_color(rgba(pane_color("red").unwrap())).child(format!("⚠︎ {name}"))).into_any_element(),
             };
         }
         (el, wide)
@@ -464,7 +465,7 @@ impl Draw<'_> {
         // A wrapper hugs its content, or takes the width when its content does.
         let wrap = || {
             let d = div().flex().flex_col().items_start();
-            if wide { greedy(d, env) } else { d }
+            if wide { greedy(d, Env { in_row: false, ..env }) } else { d }
         };
         let color = |a: &Json| a.as_str().and_then(pane_color);
         Ok(match name {
@@ -486,7 +487,7 @@ impl Draw<'_> {
                 Some([t, r, b, l]) => wrap().pt(px(t)).pr(px(r)).pb(px(b)).pl(px(l)).child(el).into_any_element(),
                 None => return Err(el),
             },
-            "frame" => match arg.as_object() { Some(d) => frame(d, el, env, wide), None => return Err(el) },
+            "frame" => match arg.as_object() { Some(d) => frame(d, el, Env { in_row: false, ..env }, env.in_row, wide), None => return Err(el) },
             "overlay" => match arg.get("stroke").and_then(color) {
                 Some(c) => {
                     let r = arg.get("cornerRadius").and_then(Json::as_f64).unwrap_or(0.) as f32;
@@ -549,7 +550,7 @@ fn font_of(arg: &Json) -> Option<(f32, f32)> {
 
 /// `frame`'s box around `el`: its sizes, and its content placed by `alignment` (leading when
 /// absent, as WheelUI's frame defaults, not SwiftUI's centre).
-fn frame(d: &Map<String, Json>, el: gpui::AnyElement, env: Env, wide: bool) -> gpui::AnyElement {
+fn frame(d: &Map<String, Json>, el: gpui::AnyElement, env: Env, in_row: bool, wide: bool) -> gpui::AnyElement {
     let len = |k: &str| d.get(k).and_then(|v| if v.as_str() == Some("infinity") { Some(f32::INFINITY) } else { v.as_f64().map(|f| f as f32) });
     let mut b = div().flex().flex_col();
     b = match d.get("alignment").and_then(Json::as_str) {
@@ -570,7 +571,7 @@ fn frame(d: &Map<String, Json>, el: gpui::AnyElement, env: Env, wide: bool) -> g
         None => {}
     }
     match len("maxHeight") {
-        Some(h) if h.is_infinite() => b = if env.in_row { b.h_full() } else { b.flex_1().min_h_0() },
+        Some(h) if h.is_infinite() => b = if in_row { b.h_full() } else { b.flex_1().min_h_0() },
         Some(h) => b = b.max_h(px(h)),
         None => {}
     }

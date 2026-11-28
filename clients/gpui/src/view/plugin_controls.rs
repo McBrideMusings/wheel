@@ -352,7 +352,7 @@ impl Draw<'_> {
         };
         let count = table_lines(self.tree, n, if page_sorts { None } else { sort.as_ref() }).len();
         let width_of = |c: &serde_json::Map<String, Json>| c.get("width").and_then(Json::as_f64).map(|w| w as f32);
-        let sized = |d: gpui::Div, c: &serde_json::Map<String, Json>| match width_of(c) { Some(w) => d.w(px(w)).flex_none(), None => d.flex_1().min_w_0() };
+        let sized = |d: gpui::Div, c: &serde_json::Map<String, Json>| match width_of(c) { Some(w) => d.w(px(w)).min_w(px(w.min(40.))), None => d.flex_1().min_w_0() };
         let mut header = div().flex().flex_row().h(px(28.)).items_center().border_b_1().border_color(rgba(pane_color("separator").unwrap())).text_size(px(12.)).text_color(rgba(SECONDARY));
         for (ci, c) in cols.iter().enumerate() {
             let key = c.get("key").and_then(Json::as_str).unwrap_or("").to_owned();
@@ -386,7 +386,7 @@ impl Draw<'_> {
         let selected: Vec<&str> = n.props.get("selected").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).collect();
         let first = cols.first().and_then(|c| c.get("key")).and_then(Json::as_str).unwrap_or("");
         let env = Env { color: 0xffffffd9, size: BODY, disabled: false, in_row: true, in_form: false };
-        let sized = |d: gpui::Div, c: &serde_json::Map<String, Json>| match c.get("width").and_then(Json::as_f64) { Some(w) => d.w(px(w as f32)).flex_none(), None => d.flex_1().min_w_0() };
+        let sized = |d: gpui::Div, c: &serde_json::Map<String, Json>| match c.get("width").and_then(Json::as_f64) { Some(w) => d.w(px(w as f32)).min_w(px((w as f32).min(40.))), None => d.flex_1().min_w_0() };
         let mut out = vec![];
         for ix in range {
             let Some(line) = lines.get(ix) else { break };
