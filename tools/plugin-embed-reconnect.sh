@@ -2,7 +2,7 @@
 # Check wheel-pmf2.2.8: a plugin pane's embedded terminal and agent chat attach again after wheeld restarts.
 # A throwaway wheeld running the fake agent, a plugin pane on the embed fixture (a terminal pane of the space
 # and the first agent pane's chat inside the page), and the hidden GPUI app (never shown, never focused) attached.
-# Case 1: after the restart the embedded terminal attaches to the term the new pane_targets name, and a
+# Case 1: after the restart the embedded terminal attaches to the term the new layout names, and a
 #         `wheel term send` echo reaches it (the /plugin query's embeds lists the term and its bytes grow).
 # Case 2: after the restart the embedded agent chat shows the agent again with no error.
 #

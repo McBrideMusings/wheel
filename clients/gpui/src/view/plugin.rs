@@ -634,11 +634,11 @@ impl Client {
         true
     }
 
-    /// The bridge's `plugin` op on plugin pane `pane` (Bridge.swift): `args.action` is `state`,
-    /// `press`, `hover`, `set`, `raise`, `scroll`, `agent_send`, `stream_key` or `stream_click`,
-    /// with `component`, `value`, `key`, `context`, `to` and `dy` as the bridge reads them. The reply
-    /// is the bridge's: `ok` and the pane's state ([`Client::plugin_state`]), or `ok` false and a
-    /// `message` when no plugin pane `pane` runs here.
+    /// The `plugin` op on plugin pane `pane` (the debug server's `/plugin`, the check): `args.action`
+    /// is `state`, `press`, `hover`, `set`, `raise`, `scroll`, `agent_send`, `stream_key` or
+    /// `stream_click`, with `component`, `value`, `key`, `context`, `to` and `dy`. The reply is `ok`
+    /// and the pane's state ([`Client::plugin_state`]), or `ok` false and a `message` when no plugin
+    /// pane `pane` runs here.
     pub fn plugin_op(&mut self, pane: &str, args: &Json, cx: &mut Context<Self>) -> Json {
         if !self.plugins.contains_key(pane) {
             return serde_json::json!({"ok": false, "message": "no plugin pane"});
@@ -674,7 +674,7 @@ impl Client {
         reply
     }
 
-    /// Plugin pane `pane` as the bridge's `plugin` op answers: the script's state, error, reloads,
+    /// Plugin pane `pane` as the `plugin` op answers: the script's state, error, reloads,
     /// restarts, components and feeds, whether it fills the pane, the hover held and the nodes the
     /// last draw lit, the last render's cost, the pane's own scroll (null when it fills the pane or
     /// has not laid out) and its embeds.

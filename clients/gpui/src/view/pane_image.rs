@@ -1,6 +1,6 @@
-//! The header's Copy Pane Image (AppModel.copyPaneImage): the bridge draws the pane as `wheel pane
-//! shot` does, with its native terminal or page contents, the PNG goes on the clipboard, and a
-//! notice says which pane; a later copy replaces the notice and restarts its 3 s. A pane with no
+//! The header's Copy Pane Image (AppModel.copyPaneImage): the pane is drawn as `wheel pane shot`
+//! draws it, the PNG goes on the clipboard, and a notice says which pane; a later copy replaces the
+//! notice and restarts its 3 s. A browser or web pane's WKWebView draws its page. A pane with no
 //! native view is the window's own drawing: its rectangle is cut from the window's last frame, and
 //! a plugin page's embeds (web pages, maps, video streams in native slots) are drawn over its cut.
 use super::*;
@@ -61,7 +61,7 @@ impl PaneImages {
 }
 
 impl Client {
-    /// For the debug window snapshot: the bridge's status (where each native view is and what is
+    /// For the debug window snapshot: the native status (where each native view is and what is
     /// cut from it), and per native pane either a render asked of it (its id, its PNG down the
     /// channel) or None when the window does not show it (hidden or faded out).
     pub fn render_native_for_snapshot(&mut self) -> (serde_json::Value, Vec<(String, Option<SnapshotRender>)>) {
@@ -83,13 +83,13 @@ impl Client {
         }).collect();
         (status, renders)
     }
-    /// Stop waiting for snapshot renders the bridge never answered.
+    /// Stop waiting for snapshot renders no view answered.
     pub fn forget_snapshot_renders(&mut self, ids: &[u64]) {
         for id in ids {
             self.pane_images.snapshots.remove(id);
         }
     }
-    /// Draw `pane` and put its PNG on the clipboard once the bridge answers.
+    /// Draw `pane` and put its PNG on the clipboard once it is drawn.
     pub fn copy_pane_image(&mut self, pane: &str) {
         self.log(format!("pane {pane}: copy image asked"));
         if self.plugins.contains_key(pane) {
@@ -98,7 +98,7 @@ impl Client {
         }
         if !self.native_panes.iter().any(|p| p == pane) {
             // The window draws this pane itself (a chat, or a pane whose view went away when it
-            // switched kind, which stays opened but hidden): the bridge has no picture of it to give.
+            // switched kind, which stays opened but hidden): no native view has a picture of it to give.
             self.pane_images.window_shots.push(pane.to_owned());
             return;
         }
@@ -129,7 +129,7 @@ impl Client {
         let (cut, scale) = self.cut_rect([x, y, w, h], window)?;
         Ok((cut, [x, y, w, h].map(f64::from), scale))
     }
-    /// Each render: put what the bridge drew on the clipboard with its notice, and take the notice
+    /// Each render: put what was drawn on the clipboard with its notice, and take the notice
     /// down 3 s after the last copy.
     pub fn tick_pane_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for pane in std::mem::take(&mut self.pane_images.window_shots) {

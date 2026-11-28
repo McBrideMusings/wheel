@@ -84,13 +84,9 @@ def sign(path):
 fresh(contents / 'MacOS/libWheelGpuiBridge.dylib')
 subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-library', '-module-name', 'WheelGpuiBridge',
     '-I', str(products), '-I', str(headers),
-    # WheelUI's PluginPane uses WheelLuau, whose C modules (the Luau headers) the compiler still loads from WheelUI's module;
-    # Xcode wrote their module maps beside the objects.
-    *[arg for name in ['CLuau', 'LuauCore'] for arg in ['-Xcc', f'-fmodule-map-file={products.parents[1] / "Intermediates.noindex/GeneratedModuleMaps" / (name + ".modulemap")}']],
-    '-Xcc', '-I' + str(repo / 'apple/WheelLuau/luau/VM/include'),
     str(client / 'native/Bridge.swift'),
-    # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
-    str(repo / 'apple/Shared/TerminalStyle.swift'),
+    # How a key event reads as a chord (`KeyChord(event:)`), compiled in so the bridge imports no WheelUI.
+    str(repo / 'apple/WheelUI/Sources/WheelUI/KeyEvents.swift'),
     *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)

@@ -1,11 +1,10 @@
 //! Rust side of native/Bridge.swift: loads the bridge library and speaks its JSON command ABI.
-//! The window's [`Host`] makes a slot view per native pane and places, masks and focuses it; it
-//! also makes browser panes and plain web panes itself (WKWebViews from Rust), and draws and
-//! snapshots every WKWebView in a slot. The bridge adds the rest of the native panes' content (an
-//! artifact page, a plugin pane's view) to their slots. All calls run on the main thread. A
-//! browser pane's state, its reports for wheeld and the answers to the daemon requests the view
-//! relayed arrive as frames on the window's channel, from the host or through the callback
-//! `attach` is given, each read as a [`Frame`].
+//! The bridge routes the window's keys (`keymap`, `post_key`, `menu_key`). The window's [`Host`]
+//! makes a slot view per native pane and per plugin page embed and places, masks and focuses it,
+//! and makes what each holds: a browser, a web or artifact page, a map, a video stream. All calls
+//! run on the main thread. A browser pane's state, its reports for wheeld and the answers to the
+//! daemon requests the view relayed arrive as frames on the window's channel, each read as a
+//! [`Frame`].
 use anyhow::{Context as _, Result};
 use futures::channel::mpsc as fmpsc;
 use serde::{Deserialize, Serialize};
@@ -92,6 +91,8 @@ pub trait Host {
     fn focus(&self, pane: &str) -> bool;
     /// Remove `pane`'s slot and whatever is in it.
     fn close(&self, pane: &str);
+    /// The pane or embed whose slot view is at `address`.
+    fn slot_owner(&self, address: usize) -> Option<String>;
     /// Drop every slot and the press monitor: the window is closing.
     fn detach(&self);
     /// A synthesized pointer event sent to the view under `point`, as AppKit routes one; the class of the view it reached.
@@ -274,28 +275,29 @@ impl Native {
                 let pane = value["pane"].as_str().unwrap_or_default();
                 let browser = value["kind"] == "browser";
                 if browser || (value["kind"] == "web" && value["artifact"].is_null()) {
-                    self.bridge_call(json!({"op":"close","pane":pane}));
                     h.open_page(pane, browser, value["url"].as_str().unwrap_or(if browser { "about:blank" } else { "" }), value["remote"] == true);
                     return self.status();
                 }
                 if value["kind"] == "web" {
-                    self.bridge_call(json!({"op":"close","pane":pane}));
                     let text = |k: &str| value[k].as_str().unwrap_or_default().to_owned();
                     h.open_artifact(pane, &text("artifact"), &text("scope"), &text("cwd"), &text("ws"));
                     return self.status();
                 }
                 h.close_page(pane);
-                self.with_facts(self.bridge_call(value))
+                self.status()
             }
             (Some("close"), Some(h)) => {
                 h.close_page(value["pane"].as_str().unwrap_or_default());
-                self.with_facts(self.bridge_call(value))
+                self.status()
             }
             (Some("browser"), Some(h)) => {
                 h.browser(value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), &value);
                 self.status()
             }
-            (Some("reload"), Some(h)) if h.reload(value["pane"].as_str().unwrap_or_default()) => self.status(),
+            (Some("reload"), Some(h)) => {
+                h.reload(value["pane"].as_str().unwrap_or_default());
+                self.status()
+            }
             (Some("inspect"), Some(h)) => {
                 h.inspect(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), value["arg"].as_str());
                 self.status()
@@ -307,9 +309,13 @@ impl Native {
             _ => self.with_facts(self.bridge_call(value)),
         }
     }
-    /// The bridge's reply with the host's pages and each pane's slot facts and the overlay folded in, where it lists panes.
+    /// The bridge's reply with the host's pages and each pane's slot facts and the overlay folded in, where it lists panes,
+    /// and the pane whose slot held the keyboard before the last routed key as `held_before_key`.
     fn with_facts(&self, mut reply: Value) -> Value {
         let Some(host) = self.host() else { return reply };
+        if let Some(address) = reply.get("held_slot").and_then(Value::as_u64) {
+            reply["held_before_key"] = json!(host.slot_owner(address as usize).unwrap_or_default());
+        }
         if let Some(panes) = reply.get_mut("panes").and_then(Value::as_object_mut) {
             let (pages, own) = host.pages();
             panes.extend(pages);
@@ -412,7 +418,6 @@ impl Native {
         }
     }
     pub fn close(&self, pane: &str) {
-        self.call(json!({"op":"close","pane":pane}));
         if let Some(host) = self.host() {
             host.close(pane);
         }

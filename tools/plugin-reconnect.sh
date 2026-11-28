@@ -1,5 +1,5 @@
 #!/bin/bash
-# Check wheel-pmf2.2.5: a plugin pane survives wheeld dropping the bridge's socket.
+# Check wheel-pmf2.2.5: a plugin pane survives wheeld dropping the window's socket.
 # A throwaway wheeld with the clock fixture plugin and the hidden GPUI app (never shown, never focused) attached.
 # Case 1: wheeld is killed; the pane's error reads "lost the connection to wheeld ... retrying" and the last view stays.
 # Case 2: wheeld starts again on the same port and support dir; the script reloads, the error clears, the pane's state is kept.
@@ -88,11 +88,11 @@ wait_for() {
 wait_for 30 'e == "None" and t.startswith("Tick")' && pass "0a the pane loaded its script: $(snap)" || fail "0a the pane never loaded: $(snap)"
 dbg --data-urlencode action=press --data-urlencode component=root/Button0 > "$T/press.json"
 wait_for 20 'o == "result: 1"' && pass "0b Echo pressed: $(snap)" || fail "0b Echo did not set the state: $(snap) $(cat "$T/press.json")"
-# The window snapshot pastes the bridge's own drawing of each native pane over GPUI's frame; the reply says which it drew.
+# GPUI draws the plugin pane itself, so the window snapshot holds it with no native view pasted in.
 shot() {
   curl -s -H "$AUTH" -X POST "http://127.0.0.1:$DEBUG/window/snapshot?path=$T/$1.png" > "$T/$1.json"
-  python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("native_panes", {}).get(sys.argv[2]) == "drawn" else 1)' "$T/$1.json" "$PANE" \
-    && pass "$2 the $1 snapshot drew the plugin pane's body: $T/$1.png" || fail "$2 the $1 snapshot did not draw the pane: $(cat "$T/$1.json")"
+  [ -s "$T/$1.png" ] && ! python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1])).get("native_panes", {}) else 1)' "$T/$1.json" "$PANE" \
+    && pass "$2 the $1 snapshot drew the window with the plugin pane GPUI's own: $T/$1.png" || fail "$2 the $1 snapshot: $(cat "$T/$1.json")"
 }
 shot before 0c
 IFS='|' read -r E0 R0 O0 T0 <<< "$(snap)"

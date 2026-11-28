@@ -24,7 +24,7 @@ keeps each table.
 | layout | `bash .claude/skills/project-verify/tools/grid-motion.sh` | anything under `apple/Mac` or `apple/WheelUI`; a change to spaces or terminals |
 | build | `bash .claude/skills/project-verify/tools/perf-build.sh` | a test that runs cargo, a change to `Cargo.toml`, `.cargo/config.toml` or a build script |
 | transcript links | `python3 clients/gpui/tools/check.py` (its `chat_links` step; `target/check/links-cost.json`) | `clients/gpui/src/chat_links.rs`, `clients/gpui/src/view/links.rs`, or how the GPUI transcript caches and measures rows |
-| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `Components`, `apple/WheelLuau`, `clients/gpui/native/Bridge.swift`'s plugin pane, or a wheelhouse pane script |
+| plugin keystroke | `bash .claude/skills/project-verify/tools/perf-plugin.sh` | anything under `apple/WheelUI/Sources/WheelUI/Plugin` or `Components`, `apple/WheelLuau`, `clients/gpui/src/view/plugin*.rs`, or a wheelhouse pane script |
 
 ## chat
 

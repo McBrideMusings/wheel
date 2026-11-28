@@ -344,6 +344,10 @@ impl Host for PaneHost {
         }
     }
 
+    fn slot_owner(&self, address: usize) -> Option<String> {
+        self.slots.borrow().iter().find(|(_, s)| Retained::as_ptr(s) as usize == address).map(|(id, _)| id.clone())
+    }
+
     fn detach(&self) {
         if let Some(monitor) = self.press_monitor.borrow_mut().take() {
             // SAFETY: the monitor `addLocalMonitorForEventsMatchingMask_handler` returned.
