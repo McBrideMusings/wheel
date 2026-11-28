@@ -34,6 +34,8 @@ pub use panes::focus_target;
 pub use pairing_copy::{copied as copied_pairing_code, ensure as ensure_pairing_copy};
 pub use sidebar::pane_window_closed;
 mod perms;
+mod plugin;
+mod plugin_draw;
 mod procs;
 mod queue;
 mod topic;
@@ -293,6 +295,9 @@ pub struct Client {
     browsers: HashMap<String, BrowserState>,
     /// Each plugin pane's last failure as the bridge reported it (None once its script loads), shown in the pane's header.
     plugin_errors: HashMap<String, Option<String>>,
+    /// Plugin panes whose script this client runs and draws (`plugin.rs`); only the hidden check
+    /// previews one before wheel-4d1o.7.
+    plugin_previews: HashMap<String, plugin::PluginHost>,
     /// The agent panes showing the Luau agent view in place of the native one; client memory only (ADR-0022).
     pub(crate) agent_views: HashSet<String>,
     /// The plugin packages each space can use, as `plugin_ls` last listed them, for the empty pane's buttons.
@@ -556,7 +561,7 @@ impl Client {
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), plugin_errors: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugin_previews: HashMap::new(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -600,6 +605,7 @@ impl Client {
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
                     let fresh = matches!(message.as_ref(), ServerMsg::Status { .. });
                     self.apply(layout, !fresh);
+                    self.prune_plugin_previews();
                     self.ask_title_buttons(fresh);
                     self.ask_plugins(true);
                     self.show_made_session();
@@ -610,7 +616,7 @@ impl Client {
                     true
                 }
                 None => {
-                    if self.on_conversations_message(message.as_ref()) || self.on_earlier_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_queue_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
+                    if self.on_conversations_message(message.as_ref()) || self.on_earlier_message(message.as_ref()) || self.on_pane_info_message(message.as_ref()) || self.on_sidebar_reply(message.as_ref()) || self.on_pane_reply(message.as_ref()) || self.on_surface_reply(message.as_ref()) || self.on_title_message(message.as_ref()) || self.on_settings_reply(message.as_ref()) || self.on_palette_reply(message.as_ref()) || self.on_toast_message(message.as_ref()) || self.on_procs_message(message.as_ref()) || self.on_plugin_message(message.as_ref(), cx) || self.on_queue_message(message.as_ref()) || self.on_running_message(message.as_ref()) {
                         return false;
                     }
                     match message.as_ref() {
@@ -623,6 +629,7 @@ impl Client {
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
                             }
+                            self.reload_plugin_preview(pane);
                             return false;
                         }
                         ServerMsg::FileImage { req, path, found, mime, data, error, version, unchanged } => {
@@ -846,6 +853,7 @@ impl Client {
                 self.send(&ClientMsg::WindowOffer {});
                 // Each term the panes draw streams again on this connection; its replay redraws it.
                 self.reattach_terms();
+                self.plugin_link_up();
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 // wheeld answers a listing only when it carries a req.
                 let req = self.settings_req();
@@ -855,6 +863,7 @@ impl Client {
                 false
             }
             Event::Down(reason) => {
+                self.plugin_link_down(&reason);
                 self.link = Link::Down(reason);
                 server::link(&self.endpoint, false);
                 self.drop_earlier();
@@ -2433,6 +2442,11 @@ impl Client {
             // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
             "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
             "terminal" if p.leaf.term.is_some() => self.term_element(p, window, cx),
+            "plugin" if self.plugin_previews.contains_key(&p.leaf.id) => {
+                let el = self.plugin_element(&p.leaf.id, r.w, r.h - TITLE, window, cx);
+                // `body` records where the page lies, for the check's pictures.
+                div().relative().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().children(el).child(recorded(&p.leaf.id, "body", &self.controls))
+            }
             _ if native => div(),
             // The body draws as a cached view of its own (`body.rs`); the frame and header draw here.
             "agent" => div().child(self.bodies.view(p, (r.w - 2. - 2. * PAD, r.h - TITLE - 2. * PAD), cx)),

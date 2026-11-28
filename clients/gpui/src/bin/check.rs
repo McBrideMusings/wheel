@@ -5817,6 +5817,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
             ensure!(ok, "pane shot of the gallery: {err}");
             eprintln!("wheel-gpui: gallery streams {streams:?}; backend saw {last:?}");
+            entry["gpui"] = gallery_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?;
             entry["streams"] = json!(streams);
             entry["stream_input"] = json!(last);
         }
@@ -5994,6 +5995,129 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, json!({"pane": pane, "panes": report})))
+}
+
+/// The gallery drawn by GPUI beside the bridge's SwiftUI (wheel-4d1o.2): the client runs the
+/// gallery's script itself on its own connection (`preview_plugin`) and draws its tree in the
+/// pane's slot, which the hidden window's picture shows in place of the Swift view. Case 1: both
+/// hold the same components with the same texts. Then page by page, GPUI's picture beside the
+/// bridge's `pane shot` at the same scroll, and each class's Card cut from GPUI's. Cases 2 to 4: a
+/// TextField's value set through GPUI reaches the script, a Button pressed through GPUI changes
+/// the script's state, and `wheel pane reload` runs the script from the top.
+async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    let bridge = |native: &Native| native.call(json!({"op":"plugin","pane":pane,"action":"state"}));
+    let preview = |window: ClientWindow, cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.plugin_preview_json(pane))?) };
+    let entries = |s: &Value| -> Vec<(String, String, String)> {
+        s["components"].as_array().cloned().unwrap_or_default().iter()
+            .map(|c| (c["id"].as_str().unwrap_or("").to_owned(), c["type"].as_str().unwrap_or("").to_owned(), c["text"].as_str().unwrap_or("").to_owned())).collect()
+    };
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane}");
+    // Case 1: the same tree. The stream demo's texts move with its frames, so they may differ for a moment.
+    let (mut ours, mut theirs) = (vec![], vec![]);
+    for _ in 0..200 {
+        pump(connection, 100, layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let p = preview(window, cx)?;
+        (ours, theirs) = (entries(&p), entries(&bridge(native)));
+        if p["error"].is_null() && !ours.is_empty() && ours == theirs {
+            break;
+        }
+    }
+    let differ: Vec<_> = ours.iter().zip(theirs.iter()).filter(|(a, b)| a != b).take(5).collect();
+    ensure!(ours == theirs, "GPUI's gallery tree differs from the bridge's: {} against {} components, first differences {differ:?}; error {}", ours.len(), theirs.len(), preview(window, cx)?["error"]);
+    let body = window.update(cx, |c, _, _| c.control_bounds(pane, "body"))?.ok_or_else(|| anyhow::anyhow!("the GPUI gallery drew no body"))?;
+    let root = window.update(cx, |c, _, _| c.control_bounds(pane, "root"))?.ok_or_else(|| anyhow::anyhow!("the GPUI gallery drew no root"))?;
+    let (page_h, content_h) = (body.3, root.3);
+    ensure!(page_h > 100. && content_h > page_h, "the GPUI gallery should be taller than its pane: body {body:?} root {root:?}");
+    // The window's picture cut to `rect` (window points), clipped to the body.
+    let cut = |window: ClientWindow, rect: (f32, f32, f32, f32), path: &std::path::Path, cx: &mut AsyncApp| -> Result<()> {
+        let any: gpui::AnyWindowHandle = window.into();
+        any.update(cx, |_, w, cx| -> Result<()> {
+            w.draw(cx).clear();
+            let image = w.render_to_image()?;
+            let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+            let (x0, y0) = (rect.0.max(body.0), rect.1.max(body.1));
+            let (x1, y1) = ((rect.0 + rect.2).min(body.0 + body.2), (rect.1 + rect.3).min(body.1 + body.3));
+            ensure!(x1 > x0 && y1 > y0, "{rect:?} lies outside the body {body:?}");
+            let [x, y] = [x0, y0].map(|v| ((v * scale) as u32).min(image.width() - 1));
+            let (cw, ch) = ((((x1 - x0) * scale) as u32).min(image.width() - x), (((y1 - y0) * scale) as u32).min(image.height() - y));
+            image::imageops::crop_imm(&image, x, y, cw, ch).to_image().save(path)?;
+            Ok(())
+        })?
+    };
+    let scroll_to = |window: ClientWindow, y: f32, cx: &mut AsyncApp| -> Result<()> {
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, y))?, "the gallery is not previewed");
+        draw(window, None, cx)
+    };
+    // Page by page: the bridge scrolls its ScrollView by the same distance.
+    let pages = ((content_h / page_h).ceil() as usize).min(40);
+    native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"top"}));
+    for k in 0..pages {
+        let y = k as f32 * page_h;
+        scroll_to(window, y, cx)?;
+        cut(window, body, &output.join(format!("gpui-gallery-page-{k:02}.png")), cx)?;
+        if k > 0 {
+            native.call(json!({"op":"plugin","pane":pane,"action":"scroll","dy":page_h}));
+        }
+        pump(connection, 300, layouts, window, cx).await?;
+        let png = output.join(format!("swift-gallery-page-{k:02}.png"));
+        let (ok, _, err) = run_pumped(&["pane", "shot", pane, &png.display().to_string()], connection, layouts, window, cx).await?;
+        ensure!(ok, "pane shot of the gallery's page {k}: {err}");
+    }
+    // Each class is a Card whose first Text is its heading.
+    let mut classes = vec![];
+    for (i, (id, kind, _)) in ours.iter().enumerate() {
+        if kind != "Card" {
+            continue;
+        }
+        let Some((_, _, heading)) = ours[i + 1..].iter().find(|(_, k, _)| k == "Text") else { continue };
+        scroll_to(window, 0., cx)?;
+        let Some(at) = window.update(cx, |c, _, _| c.control_bounds(pane, id))? else { continue };
+        scroll_to(window, at.1 - body.1, cx)?;
+        let Some(card) = window.update(cx, |c, _, _| c.control_bounds(pane, id))? else { continue };
+        let slug: String = heading.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        cut(window, card, &output.join(format!("gpui-class-{slug}.png")), cx)?;
+        classes.push(json!({"class": heading, "card": id, "size": [card.2, card.3]}));
+    }
+    ensure!(classes.len() >= 9, "the GPUI gallery drew {} class Cards, not 9: {classes:?}", classes.len());
+    scroll_to(window, 0., cx)?;
+    native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"top"}));
+    // Case 2: a TextField's value set as typing sets it reaches the script and stays drawn.
+    let field = ours.iter().find(|(_, k, _)| k == "TextField").map(|(id, ..)| id.clone()).ok_or_else(|| anyhow::anyhow!("the gallery has no TextField"))?;
+    let before = preview(window, cx)?["state"].clone();
+    ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, &field, json!("typed in GPUI"), cx))?, "plugin_set {field} refused");
+    draw(window, None, cx)?;
+    let typed = preview(window, cx)?;
+    ensure!(typed["fields"][&field] == "typed in GPUI", "GPUI's input for {field} does not show the set value: {}", typed["fields"]);
+    // Case 3: pressing a Button runs the script's update.
+    let mut pressed = None;
+    for (id, ..) in ours.iter().filter(|(_, k, _)| k == "Button") {
+        let s0 = preview(window, cx)?["state"].clone();
+        window.update(cx, |c, _, cx| c.plugin_press(pane, id, cx))?;
+        draw(window, None, cx)?;
+        if preview(window, cx)?["state"] != s0 {
+            pressed = Some(id.clone());
+            break;
+        }
+    }
+    ensure!(pressed.is_some() || typed["state"] != before, "no Button pressed through GPUI changed the gallery's state");
+    // Case 4: `wheel pane reload` runs the script from the top.
+    let restarts = preview(window, cx)?["restarts"].as_u64().unwrap_or(0);
+    let (ok, _, err) = run_pumped(&["pane", "reload", pane], connection, layouts, window, cx).await?;
+    ensure!(ok, "pane reload: {err}");
+    let mut reloaded = Value::Null;
+    for _ in 0..100 {
+        pump(connection, 100, layouts, window, cx).await?;
+        reloaded = preview(window, cx)?;
+        if reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["error"].is_null() && !entries(&reloaded).is_empty() {
+            break;
+        }
+    }
+    ensure!(reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["error"].is_null(), "the reload did not restart GPUI's script: {} error {}", reloaded["restarts"], reloaded["error"]);
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    eprintln!("wheel-gpui: the gallery in GPUI: {} components, {pages} pages, {} classes", ours.len(), classes.len());
+    Ok(json!({"components": ours.len(), "pages": pages, "classes": classes, "field": field, "pressed": pressed, "restarts": reloaded["restarts"]}))
 }
 
 /// The command palette, key bindings, Run…, the shortcut sheet and ⌘W.
