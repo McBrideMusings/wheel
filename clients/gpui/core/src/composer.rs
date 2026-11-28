@@ -196,12 +196,11 @@ pub fn attach_as_context(draft: &str, markdown: &str) -> String {
 }
 
 /// What the composer's + menu offers (the phone's `AttachMenu`, design §8.6 K1): the file
-/// picker, starting the conversation over, and reading the agent's replies aloud.
+/// picker and starting the conversation over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlusAction {
     AddFiles,
     Clear,
-    ReadAloud,
 }
 
 impl PlusAction {
@@ -209,21 +208,19 @@ impl PlusAction {
         match self {
             PlusAction::AddFiles => "add-files",
             PlusAction::Clear => "clear",
-            PlusAction::ReadAloud => "read-aloud",
         }
     }
     pub fn title(self) -> &'static str {
         match self {
             PlusAction::AddFiles => "Add files…",
             PlusAction::Clear => "Clear chat",
-            PlusAction::ReadAloud => "Read aloud",
         }
     }
 }
 
 /// The + menu's items, Clear chat only for a harness that starts over on `/clear` (`can_clear`).
 pub fn plus_items(can_clear: bool) -> Vec<PlusAction> {
-    [PlusAction::AddFiles, PlusAction::Clear, PlusAction::ReadAloud].into_iter().filter(|a| can_clear || *a != PlusAction::Clear).collect()
+    [PlusAction::AddFiles, PlusAction::Clear].into_iter().filter(|a| can_clear || *a != PlusAction::Clear).collect()
 }
 
 /// Whether `/clear` starts the harness's conversation over (`AgentPanes.canClear`): Claude Code
@@ -392,8 +389,8 @@ mod tests {
     #[test]
     fn the_plus_menu_offers_clear_chat_only_where_clear_starts_over() {
         assert!(can_clear(Some("claude")) && !can_clear(Some("codex")) && !can_clear(None));
-        assert_eq!(plus_items(true), [PlusAction::AddFiles, PlusAction::Clear, PlusAction::ReadAloud]);
-        assert_eq!(plus_items(false), [PlusAction::AddFiles, PlusAction::ReadAloud]);
+        assert_eq!(plus_items(true), [PlusAction::AddFiles, PlusAction::Clear]);
+        assert_eq!(plus_items(false), [PlusAction::AddFiles]);
     }
 
     fn commands(names: &[&str]) -> Vec<Command> {

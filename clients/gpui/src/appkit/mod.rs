@@ -8,7 +8,6 @@ pub mod live_resize;
 pub mod motion;
 pub mod page_scheme;
 pub mod pane_host;
-pub mod read_aloud;
 pub mod status_item;
 pub mod web;
 pub mod window;

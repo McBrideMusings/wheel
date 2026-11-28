@@ -178,14 +178,13 @@ impl Client {
         self.composer_errors.insert(agent, "Voice mode moved to another device.".into());
     }
 
-    /// `agent`'s turn ended: in voice mode its reply is spoken. Returns whether voice took it.
-    pub(super) fn voice_turn_ended(&mut self, agent: &str) -> bool {
+    /// `agent`'s turn ended: in voice mode its reply is spoken.
+    pub(super) fn voice_turn_ended(&mut self, agent: &str) {
         if self.voice.as_ref().is_none_or(|s| s.agent != agent) {
-            return false;
+            return;
         }
-        let text = self.transcripts.get(agent).and_then(Transcript::last_reply).map(|(_, t)| t).unwrap_or_default();
+        let text = self.transcripts.get(agent).and_then(Transcript::last_reply).unwrap_or_default();
         speech::send(Cmd::VoiceSpeak(text));
-        true
     }
 
     pub(super) fn voice_action(&mut self, action: &str) {

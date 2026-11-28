@@ -822,8 +822,6 @@ impl Client {
         out["composer_errors"] = json!(self.composer_errors);
         out["message_menu"] = self.message_menu_json();
         out["reply_ends"] = json!(self.columns.iter().map(|(a, c)| (a.clone(), json!(c.reply_ends))).collect::<serde_json::Map<_, _>>());
-        out["read_aloud"] = json!(self.read_aloud);
-        out["reads_aloud"] = json!(self.reads_aloud.iter().collect::<std::collections::BTreeSet<_>>());
         let (d, v) = (&self.speech.dictation, &self.speech.voice);
         let last_user = self.voice.as_ref().and_then(|s| self.transcripts.get(&s.agent)).and_then(|t| t.rows.iter().rev().find_map(|r| match &r.kind {
             crate::transcript::Kind::User { text, .. } => Some(text.clone()),

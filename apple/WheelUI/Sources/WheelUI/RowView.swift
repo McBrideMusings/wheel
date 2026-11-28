@@ -357,13 +357,6 @@ public final class ReplyCopyRegistry {
     func set(_ text: String, agent: String, row: Int) { markdown[agent, default: [:]][row] = text }
     func forget(agent: String, row: Int) { markdown[agent]?[row] = nil }
 
-    /// Press the play button of reply `row`. False when that reply is not on screen.
-    public func play(agent: String, row: Int) -> Bool {
-        guard let text = markdown[agent]?[row] else { return false }
-        ReadAloud.shared.toggle(text, for: agent, key: "\(agent)#\(row)")
-        return true
-    }
-
     /// Press the copy button of reply `row`: its Markdown goes to the pasteboard. False when that
     /// reply is not on screen.
     public func press(agent: String, row: Int) -> Bool {
@@ -501,11 +494,10 @@ struct AgentText: View {
         #endif
     }
 
-    /// The copy button and, just right of it, the play button that speaks this reply or stops it.
+    /// The copy button and, when the turn can be forked, the fork button.
     private var actions: some View {
         HStack(spacing: 6) {
             copy
-            play
             if chat.forkTurns(row: id) != nil { fork }
         }
     }
@@ -519,19 +511,6 @@ struct AgentText: View {
         .buttonStyle(.chat("fork", "Fork the conversation through this turn into a new pane"))
         .foregroundStyle(.secondary)
         .help("Fork the conversation through this turn into a new pane")
-    }
-
-    private var play: some View {
-        let key = "\(chat.name)#\(id)"
-        let speaking = ReadAloud.shared.playing == key
-        return Button {
-            ReadAloud.shared.toggle(text, for: chat.name, key: key)
-        } label: {
-            Image(systemName: speaking ? "stop.fill" : "speaker.wave.2").font(look.meta).frame(width: 18)
-        }
-        .buttonStyle(.chat("play", speaking ? "Stop reading this reply" : "Read this reply aloud"))
-        .foregroundStyle(.secondary)
-        .help(speaking ? "Stop reading this reply" : "Read this reply aloud")
     }
 
     private var copy: some View {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// What read-aloud says for an agent's reply: the prose, with the markup a voice would read out
+/// What voice mode says for an agent's reply: the prose, with the markup a voice would read out
 /// loud taken away.
 public enum SpokenText {
     /// `markdown` as speech: fenced code blocks dropped, inline code and emphasis marks removed,

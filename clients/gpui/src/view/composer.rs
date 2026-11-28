@@ -531,7 +531,6 @@ impl Client {
             PlusAction::AddFiles => self.pick_files(agent, cx),
             // Asked first, as the phone's AttachMenu asks: the conversation cannot be taken back here.
             PlusAction::Clear => self.confirm("Clear this chat?", "The agent starts a new conversation.".into(), "Clear Chat".into(), Pending::ClearChat(agent.to_owned())),
-            PlusAction::ReadAloud => self.toggle_reads_aloud(agent, cx),
         }
     }
 
@@ -595,9 +594,9 @@ pub(super) fn drop_target(agent: Option<&str>, over: bool, on_drop: fn(&mut Clie
 
 /// The + at the start of the composer row (the phone's `AttachMenu`, design §8.6 K1), `icon`
 /// the SF Symbol the bridge drew ("+" until it has). A press opens its menu above it, `items` in
-/// order with the row `at` lit for the arrow keys; Read aloud is ticked while `reads_aloud`.
+/// order with the row `at` lit for the arrow keys.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusAction], reads_aloud: bool, icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusAction], icon: Option<gpui::AnyElement>, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let a = agent.to_owned();
     let mut button = div().id(gpui::ElementId::Name(format!("plus-{agent}").into())).tooltip(crate::tooltip::tip("Add files and more"))
         .relative().flex_none().w(px(ROW_BUTTON)).h(px(ROW_BUTTON)).flex().items_center().justify_center().cursor_pointer().text_color(rgb(0x8fa89b))
@@ -621,7 +620,6 @@ pub(super) fn plus_button(agent: &str, open: bool, at: usize, items: &[PlusActio
                 entry = entry.bg(rgb(0x31483e));
             }
             list = list.child(entry
-                .child(div().w(px(12.)).child(if action == PlusAction::ReadAloud && reads_aloud { "✓" } else { "" }))
                 .child(action.title())
                 .child(recorded(agent, &format!("plus:{}", action.id()), controls))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {

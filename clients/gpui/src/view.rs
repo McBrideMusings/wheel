@@ -429,12 +429,6 @@ pub struct Client {
     pub pane_menu: Option<(String, f32, f32, u8)>,
     /// The message menu a right-click on a message opened.
     message_menu: Option<messages::MessageMenu>,
-    /// The reply the app's one synthesizer reads now, as `agent#row id` (`ReadAloud.playing`),
-    /// told by the bridge to every window.
-    read_aloud: Option<String>,
-    /// The agents whose finished replies are spoken (the + menu's Read aloud): per
-    /// conversation, off until the person turns it on, and never history loaded on attach.
-    reads_aloud: HashSet<String>,
     /// What the app's speech last said it was doing (`crate::speech`): dictation and voice audio.
     speech: voice::SpeechState,
     /// Voice mode, open over one agent pane of this window (`view/voice.rs`).
@@ -569,12 +563,12 @@ impl Client {
             session_show_req: None, orchestrator_dir: None, session_to_show: None, symbols: RefCell::default(), layout_reqs: HashSet::new(), perms: vec![], pairing: crate::pairing::Pairing::default(),
             quarantine: crate::crash_guard::launch_quarantine(), launch_stamp: Self::executable_stamp(), client_checked_at: None, toast_log: vec![], procs: crate::procs::Procs::default(), queue: crate::queue::Tray::default(), topic: crate::topic::Line::default(), earlier: HashMap::new(), history_reqs: HashMap::new(),
             server_offer: None, server_source_logged: None, server_started: None,
-            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, read_aloud: None, reads_aloud: HashSet::new(), speech: Default::default(), voice: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
+            sidebar_open: true, space_drag: None, space_drag_world: None, space_hover_changed: false, space_press: None, pane_drag: None, pane_out: Default::default(), pane_press: None, rename: None, space_menu: None, pane_menu: None, message_menu: None, speech: Default::default(), voice: None, conversations: Default::default(), conversations_scroll: ScrollHandle::new(), pane_info: None, pane_images: Default::default(), pending_focus: None, split_reqs: HashSet::new(), hover: None, preview: None, preview_leave: None, preview_asked: 0, space_for_new_session: None,
             window_name: None, name_edit: None, pending_show: None, title_set: String::new(), little: false, pump: None,
         }
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
-    pub fn on_event(&mut self, event: Event, cx: &mut App) -> bool {
+    pub fn on_event(&mut self, event: Event) -> bool {
         // A term's stream goes to the model drawing it (`terminal.rs`); the window redraws after any event.
         if let Event::Message(message) = &event && self.term_message(message.as_ref()) {
             return false;
@@ -783,8 +777,8 @@ impl Client {
                         t.on_message(&message, agent);
                     }
                     if let ServerMsg::Agent { agent, event } = &*message {
-                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") && !self.voice_turn_ended(agent) && self.reads_aloud.contains(agent) {
-                            self.speak_last_reply(agent, cx);
+                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") {
+                            self.voice_turn_ended(agent);
                         }
                     }
                     false
@@ -1481,12 +1475,6 @@ impl Client {
             self.log(format!("reduce motion: {}", if on { "on" } else { "off" }));
         }
         self.reduce_motion = on;
-    }
-    /// The reply the app's synthesizer reads now (`appkit::read_aloud`); whether that changed.
-    pub fn set_read_aloud(&mut self, playing: Option<String>) -> bool {
-        let changed = self.read_aloud != playing;
-        self.read_aloud = playing;
-        changed
     }
     /// A frame the bridge sent on its own: a browser pane's state is kept for its chrome, its
     /// reports go to wheeld as this connection's requests, and an answer to a relayed daemon
@@ -2359,7 +2347,7 @@ impl Client {
         let chips = agent.zip(agent.and_then(|a| self.attachments.get(a))).filter(|(_, tray)| !tray.is_empty()).map(|(a, tray)| composer::attachment_chips(a, tray, || title::symbol(&self.symbols, "doc", 14., 0x8fa89b), &self.controls, cx));
         let plus = agent.map(|a| {
             let items = self.plus_items(a);
-            composer::plus_button(a, menu.as_deref() == Some(composer::PLUS_MENU), self.menu_at, &items, self.reads_aloud.contains(a), title::symbol(&self.symbols, "plus", 13., 0x8fa89b), &self.controls, cx)
+            composer::plus_button(a, menu.as_deref() == Some(composer::PLUS_MENU), self.menu_at, &items, title::symbol(&self.symbols, "plus", 13., 0x8fa89b), &self.controls, cx)
         });
         let busy = t.is_some_and(Transcript::busy);
         let stop = agent.map(|a| {
@@ -3181,11 +3169,11 @@ impl Client {
                 if !live {
                     return col.w_full().pb_1();
                 }
-                // Copy, play and, when the turn can fork, fork (RowView.swift's `actions`): on a
+                // Copy and, when the turn can fork, fork (RowView.swift's `actions`): on a
                 // line of their own under the last reply of a finished turn, over the top right
                 // corner of an earlier one while the pointer is on it, so the parts of a turn stay close.
                 let line = self.columns.get(agent).is_some_and(|c| c.reply_ends.binary_search(&ix).is_ok());
-                let mut actions = div().flex().items_center().gap(px(6.)).child(self.copy_button(agent, ix, cx)).child(self.play_button(agent, ix, row.id, cx));
+                let mut actions = div().flex().items_center().gap(px(6.)).child(self.copy_button(agent, ix, cx));
                 if t.fork_turns(ix, self.can_fork(agent)).is_some() {
                     actions = actions.child(self.fork_button(agent, ix, cx));
                 }

@@ -49,9 +49,6 @@ public struct Composer: View {
     /// Set while a permission request waits on this conversation: Return with nothing typed allows
     /// it and Escape denies it. Returns whether the request took the key.
     var permissionKey: ((PermissionKey) -> Bool)?
-    /// Whether this conversation's replies are read aloud; nil draws no speaker control.
-    @Binding var readAloud: Bool
-    let showsReadAloud: Bool
     /// The pane's own controls for the row, drawn left of the mic and send: the phone's usage ring and model button.
     var accessory: AnyView?
     /// The conversation dictation writes into, on the phone; nil draws no microphone.
@@ -80,7 +77,6 @@ public struct Composer: View {
         sendNow: @escaping () -> Void = {},
         takeBack: @escaping () -> Bool = { false },
         permissionKey: ((PermissionKey) -> Bool)? = nil,
-        readAloud: Binding<Bool>? = nil,
         accessory: AnyView? = nil,
         dictation: String? = nil,
         voice: (() -> Void)? = nil
@@ -88,8 +84,6 @@ public struct Composer: View {
         self.voice = voice
         self.accessory = accessory
         self.dictation = dictation
-        self._readAloud = readAloud ?? .constant(false)
-        self.showsReadAloud = readAloud != nil
         self.takeBack = takeBack
         self.permissionKey = permissionKey
         self.busy = busy
@@ -252,16 +246,6 @@ public struct Composer: View {
                 .fixedSize()
                 .chatControl("composer", "Run a skill")
                 .help("Run a skill")
-                }
-                if showsReadAloud {
-                    Button { readAloud.toggle() } label: {
-                        Label(readAloud ? "Stop reading replies aloud" : "Read replies aloud",
-                              systemImage: readAloud ? "speaker.wave.2.fill" : "speaker.slash")
-                            .labelStyle(.iconOnly)
-                            .composerIcon()
-                    }
-                    .buttonStyle(.chat("composer", "Toggle reading replies aloud"))
-                    .help(readAloud ? "Stop reading replies aloud" : "Read this agent's replies aloud")
                 }
                 #if os(iOS)
                 // Always in the row, so nothing beside it moves; it works only while the keyboard is up.
