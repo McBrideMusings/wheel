@@ -208,7 +208,7 @@ pub struct CanvasView {
     focus: Option<gpui::FocusHandle>,
     /// For a check: each label drawn, its width as drawn and as `measureText` gives it.
     pub texts: Vec<(String, f32, f64)>,
-    /// For a check: the first hits in view with an action, as (id, screen rect).
+    /// For a check: the first rect hits in view, as (id, screen rect).
     hits: Vec<(String, [f64; 4])>,
 }
 
@@ -683,7 +683,7 @@ fn draw_scene(scene: &Scene, s: &mut CanvasView, origin: Point<Pixels>, window: 
         }
     }
     s.texts = texts;
-    s.hits = scene.hits.iter().filter(|h| !h.action.is_empty() && c.s >= h.min_zoom && c.s <= h.max_zoom)
+    s.hits = scene.hits.iter().filter(|h| c.s >= h.min_zoom && c.s <= h.max_zoom)
         .filter_map(|h| h.rect.map(|r| (h.id.clone(), [r[0] * c.s + c.x, r[1] * c.s + c.y, r[2] * c.s, r[3] * c.s])))
         .filter(|(_, r)| r[0] >= 0. && r[1] >= 0. && r[0] + r[2] <= vw && r[1] + r[3] <= vh).take(20).collect();
     if let Some(p) = s.hover

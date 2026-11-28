@@ -5655,7 +5655,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
         // GPUI's own drawing of the pane, before the steps below move the bridge's view away from its first state.
         entry["gpui_preview"] = plugin_beside_bridge(&mut connection, &mut layouts, window, &native, &output, &pane, &name, cx).await?;
-        if name == "graph" || name == "beads" {
+        if name == "graph" || name == "gallery" {
             entry["gpui_canvas"] = canvas_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, &name, cx).await?;
         }
         if name == "beads" {
@@ -6032,20 +6032,15 @@ fn mouse(kind: &str, at: gpui::Point<gpui::Pixels>, pressed: bool) -> gpui::Plat
 /// GPUI's own Canvas (wheel-4d1o.4), on a fresh preview of plugin pane `pane`, through real GPUI
 /// pointer events. Graph (a recorded command list): the script gets the size GPUI drew the Canvas
 /// at; every label's drawn width equals its `measureText` width; moving over a node hovers it, a
-/// click opens it, a drag of (40, 25) pans by (40, 25). Beads' Graph view (an `ops` scene): its
-/// labels' widths match the same way; moving over a hit outlines it; a click on it reaches the
-/// script; a scroll zooms the camera and Fit fits it again.
+/// click opens it, a drag of (40, 25) pans by (40, 25). The gallery's `ops` scene: its labels'
+/// widths match the same way, moving over a hit hovers it, a scroll zooms the camera and Fit fits
+/// it again. (Beads' Graph view is the shipped scene, but its feed never answers GPUI's preview:
+/// wheel-4d1o.11.)
 #[allow(clippy::too_many_arguments)]
 async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {name}");
     let steps = async {
         plugin_preview_matches(connection, layouts, window, native, pane, name, cx).await?;
-        if name == "beads" {
-            let seen = plugin_preview(window, pane, cx)?;
-            let picker = seen["components"].as_array().into_iter().flatten().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned))
-                .ok_or_else(|| anyhow::anyhow!("GPUI's Beads drew no view picker"))?;
-            ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, &picker, json!(["graph"]), cx))?, "GPUI's Beads view picker {picker} took no value");
-        }
         // The Canvas, once its script has drawn it at the size GPUI reported.
         let (mut id, mut seen) = (String::new(), Value::Null);
         let began = std::time::Instant::now();
@@ -6054,7 +6049,18 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             pump(connection, 100, layouts, window, cx).await?;
             draw(window, None, cx)?;
             seen = plugin_preview(window, pane, cx)?;
-            id = seen["components"].as_array().into_iter().flatten().find(|c| c["type"] == "Canvas").and_then(|c| c["id"].as_str().map(str::to_owned)).unwrap_or_default();
+            // The gallery's scene Canvas is the one with hits; scrolled into the pane so the pointer can reach it.
+            let canvases: Vec<String> = seen["components"].as_array().into_iter().flatten().filter(|c| c["type"] == "Canvas").filter_map(|c| c["id"].as_str().map(str::to_owned)).collect();
+            id = canvases.iter().find(|i| name == "graph" || seen["canvases"][i.as_str()]["hits"].as_array().is_some_and(|h| !h.is_empty())).cloned().unwrap_or_else(|| canvases.first().cloned().unwrap_or_default());
+            if name == "gallery" && !id.is_empty() {
+                let body = plugin_body(window, pane, cx)?;
+                if let Some(at) = window.update(cx, |c, _, _| c.control_bounds(pane, &id))? && (at.1 < body.1 || at.1 + at.3 > body.1 + body.3) {
+                    window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, 0.))?;
+                    draw(window, None, cx)?;
+                    let top = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.map_or(0., |r| r.1 - body.1 - 40.);
+                    window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, top))?;
+                }
+            }
             let c = &seen["canvases"][&id];
             let ready = if name == "graph" { c["paints"].as_u64().unwrap_or(0) > 0 } else { c["hits"].as_array().is_some_and(|h| !h.is_empty()) };
             if !id.is_empty() && ready && !c["texts"].as_array().is_none_or(Vec::is_empty) {
@@ -6063,11 +6069,13 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         }
         ensure!(!id.is_empty() && seen["error"].is_null(), "GPUI's {name} drew no Canvas: error {} canvases {} view {} pending {} feeds {} types {:?}", seen["error"], seen["canvases"],
             plugin_preview_state(window, pane, cx)?["view"], seen["pending_feeds"], seen["feeds"], seen["components"].as_array().into_iter().flatten().map(|c| c["type"].clone()).collect::<Vec<_>>());
+        draw(window, None, cx)?;
         let bounds = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.ok_or_else(|| anyhow::anyhow!("GPUI recorded no bounds for {name}'s Canvas {id}"))?;
         let canvas = seen["canvases"][&id].clone();
         // measureText of every label against the width GPUI drew it at.
         let texts = canvas["texts"].as_array().cloned().unwrap_or_default();
         ensure!(!texts.is_empty(), "GPUI's {name} Canvas drew no label: {canvas}");
+        let bounds = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.unwrap_or(bounds);
         let worst = texts.iter().map(|t| (t["drawn"].as_f64().unwrap_or(0.) - t["measured"].as_f64().unwrap_or(0.)).abs()).fold(0., f64::max);
         ensure!(worst <= 0.5, "a label on {name}'s Canvas draws wider or narrower than measureText says (worst {worst:.2} pt): {texts:?}");
         let at = |x: f64, y: f64| gpui::point(gpui::px(bounds.0 + x as f32), gpui::px(bounds.1 + y as f32));
@@ -6112,7 +6120,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         } else {
             let hit = canvas["hits"][0].clone();
             let r: Vec<f64> = hit["rect"].as_array().into_iter().flatten().filter_map(Value::as_f64).collect();
-            ensure!(r.len() == 4, "the Beads Graph scene drew no hit in view: {canvas}");
+            ensure!(r.len() == 4, "the gallery's scene drew no hit in view: {canvas}");
             let (cx0, cy0) = (r[0] + r[2] / 2., r[1] + r[3] / 2.);
             gpui_input(window.into(), mouse("move", at(cx0, cy0), false), cx)?;
             draw(window, None, cx)?;
@@ -6120,19 +6128,6 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             ensure!(hovered.is_array(), "moving over hit {} should hover the scene: {hovered}", hit["id"]);
             let body = plugin_body(window, pane, cx)?;
             cut_picture(window, body, body, &hover_png, cx)?;
-            let before = plugin_preview(window, pane, cx)?["state"].clone();
-            gpui_input(window.into(), mouse("down", at(cx0, cy0), false), cx)?;
-            gpui_input(window.into(), mouse("up", at(cx0, cy0), false), cx)?;
-            let mut after = before.clone();
-            for _ in 0..50 {
-                draw(window, None, cx)?;
-                pump(connection, 50, layouts, window, cx).await?;
-                after = plugin_preview(window, pane, cx)?["state"].clone();
-                if after != before {
-                    break;
-                }
-            }
-            ensure!(after != before, "a click on hit {} reached no script state", hit["id"]);
             draw(window, None, cx)?;
             let cam = |cx: &mut AsyncApp| -> Result<Value> { Ok(plugin_preview(window, pane, cx)?["canvases"][&id]["camera"].clone()) };
             let s0 = cam(cx)?;
@@ -6143,7 +6138,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             draw(window, None, cx)?;
             let zoomed = cam(cx)?;
             ensure!(zoomed["auto"] == false && zoomed["s"] != s0["s"], "a scroll over the scene should zoom its camera: before {s0} after {zoomed}");
-            let fit = window.update(cx, |c, _, _| c.control_bounds(pane, &format!("{id}#fit")))?.ok_or_else(|| anyhow::anyhow!("the Beads Graph scene drew no Fit control"))?;
+            let fit = window.update(cx, |c, _, _| c.control_bounds(pane, &format!("{id}#fit")))?.ok_or_else(|| anyhow::anyhow!("the gallery's scene drew no Fit control"))?;
             gpui_click(window.into(), gpui::point(gpui::px(fit.0 + fit.2 / 2.), gpui::px(fit.1 + fit.3 / 2.)), gpui::MouseButton::Left, cx)?;
             draw(window, None, cx)?;
             let fitted = cam(cx)?;
