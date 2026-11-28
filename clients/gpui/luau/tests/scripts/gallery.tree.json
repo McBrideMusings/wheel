@@ -26973,7 +26973,7 @@
                                         "foregroundStyle" : "secondary"
                                       }
                                     ],
-                                    "text" : "a display list with a camera and hit regions; needs a scene, not shown",
+                                    "text" : "ops: a display list with a camera (drag to pan, scroll to zoom, Fit + −) and hit regions that outline on hover and show their tip; used by the Beads dependency graph",
                                     "variant" : "caption"
                                   }
                                 ],
@@ -26997,13 +26997,209 @@
                                 "align" : "start",
                                 "children" : [
                                   {
-                                    "component" : "Text",
-                                    "modifiers" : [
+                                    "bounds" : [
+                                      0,
+                                      0,
+                                      400,
+                                      160
+                                    ],
+                                    "component" : "Canvas",
+                                    "height" : 220,
+                                    "hits" : [
                                       {
-                                        "foregroundStyle" : "secondary"
+                                        "id" : "a",
+                                        "rect" : [
+                                          20,
+                                          20,
+                                          120,
+                                          44
+                                        ],
+                                        "tip" : [
+                                          "Node A",
+                                          [
+                                            {
+                                              "t" : "ready",
+                                              "tone" : "ok"
+                                            },
+                                            {
+                                              "t" : " · P1",
+                                              "tone" : "muted"
+                                            }
+                                          ]
+                                        ]
+                                      },
+                                      {
+                                        "id" : "b",
+                                        "rect" : [
+                                          240,
+                                          96,
+                                          140,
+                                          44
+                                        ],
+                                        "tip" : [
+                                          "Node B: a long label cut to its box"
+                                        ]
+                                      },
+                                      {
+                                        "circle" : [
+                                          200,
+                                          42,
+                                          14
+                                        ],
+                                        "id" : "c",
+                                        "tip" : [
+                                          [
+                                            {
+                                              "bold" : true,
+                                              "mono" : true,
+                                              "t" : "circle"
+                                            }
+                                          ]
+                                        ]
                                       }
                                     ],
-                                    "text" : "Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it."
+                                    "ops" : [
+                                      {
+                                        "d" : [
+                                          "M140 42 C 190 42, 190 118, 240 118"
+                                        ],
+                                        "op" : "path",
+                                        "stroke" : "muted",
+                                        "width" : 1.5
+                                      },
+                                      {
+                                        "d" : [
+                                          "M80 64 Q 80 140 240 130"
+                                        ],
+                                        "dash" : [
+                                          4,
+                                          3
+                                        ],
+                                        "op" : "path",
+                                        "stroke" : "accent",
+                                        "width" : 1
+                                      },
+                                      {
+                                        "fill" : "fill",
+                                        "op" : "rect",
+                                        "r" : [
+                                          [
+                                            20,
+                                            20,
+                                            120,
+                                            44
+                                          ]
+                                        ],
+                                        "radius" : 6,
+                                        "stroke" : "ok",
+                                        "width" : 1.5
+                                      },
+                                      {
+                                        "fill" : "accentFill",
+                                        "op" : "rect",
+                                        "r" : [
+                                          [
+                                            240,
+                                            96,
+                                            140,
+                                            44
+                                          ]
+                                        ],
+                                        "radius" : 6,
+                                        "stroke" : "accent",
+                                        "width" : 1
+                                      },
+                                      {
+                                        "c" : [
+                                          [
+                                            200,
+                                            42,
+                                            14
+                                          ]
+                                        ],
+                                        "fill" : "purple",
+                                        "op" : "circle",
+                                        "opacity" : 0.80000000000000004
+                                      },
+                                      {
+                                        "fill" : "#ff9f0a66",
+                                        "op" : "rect",
+                                        "px" : true,
+                                        "r" : [
+                                          [
+                                            300,
+                                            20,
+                                            60,
+                                            30
+                                          ]
+                                        ],
+                                        "stroke" : "warn",
+                                        "width" : 2
+                                      },
+                                      {
+                                        "fill" : "ok",
+                                        "mono" : true,
+                                        "op" : "text",
+                                        "size" : 10,
+                                        "t" : [
+                                          [
+                                            30,
+                                            36,
+                                            "wheel-a"
+                                          ]
+                                        ],
+                                        "weight" : "bold"
+                                      },
+                                      {
+                                        "op" : "text",
+                                        "size" : 11,
+                                        "t" : [
+                                          [
+                                            30,
+                                            52,
+                                            "Node A title"
+                                          ]
+                                        ]
+                                      },
+                                      {
+                                        "maxw" : 120,
+                                        "op" : "text",
+                                        "size" : 11,
+                                        "t" : [
+                                          [
+                                            250,
+                                            118,
+                                            "Node B: a long label cut to its box"
+                                          ]
+                                        ]
+                                      },
+                                      {
+                                        "anchor" : "middle",
+                                        "fill" : "muted",
+                                        "op" : "text",
+                                        "size" : 10,
+                                        "t" : [
+                                          [
+                                            200,
+                                            72,
+                                            "middle"
+                                          ]
+                                        ]
+                                      },
+                                      {
+                                        "anchor" : "end",
+                                        "fill" : "faint",
+                                        "op" : "text",
+                                        "size" : 10,
+                                        "t" : [
+                                          [
+                                            360,
+                                            64,
+                                            "end"
+                                          ]
+                                        ]
+                                      }
+                                    ]
                                   }
                                 ],
                                 "component" : "Column",
@@ -27069,17 +27265,213 @@
                                     "foregroundStyle" : "secondary"
                                   }
                                 ],
-                                "text" : "a display list with a camera and hit regions; needs a scene, not shown",
+                                "text" : "ops: a display list with a camera (drag to pan, scroll to zoom, Fit + −) and hit regions that outline on hover and show their tip; used by the Beads dependency graph",
                                 "variant" : "caption"
                               },
                               {
-                                "component" : "Text",
-                                "modifiers" : [
+                                "bounds" : [
+                                  0,
+                                  0,
+                                  400,
+                                  160
+                                ],
+                                "component" : "Canvas",
+                                "height" : 220,
+                                "hits" : [
                                   {
-                                    "foregroundStyle" : "secondary"
+                                    "id" : "a",
+                                    "rect" : [
+                                      20,
+                                      20,
+                                      120,
+                                      44
+                                    ],
+                                    "tip" : [
+                                      "Node A",
+                                      [
+                                        {
+                                          "t" : "ready",
+                                          "tone" : "ok"
+                                        },
+                                        {
+                                          "t" : " · P1",
+                                          "tone" : "muted"
+                                        }
+                                      ]
+                                    ]
+                                  },
+                                  {
+                                    "id" : "b",
+                                    "rect" : [
+                                      240,
+                                      96,
+                                      140,
+                                      44
+                                    ],
+                                    "tip" : [
+                                      "Node B: a long label cut to its box"
+                                    ]
+                                  },
+                                  {
+                                    "circle" : [
+                                      200,
+                                      42,
+                                      14
+                                    ],
+                                    "id" : "c",
+                                    "tip" : [
+                                      [
+                                        {
+                                          "bold" : true,
+                                          "mono" : true,
+                                          "t" : "circle"
+                                        }
+                                      ]
+                                    ]
                                   }
                                 ],
-                                "text" : "Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it."
+                                "ops" : [
+                                  {
+                                    "d" : [
+                                      "M140 42 C 190 42, 190 118, 240 118"
+                                    ],
+                                    "op" : "path",
+                                    "stroke" : "muted",
+                                    "width" : 1.5
+                                  },
+                                  {
+                                    "d" : [
+                                      "M80 64 Q 80 140 240 130"
+                                    ],
+                                    "dash" : [
+                                      4,
+                                      3
+                                    ],
+                                    "op" : "path",
+                                    "stroke" : "accent",
+                                    "width" : 1
+                                  },
+                                  {
+                                    "fill" : "fill",
+                                    "op" : "rect",
+                                    "r" : [
+                                      [
+                                        20,
+                                        20,
+                                        120,
+                                        44
+                                      ]
+                                    ],
+                                    "radius" : 6,
+                                    "stroke" : "ok",
+                                    "width" : 1.5
+                                  },
+                                  {
+                                    "fill" : "accentFill",
+                                    "op" : "rect",
+                                    "r" : [
+                                      [
+                                        240,
+                                        96,
+                                        140,
+                                        44
+                                      ]
+                                    ],
+                                    "radius" : 6,
+                                    "stroke" : "accent",
+                                    "width" : 1
+                                  },
+                                  {
+                                    "c" : [
+                                      [
+                                        200,
+                                        42,
+                                        14
+                                      ]
+                                    ],
+                                    "fill" : "purple",
+                                    "op" : "circle",
+                                    "opacity" : 0.80000000000000004
+                                  },
+                                  {
+                                    "fill" : "#ff9f0a66",
+                                    "op" : "rect",
+                                    "px" : true,
+                                    "r" : [
+                                      [
+                                        300,
+                                        20,
+                                        60,
+                                        30
+                                      ]
+                                    ],
+                                    "stroke" : "warn",
+                                    "width" : 2
+                                  },
+                                  {
+                                    "fill" : "ok",
+                                    "mono" : true,
+                                    "op" : "text",
+                                    "size" : 10,
+                                    "t" : [
+                                      [
+                                        30,
+                                        36,
+                                        "wheel-a"
+                                      ]
+                                    ],
+                                    "weight" : "bold"
+                                  },
+                                  {
+                                    "op" : "text",
+                                    "size" : 11,
+                                    "t" : [
+                                      [
+                                        30,
+                                        52,
+                                        "Node A title"
+                                      ]
+                                    ]
+                                  },
+                                  {
+                                    "maxw" : 120,
+                                    "op" : "text",
+                                    "size" : 11,
+                                    "t" : [
+                                      [
+                                        250,
+                                        118,
+                                        "Node B: a long label cut to its box"
+                                      ]
+                                    ]
+                                  },
+                                  {
+                                    "anchor" : "middle",
+                                    "fill" : "muted",
+                                    "op" : "text",
+                                    "size" : 10,
+                                    "t" : [
+                                      [
+                                        200,
+                                        72,
+                                        "middle"
+                                      ]
+                                    ]
+                                  },
+                                  {
+                                    "anchor" : "end",
+                                    "fill" : "faint",
+                                    "op" : "text",
+                                    "size" : 10,
+                                    "t" : [
+                                      [
+                                        360,
+                                        64,
+                                        "end"
+                                      ]
+                                    ]
+                                  }
+                                ]
                               }
                             ],
                             "component" : "Column",
