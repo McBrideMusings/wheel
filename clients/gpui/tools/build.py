@@ -10,11 +10,11 @@ release wheeld as `com.piercemakes.wheel.daemon` on 7420. `dev` makes `target/ap
 items under, so `make deploy-client` and `make deploy-dev` install these bundles as
 `/Applications/Wheel.app` and `/Applications/Wheel Dev.app` (ADR-0040).
 
-The bridge links Wheel's release objects (GhosttyTerminal, WheelKit, WheelUI and what they use):
-`tools/swift-objects.sh` builds them from this checkout into `DerivedData-deploy-release.noindex`
-first, its output in `target/swift-objects.log`. WHEEL_NATIVE_PRODUCTS names a product directory a
-caller built already (`tools/install-app.sh` does), and skips that build. CARGO_TARGET_DIR is
-honoured for the client's own crates.
+The bridge is `native/Bridge.swift` and WheelUI's `KeyEvents.swift`, linked with WheelKit, which
+swiftc compiles from `apple/WheelKit/Sources` (a package with no dependencies) into
+`target/swift/WheelKit.o`. No Xcode build, WheelUI, Luau or Ghostty object goes in the app, and
+`check_no_swift_ui` fails the build if a symbol of one does. CARGO_TARGET_DIR is honoured for the
+client's own crates.
 
 The server goes in the same way as the Mac app's: `apple/Mac/embed-wheeld.sh`, the Xcode build
 phase, run with the variables Xcode would set (CONFIGURATION Release or Debug picks the variant),
@@ -32,7 +32,35 @@ granted across rebuilds; with no certificate the signature is ad hoc.
 The check runs from inside a bundle because it finds the bridge and the server through its own
 path; the bundle that is installed never carries it.
 """
-import os, pathlib, plistlib, shutil, subprocess, sys, tempfile
+import os, pathlib, plistlib, re, shutil, subprocess, sys, tempfile
+
+# Symbols the Swift UI stack, the Luau VM and Ghostty leave: none belongs in a client that draws with GPUI.
+FORBIDDEN = re.compile(r'7WheelUI|9WheelLuau|lua_|luaL_|ghostty', re.I)
+def forbidden_symbols(nm_output):
+    return [line for line in nm_output.splitlines() if FORBIDDEN.search(line)]
+def check_no_swift_ui(binaries):
+    for binary in binaries:
+        found = forbidden_symbols(subprocess.run(['nm', str(binary)], check=True, capture_output=True, text=True).stdout)
+        if found:
+            sys.exit(f'{binary} carries {len(found)} WheelUI, WheelLuau, Luau or Ghostty symbols, e.g. {found[0].strip()}')
+assert forbidden_symbols('0000 T _wheel_native_attach\n0000 T _$s7WheelUI3FooV') == ['0000 T _$s7WheelUI3FooV']
+assert not forbidden_symbols('0000 T _$s8WheelKit8KeyChordV')
+
+def build_swift(repo, client, out, dylib):
+    """WheelKit from source into `out`, then the bridge dylib linked with it."""
+    wheelkit = sorted((repo / 'apple/WheelKit/Sources/WheelKit').glob('*.swift'))
+    swiftc = ['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-swift-version', '6']
+    # The package's own warnings are not this build's; only a failure prints.
+    kit = subprocess.run([*swiftc, '-parse-as-library', '-wmo', '-module-name', 'WheelKit', '-emit-module',
+        '-emit-module-path', str(out / 'WheelKit.swiftmodule'), '-c', '-o', str(out / 'WheelKit.o'),
+        *map(str, wheelkit)], capture_output=True, text=True)
+    if kit.returncode:
+        sys.exit(f'WheelKit failed to compile:\n{kit.stderr}')
+    subprocess.run([*swiftc, '-emit-library', '-module-name', 'WheelGpuiBridge', '-I', str(out),
+        str(client / 'native/Bridge.swift'),
+        # How a key event reads as a chord (`KeyChord(event:)`), compiled in so the bridge imports no WheelUI.
+        str(repo / 'apple/WheelUI/Sources/WheelUI/KeyEvents.swift'),
+        str(out / 'WheelKit.o'), '-o', str(dylib)], check=True)
 
 VARIANTS = dict(
     release=dict(name='Wheel', bundle_id='com.piercemakes.wheel', configuration='Release', icon='AppIcon'),
@@ -49,16 +77,6 @@ spec = VARIANTS[variant]
 here = pathlib.Path(__file__).resolve().parent
 client = here.parent
 repo = client.parents[1]
-if 'WHEEL_NATIVE_PRODUCTS' in os.environ:
-    products = pathlib.Path(os.environ['WHEEL_NATIVE_PRODUCTS'])
-else:
-    # Objects left by an earlier build may predate this checkout's Swift (a protocol level the bridge then refuses).
-    swift_log = client / 'target/swift-objects.log'
-    if subprocess.run([str(repo / 'tools/swift-objects.sh'), str(swift_log)]).returncode:
-        sys.exit(f'the Swift Release objects failed to build; see {swift_log}')
-    products = repo / 'DerivedData-deploy-release.noindex/Build/Products/Release'
-# The libghostty headers come from the same build as the objects linked: <derived data>/Build/Products/Release.
-headers = products.parents[2] / 'SourcePackages/artifacts/libghostty-spm/libghostty/GhosttyKit.xcframework/macos-arm64_x86_64/Headers'
 target = pathlib.Path(os.environ.get('CARGO_TARGET_DIR', client / 'target'))
 bundle = client / 'target/app' / f"{spec['name']}.app"
 contents = bundle / 'Contents'
@@ -81,22 +99,14 @@ def sign(path):
     signed = subprocess.run(['codesign', '--force', '--sign', identity, str(path)], capture_output=True, text=True)
     if signed.returncode:
         sys.exit(f'codesign of {path} failed: {signed.stderr.strip()}')
-fresh(contents / 'MacOS/libWheelGpuiBridge.dylib')
-subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-library', '-module-name', 'WheelGpuiBridge',
-    '-I', str(products), '-I', str(headers),
-    str(client / 'native/Bridge.swift'),
-    # How a key event reads as a chord (`KeyChord(event:)`), compiled in so the bridge imports no WheelUI.
-    str(repo / 'apple/WheelUI/Sources/WheelUI/KeyEvents.swift'),
-    *[str(o) for o in sorted(products.glob('*.o'))],
-    str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
-    '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
+swift_out = client / 'target/swift'
+swift_out.mkdir(parents=True, exist_ok=True)
+build_swift(repo, client, swift_out, fresh(contents / 'MacOS/libWheelGpuiBridge.dylib'))
 sign(contents / 'MacOS/libWheelGpuiBridge.dylib')
 shutil.copy2(target / 'release/wheel-gpui', fresh(contents / 'MacOS/wheel-gpui'))
 sign(contents / 'MacOS/wheel-gpui')
 # A bundle an earlier build made may still hold the check.
 fresh(contents / 'MacOS/wheel-gpui-check')
-for resource in products.glob('*.bundle'):
-    shutil.copytree(resource, contents / 'Resources' / resource.name, dirs_exist_ok=True)
 
 # The icon is the asset set beside the client (the DEV band for the dev variant), folded into an .icns:
 # the set's sizes are each iconset entry and its @2x.
@@ -123,6 +133,7 @@ subprocess.run(['bash', str(repo / 'apple/Mac/embed-wheeld.sh')], check=True, en
     CONTENTS_FOLDER_PATH=f'{bundle.name}/Contents', EXPANDED_CODE_SIGN_IDENTITY=identity))
 # The bundle is signed last, after every file inside it is in place and signed.
 sign(bundle)
+check_no_swift_ui([contents / 'MacOS/wheel-gpui', contents / 'MacOS/libWheelGpuiBridge.dylib'])
 if with_check:
     checked = client / 'target/app/check' / bundle.name
     shutil.rmtree(checked, ignore_errors=True)
