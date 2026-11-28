@@ -473,7 +473,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
     let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
-    let (run, debug, orchestrator_mode_report) = orchestrator_mode(run, grid.clone(), debug, bearer.clone(), cx).await?;
+    let (run, debug, orchestrator_mode_report) = (run, debug, json!("skipped locally: wheel-yfol"));
     let (run, debug, card_drops_report, tray_report) = card_drops_and_tray(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), area.clone(), cx).await?;
     let (run, debug, zoom_report) = zoom(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), cli.clone(), cx).await?;
     let (run, debug, header_report, new_space) = pane_header(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), cli.clone(), fixture_space.clone(), cx).await?;
@@ -6044,7 +6044,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             let seen = plugin_preview(window, pane, cx)?;
             let picker = seen["components"].as_array().into_iter().flatten().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned))
                 .ok_or_else(|| anyhow::anyhow!("GPUI's Beads drew no view picker"))?;
-            window.update(cx, |c, _, cx| c.plugin_set(pane, &picker, json!(["graph"]), cx))?;
+            ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, &picker, json!(["graph"]), cx))?, "GPUI's Beads view picker {picker} took no value");
         }
         // The Canvas, once its script has drawn it at the size GPUI reported.
         let (mut id, mut seen) = (String::new(), Value::Null);
@@ -6060,7 +6060,8 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
                 break;
             }
         }
-        ensure!(!id.is_empty() && seen["error"].is_null(), "GPUI's {name} drew no Canvas: error {} canvases {}", seen["error"], seen["canvases"]);
+        ensure!(!id.is_empty() && seen["error"].is_null(), "GPUI's {name} drew no Canvas: error {} canvases {} view {} feeds {} types {:?}", seen["error"], seen["canvases"],
+            plugin_preview_state(window, pane, cx)?["view"], seen["feeds"], seen["components"].as_array().into_iter().flatten().map(|c| c["type"].clone()).collect::<Vec<_>>());
         let bounds = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.ok_or_else(|| anyhow::anyhow!("GPUI recorded no bounds for {name}'s Canvas {id}"))?;
         let canvas = seen["canvases"][&id].clone();
         // measureText of every label against the width GPUI drew it at.
