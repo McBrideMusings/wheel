@@ -8,7 +8,7 @@ use objc2_core_foundation::CFAttributedString;
 use objc2_core_text::{CTFont, CTLine};
 use objc2_foundation::{NSAttributedString, NSDictionary, NSString};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Design {
     Default,
     Monospaced,

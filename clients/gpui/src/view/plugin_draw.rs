@@ -137,11 +137,11 @@ pub(super) fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
 }
 
 /// Whether node `n` takes the width it is offered, as its SwiftUI view does: a Column (WheelUI
-/// frames it to the full width), a Card, a field, a horizontal Divider, a List, a bar, and a Row
+/// frames it to the full width), a Card, a Canvas, a field, a horizontal Divider, a List, a bar, and a Row
 /// a justify spacer pushes to its edges.
 fn takes_width(n: &ViewNode) -> bool {
     match n.component.as_str() {
-        "Column" | "Card" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
+        "Column" | "Card" | "Canvas" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
         "Gauge" => !matches!(n.string("style"), Some("accessoryCircular" | "accessoryCircularCapacity")),
         "Divider" => n.string("axis") != Some("vertical"),
         "ProgressView" => n.number("value").is_some(),

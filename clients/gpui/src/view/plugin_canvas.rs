@@ -118,19 +118,22 @@ fn lyon_tessellation_join() -> lyon::tessellation::LineJoin {
 }
 
 thread_local! {
-    /// The family the monospaced system font resolves to here (SF Mono, which `measureText` measures), found once.
-    static MONO: std::cell::OnceCell<&'static str> = const { std::cell::OnceCell::new() };
+    /// The family name of each design's system font, the face `measureText` measures, found once.
+    static FAMILIES: RefCell<HashMap<wheel_luau::Design, gpui::SharedString>> = RefCell::new(HashMap::new());
     /// Decoded drawImage pixels by size and data, so a redraw decodes nothing it has decoded before.
     static IMAGES: RefCell<(HashMap<String, Arc<gpui::RenderImage>>, Vec<String>, usize)> = RefCell::new(Default::default());
 }
 
 /// The GPUI font that draws the face `CanvasFont::measure` measures.
-fn gpui_font(f: &CanvasFont, window: &Window) -> gpui::Font {
-    let family = match f.design {
-        wheel_luau::Design::Monospaced => MONO.with(|m| *m.get_or_init(|| if window.text_system().all_font_names().iter().any(|f| f == "SF Mono") { "SF Mono" } else { "Menlo" })),
-        wheel_luau::Design::Serif => "New York",
-        _ => ".SystemUIFont",
-    };
+fn gpui_font(f: &CanvasFont) -> gpui::Font {
+    // The system fonts' families (".AppleSystemUIFontMonospaced" and the rest) are hidden from font
+    // listings, but CoreText loads them by name.
+    let family = FAMILIES.with(|c| {
+        c.borrow_mut()
+            .entry(f.design)
+            .or_insert_with(|| CanvasFont { size: 12.0, weight: 400, italic: false, design: f.design }.ns_font().familyName().map(|n| n.to_string()).unwrap_or_else(|| ".SystemUIFont".into()).into())
+            .clone()
+    });
     let mut font = gpui::font(family);
     font.weight = FontWeight(f.weight.clamp(100, 900) as f32);
     if f.italic {
@@ -576,7 +579,7 @@ fn paint_command(p: &Paint, origin: Point<Pixels>, texts: &mut Vec<(String, f32,
             // hack: text under a rotate or skew draws upright at its mapped origin; GPUI lays glyphs out on a level line. Upgrade when a shipped script rotates text.
             let k = transform.scale();
             let (dx, dy) = transform.apply(*x, *y);
-            let line = shape(text, gpui_font(font, window), (font.size * k) as f32, color(c), window);
+            let line = shape(text, gpui_font(font), (font.size * k) as f32, color(c), window);
             // Canvas 2D puts (x, y) on the alphabetic baseline at the text's left end.
             let top = pt(origin, dx, dy - f64::from(f32::from(line.ascent)));
             let _ = line.paint(top, line.ascent + line.descent, TextAlign::Left, None, window, cx);
@@ -645,7 +648,7 @@ fn draw_scene(scene: &Scene, s: &mut CanvasView, origin: Point<Pixels>, window: 
                 let size = if st.sizepx.is_some() { cv::clamp(st.size * c.s, st.sizepx) } else if st.px { st.size } else { st.size * c.s };
                 let weight = match st.weight.as_str() { "bold" => 700, "semibold" => 600, "medium" => 500, _ => 400 };
                 let font = CanvasFont { size, weight, italic: false, design: if st.mono { wheel_luau::Design::Monospaced } else { wheel_luau::Design::Default } };
-                let gfont = gpui_font(&font, window);
+                let gfont = gpui_font(&font);
                 let col = scene_color(st.fill.as_deref(), st.opacity).unwrap_or_else(|| hsla(FG, st.opacity));
                 let reach = st.maxw.unwrap_or(400.) + 8.;
                 for (x, y, label) in &op.texts {

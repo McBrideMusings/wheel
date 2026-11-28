@@ -6071,6 +6071,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
             plugin_preview_state(window, pane, cx)?["view"], seen["pending_feeds"], seen["feeds"], seen["components"].as_array().into_iter().flatten().map(|c| c["type"].clone()).collect::<Vec<_>>());
         draw(window, None, cx)?;
         let bounds = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.ok_or_else(|| anyhow::anyhow!("GPUI recorded no bounds for {name}'s Canvas {id}"))?;
+        ensure!(bounds.2 > 0. && bounds.3 > 0., "GPUI drew {name}'s Canvas {id} at {}x{}: it should take the width it is offered", bounds.2, bounds.3);
         let canvas = seen["canvases"][&id].clone();
         // measureText of every label against the width GPUI drew it at.
         let texts = canvas["texts"].as_array().cloned().unwrap_or_default();
