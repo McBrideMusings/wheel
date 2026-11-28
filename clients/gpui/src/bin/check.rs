@@ -6035,7 +6035,7 @@ async fn plugin_beside_bridge(connection: &mut Connection, layouts: &mut usize, 
         cut_picture(window, body, body, &png, cx)?;
         Ok((ours, png))
     });
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     let (ours, png) = pictured?;
     let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
@@ -6203,7 +6203,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         eprintln!("wheel-gpui: {name}'s Canvas in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     steps
 }
@@ -6369,7 +6369,7 @@ async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         eprintln!("wheel-gpui: embeds in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     if steps.is_err() {
         let _ = run_pumped(&["pane", "close", &term_pane], connection, layouts, window, cx).await;
@@ -6531,7 +6531,7 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
         eprintln!("wheel-gpui: web embeds in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     let left: Vec<&String> = keys.iter().filter(|k| !native.embed_facts(k).is_null()).collect();
     let out = steps?;
@@ -6703,7 +6703,7 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
         eprintln!("wheel-gpui: video streams in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     let left: Vec<&String> = keys.iter().filter(|k| !native.embed_facts(k).is_null()).collect();
     let out = steps?;
@@ -6883,7 +6883,7 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         }
     }
     ensure!(reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["running"] == true && reloaded["error"].is_null(), "the reload did not restart GPUI's script: {} error {}", reloaded["restarts"], reloaded["error"]);
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     eprintln!("wheel-gpui: the gallery in GPUI: {} components, {pages} pages, {} classes", ours.len(), classes.len());
     Ok(json!({"components": ours.len(), "pages": pages, "classes": classes, "field": field, "pressed": pressed, "restarts": reloaded["restarts"],
@@ -6929,7 +6929,7 @@ async fn dialogs_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         ensure!(st[key] == want || (want == json!([]) && st[key] == json!({})), "{what} on row {row:?} of {table} should leave {key} {want}: state {st}");
     }
     let st = plugin_preview_state(window, pane, cx)?;
-    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    window.update(cx, |c, _, _| c.end_plugin(pane))?;
     draw(window, None, cx)?;
     eprintln!("wheel-gpui: the dialogs pane in GPUI: {dialogs:?}; table state {st}");
     Ok(json!({"components": ours.len(), "dialogs": dialogs, "table": table, "selected": st["selected"], "opened": st["opened"]}))

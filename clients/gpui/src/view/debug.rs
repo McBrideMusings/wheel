@@ -209,7 +209,7 @@ impl Client {
                 if !self.leaf(&pane).is_some_and(|l| l.kind == "empty") {
                     return refuse(MISSING, "no empty pane with that id in the shown spaces");
                 }
-                let offered = self.space().and_then(|s| self.plugins.get(&s.id)).is_some_and(|list| list.iter().any(|p| p.id == plugin && p.panes.iter().any(|x| x.id == plugin_pane)));
+                let offered = self.space().and_then(|s| self.plugin_packages.get(&s.id)).is_some_and(|list| list.iter().any(|p| p.id == plugin && p.panes.iter().any(|x| x.id == plugin_pane)));
                 if !offered {
                     return refuse(MISSING, "the shown space offers no such plugin pane button");
                 }
@@ -803,7 +803,7 @@ impl Client {
         out["chat_diagrams"] = self.diagrams.json();
         out["chat_charts"] = self.charts.json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.
-        out["plugins"] = self.plugins.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();
+        out["plugins"] = self.plugin_packages.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();
         out["plugin_errors"] = serde_json::json!(self.plugin_errors);
         // The popped cards, bottom first, in window coordinates.
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();

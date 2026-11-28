@@ -411,6 +411,7 @@ impl Draw<'_> {
                         r = r.bg(rgb(SELECTED)).rounded(px(4.));
                     }
                     for c in &cols {
+                        super::plugin_draw::CELLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         r = r.child(sized(div().px(px(6.)).overflow_hidden().flex().flex_row().items_center(), c).child(self.cell(n, row, c, env, cx)));
                     }
                     let (pane, table, rid, row_node) = (self.pane.to_owned(), n.id.clone(), row.row_id.clone(), row.id.clone());
@@ -708,7 +709,7 @@ impl Draw<'_> {
             let (pane, id) = (self.pane.to_owned(), n.id.clone());
             bar = bar.child(div().id(el_id(self.pane, &n.id, &format!("tab{i}"))).px(px(10.)).py(px(2.)).rounded(px(5.)).when(i == at, |d| d.bg(rgba(0xffffff33))).cursor_pointer().child(Self::label(t.clone()))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(h) = this.plugin_previews.get_mut(&pane) {
+                    if let Some(h) = this.plugins.get_mut(&pane) {
                         h.tabs.insert(id.clone(), i);
                     }
                     cx.notify();

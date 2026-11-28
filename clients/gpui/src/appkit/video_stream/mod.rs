@@ -469,9 +469,13 @@ impl StreamView {
         if !self.ivars().takes_input.get() {
             return;
         }
+        self.pointer_at(kind, self.convertPoint_fromView(event.locationInWindow(), None), button);
+    }
+
+    /// A pointer event at `p`, in the view's own coordinates.
+    fn pointer_at(&self, kind: &str, p: NSPoint, button: Option<i64>) {
         let Some(owner) = self.ivars().owner.borrow().upgrade() else { return };
         let Some((w, h)) = owner.video_size().filter(|(w, h)| *w > 0 && *h > 0) else { return };
-        let p = self.convertPoint_fromView(event.locationInWindow(), None);
         let b = self.bounds();
         let (x, y) = frames::video_point((p.x, p.y), (f64::from(w), f64::from(h)), [0., 0., b.size.width, b.size.height], self.ivars().fills.get());
         let mut o = json!({"kind": kind, "x": x as i64, "y": y as i64});
@@ -603,6 +607,31 @@ impl StreamEmbed {
         if link.send(frames::input(kind, event)).is_ok() {
             self.stats.borrow().inputs.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// A check's key typing `characters` on the stream, as `VideoStreams.type` hands the view a key
+    /// down and up (key code 0, no modifiers); false when it takes no input.
+    pub fn type_characters(&self, characters: &str) -> bool {
+        if !self.input.get() {
+            return false;
+        }
+        for kind in ["down", "up"] {
+            self.send(Input::Key, &frames::key_event(kind, 0, characters, false, &[]));
+        }
+        true
+    }
+
+    /// A check's left click at the middle of the stream, as `VideoStreams.click` hands the view a
+    /// mouse down (which takes the keyboard) and up; false when it takes no input or is in no window.
+    pub fn click_middle(&self) -> bool {
+        let Some(window) = self.view.window().filter(|_| self.input.get()) else { return false };
+        window.makeFirstResponder(Some(&self.view));
+        let b = self.view.bounds();
+        let middle = NSPoint::new(b.size.width / 2., b.size.height / 2.);
+        for kind in ["down", "up"] {
+            self.view.pointer_at(kind, middle, Some(0));
+        }
+        true
     }
 
     /// Whether controller events go here: the stream takes input, is connected and its window is the key one.

@@ -130,6 +130,18 @@ pub trait Host {
     /// Each page's status entry by pane (`kind`, `url`, `loads` and the rest), and the window's own
     /// (`snapshots_pending`, `snapshots_waiting`, `logs`, `errors`).
     fn pages(&self) -> (serde_json::Map<String, Value>, Value);
+    /// A check's stand-in for a person's input on the video stream in embed `key`'s slot, handed to
+    /// the stream view's own handlers; false when the slot holds no stream taking input.
+    fn stream_touch(&self, key: &str, touch: &StreamTouch) -> bool;
+}
+
+/// What a check does on a `VideoStream` with no real input (the bridge's `stream_key` and `stream_click`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum StreamTouch {
+    /// A key down and a key up typing `characters`, key code 0 and no modifiers.
+    Type(String),
+    /// A left press and release at the view's middle.
+    Click,
 }
 
 /// What a plugin page's `WebView`, `Map` or `VideoStream` shows in a slot of its own (wheel-4d1o.5, wheel-4d1o.6).
@@ -441,6 +453,10 @@ impl Native {
         if let Some(host) = self.host() {
             host.reload(key);
         }
+    }
+    /// A check's input on the stream in embed `key`'s slot ([`Host::stream_touch`]).
+    pub fn stream_touch(&self, key: &str, touch: &StreamTouch) -> bool {
+        self.host().is_some_and(|h| h.stream_touch(key, touch))
     }
     /// Embed `key`'s slot facts (`frame_top`, `hidden`, `holes`, a map's `map`) with its page's
     /// status entry (`url`, `loads`, `store`, `page`) folded in; null when it has no slot.

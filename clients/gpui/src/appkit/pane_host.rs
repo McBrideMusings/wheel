@@ -25,7 +25,7 @@ use std::{
     ptr::NonNull,
     rc::Rc,
 };
-use wheel_gpui_core::native::{Embedded, Host, Mouse, MouseKind};
+use wheel_gpui_core::native::{Embedded, Host, Mouse, MouseKind, StreamTouch};
 
 /// A page's `ui.Map` in its slot: where it was asked to look (latitude, longitude, span), whether
 /// it has looked there yet, and the markers it shows.
@@ -550,6 +550,14 @@ impl Host for PaneHost {
     fn pages(&self) -> (Map<String, Value>, Value) {
         let responder = self.root.window().and_then(|w| w.firstResponder()).and_then(|r| r.downcast::<NSView>().ok());
         self.pages.report(responder.as_deref())
+    }
+
+    fn stream_touch(&self, key: &str, touch: &StreamTouch) -> bool {
+        let Some(stream) = self.streams.borrow().get(key).cloned() else { return false };
+        match touch {
+            StreamTouch::Type(characters) => stream.type_characters(characters),
+            StreamTouch::Click => stream.click_middle(),
+        }
     }
 }
 

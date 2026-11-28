@@ -300,7 +300,7 @@ pub struct Client {
     plugin_errors: HashMap<String, Option<String>>,
     /// Plugin panes whose script this client runs and draws (`plugin.rs`); only the hidden check
     /// previews one before wheel-4d1o.7.
-    plugin_previews: HashMap<String, plugin::PluginHost>,
+    plugins: HashMap<String, plugin::PluginHost>,
     /// The native slots previewed pages' WebView and Map embeds show in, by `<host>#<node>`: what each
     /// shows and where it was last put (`plugin_embeds.rs`).
     embed_slots: HashMap<String, (wheel_gpui_core::native::Embedded, Option<Placement>)>,
@@ -311,7 +311,7 @@ pub struct Client {
     /// The agent panes showing the Luau agent view in place of the native one; client memory only (ADR-0022).
     pub(crate) agent_views: HashSet<String>,
     /// The plugin packages each space can use, as `plugin_ls` last listed them, for the empty pane's buttons.
-    plugins: HashMap<String, Vec<PluginInfo>>,
+    plugin_packages: HashMap<String, Vec<PluginInfo>>,
     /// `plugin_ls` requests waiting for an answer (request id to the space asked about), and when each space was last asked.
     plugin_reqs: HashMap<u64, String>,
     plugins_asked: HashMap<String, std::time::Instant>,
@@ -565,7 +565,7 @@ impl Client {
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugin_previews: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugins: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugin_packages: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -609,7 +609,7 @@ impl Client {
                     // A `status` reply carries every status; a `spaces` broadcast carries none.
                     let fresh = matches!(message.as_ref(), ServerMsg::Status { .. });
                     self.apply(layout, !fresh);
-                    self.prune_plugin_previews();
+                    self.prune_plugins();
                     self.ask_title_buttons(fresh);
                     self.ask_plugins(true);
                     self.show_made_session();
@@ -634,7 +634,7 @@ impl Client {
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
                             }
-                            self.reload_plugin_preview(pane);
+                            self.reload_plugin(pane);
                             return false;
                         }
                         ServerMsg::FileImage { req, path, found, mime, data, error, version, unchanged } => {
@@ -649,7 +649,7 @@ impl Client {
                         }
                         ServerMsg::Plugins { req, plugins } => {
                             if let Some(space) = self.plugin_reqs.remove(req) {
-                                self.plugins.insert(space, plugins.clone());
+                                self.plugin_packages.insert(space, plugins.clone());
                             }
                             return false;
                         }
@@ -1793,12 +1793,12 @@ impl Client {
     /// Give `pane` the keyboard: its native view, or the GPUI view for a pane GPUI draws. An
     /// embed's key (`<host>#<node>`) gives it to the embed, inside its plugin pane.
     fn focus_pane(&mut self, pane: &str) {
-        for host in self.plugin_previews.values_mut() {
+        for host in self.plugins.values_mut() {
             host.focused_embed = None;
         }
         let pane = match pane.split_once('#') {
-            Some((host, node)) if self.plugin_previews.contains_key(host) => {
-                self.plugin_previews.get_mut(host).unwrap().focused_embed = Some(node.to_owned());
+            Some((host, node)) if self.plugins.contains_key(host) => {
+                self.plugins.get_mut(host).unwrap().focused_embed = Some(node.to_owned());
                 host
             }
             _ => pane,
@@ -1815,7 +1815,7 @@ impl Client {
     /// press GPUI never saw: its pane, or the embed's plugin pane with none of its embeds, holds
     /// it. The native view keeps the keyboard, so nothing is handed to AppKit.
     fn native_took_keyboard(&mut self, held: &str) {
-        for host in self.plugin_previews.values_mut() {
+        for host in self.plugins.values_mut() {
             host.focused_embed = None;
         }
         let pane = match held.split_once('#') {
@@ -2479,7 +2479,7 @@ impl Client {
             // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
             "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
             "terminal" if p.leaf.term.is_some() => self.term_element(&p.leaf.id, terminal::body_of(r)[3], window, cx),
-            "plugin" if self.plugin_previews.contains_key(&p.leaf.id) => {
+            "plugin" if self.plugins.contains_key(&p.leaf.id) => {
                 let el = self.plugin_element(&p.leaf.id, r.w, r.h - TITLE, window, cx);
                 // `body` records where the page lies, for the check's pictures.
                 div().relative().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().children(el).child(recorded(&p.leaf.id, "body", &self.controls))
@@ -2508,7 +2508,7 @@ impl Client {
                         .child(commands::capitalized(&a.name))
                 }).collect::<Vec<_>>();
                 // One button per pane of the plugins this space can use (ADR-0041).
-                let plugin_panes = self.space().and_then(|s| self.plugins.get(&s.id)).into_iter().flatten().flat_map(|plugin| plugin.panes.iter().map(move |pane| (plugin.id.clone(), pane.clone()))).map(|(plugin, pane)| {
+                let plugin_panes = self.space().and_then(|s| self.plugin_packages.get(&s.id)).into_iter().flatten().flat_map(|plugin| plugin.panes.iter().map(move |pane| (plugin.id.clone(), pane.clone()))).map(|(plugin, pane)| {
                     let id = id.clone();
                     div().id(gpui::ElementId::Name(format!("plugin-pane-{plugin}-{}", pane.id).into())).px_2().py_1().rounded_sm().cursor_pointer().bg(rgb(0x31483e))
                         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| this.show_plugin(&id, &plugin, &pane.id)))

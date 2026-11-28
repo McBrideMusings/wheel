@@ -288,14 +288,14 @@ impl Client {
 
     /// The previewed plugin panes among `leaves`, whose embeds draw this frame.
     pub(super) fn embed_hosts<'a>(&self, leaves: impl IntoIterator<Item = &'a Placed>) -> Vec<String> {
-        leaves.into_iter().filter(|p| p.leaf.kind == "plugin" && self.plugin_previews.contains_key(&p.leaf.id)).map(|p| p.leaf.id.clone()).collect()
+        leaves.into_iter().filter(|p| p.leaf.kind == "plugin" && self.plugins.contains_key(&p.leaf.id)).map(|p| p.leaf.id.clone()).collect()
     }
 
     /// Every Terminal embed of `hosts` that resolves and has drawn: its key, its body (window points)
     /// and the term it shows.
     pub(super) fn embed_terms(&self, hosts: &[String]) -> Vec<(String, [f32; 4], String)> {
         let mut out = vec![];
-        for (h, host) in hosts.iter().filter_map(|h| self.plugin_previews.get(h).map(|host| (h, host))) {
+        for (h, host) in hosts.iter().filter_map(|h| self.plugins.get(h).map(|host| (h, host))) {
             for n in host.pane.tree.all().filter(|n| n.component == "Terminal") {
                 let (Ok(leaf), Some(embed)) = (self.embed_target(n), host.embeds.get(&n.id)) else { continue };
                 let body = embed.shown();
@@ -309,7 +309,7 @@ impl Client {
 
     /// The agents `hosts`' drawn AgentChat embeds show, which are attached as an agent pane's are.
     pub(super) fn embed_agents(&self, hosts: &[String]) -> Vec<String> {
-        hosts.iter().filter_map(|h| self.plugin_previews.get(h))
+        hosts.iter().filter_map(|h| self.plugins.get(h))
             .flat_map(|host| host.pane.tree.all().filter(|n| n.component == "AgentChat" && host.embeds.get(&n.id).is_some_and(|e| e.counted)))
             .filter_map(|n| self.embed_target(n).ok().and_then(|l| l.agent.clone())).collect()
     }
@@ -317,7 +317,7 @@ impl Client {
     /// At the start of a frame: each embed counts as drawn only when the frame painted last drew it.
     pub(super) fn count_drawn_embeds(&mut self) {
         let frame = self.frames;
-        for e in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()) {
+        for e in self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()) {
             e.count(frame);
         }
     }
@@ -326,14 +326,14 @@ impl Client {
     /// counted (a tab picked away from it, a sheet closed over it), another frame counts again,
     /// so that embed's terminal detaches or its native view hides with nothing else to redraw.
     pub(super) fn recount_embeds_after_paint(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.plugin_previews.values().all(|h| h.embeds.is_empty()) {
+        if self.plugins.values().all(|h| h.embeds.is_empty()) {
             return;
         }
         let client = cx.entity().downgrade();
         window.on_next_frame(move |_, cx| {
             client.update(cx, |c, cx| {
                 let frame = c.frames;
-                if c.plugin_previews.values().flat_map(|h| h.embeds.values()).any(|e| e.counted != e.drawn_in(frame)) {
+                if c.plugins.values().flat_map(|h| h.embeds.values()).any(|e| e.counted != e.drawn_in(frame)) {
                     cx.notify();
                 }
             }).ok();
@@ -343,7 +343,7 @@ impl Client {
     /// The pane or embed that holds the keyboard: an embed's key while it does, else the focused pane.
     pub(super) fn keyboard_target(&self) -> Option<String> {
         let pane = self.focus.current.as_ref()?;
-        Some(match self.plugin_previews.get(pane).and_then(|h| h.focused_embed.as_ref()) {
+        Some(match self.plugins.get(pane).and_then(|h| h.focused_embed.as_ref()) {
             Some(node) => embed_key(pane, node),
             None => pane.clone(),
         })
@@ -352,7 +352,7 @@ impl Client {
     /// The pane AgentChat embed `key` shows, while it shows one.
     pub(super) fn embedded_agent_leaf(&self, key: &str) -> Option<&Leaf> {
         let (host, node) = key.split_once('#')?;
-        let n = self.plugin_previews.get(host)?.pane.tree.node(node).filter(|n| n.component == "AgentChat")?;
+        let n = self.plugins.get(host)?.pane.tree.node(node).filter(|n| n.component == "AgentChat")?;
         self.embed_target(n).ok().filter(|l| l.agent.is_some())
     }
 
@@ -360,13 +360,13 @@ impl Client {
     /// terminal, the agent's body or the note) is built here, where the client can be changed,
     /// for `Draw::embed` to place. `page_w` is the page's width, an AgentChat's until it has drawn.
     pub(super) fn sync_plugin_embeds(&mut self, pane: &str, page_w: f32, cx: &mut Context<Self>) {
-        let Some(host) = self.plugin_previews.get(pane) else { return };
+        let Some(host) = self.plugins.get(pane) else { return };
         let nodes: Vec<(String, String, f32, Result<Leaf, String>)> = host.pane.tree.all().filter(|n| is_pane_embed(&n.component))
             .map(|n| (n.id.clone(), n.component.clone(), n.number("height").unwrap_or(f64::from(HEIGHT)) as f32, self.embed_target(n).cloned())).collect();
         let natives: Vec<(String, String, Option<WebChoice>, Option<String>)> = host.pane.tree.all().filter(|n| is_native_embed(&n.component))
             .map(|n| (n.id.clone(), n.component.clone(), (n.component == "WebView").then(|| web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or(""))),
                 (n.component == "VideoStream").then(|| n.string("stream").unwrap_or("").to_owned()))).collect();
-        let host = self.plugin_previews.get_mut(pane).unwrap();
+        let host = self.plugins.get_mut(pane).unwrap();
         for (id, component) in nodes.iter().map(|(i, c, ..)| (i, c)).chain(natives.iter().map(|(i, c, ..)| (i, c))) {
             if host.embeds.get(id).is_none_or(|e| &e.component != component) {
                 host.embeds.insert(id.clone(), Embed::new(component));
@@ -392,7 +392,7 @@ impl Client {
         let client = cx.entity().downgrade();
         for (id, component, height, target) in nodes {
             let key = embed_key(pane, &id);
-            let embed = self.plugin_previews.get_mut(pane).unwrap().embeds.get_mut(&id).unwrap();
+            let embed = self.plugins.get_mut(pane).unwrap().embeds.get_mut(&id).unwrap();
             let bounds = embed.shown();
             if component != "Terminal" || target.is_err() || !self.terms.panes.contains_key(&key) {
                 embed.term = None;
@@ -417,13 +417,13 @@ impl Client {
             };
             els.insert(id, el);
         }
-        self.plugin_previews.get_mut(pane).unwrap().embed_els = els;
+        self.plugins.get_mut(pane).unwrap().embed_els = els;
     }
 
     /// Previewed pane `pane`'s embeds for a check: each one's component, the pane it names, its note,
     /// the term or agent it shows, where it drew and, for a terminal, its grid and the last grid sent.
     pub(super) fn plugin_embeds_json(&self, pane: &str) -> serde_json::Value {
-        let Some(host) = self.plugin_previews.get(pane) else { return serde_json::Value::Null };
+        let Some(host) = self.plugins.get(pane) else { return serde_json::Value::Null };
         let natives = host.pane.tree.all().filter(|n| is_native_embed(&n.component)).map(|n| {
             let key = embed_key(pane, &n.id);
             let embed = host.embeds.get(&n.id);
@@ -495,6 +495,67 @@ impl Client {
         }).chain(natives).collect::<serde_json::Map<_, _>>().into()
     }
 
+    /// Pane `pane`'s embeds as the bridge's `plugin` op lists them: each Terminal (`pane`, `term`,
+    /// `bytes`), each AgentChat (`pane`, `agent`, `note`, `state`, `items`, `draft`, `error`), each
+    /// artifact page (`artifact`, `loads`, `id`, `error`, `status`), then each stream with a slot
+    /// (`stream`, `frames`, `audio`, `inputs`, `bytes`, `socket`, `error`, `video`).
+    pub(super) fn plugin_embed_states(&self, pane: &str) -> Vec<serde_json::Value> {
+        use serde_json::{Value, json};
+        let Some(host) = self.plugins.get(pane) else { return vec![] };
+        let nodes = |c: &'static str| host.pane.tree.all().filter(move |n| n.component == c);
+        let mut out: Vec<Value> = nodes("Terminal").map(|n| {
+            let term = self.embed_target(n).ok().and_then(|l| l.term.clone());
+            let bytes = term.as_ref().and_then(|t| self.terms.models.get(t)).map_or(0, |m| m.received);
+            json!({"pane": n.string("pane").unwrap_or(""), "term": term, "bytes": bytes})
+        }).collect();
+        out.extend(nodes("AgentChat").map(|n| {
+            let target = self.embed_target(n);
+            let agent = target.as_ref().ok().and_then(|l| l.agent.clone());
+            let chat = agent.as_ref().and_then(|a| self.transcripts.get(a));
+            json!({
+                "pane": n.string("pane").unwrap_or(""), "agent": agent, "note": target.as_ref().err().cloned().unwrap_or_default(),
+                "state": chat.map(|t| t.state.clone()), "items": chat.map_or(0, |t| t.rows.len()),
+                "draft": agent.as_ref().and_then(|a| self.drafts.get(a)).cloned().unwrap_or_default(),
+                "error": agent.as_ref().and_then(|a| self.composer_errors.get(a)),
+            })
+        }));
+        let facts = |id: &str| self.native.embed_facts(&embed_key(pane, id));
+        for n in nodes("WebView") {
+            let Some(a) = host.embeds.get(&n.id).and_then(|e| e.artifact.as_ref()) else { continue };
+            let f = facts(&n.id);
+            let mut o = json!({"artifact": a.name, "loads": f.get("loads").cloned().unwrap_or(json!(0))});
+            if let Some(id) = &a.id { o["id"] = json!(id); }
+            if let Some(error) = &a.error { o["error"] = json!(error); }
+            if let Some(status) = f.get("status").filter(|s| !s.is_null()) { o["status"] = status.clone(); }
+            out.push(o);
+        }
+        for n in nodes("VideoStream") {
+            let Some(Value::Object(f)) = facts(&n.id).get("stream").cloned() else { continue };
+            out.push(f.into_iter().filter(|(k, _)| matches!(k.as_str(), "stream" | "frames" | "audio" | "inputs" | "bytes" | "socket" | "error" | "video")).collect());
+        }
+        out
+    }
+
+    /// The bridge's `agent_send`: the AgentChat embed of pane `pane` showing pane `named` sends
+    /// `text` as its composer's Send does. False when no such embed shows an agent.
+    pub(super) fn plugin_agent_send(&mut self, pane: &str, named: &str, text: &str) -> bool {
+        let Some(host) = self.plugins.get(pane) else { return false };
+        let agent = host.pane.tree.all().filter(|n| n.component == "AgentChat" && n.string("pane") == Some(named))
+            .find_map(|n| self.embed_target(n).ok().and_then(|l| l.agent.clone()));
+        let Some(agent) = agent else { return false };
+        self.set_draft(&agent, text.to_owned());
+        self.send_draft(&agent, false);
+        true
+    }
+
+    /// The bridge's `stream_key` and `stream_click`: `touch` on the first VideoStream of pane `pane`
+    /// playing `stream` that takes input and has a slot.
+    pub(super) fn plugin_stream_touch(&self, pane: &str, stream: &str, touch: &wheel_gpui_core::native::StreamTouch) -> bool {
+        let Some(host) = self.plugins.get(pane) else { return false };
+        host.pane.tree.all().filter(|n| n.component == "VideoStream" && n.string("stream") == Some(stream) && n.bool("input").unwrap_or(true))
+            .any(|n| self.native.stream_touch(&embed_key(pane, &n.id), touch))
+    }
+
     /// The socket `VideoStream` node `node` of plugin pane `pane` names (`name`), asked of wheeld
     /// while the node is drawn and no socket, request or refusal stands (again after a connection
     /// ended, once its wait is over): Some the note shown in its place instead of the stream.
@@ -504,7 +565,7 @@ impl Client {
             return Some(text);
         }
         let up = self.link == Link::Up;
-        let embed = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?;
+        let embed = self.plugins.get_mut(pane)?.embeds.get_mut(node)?;
         // Another stream is another session, as `VideoStreamHostView` is identified by its stream.
         if embed.stream.as_ref().is_none_or(|a| a.name != name) {
             embed.stream = Some(StreamAsk::new(name));
@@ -524,7 +585,7 @@ impl Client {
             a.retry_at = None;
             a.timer = false;
             let req = self.req();
-            let a = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?.stream.as_mut()?;
+            let a = self.plugins.get_mut(pane)?.embeds.get_mut(node)?.stream.as_mut()?;
             a.req = Some(req);
             self.send(&ClientMsg::PluginStream { req: Some(req), pane: pane.to_owned(), stream: name.to_owned() });
         }
@@ -535,7 +596,7 @@ impl Client {
     /// picture): its socket is asked for again after a wait.
     pub(super) fn stream_ended(&mut self, key: &str, socket: &str, why: &str, shown: bool) {
         let Some((host, node)) = key.split_once('#') else { return };
-        if let Some(a) = self.plugin_previews.get_mut(host).and_then(|h| h.embeds.get_mut(node)).and_then(|e| e.stream.as_mut())
+        if let Some(a) = self.plugins.get_mut(host).and_then(|h| h.embeds.get_mut(node)).and_then(|e| e.stream.as_mut())
             && a.ended(socket, why, shown, Instant::now())
         {
             self.log(format!("video stream {key}: {why}"));
@@ -548,7 +609,7 @@ impl Client {
     fn ask_artifact_embed(&mut self, pane: &str, node: &str, name: &str) -> Option<String> {
         let lacking = self.server_offer.as_ref().map(|o| !o.has("plugin_embed"));
         let up = self.link == Link::Up;
-        let embed = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?;
+        let embed = self.plugins.get_mut(pane)?.embeds.get_mut(node)?;
         // Another artifact is another page, as `ArtifactEmbedView` is identified by its name.
         if embed.artifact.as_ref().is_none_or(|a| a.name != name) {
             embed.artifact = Some(ArtifactEmbed { name: name.to_owned(), ..Default::default() });
@@ -560,14 +621,14 @@ impl Client {
                 Some(false) => {
                     let req = self.next_req;
                     self.next_req += 1;
-                    self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?.artifact.as_mut()?.req = Some(req);
+                    self.plugins.get_mut(pane)?.embeds.get_mut(node)?.artifact.as_mut()?.req = Some(req);
                     self.send(&ClientMsg::PluginEmbed { req: Some(req), pane: pane.to_owned(), artifact: name.to_owned() });
                 }
                 // wheeld's offer comes with its first status; the page is asked for then.
                 None => {}
             }
         }
-        let a = self.plugin_previews.get(pane)?.embeds.get(node)?.artifact.as_ref()?;
+        let a = self.plugins.get(pane)?.embeds.get(node)?.artifact.as_ref()?;
         match (&a.error, &a.id) {
             (Some(error), _) => Some(error.clone()),
             (None, Some(_)) => None,
@@ -583,7 +644,7 @@ impl Client {
             _ => None,
         };
         if let Some(req) = stream_req
-            && let Some(a) = self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()).find(|a| a.req == Some(req))
+            && let Some(a) = self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()).find(|a| a.req == Some(req))
         {
             a.req = None;
             match message {
@@ -605,7 +666,7 @@ impl Client {
             ServerMsg::Error { req: Some(req), message, .. } => (*req, Err(message.clone())),
             _ => return false,
         };
-        let Some(a) = self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()).find(|a| a.req == Some(req)) else { return false };
+        let Some(a) = self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()).find(|a| a.req == Some(req)) else { return false };
         a.req = None;
         match answer {
             Ok((id, scope)) => {
@@ -624,18 +685,18 @@ impl Client {
     /// A new connection: wheeld may have restarted and forgotten every embed's page, so each is asked for again.
     pub(super) fn embeds_link_up(&mut self) {
         // wheeld may have restarted its backends: every stream asks for its socket again on the next frame.
-        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
+        for a in self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
             a.req = None;
             a.socket = None;
             a.error = None;
             a.retry_at = None;
         }
-        let asks: Vec<(String, String, String)> = self.plugin_previews.iter()
+        let asks: Vec<(String, String, String)> = self.plugins.iter()
             .flat_map(|(h, host)| host.embeds.iter().filter_map(move |(n, e)| e.artifact.as_ref().map(|a| (h.clone(), n.clone(), a.name.clone()))))
             .collect();
         for (pane, node, name) in asks {
             let req = self.req();
-            if let Some(a) = self.plugin_previews.get_mut(&pane).and_then(|h| h.embeds.get_mut(&node)).and_then(|e| e.artifact.as_mut()) {
+            if let Some(a) = self.plugins.get_mut(&pane).and_then(|h| h.embeds.get_mut(&node)).and_then(|e| e.artifact.as_mut()) {
                 a.req = Some(req);
                 a.error = None;
             }
@@ -645,10 +706,10 @@ impl Client {
 
     /// The connection dropped: no answer to a `plugin_embed` asked on it comes.
     pub(super) fn embeds_link_down(&mut self) {
-        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()) {
+        for a in self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()) {
             a.req = None;
         }
-        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
+        for a in self.plugins.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
             a.req = None;
         }
     }
@@ -667,7 +728,7 @@ impl Client {
     /// is closed too while the frame did not draw it, as its SwiftUI view disappears, so its sound stops. `hosts` are the previewed panes drawn this frame.
     pub(super) fn sync_embed_slots(&mut self, hosts: &[String]) {
         let mut wanted: HashMap<String, (Embedded, Placement)> = HashMap::new();
-        for (h, host) in &self.plugin_previews {
+        for (h, host) in &self.plugins {
             let cwd = host.pane.context.get("cwd").and_then(serde_json::Value::as_str).unwrap_or("");
             let page = self.placed.get(h);
             let hidden = !hosts.contains(h) || page.is_none_or(|p| p.1) || super::plugin_controls::page_overlaid(&host.pane.tree, host);

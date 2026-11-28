@@ -13,6 +13,13 @@ pub(super) const BODY: f32 = 13.;
 pub(super) const SECONDARY: u32 = 0xffffff8c;
 const TERTIARY: u32 = 0xffffff40;
 pub(super) const ACCENT: u32 = 0x0a84ff;
+/// The fill a lit hover highlight draws: `.primary` at 0.16.
+const HIGHLIGHT: u32 = 0xffffff29;
+
+/// Every node and every Table cell built for any page since the app started, the counts the bridge's
+/// `ViewPerf.bodies` and `ViewPerf.cells` give for SwiftUI bodies, for a check's `perf`.
+pub(super) static BODIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(super) static CELLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A colour name a modifier may give (`paneColor`, Modifiers.swift), as RGBA in the dark
 /// appearance the app draws in; None for any other name, which shows the warning marker.
@@ -155,9 +162,10 @@ impl Client {
     pub(super) fn plugin_element(&mut self, pane: &str, w: f32, h: f32, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         self.flush_plugin_copies(cx);
         self.sync_plugin_fields(pane, window, cx);
-        let w = self.plugin_previews.get(pane)?.width.unwrap_or(w);
+        let w = self.plugins.get(pane)?.width.unwrap_or(w);
         self.sync_plugin_embeds(pane, w, cx);
-        let host = self.plugin_previews.get(pane)?;
+        let host = self.plugins.get(pane)?;
+        host.lit.borrow_mut().clear();
         host.drawn.set(w);
         host.viewport.set(h);
         let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols, width: w };
@@ -180,7 +188,7 @@ impl Client {
 
     /// Gives each TextField of `pane`'s tree an input, and the script's value when it changed.
     fn sync_plugin_fields(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = self.plugin_previews.get_mut(pane) else { return };
+        let Some(host) = self.plugins.get_mut(pane) else { return };
         host.prune_view_state();
         let mut fields: Vec<(String, u64, String, String, Option<String>)> = host.pane.tree.all().filter(|n| n.component == "TextField")
             .map(|n| (n.id.clone(), n.serial, n.value().map(json_text).unwrap_or_default(), n.string("label").unwrap_or("").to_owned(), n.string("variant").map(str::to_owned)))
@@ -193,7 +201,7 @@ impl Client {
         }
         host.fields.retain(|id, (serial, _, _)| fields.iter().any(|(i, s, ..)| i == id && s == serial));
         for (id, serial, value, label, variant) in fields {
-            let host = self.plugin_previews.get_mut(pane).unwrap();
+            let host = self.plugins.get_mut(pane).unwrap();
             let input = match host.fields.get(&id) {
                 Some((_, input, synced)) if *synced == value => continue,
                 Some((_, input, _)) => input.clone(),
@@ -205,7 +213,7 @@ impl Client {
                     cx.subscribe_in(&input, window, move |this: &mut Self, input, event: &InputEvent, _, cx| {
                         if let InputEvent::Change = event {
                             let text = input.read(cx).value().to_string();
-                            if let Some((_, _, synced)) = this.plugin_previews.get_mut(&pane).and_then(|h| h.fields.get_mut(&node)) {
+                            if let Some((_, _, synced)) = this.plugins.get_mut(&pane).and_then(|h| h.fields.get_mut(&node)) {
                                 if *synced == text {
                                     return;
                                 }
@@ -225,7 +233,7 @@ impl Client {
                 state.set_value("", window, cx);
                 state.insert(value.clone(), window, cx);
             });
-            self.plugin_previews.get_mut(pane).unwrap().fields.insert(id, (serial, input, value));
+            self.plugins.get_mut(pane).unwrap().fields.insert(id, (serial, input, value));
         }
     }
 }
@@ -237,6 +245,7 @@ impl Draw<'_> {
 
     /// Node `n` with its modifiers, as WheelUI's `PaneNodeView` wraps it.
     pub(super) fn node(&self, n: &ViewNode, env: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
+        BODIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // What the node's own modifiers set for everything inside it.
         let mut inner = env;
         for m in n.modifiers() {
@@ -257,7 +266,26 @@ impl Draw<'_> {
         let wrapped = outer(div().relative().flex().flex_col().items_start()).child(modified).child(recorded(self.pane, &n.id, self.controls));
         // A disabled node and everything in it ignores the pointer, as SwiftUI's `disabled` does.
         let wrapped = if inner.disabled && !env.disabled { wrapped.child(div().id(el_id(self.pane, &n.id, "disabled")).absolute().inset_0().occlude()) } else { wrapped };
-        if lit { outer(div().flex().flex_col().items_start()).id(el_id(self.pane, &n.id, "hover")).rounded(px(6.)).hover(|s| s.bg(rgba(0xffffff29))).child(wrapped).into_any_element() } else { wrapped.into_any_element() }
+        if lit { self.highlight(n, "hover", outer(div().flex().flex_col().items_start()), false, cx).child(wrapped).into_any_element() } else { wrapped.into_any_element() }
+    }
+
+    /// `d` as WheelUI's `HoverHighlight` draws node `n`'s hover: a rounded fill while the pointer
+    /// is over it or a check holds one there (`hover_held`), never while `disabled`. Each lit node
+    /// is noted in the host's `lit` for the check.
+    fn highlight(&self, n: &ViewNode, tag: &str, d: gpui::Div, disabled: bool, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
+        let lit = !disabled && (self.tree.hover_held.as_deref() == Some(n.id.as_str()) || self.host.hovered.contains(&n.id));
+        if lit {
+            self.host.lit.borrow_mut().insert(n.id.clone());
+        }
+        let (pane, id) = (self.pane.to_owned(), n.id.clone());
+        d.id(el_id(self.pane, &n.id, tag)).rounded(px(6.)).when(lit, |d| d.bg(rgba(HIGHLIGHT))).when(!disabled, |d| d.hover(|s| s.bg(rgba(HIGHLIGHT))))
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                let Some(h) = this.plugins.get_mut(&pane) else { return };
+                let changed = if *over { h.hovered.insert(id.clone()) } else { h.hovered.remove(&id) };
+                if changed {
+                    cx.notify();
+                }
+            }))
     }
 
     /// The component itself, inside its modifiers: `inner` is what its children inherit and
@@ -527,7 +555,7 @@ impl Draw<'_> {
             }
             "hoverEffect" => match arg.as_str() {
                 Some("none") => el,
-                Some("highlight") => wrap().id(el_id(self.pane, &n.id, &format!("hl{i}"))).rounded(px(6.)).hover(|s| s.bg(rgba(0xffffff29))).child(el).into_any_element(),
+                Some("highlight") => self.highlight(n, &format!("hl{i}"), wrap(), env.disabled, cx).child(el).into_any_element(),
                 _ => return Err(el),
             },
             "pointerStyle" => match arg.as_str() { Some("link") => wrap().id(el_id(self.pane, &n.id, &format!("ptr{i}"))).cursor_pointer().child(el).into_any_element(), _ => return Err(el) },

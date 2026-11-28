@@ -416,6 +416,8 @@ pub struct TermModel {
     pub exited: Option<Option<u32>>,
     /// The grid last sent as `term_resize` since the last attach.
     sent: Option<(u16, u16)>,
+    /// The bytes of `term_output` fed since the model was made, replays included.
+    pub received: u64,
     /// Whether a mouse button is held, which button-event mouse reports (mode 1002) follow.
     button_down: bool,
     /// The size the mouse encoder was last given; setting it again forgets the last cell reported.
@@ -449,6 +451,7 @@ impl TermModel {
             title: None,
             exited: None,
             sent: None,
+            received: 0,
             button_down: false,
             mouse_size: None,
             mouse_modes: None,
@@ -481,6 +484,7 @@ impl TermModel {
             }
             ServerMsg::TermOutput { id, data } if *id == self.id => {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                    self.received += bytes.len() as u64;
                     self.feed(&bytes);
                 }
                 true
