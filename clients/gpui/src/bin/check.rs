@@ -6523,7 +6523,8 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
 /// the embed drew at. A click at that slot's middle, posted to the view the window's hit test
 /// reaches there, and a key typed while it holds the keyboard reach the backend, whose
 /// `gallery.input` feed GPUI's preview then shows: the click at (160, 90) in the video's pixels,
-/// button 0, and the key `q` going up. A click on the `input = false` stream sends nothing. The
+/// button 0, and the key `q` going up. The `plugin` op's `stream_click` and `stream_key` `q` then
+/// reach it the same way, each adding two events to the backend's count. A click on the `input = false` stream sends nothing. The
 /// page is cut to `gpui-plugin-gallery-stream.png` with each shown stream's last frame laid over
 /// its slot.
 async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
@@ -6612,6 +6613,30 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
         ensure!(typed.iter().any(|t| t.contains("last: key") && t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)), "the key typed on GPUI's stream never reached the backend: {typed:?}");
         let sent = native.embed_facts(&key)["stream"]["inputs"].as_u64().unwrap_or(0);
         ensure!(sent >= 4, "the stream should count the click's two events and the key's two as sent: {}", native.embed_facts(&key)["stream"]);
+        // The `plugin` op's stream_click and stream_key reach the backend too: each adds its down and up to the backend's count.
+        let count = |texts: &[String]| texts.iter().find_map(|t| t.split_once(" events; last: ").and_then(|(n, _)| n.parse::<u64>().ok())).unwrap_or(0);
+        macro_rules! touch {
+            ($args:expr, $what:expr, $last:expr) => {{
+                let from = count(&input_text(window, cx)?);
+                let reply = plugin_op(window, pane, $args, cx)?;
+                ensure!(reply["ok"] == true, "the plugin op's {} on gallery.demo: {reply}", $what);
+                let mut now = vec![];
+                for _ in 0..100 {
+                    pump(connection, 100, layouts, window, cx).await?;
+                    draw(window, None, cx)?;
+                    now = input_text(window, cx)?;
+                    if count(&now) >= from + 2 && now.iter().any($last) {
+                        break;
+                    }
+                }
+                ensure!(count(&now) >= from + 2 && now.iter().any($last), "the plugin op's {} never reached the backend: {from} events before, now {now:?}", $what);
+                now
+            }};
+        }
+        let op_click = touch!(json!({"action":"stream_click","component":"gallery.demo"}), "stream_click",
+            |t: &String| t.contains("last: pointer") && t.contains(r#""button":0"#) && t.contains(r#""kind":"up""#) && t.contains(r#""x":160"#) && t.contains(r#""y":90"#));
+        let op_key = touch!(json!({"action":"stream_key","component":"gallery.demo","value":"q"}), "stream_key",
+            |t: &String| t.contains("last: key") && t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#));
         // The picture, before the page scrolls to the quiet stream.
         let shots = output.join("gpui-plugin-gallery-stream");
         shot(native, &shots, cx).await?;
@@ -6676,7 +6701,7 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
         ensure!(quiet_facts["inputs"] == 0 && quiet_facts["input"] == false && count_after == count_before,
             "the input = false stream should send nothing: {quiet_facts}; the backend saw {count_before:?} then {count_after:?}");
         let out = json!({"stream_embeds_ms": began.elapsed().as_millis() as u64, "streams": all.iter().map(|v| v["slot"]["stream"].clone()).collect::<Vec<_>>(),
-            "first": {"bounds": b, "slot": f}, "click": pointer, "key": typed, "quiet": quiet_facts, "picture": picture});
+            "first": {"bounds": b, "slot": f}, "click": pointer, "key": typed, "op_click": op_click, "op_key": op_key, "quiet": quiet_facts, "picture": picture});
         eprintln!("wheel-gpui: video streams in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
