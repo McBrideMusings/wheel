@@ -473,7 +473,7 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, notices_report) = notices(run, native_panes.clone(), cx).await?;
     let (run, debug, bearer, unauthorized, origin_refused, missing, state_keys, sleep_row, lists_seen, card_rows, snapshot_bytes, stopped, front_refused, fixture_space) = debug_server_and_processes(run, terms.clone(), cx).await?;
     let (run, debug, grid, grid_a, grid_b, grid_c, a, c, menu_ids, docked, area, popped_card_report) = pane_grid(run, first_session_id.clone(), debug, bearer.clone(), cx).await?;
-    let (run, debug, orchestrator_mode_report) = (run, debug, json!("skipped locally: wheel-yfol"));
+    let (run, debug, orchestrator_mode_report) = orchestrator_mode(run, grid.clone(), debug, bearer.clone(), cx).await?;
     let (run, debug, card_drops_report, tray_report) = card_drops_and_tray(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), area.clone(), cx).await?;
     let (run, debug, zoom_report) = zoom(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), grid_c.clone(), cli.clone(), cx).await?;
     let (run, debug, header_report, new_space) = pane_header(run, debug, bearer.clone(), grid.clone(), grid_a.clone(), grid_b.clone(), cli.clone(), fixture_space.clone(), cx).await?;
@@ -6048,7 +6048,8 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         }
         // The Canvas, once its script has drawn it at the size GPUI reported.
         let (mut id, mut seen) = (String::new(), Value::Null);
-        for _ in 0..100 {
+        let began = std::time::Instant::now();
+        for _ in 0..200 {
             draw(window, None, cx)?;
             pump(connection, 100, layouts, window, cx).await?;
             draw(window, None, cx)?;
@@ -6071,7 +6072,7 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         ensure!(worst <= 0.5, "a label on {name}'s Canvas draws wider or narrower than measureText says (worst {worst:.2} pt): {texts:?}");
         let at = |x: f64, y: f64| gpui::point(gpui::px(bounds.0 + x as f32), gpui::px(bounds.1 + y as f32));
         let hover_png = output.join(format!("gpui-plugin-{name}-canvas.png"));
-        let mut out = json!({"canvas": id, "bounds": [bounds.0, bounds.1, bounds.2, bounds.3], "labels": texts.len(), "worst_label_pt": worst, "picture": hover_png});
+        let mut out = json!({"canvas_ms": began.elapsed().as_millis() as u64, "canvas": id, "bounds": [bounds.0, bounds.1, bounds.2, bounds.3], "labels": texts.len(), "worst_label_pt": worst, "picture": hover_png});
         if name == "graph" {
             let reported = canvas["reported"].clone();
             ensure!(reported == json!([bounds.2, bounds.3]), "the Graph Canvas reported {reported} but GPUI drew it {}x{}", bounds.2, bounds.3);
