@@ -5,6 +5,7 @@ pub mod dialogs;
 pub mod images;
 pub mod live_resize;
 pub mod motion;
+pub mod pane_host;
 pub mod read_aloud;
 pub mod status_item;
 pub mod window;

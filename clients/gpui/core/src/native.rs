@@ -1,6 +1,7 @@
 //! Rust side of native/Bridge.swift: loads the bridge library and speaks its JSON command ABI.
-//! The bridge hosts Wheel's real Ghostty terminal view and a WKWebView as children of the
-//! GPUI window's NSView. All calls run on the main thread. The bridge also speaks first: a
+//! The bridge makes each native pane's content (a WKWebView, a browser, a plugin pane's view) and
+//! adds it to the slot view the window's [`Host`] made for the pane; the host places, masks and
+//! focuses the slots. All calls run on the main thread. The bridge also speaks first: a
 //! browser pane's state, its reports for wheeld and the answers to the daemon requests the view
 //! relayed arrive as frames through the callback `attach` is given, each read as a [`Frame`].
 use anyhow::{Context as _, Result};
@@ -75,6 +76,55 @@ impl Bridge {
     }
 }
 
+/// A window's native pane host (`appkit::pane_host` in the app crate, which links AppKit): one
+/// slot view per native pane in the window's content view, where it sits, what is cut out of it,
+/// which view holds the keyboard, and the check's synthetic pointer. Rects are window points from
+/// the top left.
+pub trait Host {
+    /// The slot view of `pane` as an address, made and added to the window on first ask.
+    fn slot(&self, pane: &str) -> usize;
+    fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]], alpha: f64);
+    /// Cut `rect` (the palette's, a sheet's) out of every slot, or close the cut with None.
+    fn overlay(&self, rect: Option<[f64; 4]>);
+    /// Give the keyboard to `pane`'s content view, else to the GPUI view; whether the window took it.
+    fn focus(&self, pane: &str) -> bool;
+    /// Remove `pane`'s slot and whatever is in it.
+    fn close(&self, pane: &str);
+    /// Drop every slot and the press monitor: the window is closing.
+    fn detach(&self);
+    /// A synthesized pointer event sent to the view under `point`, as AppKit routes one; the class of the view it reached.
+    fn mouse(&self, mouse: &Mouse) -> Option<String>;
+    /// The class of the view under `point` and the pane whose slot holds it.
+    fn hit(&self, point: [f64; 2]) -> (Option<String>, Option<String>);
+    /// Each slot's facts by pane (`frame_top`, `hidden`, `alpha`, `masked`, `holes`, `mask_rects`) and the overlay's rect.
+    fn facts(&self) -> (serde_json::Map<String, Value>, Option<[f64; 4]>);
+}
+
+/// One synthesized pointer event (the check's and the debug route's `post_mouse`). A context menu
+/// is asked for with `control` on a left press, as a Mac control-click asks for one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    pub point: [f64; 2],
+    #[serde(default)]
+    pub control: bool,
+    #[serde(default)]
+    pub command: bool,
+    #[serde(default = "one")]
+    pub clicks: i64,
+}
+fn one() -> i64 {
+    1
+}
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseKind {
+    Down,
+    Drag,
+    Move,
+    Up,
+}
+
 /// The native views of one window. Every command names the window the bridge assigned at
 /// `attach_to`; before that, commands answer `detached`.
 pub struct Native {
@@ -82,10 +132,21 @@ pub struct Native {
     window: Cell<i32>,
     /// The window's content view `attach_to` was given (null before): where AppKit places the window.
     ns_view: Cell<usize>,
+    host: std::cell::RefCell<Option<Rc<dyn Host>>>,
 }
 impl Native {
     pub fn new(bridge: &Rc<Bridge>) -> Rc<Self> {
-        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0), ns_view: Cell::new(0) })
+        Rc::new(Self { bridge: bridge.clone(), window: Cell::new(0), ns_view: Cell::new(0), host: std::cell::RefCell::new(None) })
+    }
+    /// The window's pane host, given once its content view exists.
+    pub fn set_host(&self, host: Rc<dyn Host>) {
+        *self.host.borrow_mut() = Some(host);
+    }
+    fn host(&self) -> Option<Rc<dyn Host>> {
+        self.host.borrow().clone()
+    }
+    fn slot(&self, pane: &str) -> usize {
+        self.host().map_or(0, |h| h.slot(pane))
     }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
     /// active, deaf to the pointer. The bridge's own frames for this window go to `frames`.
@@ -102,13 +163,60 @@ impl Native {
     /// The window is closing: the bridge drops its views, socket and key monitor.
     pub fn detach(&self) {
         self.call(json!({"op":"detach"}));
+        if let Some(host) = self.host.borrow_mut().take() {
+            host.detach();
+        }
         if let Some(map) = EMITS.lock().unwrap().as_mut() {
             map.remove(&self.window.get());
         }
         self.window.set(0);
         self.ns_view.set(0);
     }
-    pub fn call(&self, mut value: Value) -> Value {
+    /// One op by its JSON: the host's own (`place`, `overlay`, `focus`, `post_mouse`, `hit`) run
+    /// here, every other goes to the bridge. The debug route and the check send ops this way.
+    pub fn call(&self, value: Value) -> Value {
+        let host = self.host();
+        let rect = |v: &Value| serde_json::from_value::<[f64; 4]>(v.clone()).ok();
+        match (value["op"].as_str(), &host) {
+            (Some("place"), Some(_)) => {
+                let holes: Vec<[f64; 4]> = serde_json::from_value(value["holes"].clone()).unwrap_or_default();
+                if let Some(r) = rect(&value["rect"]) {
+                    self.place(value["pane"].as_str().unwrap_or_default(), r, value["hidden"] == true, &holes, value["alpha"].as_f64().unwrap_or(1.));
+                }
+                self.status()
+            }
+            (Some("overlay"), Some(h)) => {
+                h.overlay(if value["open"] == true { rect(&value["rect"]) } else { None });
+                self.status()
+            }
+            (Some("focus"), Some(h)) => json!({"accepted": h.focus(value["pane"].as_str().unwrap_or_default())}),
+            (Some("post_mouse"), Some(h)) => match serde_json::from_value::<Mouse>(value.clone()) {
+                Ok(m) => json!({"target": h.mouse(&m).unwrap_or_else(|| "nil".into())}),
+                Err(e) => json!({"error": e.to_string()}),
+            },
+            (Some("hit"), Some(h)) => {
+                let point: [f64; 2] = serde_json::from_value(value["point"].clone()).unwrap_or_default();
+                let (class, pane) = h.hit(point);
+                json!({"class": class.unwrap_or_else(|| "nil".into()), "pane": pane})
+            }
+            _ => self.with_facts(self.bridge_call(value)),
+        }
+    }
+    /// The bridge's reply with each pane's slot facts and the overlay folded in, where it lists panes.
+    fn with_facts(&self, mut reply: Value) -> Value {
+        let Some(host) = self.host() else { return reply };
+        if let Some(panes) = reply.get_mut("panes").and_then(Value::as_object_mut) {
+            let (facts, overlay) = host.facts();
+            for (pane, entry) in panes.iter_mut() {
+                if let (Some(into), Some(Value::Object(from))) = (entry.as_object_mut(), facts.get(pane)) {
+                    into.extend(from.clone());
+                }
+            }
+            reply["overlay"] = json!(overlay);
+        }
+        reply
+    }
+    fn bridge_call(&self, mut value: Value) -> Value {
         value["window"] = json!(self.window.get());
         let input = CString::new(value.to_string()).unwrap();
         unsafe {
@@ -123,30 +231,30 @@ impl Native {
     }
     /// Show an artifact page in a WKWebView for `pane`; opening it again with a new URL navigates.
     pub fn open_web(&self, pane: &str, url: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"web","url":url}));
+        self.call(json!({"op":"open","pane":pane,"kind":"web","url":url,"slot":self.slot(pane)}));
     }
     /// Show an artifact for `pane`: its page in a WKWebView under the client's own `wheel-page` scheme, fetched from the daemon at `ws` and kept in the store of the
     /// artifact in the space at `cwd`.
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws}));
+        self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
     }
     /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as WheelUI components, asking wheeld at `ws`
     /// for the script and again whenever it changes on disk. `label` is `<plugin>/<pane id>`; the script's `data` gets
     /// the pane, `space`, the space directory `cwd` and those two ids.
     pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws}));
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
     }
     /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts. The client draws
     /// the permission card of the pane's agent above it.
     pub fn open_agent_view(&self, pane: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws}));
+        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
     }
     /// Show a browser pane on `url` (ADR-0005): WheelUI's `BrowserPane`, the model the Swift Mac
     /// app shows under its chrome. `remote` says wheeld runs on another machine, so a file page
     /// names a path this Mac does not have. Opening it again sends the pane to `url` as the daemon
     /// would.
     pub fn open_browser(&self, pane: &str, url: &str, remote: bool) {
-        self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote}));
+        self.call(json!({"op":"open","pane":pane,"kind":"browser","url":url,"remote":remote,"slot":self.slot(pane)}));
     }
     /// One of a browser pane's actions: `back`, `forward`, `reload`, `stop`, `clear_failure`,
     /// `go_home`, `open` (with `text`), `opened` and `home_is` (with `url`), `refused` (with `text` and
@@ -177,7 +285,16 @@ impl Native {
     /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin), with `holes`
     /// (the same coordinates) cut out of it: the cards drawn over it. `alpha` is how opaque it draws.
     pub fn place(&self, pane: &str, rect: [f64; 4], hidden: bool, holes: &[[f64; 4]], alpha: f64) {
-        self.call(json!({"op":"place","pane":pane,"rect":rect,"hidden":hidden,"holes":holes,"alpha":alpha}));
+        if let Some(host) = self.host() {
+            host.place(pane, rect, hidden, holes, alpha);
+        }
+    }
+    /// Cut `rect` (the palette's, a sheet's; window points from the top left) out of every native
+    /// pane and give the keyboard to the GPUI view, or close the cut with None.
+    pub fn overlay(&self, rect: Option<[f64; 4]>) {
+        if let Some(host) = self.host() {
+            host.overlay(rect);
+        }
     }
     /// The daemon socket the plugin panes kept across a reconnect ask for their scripts on.
     pub fn plugin_endpoint(&self, ws: &str) {
@@ -189,10 +306,15 @@ impl Native {
     }
     /// Give `pane`'s native view the keyboard; a pane with none (GPUI draws it) gives it to the GPUI view.
     pub fn focus(&self, pane: &str) {
-        self.call(json!({"op":"focus","pane":pane}));
+        if let Some(host) = self.host() {
+            host.focus(pane);
+        }
     }
     pub fn close(&self, pane: &str) {
         self.call(json!({"op":"close","pane":pane}));
+        if let Some(host) = self.host() {
+            host.close(pane);
+        }
     }
 }
 

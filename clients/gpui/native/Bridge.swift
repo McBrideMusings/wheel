@@ -9,51 +9,16 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-// The native half of the GPUI client: real WKWebView and Ghostty terminal views as children
-// of the GPUI window's NSView, one per pane id. Every C entrypoint is called on the main thread.
-// Panes are opened, placed and closed by JSON commands; the Rust side owns what each pane is.
-
-/// A pane's container. Its holes (an overlay's, and the cards drawn over it) neither draw nor hit-test.
-final class Slot: NSView {
-    override var isFlipped: Bool { true }
-    var holes: [CGRect] = []
-    /// How many rects the mask keeps: 1 with no hole over the view.
-    var shown = 1
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        if holes.contains(where: { $0.contains(local) }) { return nil }
-        return super.hitTest(point)
-    }
-    /// Cut `rects` (the root's coordinates) out of the slot. The mask is what is left of the
-    /// bounds once every hole is taken away, so two holes that overlap stay holes.
-    func cut(_ rects: [CGRect]) {
-        holes = rects.map { convert($0, from: superview) }.filter { $0.intersects(bounds) }
-        var left = [bounds]
-        for hole in holes {
-            left = left.flatMap { r -> [CGRect] in
-                let h = r.intersection(hole)
-                if h.isNull || h.isEmpty { return [r] }
-                return [CGRect(x: r.minX, y: r.minY, width: r.width, height: h.minY - r.minY),
-                        CGRect(x: r.minX, y: h.maxY, width: r.width, height: r.maxY - h.maxY),
-                        CGRect(x: r.minX, y: h.minY, width: h.minX - r.minX, height: h.height),
-                        CGRect(x: h.maxX, y: h.minY, width: r.maxX - h.maxX, height: h.height)].filter { $0.width > 0 && $0.height > 0 }
-            }
-        }
-        shown = left.count
-        let path = CGMutablePath()
-        left.forEach { path.addRect($0) }
-        let mask = CAShapeLayer()
-        mask.path = path
-        layer?.mask = mask
-    }
-}
+// The native half of the GPUI client: real WKWebView and plugin views, one per pane id, each in
+// the slot view the Rust pane host made for the pane (clients/gpui/src/appkit/pane_host.rs), which
+// places, masks and focuses it. Every C entrypoint is called on the main thread. Panes are opened
+// and closed by JSON commands; the Rust side owns what each pane is.
 
 @MainActor final class PaneHost {
     let id: String
     let kind: String
-    let slot = Slot()
-    /// The cards drawn over this view, as GPUI placed them (x, y, w, h, top-left origin).
-    var holesTop: [[Double]] = []
+    /// The slot view the Rust pane host made for the pane: the content goes in it, and the host places, masks and focuses it.
+    let slot: NSView
     var web: WKWebView?
     var url: String?
     var loads: [String] = []
@@ -77,7 +42,7 @@ final class Slot: NSView {
     /// GPUI view draws the chrome from the state the bridge emits on every change.
     var browser: BrowserPane?
     var browserChanges: AnyCancellable?
-    init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
+    init(id: String, kind: String, slot: NSView) { self.id = id; self.kind = kind; self.slot = slot }
     var content: NSView { pluginView ?? web! }
 }
 
@@ -404,16 +369,12 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         logs.append(line)
         if logs.count > 200 { logs.removeFirst(logs.count - 200) }
     }
-    var overlay: CGRect?
-    var mouseNumber = 0
     var heldBeforeKey: String?
-    var mouseTarget: NSView?
     /// The panes whose WKWebView snapshot has not answered yet.
     var snapshotsPending: Set<String> = []
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
-    var pressMonitor: Any?
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -435,26 +396,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             self?.routeKey(event)
             return event
         }
-        // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
-        // and closes what a press away closes (its popovers), as a Swift popover closes on one.
-        pressMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            guard let self, event.window === root.window, let superview = root.superview else { return event }
-            let at = superview.convert(event.locationInWindow, from: nil)
-            pressed(root.hitTest(at), at: root.convert(at, from: superview))
-            return event
-        }
-    }
-    /// The pane whose native view `view` is or lies inside.
-    func owner(of view: NSView?) -> PaneHost? {
-        guard let view else { return nil }
-        return panes.values.first { view === $0.content || view.isDescendant(of: $0.content) }
-    }
-    /// A press reached `hit` at `point` (the root's coordinates): when that is a pane's native
-    /// view, say so with the point from the window's top left.
-    func pressed(_ hit: NSView?, at point: NSPoint) {
-        guard let host = owner(of: hit) else { return }
-        let y = root.isFlipped ? point.y : root.bounds.height - point.y
-        emit(["event": "pressed", "pane": host.id, "point": [Double(point.x), Double(y)]])
     }
     /// Send one JSON object to the Rust side: a browser pane's state or report, or the answer to a
     /// daemon request the Rust side relayed.
@@ -537,9 +478,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// The window is closing: drop every view, the socket and the key monitor.
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
-        if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
         monitor = nil
-        pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
@@ -775,11 +714,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             return
         }
         close(id)
-        let host = PaneHost(id: id, kind: kind)
+        guard let address = value["slot"] as? UInt, let pointer = UnsafeRawPointer(bitPattern: address) else { errors.append("open \(id): no slot"); return }
+        let host = PaneHost(id: id, kind: kind, slot: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue())
         host.artifact = artifact
         host.cwd = value["cwd"] as? String
         host.pluginLabel = value["label"] as? String
-        root.addSubview(host.slot)
         if kind == "plugin" {
             let plugin = PluginPane()
             let space = value["space"] as? String
@@ -1164,7 +1103,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         for key in gone.keys { agentEmbeds[key] = nil }
         for embed in gone.values { embed.drop() }
         if let web = host.web { PageSchemeHandler.close(web) }
-        host.slot.removeFromSuperview()
+        host.slot.subviews.forEach { $0.removeFromSuperview() }
         if let plugin = host.plugin {
             plugin.close()
             pluginReqs = pluginReqs.filter { $0.value != id }
@@ -1204,28 +1143,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         client.start()
         pageClient = client
         return client
-    }
-    func place(_ value: [String: Any]) {
-        guard let host = panes[value["pane"] as! String] else { return }
-        host.slot.isHidden = value["hidden"] as? Bool == true
-        host.slot.alphaValue = CGFloat(value["alpha"] as? Double ?? 1)
-        let a = value["rect"] as! [Double]
-        var frame = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-        if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
-        host.holesTop = (value["holes"] as? [[Double]]) ?? []
-        host.slot.frame = frame
-        host.content.frame = host.slot.bounds
-        host.web?.frame = host.slot.bounds
-        host.slot.cut(cuts(host))
-    }
-    /// What is cut out of `host`'s view: the overlay's rect and the cards over it, in the root's coordinates.
-    func cuts(_ host: PaneHost) -> [CGRect] {
-        let cards = host.holesTop.map { a -> CGRect in
-            var rect = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-            if !root.isFlipped { rect.origin.y = root.bounds.height - rect.maxY }
-            return rect
-        }
-        return (overlay.map { [$0] } ?? []) + cards
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let host = panes.values.first(where: { $0.web === webView }) else { return }
@@ -1339,22 +1256,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pageClient = nil
             embedPerms.list = []
             agentReqs = [:]; attachReqs = []; taskOutputAsks = [:]
-        case "place": place(value)
-        case "focus":
-            // A pane with no native view is drawn by GPUI: its view takes the keyboard.
-            let target = panes[value["pane"] as! String]?.content ?? root
-            return ["accepted": root.window?.makeFirstResponder(target) ?? false]
-        case "overlay":
-            if value["open"] as? Bool == true {
-                let a = value["rect"] as! [Double]
-                var rect = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-                if !root.isFlipped { rect.origin.y = root.bounds.height - rect.maxY }
-                overlay = rect
-                _ = root.window?.makeFirstResponder(root)
-            } else {
-                overlay = nil
-            }
-            panes.values.forEach { $0.slot.cut(cuts($0)) }
         case "keymap":
             routed = Set((value["chords"] as? [String]) ?? [])
         case "post_key":
@@ -1396,41 +1297,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             guard let item = Self.menuItem(NSApp.mainMenu, key: key, modifiers: .command), let action = item.action else { return ["sent": false, "item": NSNull()] }
             guard let target = Self.target(for: action, from: root.window), Self.validates(target, item) else { return ["sent": false, "item": item.title] }
             return ["sent": NSApp.sendAction(action, to: target, from: item), "item": item.title, "target": String(describing: type(of: target))]
-        case "post_mouse":
-            let kind = value["kind"] as! String
-            let a = value["point"] as! [Double]
-            var point = NSPoint(x: a[0], y: a[1])
-            if !root.isFlipped { point.y = root.bounds.height - point.y }
-            // A synthesized right press reads as button 0 to GPUI (`NSEvent.buttonNumber` is 0 for
-            // every event made this way), so a context menu is asked for with `control: true` on a
-            // left press, as a Mac control-click asks for one.
-            let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : kind == "move" ? .mouseMoved : .leftMouseUp
-            var flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
-            if value["command"] as? Bool == true { flags.insert(.command) }
-            mouseNumber += 1
-            // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit
-            // does after its own step: hit test, then the view gets the NSEvent. A drag or release
-            // goes to the view that took the press.
-            if kind == "down" || kind == "move" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
-            if kind == "down" { pressed(mouseTarget, at: point) }
-            if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: flags,
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
-                context: nil, eventNumber: mouseNumber, clickCount: value["clicks"] as? Int ?? 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
-                switch kind {
-                case "down": target.mouseDown(with: event)
-                case "drag": target.mouseDragged(with: event)
-                case "move": target.mouseMoved(with: event)
-                default: target.mouseUp(with: event)
-                }
-            }
-            return ["target": mouseTarget.map { String(describing: type(of: $0)) } ?? "nil"]
-        case "hit":
-            let a = value["point"] as! [Double]
-            var point = NSPoint(x: a[0], y: a[1])
-            if !root.isFlipped { point.y = root.bounds.height - point.y }
-            let hit = root.hitTest(root.convert(point, to: root.superview))
-            let host = owner(of: hit)
-            return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": host?.id ?? NSNull()]
         case "snapshot":
             let directory = value["directory"] as! String
             snapshotsPending = []
@@ -1467,10 +1333,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends, "logs": logs]
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
-            let f = host.slot.frame
-            var entry: [String: Any] = ["kind": host.kind, "hidden": host.slot.isHidden, "alpha": Double(host.slot.alphaValue),
-                "frame_top": [f.minX, root.isFlipped ? f.minY : root.bounds.height - f.maxY, f.width, f.height],
-                "masked": host.slot.layer?.mask != nil, "holes": host.holesTop, "mask_rects": host.slot.shown,
+            // Where the slot sits and what is cut out of it the Rust pane host adds.
+            var entry: [String: Any] = ["kind": host.kind,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
             if let b = host.browser {
@@ -1487,8 +1351,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             panesOut[id] = entry
         }
         out["panes"] = panesOut
-        // The rect cut out of every pane's view while the palette or a sheet is open, top-left coordinates.
-        out["overlay"] = overlay.map { r -> [Double] in [r.minX, root.isFlipped ? r.minY : root.bounds.height - r.maxY, r.width, r.height] } ?? NSNull()
         return out
     }
 }

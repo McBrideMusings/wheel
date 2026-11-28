@@ -290,6 +290,7 @@ pub fn create_window(
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
+        native.set_host(appkit::pane_host::PaneHost::new(handle.ns_view.as_ptr(), frames.clone()));
         native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
         // Every move and resize is saved with the window (saved.rs).
         cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
