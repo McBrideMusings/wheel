@@ -34,17 +34,18 @@ path; the bundle that is installed never carries it.
 """
 import os, pathlib, plistlib, re, shutil, subprocess, sys, tempfile
 
-# Symbols the Swift UI stack, the Luau VM and Ghostty leave: none belongs in a client that draws with GPUI.
-FORBIDDEN = re.compile(r'7WheelUI|9WheelLuau|lua_|luaL_|ghostty', re.I)
+# Swift modules of the old pane-script path and the Swift terminal; GPUI's own Rust Luau (lua_) and ghostty-vt stay.
+FORBIDDEN = re.compile(r'7WheelUI|9WheelLuau|11GhosttyKit|16GhosttyTerminal|ghostty_surface_|ghostty_app_')
 def forbidden_symbols(nm_output):
     return [line for line in nm_output.splitlines() if FORBIDDEN.search(line)]
 def check_no_swift_ui(binaries):
     for binary in binaries:
         found = forbidden_symbols(subprocess.run(['nm', str(binary)], check=True, capture_output=True, text=True).stdout)
         if found:
-            sys.exit(f'{binary} carries {len(found)} WheelUI, WheelLuau, Luau or Ghostty symbols, e.g. {found[0].strip()}')
+            sys.exit(f'{binary} carries {len(found)} WheelUI, WheelLuau or Swift Ghostty symbols, e.g. {found[0].strip()}')
 assert forbidden_symbols('0000 T _wheel_native_attach\n0000 T _$s7WheelUI3FooV') == ['0000 T _$s7WheelUI3FooV']
 assert not forbidden_symbols('0000 T _$s8WheelKit8KeyChordV')
+assert not forbidden_symbols('0000 T _lua_pushnil\n0000 T _ghostty_terminal_new')
 
 def build_swift(repo, client, out, dylib):
     """WheelKit from source into `out`, then the bridge dylib linked with it."""
