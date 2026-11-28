@@ -125,8 +125,9 @@ impl Link {
             if let Some(socket) = s.socket.get() {
                 let _ = socket.shutdown(std::net::Shutdown::Both);
             }
+            // A link its slot closed takes its last picture with it, so another stream starts on black.
             // SAFETY: the renderer takes a flush from any thread.
-            unsafe { s.renderer.0.flushWithRemovalOfDisplayedImage_completionHandler(false, None) };
+            unsafe { s.renderer.0.flushWithRemovalOfDisplayedImage_completionHandler(s.closed.load(Ordering::SeqCst), None) };
             if !s.closed.load(Ordering::SeqCst) {
                 on_main(embed, no, Event::Ended(why));
             }
@@ -182,6 +183,9 @@ fn read(s: &Arc<Shared>, path: &str, embed: u64, no: u64) -> String {
     let mut audio = audio::Audio::new();
     let shown = s.clone();
     let mut decoder = decoder::Decoder::new(Arc::new(move |sample: &CMSampleBuffer| {
+        if shown.closed.load(Ordering::SeqCst) {
+            return;
+        }
         // SAFETY: a decoded sample, onto the layer at once from VideoToolbox's thread.
         unsafe {
             let r = &shown.renderer.0;
@@ -525,6 +529,8 @@ impl StreamEmbed {
         let Embedded::Stream { stream, socket, error, input, fills, gain } = what else { return };
         if *self.stream.borrow() != *stream {
             self.close();
+            // SAFETY: the display layer's own renderer, on the main thread.
+            unsafe { self.view.display().sampleBufferRenderer().flushWithRemovalOfDisplayedImage_completionHandler(true, None) };
             *self.stream.borrow_mut() = stream.clone();
             *self.stats.borrow_mut() = Arc::default();
             *self.socket.borrow_mut() = None;

@@ -6534,9 +6534,9 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
         let began = std::time::Instant::now();
         plugin_preview_matches(connection, layouts, window, native, pane, "gallery streams", cx).await?;
         let nums = |v: &Value| -> Vec<f64> { v.as_array().into_iter().flatten().filter_map(Value::as_f64).collect() };
-        // The gallery's VideoStreams, top to bottom as drawn.
+        // The gallery's VideoStreams the frame drew, top to bottom: each ViewThatFits also holds the layout it did not pick.
         let streams = |e: &Value| {
-            let mut s: Vec<Value> = e.as_object().into_iter().flatten().filter(|(_, v)| v["component"] == "VideoStream" && v["stream"] == "gallery.demo").map(|(_, v)| v.clone()).collect();
+            let mut s: Vec<Value> = e.as_object().into_iter().flatten().filter(|(_, v)| v["component"] == "VideoStream" && v["stream"] == "gallery.demo" && v["drawn"] == true).map(|(_, v)| v.clone()).collect();
             s.sort_by(|a, b| nums(&a["bounds"]).get(1).partial_cmp(&nums(&b["bounds"]).get(1)).unwrap_or(std::cmp::Ordering::Equal));
             s
         };
