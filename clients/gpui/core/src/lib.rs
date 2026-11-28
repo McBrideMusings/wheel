@@ -1,4 +1,5 @@
 //! The parts of Wheel's GPUI client that draw nothing: layout, settings, transcript, server and the rest, with their tests, built without GPUI.
+pub mod artifact_page;
 pub mod cards;
 pub mod chat_links;
 pub mod command_palette;
