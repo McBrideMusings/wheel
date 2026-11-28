@@ -192,7 +192,7 @@ impl Client {
                 self.send_layout(|req| ClientMsg::PaneSetKind { home: None, req: Some(req), pane, kind, artifact, scope, url: None, plugin: q("plugin").zip(q("plugin_pane")).map(|(plugin, pane)| wheel_proto::PluginPaneRef { plugin, pane }) });
                 None
             }
-            // A plugin pane's drawn view and script state: `action=state`, `press&component=<id>`, `set&path=/<id>&value=<text>`
+            // A plugin pane's drawn view and script state (`Client::plugin_op`): `action=state`, `press&component=<id>`, `set&component=<id>&value=<text>`
             // (or `json=<JSON value>` for a CheckBox, ChoicePicker, ...), `raise&component=<id>&key=<rowAction|hits.0.action>&context=<JSON object>`,
             // `hover&component=<id>` (a pointer held on it; no component takes it away).
             "/plugin" => {
@@ -200,7 +200,7 @@ impl Client {
                 let parse = |name: &str| q(name).map(|t| serde_json::from_str::<Value>(&t)).transpose();
                 let (Ok(json_value), Ok(context)) = (parse("json"), parse("context")) else { return refuse(BAD, "json= and context= must be JSON") };
                 let value = json_value.or_else(|| q("value").map(Value::String));
-                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":action,"component":q("component"),"path":q("path"),"value":value,"key":q("key"),"context":context})))
+                Some(self.plugin_op(&pane, &json!({"action":action,"component":q("component"),"value":value,"key":q("key"),"context":context}), cx))
             }
             // Presses the plugin button of an empty pane (`pane=<id>&plugin=<id>&plugin_pane=<id>`) through the button's own press,
             // so it exists only while the pane is empty and the shown space's `plugin_ls` lists that plugin pane.
@@ -222,7 +222,7 @@ impl Client {
                 let dy = q("dy").map(|d| d.parse::<f64>());
                 if !matches!(dy, None | Some(Ok(_))) || matches!(dy, Some(Ok(d)) if !d.is_finite()) { return refuse(BAD, "dy= must be a number") }
                 if dy.is_none() && !matches!(q("to").as_deref(), Some("top" | "bottom")) { return refuse(BAD, "pane= and dy=<points> or to=top|bottom are required") }
-                Some(self.native.call(json!({"op":"plugin","pane":pane,"action":"scroll","dy":dy.and_then(Result::ok),"to":q("to")})))
+                Some(self.plugin_op(&pane, &json!({"action":"scroll","dy":dy.and_then(Result::ok),"to":q("to")}), cx))
             }
             "/start" => {
                 let (Some(pane), Some(kind)) = (q("pane"), q("kind")) else { return refuse(BAD, "pane= and kind=terminal|agent are required") };

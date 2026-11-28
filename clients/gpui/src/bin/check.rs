@@ -5609,10 +5609,10 @@ async fn browser_pane(run: Run, native_panes: Vec<(String, String)>, cx: &mut As
 
 /// The Wheelhouse plugin panes (Luau scripts fed by the wheelhouse backend) and the component gallery
 /// (the `gallery` plugin, every component, option and modifier the client draws), opened one after
-/// another in one pane of a session on the fixture's Wheelhouse project: each reaches a drawn state with
-/// no error and no unsupported component, shows its own content, and the Beads pane's Graph view draws a
-/// Canvas. A hidden snapshot draws a native plugin view blank, so the assertions read the pane's
-/// components through the `plugin` op (`/plugin?action=state`), and the picture is the window's own draw.
+/// another in one pane of a session on the fixture's Wheelhouse project and run by GPUI: each reaches a
+/// drawn state with no error and no unsupported component, shows its own content, and the Beads pane's
+/// Graph view draws a Canvas. The assertions read the pane through the `plugin` op as GPUI answers it
+/// (`Client::plugin_op`, the debug server's `/plugin?action=state`), and the pictures are GPUI's own draw.
 async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Option<String>, native_panes: Vec<(String, String)>, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     #[allow(unused_variables, unused_mut)]
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
@@ -5621,56 +5621,44 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     let names: Vec<String> = serde_json::from_str(&std::env::var("WHEEL_CLIENT_PLUGIN_PANES")?)?;
     switch_session(window, &session, cx).await?;
     ensure!(shown(window, cx)?.0.as_deref() == Some(session.as_str()), "clicking the Plugins session shows {:?}", shown(window, cx)?);
-    let state = |native: &Native| native.call(json!({"op":"plugin","pane":pane,"action":"state"}));
+    let op = |args: Value, cx: &mut AsyncApp| plugin_op(window, &pane, args, cx);
+    let state = |cx: &mut AsyncApp| plugin_op(window, &pane, json!({"action":"state"}), cx);
     let components = |s: &Value| s["components"].as_array().cloned().unwrap_or_default();
     let texts = |s: &Value| components(s).iter().filter_map(|c| c["text"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let page_picture = |path: &std::path::Path, cx: &mut AsyncApp| -> Result<u64> {
+        draw(window, None, cx)?;
+        let body = plugin_body(window, &pane, cx)?;
+        cut_picture(window, body, body, path, cx)?;
+        Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+    };
     let mut report = serde_json::Map::new();
     for entry in &names {
         let (plugin, name) = entry.split_once('/').ok_or_else(|| anyhow::anyhow!("plugin pane {entry:?} is not <plugin>/<pane>"))?;
         let name = name.to_owned();
         let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", plugin, "--plugin-pane", &name], &mut connection, &mut layouts, window, cx).await?;
         ensure!(ok, "pane kind plugin {entry}: {err}");
-        // What each pane shows once its feed has arrived: Beads and Issues their Actions button, Repo anything but its loading line,
-        // the gallery its last class's heading.
-        let want = |t: &str| match name.as_str() {
-            "beads" | "issues" => t == "Actions ⌄",
-            "graph" => t.contains(" open issues"),
-            "gallery" => t == "Wheel's own component",
-            _ => !t.starts_with("Reading"),
-        };
-        let mut seen = Value::Null;
-        for _ in 0..200 {
-            pump(&mut connection, 100, &mut layouts, window, cx).await?;
-            seen = state(&native);
-            if seen["ok"] == true && seen["error"].is_null() && texts(&seen).iter().any(|t| want(t)) && !texts(&seen).iter().any(|t| t.starts_with("Reading")) {
-                break;
-            }
-        }
-        ensure!(seen["ok"] == true && seen["error"].is_null() && texts(&seen).iter().any(|t| want(t)), "the {name} plugin pane never drew its content: error {} texts {:?}", seen["error"], texts(&seen));
-        ensure!(!components(&seen).iter().any(|c| c["type"] == "Unsupported"), "the {name} plugin pane asked for components the client lacks: {:?}", components(&seen).iter().filter(|c| c["type"] == "Unsupported").collect::<Vec<_>>());
+        host_plugin(&mut connection, &mut layouts, window, &pane, entry, cx).await?;
+        plugin_settled(&mut connection, &mut layouts, window, &pane, &name, cx).await?;
+        let seen = state(cx)?;
+        ensure!(seen["ok"] == true && seen["error"].is_null(), "the {name} plugin pane's state: {seen}");
         let png = output.join(format!("client-plugin-{name}.png"));
         draw(window, Some(png.clone()), cx)?;
         let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
         ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
-        // GPUI's own drawing of the pane, before the steps below move the bridge's view away from its first state.
-        entry["gpui_preview"] = plugin_beside_bridge(&mut connection, &mut layouts, window, &native, &output, &pane, &name, cx).await?;
-        if name == "graph" || name == "beads" || name == "gallery" {
-            entry["gpui_canvas"] = canvas_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, &name, cx).await?;
-        }
+        entry["gpui_preview"] = plugin_picture(window, &output, &pane, &name, cx)?;
         if name == "beads" {
             // The Table fills the pane, so the pane has no ScrollView of its own to scroll.
             ensure!(seen["fills"] == true && seen["scroll"].is_null(), "the Beads Table should fill its pane: fills {} scroll {}", seen["fills"], seen["scroll"]);
-            let refused = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
+            let refused = op(json!({"action":"scroll","to":"bottom"}), cx)?;
             ensure!(refused["ok"] == false, "a pane that fills has no ScrollView, so a scroll should answer ok false: {refused}");
             let picker = components(&seen).iter().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the Beads pane has no view picker"))?;
-            // The bridge's `set` names its node by `component` (Bridge.swift's plugin op).
-            let set = native.call(json!({"op":"plugin","pane":pane,"action":"set","component":picker,"value":["graph"]}));
+            let set = op(json!({"action":"set","component":picker,"value":["graph"]}), cx)?;
             ensure!(set["ok"] == true, "the Beads view picker refused `graph`: {set}");
             let mut graph = Value::Null;
             for _ in 0..200 {
                 pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                graph = state(&native);
+                graph = state(cx)?;
                 if components(&graph).iter().any(|c| c["type"] == "Canvas") && graph["error"].is_null() {
                     break;
                 }
@@ -5678,46 +5666,6 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             ensure!(components(&graph).iter().any(|c| c["type"] == "Canvas") && graph["error"].is_null(), "the Beads Graph view drew no Canvas: error {} types {:?}", graph["error"], components(&graph).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
             draw(window, Some(output.join("client-plugin-beads-graph.png")), cx)?;
             entry["graph_canvases"] = json!(components(&graph).iter().filter(|c| c["type"] == "Canvas").count());
-        }
-        if name == "gallery" {
-            // The gallery's VideoStream plays its backend's gallery.demo: frames decode and audio plays, and a key typed on
-            // the view reaches the backend, whose gallery.input feed the page then shows.
-            let demo = |s: &Value| s["embeds"].as_array().cloned().unwrap_or_default().into_iter()
-                .filter(|e| e["stream"] == "gallery.demo").collect::<Vec<_>>();
-            let mut streams = Vec::new();
-            for _ in 0..200 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                streams = demo(&state(&native));
-                if streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10)) { break; }
-            }
-            ensure!(streams.len() == 4 && streams.iter().all(|e| e["frames"].as_u64() >= Some(10) && e["video"] == json!([320, 180])),
-                "the gallery's four VideoStreams decoded no picture: {streams:?}; bridge errors {}", native.status()["errors"]);
-            let typed = native.call(json!({"op":"plugin","pane":pane,"action":"stream_key","component":"gallery.demo","value":"q"}));
-            ensure!(typed["ok"] == true, "stream_key on gallery.demo: {typed}");
-            let mut last = Vec::new();
-            for _ in 0..100 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                last = texts(&state(&native)).into_iter().filter(|t| t.contains("events; last: key")).collect();
-                if last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)) { break; }
-            }
-            ensure!(last.iter().any(|t| t.contains(r#""key":"q""#) && t.contains(r#""kind":"up""#)), "the key typed on the stream never reached the backend: {last:?}");
-            let clicked = native.call(json!({"op":"plugin","pane":pane,"action":"stream_click","component":"gallery.demo"}));
-            ensure!(clicked["ok"] == true, "stream_click on gallery.demo: {clicked}");
-            let mut pointer = Vec::new();
-            for _ in 0..100 {
-                pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                pointer = texts(&state(&native)).into_iter().filter(|t| t.contains("last: pointer")).collect();
-                if pointer.iter().any(|t| t.contains(r#""kind":"up""#)) { break; }
-            }
-            ensure!(pointer.iter().any(|t| t.contains(r#""button":0"#) && t.contains(r#""kind":"up""#) && t.contains(r#""x":160"#) && t.contains(r#""y":90"#)),
-                "a click at the middle of the stream should reach the backend at (160, 90): {pointer:?}");
-            let png = output.join("client-plugin-gallery-stream.png");
-            let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
-            ensure!(ok, "pane shot of the gallery: {err}");
-            eprintln!("wheel-gpui: gallery streams {streams:?}; backend saw {last:?}");
-            entry["gpui"] = gallery_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?;
-            entry["streams"] = json!(streams);
-            entry["stream_input"] = json!(last);
         }
         if name == "graph" {
             // The Graph pane's cases, each driven through the pointer events the Canvas stage raises (`pointerAction` with
@@ -5732,13 +5680,12 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             let (hx, hy) = (nx + 20.0, ny + 15.0);
             macro_rules! point {
                 ($kind:expr, $x:expr, $y:expr, $dx:expr, $dy:expr, $until:expr) => {{
-                    let sent = native.call(json!({"op":"plugin","pane":pane,"action":"raise","component":canvas,"key":"pointerAction",
-                        "context":{"kind":$kind,"x":$x,"y":$y,"button":0,"dx":$dx,"dy":$dy}}));
+                    let sent = op(json!({"action":"raise","component":canvas,"key":"pointerAction","context":{"kind":$kind,"x":$x,"y":$y,"button":0,"dx":$dx,"dy":$dy}}), cx)?;
                     ensure!(sent["ok"] == true, "the Graph canvas refused the {} event: {sent}", $kind);
                     let mut now = Value::Null;
                     for _ in 0..50 {
                         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-                        now = parsed(&state(&native));
+                        now = parsed(&state(cx)?);
                         if $until(&now) {
                             break;
                         }
@@ -5749,15 +5696,14 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             let hovered = point!("move", hx, hy, 0.0, 0.0, |s: &Value| s["hover"] == json!(id));
             ensure!(hovered["hover"] == json!(id), "moving over {id} at ({hx}, {hy}) should hover it: {hovered}");
             let png = output.join("client-plugin-graph-hover.png");
-            let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
-            ensure!(ok, "pane shot of the hovered Graph pane: {err}");
+            ensure!(page_picture(&png, cx)? > 0, "GPUI's picture of the hovered Graph pane is empty: {}", png.display());
             let away = point!("move", 900.0, 480.0, 0.0, 0.0, |s: &Value| s["hover"].is_null());
             ensure!(away["hover"].is_null(), "moving off every node should clear the hover: {away}");
             ensure!(away["open"].is_null(), "hovering must not open a bead: {away}");
             point!("down", hx, hy, 0.0, 0.0, |s: &Value| s["press"].is_object());
             let clicked = point!("up", hx, hy, 0.0, 0.0, |s: &Value| s["open"] == json!(id));
             ensure!(clicked["open"] == json!(id), "a click on {id} should open it: {clicked}");
-            let opened = state(&native);
+            let opened = state(cx)?;
             ensure!(components(&opened).iter().any(|c| c["text"].as_str() == Some("Close")) || texts(&opened).iter().any(|t| t.contains("Blocked by")), "the opened bead's card was not drawn: {:?}", texts(&opened));
             let (px, py) = (900.0, 480.0);
             point!("down", px, py, 0.0, 0.0, |s: &Value| s["press"].is_object());
@@ -5773,17 +5719,26 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
             eprintln!("wheel-gpui: graph pane: {} nodes, {} edges; hover {}, open {}, pan ({}, {})", st["nodes"], st["edges"], hovered["hover"], clicked["open"], panned["ox"], panned["oy"]);
             entry["graph"] = json!({"node": id, "hover": hovered["hover"], "open": clicked["open"], "pan": [panned["ox"], panned["oy"]], "png": png});
         }
+        // Each of these runs its pane's script afresh and ends it.
+        if name == "graph" || name == "beads" || name == "gallery" {
+            entry["gpui_canvas"] = canvas_in_gpui(&mut connection, &mut layouts, window, &output, &pane, &name, cx).await?;
+        }
+        if name == "gallery" {
+            entry["gpui"] = gallery_in_gpui(&mut connection, &mut layouts, window, &output, &pane, cx).await?;
+        }
         report.insert(name.clone(), entry);
     }
     // A plugin pane taller than the pane, holding nothing that fills it, scrolls as a whole: scrolled to the bottom its last row is inside the view.
     let rows: u64 = std::env::var("WHEEL_CLIENT_TALL_ROWS")?.parse()?;
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "tall", "--plugin-pane", "tall"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin tall/tall: {err}");
+    host_plugin(&mut connection, &mut layouts, window, &pane, "tall/tall", cx).await?;
     let last = format!("Row {rows}");
     let mut tall = Value::Null;
     for _ in 0..200 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        tall = state(&native);
+        draw(window, None, cx)?;
+        tall = state(cx)?;
         if texts(&tall).contains(&last) && tall["scroll"]["content"].as_f64().is_some_and(|c| c > 0.0) {
             break;
         }
@@ -5791,15 +5746,14 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(texts(&tall).contains(&last) && tall["error"].is_null(), "the tall plugin pane never drew {last}: error {} texts {}", tall["error"], texts(&tall).len());
     let (content, visible) = (tall["scroll"]["content"].as_f64().unwrap_or(0.0), tall["scroll"]["visible"].as_f64().unwrap_or(0.0));
     ensure!(tall["fills"] == false && content > visible && visible > 0.0 && tall["scroll"]["offset"].as_f64() == Some(0.0), "the tall pane should scroll from the top: fills {} scroll {}", tall["fills"], tall["scroll"]);
-    // A hidden window draws a native plugin view blank, so the pane's own picture comes from wheeld's `pane shot`, which the client answers with the view's pixels.
     let top = output.join("client-plugin-tall-top.png");
-    let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &top.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "pane shot of the tall pane at the top: {err}");
-    let sent = native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"bottom"}));
+    page_picture(&top, cx)?;
+    let sent = op(json!({"action":"scroll","to":"bottom"}), cx)?;
     ensure!(sent["ok"] == true, "the tall pane refused a scroll to the bottom: {sent}");
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        tall = state(&native);
+        draw(window, None, cx)?;
+        tall = state(cx)?;
         if tall["scroll"]["offset"].as_f64().is_some_and(|o| o > 0.0) {
             break;
         }
@@ -5807,19 +5761,18 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     let offset = tall["scroll"]["offset"].as_f64().unwrap_or(0.0);
     ensure!(offset > 0.0 && (offset + visible - content).abs() < 1.5, "scrolled to the bottom the tall pane should end at its content: offset {offset} visible {visible} content {content}");
     let png = output.join("client-plugin-tall-bottom.png");
-    let (ok, _, err) = run_pumped(&["pane", "shot", &pane, &png.display().to_string()], &mut connection, &mut layouts, window, cx).await?;
-    ensure!(ok, "pane shot of the tall pane at the bottom: {err}");
-    let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+    let bytes = page_picture(&png, cx)?;
     ensure!(bytes > 5000 && std::fs::read(&png)? != std::fs::read(&top)?, "the scrolled tall pane's picture is missing or equals the top's: {} ({bytes} bytes)", png.display());
     // `to=top` returns to offset 0, then `dy=100` moves down by 100 points from there.
     for (body, want) in [(json!({"to":"top"}), 0.0), (json!({"dy":100.0}), 100.0)] {
-        let mut request = json!({"op":"plugin","pane":pane,"action":"scroll"});
+        let mut request = json!({"action":"scroll"});
         request.as_object_mut().unwrap().extend(body.as_object().unwrap().clone());
-        let sent = native.call(request);
+        let sent = op(request, cx)?;
         ensure!(sent["ok"] == true, "the tall pane refused {body}: {sent}");
         for _ in 0..100 {
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
-            tall = state(&native);
+            draw(window, None, cx)?;
+            tall = state(cx)?;
             if tall["scroll"]["offset"].as_f64().is_some_and(|o| (o - want).abs() < 1.5) {
                 break;
             }
@@ -5827,6 +5780,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let now = tall["scroll"]["offset"].as_f64().unwrap_or(-1.0);
         ensure!((now - want).abs() < 1.5, "after {body} the tall pane's offset should be {want}: {now}");
     }
+    window.update(cx, |c, _, _| c.end_plugin(&pane))?;
     // A failing script's error shows beside the title: the title keeps one width whatever the error's length, and the error is cut to what is left.
     let mut headers = Vec::new();
     for name in ["errshort", "errlong1"] {
@@ -5856,21 +5810,22 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     // keeps its count across a hot reload, so only a fresh run reads `Count 0` after a press.
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "counter", "--plugin-pane", "counter"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin counter: {err}");
+    host_plugin(&mut connection, &mut layouts, window, &pane, "counter/counter", cx).await?;
     let mut seen = Value::Null;
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
+        seen = state(cx)?;
         if texts(&seen).iter().any(|t| t == "Count 0") {
             break;
         }
     }
     ensure!(texts(&seen).iter().any(|t| t == "Count 0"), "the counter never drew: error {} texts {:?}", seen["error"], texts(&seen));
     let button = components(&seen).iter().find(|c| c["type"] == "Button").and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the counter has no button"))?;
-    let pressed = native.call(json!({"op":"plugin","pane":pane,"action":"press","component":button}));
+    let pressed = op(json!({"action":"press","component":button}), cx)?;
     ensure!(pressed["ok"] == true, "the counter's button refused a press: {pressed}");
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
+        seen = state(cx)?;
         if texts(&seen).iter().any(|t| t == "Count 1") {
             break;
         }
@@ -5881,7 +5836,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(ok, "pane reload on the counter: {err}");
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
+        seen = state(cx)?;
         if seen["restarts"].as_u64().unwrap_or(0) > restarts_before && texts(&seen).iter().any(|t| t == "Count 0") {
             break;
         }
@@ -5892,51 +5847,24 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     // The fixture's `dialogs` plugin keeps its Alert's and ConfirmationDialog's `presented`, its Table's selection and the row it opened in its state.
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "dialogs", "--plugin-pane", "dialogs"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin dialogs: {err}");
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
-        if texts(&seen).iter().any(|t| t == "Show alert") {
-            break;
-        }
-    }
-    ensure!(texts(&seen).iter().any(|t| t == "Show alert"), "the dialogs pane never drew: error {} texts {:?}", seen["error"], texts(&seen));
-    report.insert("dialogs".into(), dialogs_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
+    host_plugin(&mut connection, &mut layouts, window, &pane, "dialogs/dialogs", cx).await?;
+    report.insert("dialogs".into(), dialogs_in_gpui(&mut connection, &mut layouts, window, &output, &pane, cx).await?);
     // The fixture's `embeds` plugin draws a Terminal and an AgentChat naming the panes its two fields hold.
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "embeds", "--plugin-pane", "embeds"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin embeds: {err}");
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
-        if components(&seen).iter().any(|c| c["type"] == "AgentChat") {
-            break;
-        }
-    }
-    ensure!(components(&seen).iter().any(|c| c["type"] == "AgentChat") && seen["error"].is_null(), "the embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
+    host_plugin(&mut connection, &mut layouts, window, &pane, "embeds/embeds", cx).await?;
+    plugin_settled(&mut connection, &mut layouts, window, &pane, "embeds", cx).await?;
     draw(window, Some(output.join("client-plugin-embeds.png")), cx)?;
-    report.insert("embeds".into(), json!({"gpui_embeds": embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?}));
+    report.insert("embeds".into(), json!({"gpui_embeds": embeds_in_gpui(&mut connection, &mut layouts, window, &output, &pane, cx).await?}));
     // Its `web` pane draws a WebView whose url and artifact its two fields hold, and a Map.
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "embeds", "--plugin-pane", "web"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin embeds web: {err}");
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
-        if components(&seen).iter().any(|c| c["type"] == "Map") {
-            break;
-        }
-    }
-    ensure!(components(&seen).iter().any(|c| c["type"] == "Map") && seen["error"].is_null(), "the web embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
+    host_plugin(&mut connection, &mut layouts, window, &pane, "embeds/web", cx).await?;
     report.insert("web_embeds".into(), web_embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
     // The gallery again, for its four VideoStreams playing in GPUI's own slots.
     let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "gallery", "--plugin-pane", "gallery"], &mut connection, &mut layouts, window, cx).await?;
     ensure!(ok, "pane kind plugin gallery: {err}");
-    for _ in 0..100 {
-        pump(&mut connection, 100, &mut layouts, window, cx).await?;
-        seen = state(&native);
-        if texts(&seen).iter().any(|t| t == "Wheel's own component") {
-            break;
-        }
-    }
-    ensure!(texts(&seen).iter().any(|t| t == "Wheel's own component") && seen["error"].is_null(), "the gallery pane never drew again: error {} texts {:?}", seen["error"], texts(&seen));
+    host_plugin(&mut connection, &mut layouts, window, &pane, "gallery/gallery", cx).await?;
     report.insert("stream_embeds".into(), stream_embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
@@ -5944,7 +5872,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, json!({"pane": pane, "panes": report})))
 }
 
-/// One component of a plugin pane's tree as GPUI's preview and the bridge both list it: (id, type, text).
+/// One component of a plugin pane's tree as GPUI lists it: (id, type, text).
 type PluginEntry = (String, String, String);
 
 fn plugin_entries(s: &Value) -> Vec<PluginEntry> {
@@ -5966,21 +5894,64 @@ fn plugin_body(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<(f
     window.update(cx, |c, _, _| c.control_bounds(pane, "body"))?.ok_or_else(|| anyhow::anyhow!("GPUI drew no page for plugin pane {pane}"))
 }
 
-/// Waits until GPUI's preview of plugin pane `pane` (`what` in messages) holds the components the
-/// bridge's view holds, with no script error. The stream demo's texts move with its frames, so they may differ for a moment.
-async fn plugin_preview_matches(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, pane: &str, what: &str, cx: &mut AsyncApp) -> Result<Vec<PluginEntry>> {
-    let (mut ours, mut theirs) = (vec![], vec![]);
+/// The bridge's `plugin` op on plugin pane `pane` as GPUI runs it (`Client::plugin_op`): `args`
+/// holds `action` and what it reads.
+fn plugin_op(window: ClientWindow, pane: &str, args: Value, cx: &mut AsyncApp) -> Result<Value> {
+    window.update(cx, |c, _, cx| c.plugin_op(pane, &args, cx))
+}
+
+/// Runs plugin pane `pane`'s script in GPUI afresh once its leaf shows `entry` (`<plugin>/<pane>`),
+/// so the script is the one `wheel pane kind` just set.
+async fn host_plugin(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, pane: &str, entry: &str, cx: &mut AsyncApp) -> Result<()> {
+    for _ in 0..100 {
+        let leaf = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pane).map(|p| (p.leaf.kind, p.leaf.label)))?;
+        if leaf.as_ref().is_some_and(|(kind, label)| kind == "plugin" && label == entry) {
+            ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {entry}");
+            return Ok(());
+        }
+        pump(connection, 100, layouts, window, cx).await?;
+    }
+    anyhow::bail!("pane {pane} never showed plugin pane {entry} in GPUI's grid")
+}
+
+/// Whether the tree `entries` of plugin pane `what` shows its content rather than a loading line:
+/// Beads and Issues their Actions button, Graph its count, the gallery its last class's heading,
+/// dialogs its Show alert, the embeds panes their AgentChat or Map.
+fn plugin_drawn(what: &str, entries: &[PluginEntry]) -> bool {
+    let text = |want: &dyn Fn(&str) -> bool| entries.iter().any(|(_, _, t)| want(t));
+    let kind = |k: &str| entries.iter().any(|(_, t, _)| t == k);
+    let shown = match what {
+        "beads" | "issues" => text(&|t| t == "Actions ⌄"),
+        "graph" => text(&|t| t.contains(" open issues")),
+        "gallery" | "gallery streams" => text(&|t| t == "Wheel's own component"),
+        "dialogs" => text(&|t| t == "Show alert"),
+        "embeds" => kind("AgentChat"),
+        "embeds web" => kind("Map"),
+        _ => true,
+    };
+    shown && !entries.is_empty() && !text(&|t| t.starts_with("Reading"))
+}
+
+/// Waits until GPUI's plugin pane `pane` (`what` in messages) draws its content ([`plugin_drawn`])
+/// with no script error, the same nodes two reads running (their texts may move, as the stream
+/// demo's do with its frames) and no component the client lacks.
+async fn plugin_settled(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, pane: &str, what: &str, cx: &mut AsyncApp) -> Result<Vec<PluginEntry>> {
+    let (mut ours, mut last, mut p) = (vec![], None, Value::Null);
     for _ in 0..200 {
         pump(connection, 100, layouts, window, cx).await?;
         draw(window, None, cx)?;
-        let p = plugin_preview(window, pane, cx)?;
-        (ours, theirs) = (plugin_entries(&p), plugin_entries(&native.call(json!({"op":"plugin","pane":pane,"action":"state"}))));
-        if p["error"].is_null() && !ours.is_empty() && ours == theirs {
+        p = plugin_preview(window, pane, cx)?;
+        ours = plugin_entries(&p);
+        let nodes: Vec<(String, String)> = ours.iter().map(|(id, kind, _)| (id.clone(), kind.clone())).collect();
+        if p["error"].is_null() && plugin_drawn(what, &ours) && last.as_ref() == Some(&nodes) {
+            let missing: Vec<&PluginEntry> = ours.iter().filter(|(_, t, _)| t == "Unsupported").collect();
+            ensure!(missing.is_empty(), "GPUI's {what} asked for components the client lacks: {missing:?}");
             return Ok(ours);
         }
+        last = Some(nodes);
     }
-    let differ: Vec<_> = ours.iter().zip(theirs.iter()).filter(|(a, b)| a != b).take(5).collect();
-    anyhow::bail!("GPUI's {what} tree differs from the bridge's: {} against {} components, first differences {differ:?}; error {}", ours.len(), theirs.len(), plugin_preview(window, pane, cx)?["error"])
+    let texts: Vec<&str> = ours.iter().map(|(_, _, t)| t.as_str()).filter(|t| !t.is_empty()).take(8).collect();
+    anyhow::bail!("GPUI's {what} never drew its content: {} components, texts {texts:?}; error {}", ours.len(), p["error"])
 }
 
 /// The window's picture cut to `rect` (window points), clipped to `body`, saved to `path`.
@@ -6021,27 +5992,15 @@ fn press_recorded(window: ClientWindow, pane: &str, id: &str, cx: &mut AsyncApp)
 }
 
 
-/// Plugin pane `pane`, showing plugin pane `name`, drawn by GPUI beside the bridge's view
-/// (wheel-4d1o.3): previewed, waited on until its tree holds the bridge's components, its page cut
-/// to `gpui-plugin-<name>.png` beside the bridge's `client-plugin-<name>.png`, and the preview
-/// ended.
-#[allow(clippy::too_many_arguments)]
-async fn plugin_beside_bridge(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
-    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {name}");
-    let matched = plugin_preview_matches(connection, layouts, window, native, pane, name, cx).await;
-    let pictured = matched.and_then(|ours| {
-        let body = plugin_body(window, pane, cx)?;
-        let png = output.join(format!("gpui-plugin-{name}.png"));
-        cut_picture(window, body, body, &png, cx)?;
-        Ok((ours, png))
-    });
-    window.update(cx, |c, _, _| c.end_plugin(pane))?;
-    draw(window, None, cx)?;
-    let (ours, png) = pictured?;
+/// GPUI's page of plugin pane `pane`, which shows plugin pane `name` and has settled, cut to
+/// `gpui-plugin-<name>.png`.
+fn plugin_picture(window: ClientWindow, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
+    let body = plugin_body(window, pane, cx)?;
+    let png = output.join(format!("gpui-plugin-{name}.png"));
+    cut_picture(window, body, body, &png, cx)?;
     let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
     ensure!(bytes > 0, "GPUI's picture of the {name} plugin pane is empty: {}", png.display());
-    eprintln!("wheel-gpui: {name} in GPUI matches the bridge: {} components", ours.len());
-    Ok(json!({"matched": true, "components": ours.len(), "picture": png, "picture_bytes": bytes}))
+    Ok(json!({"picture": png, "picture_bytes": bytes}))
 }
 
 /// Sends one pointer event to the window through GPUI, as `gpui_click` does.
@@ -6068,10 +6027,10 @@ fn mouse(kind: &str, at: gpui::Point<gpui::Pixels>, pressed: bool) -> gpui::Plat
 /// scenes): their labels' widths match the same way, moving over a hit hovers it, a click on a
 /// Beads hit reaches the script, a scroll zooms the camera and Fit fits it again.
 #[allow(clippy::too_many_arguments)]
-async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
+async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {name}");
     let steps = async {
-        plugin_preview_matches(connection, layouts, window, native, pane, name, cx).await?;
+        plugin_settled(connection, layouts, window, pane, name, cx).await?;
         if name == "beads" {
             let seen = plugin_preview(window, pane, cx)?;
             let picker = seen["components"].as_array().into_iter().flatten().find(|c| c["type"] == "ChoicePicker").and_then(|c| c["id"].as_str().map(str::to_owned))
@@ -6224,7 +6183,7 @@ fn typed(c: char) -> gpui::Keystroke {
 /// agent, the terminal pane emptied and closed. Case 4: the pane made a terminal again under its
 /// id attaches its new term.
 #[allow(clippy::too_many_arguments)]
-async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     let agent_pane = std::env::var("WHEEL_CLIENT_AGENT_PANE")?;
     let (ok, out, err) = run_pumped(&["pane", "split", pane, "--background"], connection, layouts, window, cx).await?;
     ensure!(ok, "wheel pane split {pane} --background failed: {err}");
@@ -6234,7 +6193,7 @@ async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for embeds");
     let steps = async {
         let began = std::time::Instant::now();
-        plugin_preview_matches(connection, layouts, window, native, pane, "embeds", cx).await?;
+        plugin_settled(connection, layouts, window, pane, "embeds", cx).await?;
         let comps = plugin_preview(window, pane, cx)?["components"].clone();
         let field = |label: &str| comps.as_array().into_iter().flatten().find(|c| c["type"] == "TextField" && c["label"] == label)
             .and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the embeds pane has no {label} field: {comps}"));
@@ -6411,7 +6370,7 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
     let mut keys = vec![];
     let steps = async {
         let began = std::time::Instant::now();
-        plugin_preview_matches(connection, layouts, window, native, pane, "embeds web", cx).await?;
+        plugin_settled(connection, layouts, window, pane, "embeds web", cx).await?;
         let preview = plugin_preview(window, pane, cx)?;
         let comps = preview["components"].clone();
         let cwd = preview["cwd"].as_str().unwrap_or_default().to_owned();
@@ -6548,13 +6507,13 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
 /// `gallery.input` feed GPUI's preview then shows: the click at (160, 90) in the video's pixels,
 /// button 0, and the key `q` going up. A click on the `input = false` stream sends nothing. The
 /// page is cut to `gpui-plugin-gallery-stream.png` with each shown stream's last frame laid over
-/// its slot, beside the bridge's `client-plugin-gallery-stream.png`.
+/// its slot.
 async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for the gallery's streams");
     let mut keys = vec![];
     let steps = async {
         let began = std::time::Instant::now();
-        plugin_preview_matches(connection, layouts, window, native, pane, "gallery streams", cx).await?;
+        plugin_settled(connection, layouts, window, pane, "gallery streams", cx).await?;
         let nums = |v: &Value| -> Vec<f64> { v.as_array().into_iter().flatten().filter_map(Value::as_f64).collect() };
         // The gallery's VideoStreams the frame drew, top to bottom: each ViewThatFits also holds the layout it did not pick.
         let streams = |e: &Value| {
@@ -6699,7 +6658,7 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
         ensure!(quiet_facts["inputs"] == 0 && quiet_facts["input"] == false && count_after == count_before,
             "the input = false stream should send nothing: {quiet_facts}; the backend saw {count_before:?} then {count_after:?}");
         let out = json!({"stream_embeds_ms": began.elapsed().as_millis() as u64, "streams": all.iter().map(|v| v["slot"]["stream"].clone()).collect::<Vec<_>>(),
-            "first": {"bounds": b, "slot": f}, "click": pointer, "key": typed, "quiet": quiet_facts, "pictures": [picture, output.join("client-plugin-gallery-stream.png")]});
+            "first": {"bounds": b, "slot": f}, "click": pointer, "key": typed, "quiet": quiet_facts, "picture": picture});
         eprintln!("wheel-gpui: video streams in GPUI: {out}");
         Ok::<Value, anyhow::Error>(out)
     }.await;
@@ -6711,22 +6670,21 @@ async fn stream_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize,
     Ok(out)
 }
 
-/// The gallery drawn by GPUI beside the bridge's SwiftUI (wheel-4d1o.2): the client runs the
-/// gallery's script itself on its own connection (`preview_plugin`) and draws its tree in the
-/// pane's slot, which the hidden window's picture shows in place of the Swift view. Case 1: both
-/// hold the same components with the same texts. Then page by page, GPUI's picture beside the
-/// bridge's `pane shot` at the same scroll, and each class's Card cut from GPUI's. Cases 2 to 4: a
+/// The gallery drawn by GPUI (wheel-4d1o.2): the client runs the gallery's script itself on its
+/// own connection (`preview_plugin`) and draws its tree in the pane's slot. Case 1: the tree
+/// settles with no error. Then page by page, scrolled through the `plugin` op's `scroll`, GPUI's
+/// picture of each page, and each class's Card cut from it. Cases 2 to 4: a
 /// TextField's value set through GPUI reaches the script, a Button pressed through GPUI changes
 /// the script's state, and `wheel pane reload` runs the script from the top. Cases 5 to 7
 /// (wheel-4d1o.3) run before the reload: a header click sorts the view-sorted Table and flips
 /// it, and leaves the page-sorted one as sent; the Modal's trigger opens its sheet and Done
 /// closes it; the table rows' ViewThatFits choose their wide child at the pane's width and
 /// their stacked one at 420 points.
-async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     let preview = |window: ClientWindow, cx: &mut AsyncApp| plugin_preview(window, pane, cx);
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane}");
-    // Case 1: the same tree.
-    let ours = plugin_preview_matches(connection, layouts, window, native, pane, "gallery", cx).await?;
+    // Case 1: the tree, settled.
+    let ours = plugin_settled(connection, layouts, window, pane, "gallery", cx).await?;
     let body = plugin_body(window, pane, cx)?;
     let root = window.update(cx, |c, _, _| c.control_bounds(pane, "root"))?.ok_or_else(|| anyhow::anyhow!("the GPUI gallery drew no root"))?;
     let (page_h, content_h) = (body.3, root.3);
@@ -6736,20 +6694,14 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, y))?, "the gallery is not previewed");
         draw(window, None, cx)
     };
-    // Page by page: the bridge scrolls its ScrollView by the same distance.
+    // Page by page, through the pane's own scroll: the top, then a page down each time.
     let pages = ((content_h / page_h).ceil() as usize).min(40);
-    native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"top"}));
     for k in 0..pages {
-        let y = k as f32 * page_h;
-        scroll_to(window, y, cx)?;
+        let args = if k == 0 { json!({"action":"scroll","to":"top"}) } else { json!({"action":"scroll","dy":page_h}) };
+        let sent = plugin_op(window, pane, args.clone(), cx)?;
+        ensure!(sent["ok"] == true, "the gallery refused {args}: {sent}");
+        draw(window, None, cx)?;
         cut(window, body, &output.join(format!("gpui-gallery-page-{k:02}.png")), cx)?;
-        if k > 0 {
-            native.call(json!({"op":"plugin","pane":pane,"action":"scroll","dy":page_h}));
-        }
-        pump(connection, 300, layouts, window, cx).await?;
-        let png = output.join(format!("swift-gallery-page-{k:02}.png"));
-        let (ok, _, err) = run_pumped(&["pane", "shot", pane, &png.display().to_string()], connection, layouts, window, cx).await?;
-        ensure!(ok, "pane shot of the gallery's page {k}: {err}");
     }
     // Each class is a Card whose first Text is its heading.
     let mut classes = vec![];
@@ -6768,7 +6720,6 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
     }
     ensure!(classes.len() >= 9, "the GPUI gallery drew {} class Cards, not 9: {classes:?}", classes.len());
     scroll_to(window, 0., cx)?;
-    native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"top"}));
     // Case 2: a TextField's value set as typing sets it reaches the script and stays drawn.
     let field = ours.iter().find(|(_, k, _)| k == "TextField").map(|(id, ..)| id.clone()).ok_or_else(|| anyhow::anyhow!("the gallery has no TextField"))?;
     ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, &field, json!("typed in GPUI"), cx))?, "plugin_set {field} refused");
@@ -6897,9 +6848,9 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
 /// drew it, raises its own action and then dismissAction, and the script's state reads that
 /// button chosen and the dialog no longer presented. On its Table, a click raises selectAction
 /// with that row alone, a ⌘-click adds a row, and a double click raises rowAction with the row.
-async fn dialogs_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+async fn dialogs_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane}");
-    let ours = plugin_preview_matches(connection, layouts, window, native, pane, "dialogs", cx).await?;
+    let ours = plugin_settled(connection, layouts, window, pane, "dialogs", cx).await?;
     let body = plugin_body(window, pane, cx)?;
     let find = |kind: &str, text: Option<&str>| ours.iter().find(|(_, k, t)| k == kind && text.is_none_or(|text| t == text)).map(|(id, ..)| id.clone())
         .ok_or_else(|| anyhow::anyhow!("the dialogs pane has no {kind} {text:?}"));
