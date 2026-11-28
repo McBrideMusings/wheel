@@ -159,7 +159,7 @@ final class DebugServer {
         case ("POST", "/agent"), ("POST", "/agent/draft"), ("POST", "/agent/focus"), ("POST", "/agent/expand"),
              ("POST", "/agent/notice/dismiss"), ("POST", "/agent/key"), ("POST", "/agent/type"), ("POST", "/agent/config"),
              ("POST", "/agent/link"), ("POST", "/agent/typing"), ("POST", "/agent/queue"), ("POST", "/agent/message"),
-             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"), ("POST", "/agent/read-aloud"),
+             ("POST", "/agent/attach"), ("POST", "/agent/pasteboard"), ("POST", "/agent/paste"),
              ("POST", "/agent/task"):
             guard let agent = query["agent"], let chat = model.chats[agent] else {
                 return refuse("404 Not Found", "no agent pane shows that agent")
@@ -228,10 +228,6 @@ final class DebugServer {
                 // Text in the composer, not sent: what a person typing sees.
                 Log.info("debug: draft for \(agent), \(text.count) chars")
                 chat.draft = text
-            case "/agent/read-aloud":
-                // The speaker toggle's state, set directly: `on=1` or `on=0`. A stand-in for the click.
-                Log.info("debug: read-aloud for \(agent): \(query["on"] ?? "")")
-                chat.readsAloud = query["on"] == "1"
             case "/agent/focus":
                 Log.info("debug: focus the composer of \(agent)")
                 chat.composerFocusRequest += 1
@@ -512,15 +508,6 @@ final class DebugServer {
             let copied = NSPasteboard.general.string(forType: .string) ?? ""
             Log.info("debug: pressed copy on reply \(row) of \(session), \(copied.count) characters")
             return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["pasteboard": copied])) ?? Data("{}".utf8))
-        case ("POST", "/reply/play"):
-            // Press the play button of reply `row`: it speaks that reply, or stops it when it is
-            // the one being read. Answers with the key being read afterwards.
-            guard let session = query["agent"], let row = query["row"].flatMap(Int.init) else {
-                return refuse("400 Bad Request", "agent and row are required")
-            }
-            guard ReplyCopyRegistry.shared.play(agent: session, row: row) else { return refuse("404 Not Found", "reply \(row) is not on screen") }
-            Log.info("debug: pressed play on reply \(row) of \(session)")
-            return ("200 OK", (try? JSONSerialization.data(withJSONObject: ["playing": (ReadAloud.shared.playing as Any?) ?? NSNull()])) ?? Data("{}".utf8))
         case ("POST", "/code/copy"):
             // Press the copy button of the `index`-th code block on screen in an agent's
             // transcript (the order of `code_blocks` in the state) and answer with the pasteboard.
@@ -2234,8 +2221,6 @@ final class DebugServer {
                         }
                     } ?? NSNull()
                     o["composer"] = chat?.draft ?? NSNull()
-                    o["reads_aloud"] = chat?.readsAloud ?? NSNull()
-                    o["read_aloud"] = ["spoken": ReadAloud.shared.spokenCount, "last": ReadAloud.shared.lastSpoken, "playing": (ReadAloud.shared.playing as Any?) ?? NSNull()] as [String: Any]
                     o["composer_drag_types"] = (NSApp.wheelWindow?.firstResponder as? NSTextView)?.registeredDraggedTypes.count ?? NSNull()
                     o["attachments"] = chat.map { chat in
                         model.attachments(for: chat).chips.map { ["name": $0.name, "detail": $0.detail, "thumbnail": $0.thumbnail != nil] as [String: Any] }

@@ -1330,11 +1330,9 @@ final class PhoneModel {
     /// Whether the composer offers voice mode: wheeld takes the `voice` lease and `agent_voice`.
     var voiceOffered: Bool { isConnected && VoiceSession.offered(by: serverOffer.ops) }
 
-    /// The composer's round button with an empty field: voice mode over `pane`'s agent. The microphone and the
-    /// speaker are voice mode's alone, so this conversation's read-aloud steps aside.
+    /// The composer's round button with an empty field: voice mode over `pane`'s agent.
     func openVoice(_ chat: AgentChat, pane: String, harness: String, orchestrator: Bool) {
         if voice.transport == nil { voice.transport = voiceTransport }
-        chat.readsAloud = false
         voicePane = pane
         let space = spaces.first { $0.allPanes.contains { $0.id == pane } }?.name
         voice.open(agent: chat.name,

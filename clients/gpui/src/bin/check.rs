@@ -373,8 +373,8 @@ async fn experiment(output: PathBuf, cx: &mut AsyncApp) -> Result<Value> {
     let (run, message_menu_report, scroll_report) = message_menu_and_scroll(run, agent_pane.clone(), agent_name.clone(), cli_path.clone(), old_id.clone(), splits_above.clone(), click.clone(), fork_row.clone(), fork_text.clone(), cx).await?;
     let (run, running_report) = running_strip(run, agent_pane.clone(), agent_name.clone(), cx).await?;
     let (run, running_full_report) = running_full_view(run, agent_pane.clone(), agent_name.clone(), cx).await?;
-    let (run, read_aloud_report) = read_aloud_toggle(run, agent_pane.clone(), agent_name.clone(), cx).await?;
-    let conversations_report = json!({"read_aloud_toggle": read_aloud_report, "reply_buttons": reply_buttons, "recent": recent_report, "earlier": earlier_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
+    let (run, plus_menu_report) = plus_menu(run, agent_name.clone(), cx)?;
+    let conversations_report = json!({"plus_menu": plus_menu_report, "reply_buttons": reply_buttons, "recent": recent_report, "earlier": earlier_report, "listed": listed, "new_id_differs": new_id_differs, "resumed_rows": resumed_rows, "codex_pane_streams": codex_pane_streams, "old_id": old_id, "new_id": new_id, "opened_from": conversations_from});
     let composer_report = json!({"commands_listed": commands_listed, "picked_by_arrows": by_arrows, "co_listed": co_listed, "picked_by_tab": by_tab, "picked_by_click": by_click,
         "queued_then_sent": queued_then_sent, "saw_sending_now": saw_sending, "cleared_queue": cleared_queue, "took_back": took_back, "control_return_ran": control_return_ran, "esc_stopped_with_draft": esc_stopped, "queue_actions": queue_ids});
     let perms_report = json!({"card_shown": card_shown, "answered_by_key": answered_by_key, "resolved_from_cli": resolved_from_cli,
@@ -921,107 +921,62 @@ async fn agent_send(pane: &str, text: &str, cx: &mut AsyncApp) -> Result<()> {
     anyhow::bail!("wheel agent send {text:?} did not finish in 70 s")
 }
 
-/// The + menu's Read aloud (wheel-e1xk.3, wheel-zxts.14): a press on the composer's + opens its
-/// menu (Add files…, then Clear chat where the harness clears, then Read aloud), and Read aloud
-/// turns reading on for this conversation; the next finished turn is handed to the app's
-/// synthesizer keyed by its last reply; a second pick turns it off, stops that speech at once,
-/// and the turn after is not read.
-async fn read_aloud_toggle(mut run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
+/// The composer's + menu (wheel-e1xk.3, wheel-zxts.14): a press on the + opens its menu (Add
+/// files…, then Clear chat where the harness clears) just above the button; the arrow keys move
+/// through its rows, Clear chat asks first, and a second press on the + closes it.
+fn plus_menu(run: Run, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     let (window, native) = (run.window, run.native.clone());
-    let log_now = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.toast_log.clone());
-    let spoken = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.starts_with(&format!("transcript {agent_name}: read aloud the turn's reply: "))).collect()) };
     let click = |b: (f32, f32, f32, f32)| {
         let p = [f64::from(b.0 + b.2 / 2.), f64::from(b.1 + b.3 / 2.)];
         native.call(json!({"op":"post_mouse","kind":"down","point":p}));
         native.call(json!({"op":"post_mouse","kind":"up","point":p}));
     };
-    let mut menu_report = Value::Null;
-    let mut toggle = |cx: &mut AsyncApp| -> Result<Value> {
+    draw(window, None, cx)?;
+    let plus = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus"))?.ok_or_else(|| anyhow::anyhow!("{agent_name}'s composer drew no +"))?;
+    click(plus);
+    draw(window, None, cx)?;
+    let open = window.update(cx, |c, _, _| c.open_menu())?;
+    ensure!(open == Some((agent_name.clone(), "+".into())), "a press on the + at {plus:?} left the open menu {open:?}");
+    let rows: Vec<(String, (f32, f32, f32, f32))> = window.update(cx, |c, _, _| c.controls_drawn(&agent_name))?.into_iter().filter(|(id, _)| id.starts_with("plus:")).collect();
+    let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
+    ensure!(ids == ["plus:add-files", "plus:clear"] || ids == ["plus:add-files"], "the + menu's rows: {ids:?}");
+    ensure!(rows.windows(2).all(|w| w[0].1.1 < w[1].1.1) && rows.iter().all(|(_, b)| b.1 + b.3 <= plus.1 + 0.5), "the + menu's rows {rows:?} are not one under the other above the + {plus:?}");
+    // Its bottom row sits on the +: it opens from the button, never off to one side.
+    ensure!(rows.last().is_some_and(|(_, b)| plus.1 - (b.1 + b.3) < 12. && (b.0 - plus.0).abs() < 12.), "the + menu's last row {:?} is not just above the + {plus:?}", rows.last());
+    draw(window, Some(run.output.join("client-plus-menu.png")), cx)?;
+    // The keys work it as a config menu: it opens on its first row; Down and Up move.
+    let opened_on = window.update(cx, |c, _, _| c.menu_row())?;
+    native.call(json!({"op":"post_key","text":"\u{f701}","code":125}));
+    draw(window, None, cx)?;
+    let after_down = window.update(cx, |c, _, _| c.menu_row())?;
+    native.call(json!({"op":"post_key","text":"\u{f700}","code":126}));
+    draw(window, None, cx)?;
+    let after_up = window.update(cx, |c, _, _| c.menu_row())?;
+    ensure!((opened_on, after_down, after_up) == (0, rows.len().min(2) - 1, 0), "the + menu's rows from the keys (opened, Down, Up): {:?}", (opened_on, after_down, after_up));
+    // Clear chat asks first; declined, nothing is sent and the conversation stays.
+    let mut cleared = Value::Null;
+    if let Some((_, clear)) = rows.iter().find(|(id, _)| id == "plus:clear") {
+        let rows_before = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
+        click(*clear);
         draw(window, None, cx)?;
-        let plus = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus"))?.ok_or_else(|| anyhow::anyhow!("{agent_name}'s composer drew no +"))?;
+        let asked = window.update(cx, |c, _, _| c.confirmation.as_ref().map(|c| (c.title.clone(), c.button.clone())))?;
+        ensure!(asked == Some(("Clear this chat?".into(), "Clear Chat".into())), "Clear chat asked {asked:?}");
+        window.update(cx, |c, _, _| c.answer_confirmation(false))?;
+        // A frame without the sheet, so the next press reaches the composer.
+        draw(window, None, cx)?;
+        let rows_after = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
+        ensure!(rows_after == rows_before && window.update(cx, |c, _, _| c.open_menu())?.is_none(), "declining Clear chat changed the transcript ({rows_before} rows, then {rows_after}) or left the menu open");
+        cleared = json!({"asked": asked, "declined_rows": [rows_before, rows_after]});
         click(plus);
         draw(window, None, cx)?;
-        let open = window.update(cx, |c, _, _| c.open_menu())?;
-        ensure!(open == Some((agent_name.clone(), "+".into())), "a press on the + at {plus:?} left the open menu {open:?}");
-        let rows: Vec<(String, (f32, f32, f32, f32))> = window.update(cx, |c, _, _| c.controls_drawn(&agent_name))?.into_iter().filter(|(id, _)| id.starts_with("plus:")).collect();
-        let ids: Vec<&str> = rows.iter().map(|(id, _)| id.as_str()).collect();
-        ensure!(ids == ["plus:add-files", "plus:clear", "plus:read-aloud"] || ids == ["plus:add-files", "plus:read-aloud"], "the + menu's rows: {ids:?}");
-        ensure!(rows.windows(2).all(|w| w[0].1.1 < w[1].1.1) && rows.iter().all(|(_, b)| b.1 + b.3 <= plus.1 + 0.5), "the + menu's rows {rows:?} are not one under the other above the + {plus:?}");
-        // Its bottom row sits on the +: it opens from the button, never off to one side.
-        ensure!(rows.last().is_some_and(|(_, b)| plus.1 - (b.1 + b.3) < 12. && (b.0 - plus.0).abs() < 12.), "the + menu's last row {:?} is not just above the + {plus:?}", rows.last());
-        if menu_report.is_null() {
-            draw(window, Some(run.output.join("client-plus-menu.png")), cx)?;
-            // The keys work it as a config menu: it opens on its first row; Down and Up move.
-            let opened_on = window.update(cx, |c, _, _| c.menu_row())?;
-            native.call(json!({"op":"post_key","text":"\u{f701}","code":125}));
-            draw(window, None, cx)?;
-            let after_down = window.update(cx, |c, _, _| c.menu_row())?;
-            native.call(json!({"op":"post_key","text":"\u{f700}","code":126}));
-            draw(window, None, cx)?;
-            let after_up = window.update(cx, |c, _, _| c.menu_row())?;
-            ensure!((opened_on, after_down, after_up) == (0, 1, 0), "the + menu's rows from the keys (opened, Down, Up): {:?}", (opened_on, after_down, after_up));
-            // Clear chat asks first; declined, nothing is sent and the conversation stays.
-            let mut cleared = Value::Null;
-            if let Some((_, clear)) = rows.iter().find(|(id, _)| id == "plus:clear") {
-                let rows_before = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
-                click(*clear);
-                draw(window, None, cx)?;
-                let asked = window.update(cx, |c, _, _| c.confirmation.as_ref().map(|c| (c.title.clone(), c.button.clone())))?;
-                ensure!(asked == Some(("Clear this chat?".into(), "Clear Chat".into())), "Clear chat asked {asked:?}");
-                window.update(cx, |c, _, _| c.answer_confirmation(false))?;
-                // A frame without the sheet, so the next press reaches the composer.
-                draw(window, None, cx)?;
-                let rows_after = window.update(cx, |c, _, _| c.transcripts[&agent_name].rows.len())?;
-                ensure!(rows_after == rows_before && window.update(cx, |c, _, _| c.open_menu())?.is_none(), "declining Clear chat changed the transcript ({rows_before} rows, then {rows_after}) or left the menu open");
-                cleared = json!({"asked": asked, "declined_rows": [rows_before, rows_after]});
-                click(plus);
-                draw(window, None, cx)?;
-                let reopened = window.update(cx, |c, _, _| (c.open_menu(), c.state_json()["confirmation"].clone(), c.presses.clone()))?;
-                ensure!(reopened.0 == Some((agent_name.clone(), "+".into())), "a press on the + after declining Clear chat left the menu {:?} (confirmation {}, presses {:?})", reopened.0, reopened.1, reopened.2);
-            }
-            menu_report = json!({"rows": ids, "keys": [opened_on, after_down, after_up], "clear": cleared});
-        }
-        // Where this open drew it: the menu may have been closed and opened again above.
-        let read_aloud = window.update(cx, |c, _, _| c.control_bounds(&agent_name, "plus:read-aloud"))?.ok_or_else(|| anyhow::anyhow!("the + menu drew no Read aloud"))?;
-        ensure!(window.update(cx, |c, _, _| c.open_menu())? == Some((agent_name.clone(), "+".into())), "the + menu is not open before Read aloud");
-        click(read_aloud);
-        ensure!(window.update(cx, |c, _, _| c.open_menu())?.is_none(), "the + menu stayed open after Read aloud");
-        Ok(window.update(cx, |c, _, _| c.state_json()["reads_aloud"].clone())?)
-    };
-    let on = toggle(cx)?;
-    ensure!(on == json!([agent_name]), "Read aloud from the + menu left reads_aloud {on}");
-    draw(window, Some(run.output.join("client-read-aloud-on.png")), cx)?;
-    let before = spoken(cx)?.len();
-    agent_send(&agent_pane, "read this one aloud", cx).await?;
-    let mut heard = None;
-    for _ in 0..100 {
-        // The check hands wheeld's messages to the window only here, the turn's end among them.
-        pump(&mut run.connection, 50, &mut run.layouts, window, cx).await?;
-        if let Some(line) = spoken(cx)?.get(before) {
-            heard = Some(line.clone());
-            break;
-        }
+        let reopened = window.update(cx, |c, _, _| (c.open_menu(), c.state_json()["confirmation"].clone(), c.presses.clone()))?;
+        ensure!(reopened.0 == Some((agent_name.clone(), "+".into())), "a press on the + after declining Clear chat left the menu {:?} (confirmation {}, presses {:?})", reopened.0, reopened.1, reopened.2);
     }
-    let key = window.update(cx, |c, _, _| c.transcripts[&agent_name].last_reply().map(|(id, _)| format!("{agent_name}#{id}")))?;
-    let heard = heard.ok_or_else(|| anyhow::anyhow!("the turn ended with read-aloud on and nothing was spoken"))?;
-    let key = key.ok_or_else(|| anyhow::anyhow!("the turn wrote no reply to read"))?;
-    ensure!(heard.ends_with(&format!(": {}", json!(key))), "the finished turn was spoken as {heard:?}, not keyed {key}");
-    let off = toggle(cx)?;
-    ensure!(off == json!([]), "a second Read aloud left reads_aloud {off}");
-    let mut stopped = Value::Null;
-    for _ in 0..100 {
-        stopped = window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?;
-        if stopped.is_null() {
-            break;
-        }
-        tick(cx, 20).await;
-    }
-    ensure!(stopped.is_null(), "turning read-aloud off left the window reading {stopped}");
-    agent_send(&agent_pane, "this one stays quiet", cx).await?;
-    pump(&mut run.connection, 1000, &mut run.layouts, window, cx).await?;
-    let after = spoken(cx)?.len();
-    ensure!(after == before + 1, "a turn that ended with read-aloud off was spoken: {} line(s) after the first", after - before - 1);
-    Ok((run, json!({"menu": menu_report, "on": on, "heard": heard, "key": key, "off": off, "stopped": stopped.is_null(), "quiet_after_off": true})))
+    // A second press on the + closes the menu.
+    click(plus);
+    draw(window, None, cx)?;
+    ensure!(window.update(cx, |c, _, _| c.open_menu())?.is_none(), "a second press on the + left the menu open");
+    Ok((run, json!({"rows": ids, "keys": [opened_on, after_down, after_up], "clear": cleared})))
 }
 
 /// Background tasks (wheel-96jo): the fake agent starts a background shell and a subagent; the
@@ -3305,10 +3260,8 @@ async fn fork_and_reply_buttons(run: Run, agent_pane: String, agent_name: String
         tick(cx, 100).await;
     }
     let fork_at = fork_at.ok_or_else(|| anyhow::anyhow!("row {fork_row} of {agent_name} drew no fork button"))?;
-    // The reply's other buttons (wheel-ynjo.10.5.5): copy and play on the same line, left of the
-    // fork button, as RowView.swift's `actions`. Copy puts the reply's Markdown on the clipboard;
-    // play has the app's synthesizer read it, which turns the button to stop, and a second press
-    // 150 ms later stops it, before the reply's first words are over.
+    // The reply's copy button (wheel-ynjo.10.5.5): on the same line, left of the fork button, as
+    // RowView.swift's `actions`; it puts the reply's Markdown on the clipboard.
     let reply_buttons = {
         let at = |id: &str, cx: &mut AsyncApp| -> Result<Option<(f32, f32, f32, f32)>> { Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_name, &format!("{id}:{fork_row}")))?) };
         let mut buttons = vec![];
@@ -3319,73 +3272,13 @@ async fn fork_and_reply_buttons(run: Run, agent_pane: String, agent_name: String
                 lefts.push(b.0);
             }
         }
-        ensure!(buttons == ["copy", "play", "fork"] && lefts.windows(2).all(|w| w[0] < w[1]), "the turn end {fork_row} drew buttons {buttons:?} at x {lefts:?}");
-        let key = window.update(cx, |c, _, _| format!("{agent_name}#{}", c.transcripts[&agent_name].rows[fork_row].id))?;
+        ensure!(buttons == ["copy", "fork"] && lefts.windows(2).all(|w| w[0] < w[1]), "the turn end {fork_row} drew buttons {buttons:?} at x {lefts:?}");
+        draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
         press(&native, at("copy", cx)?.unwrap());
         tick(cx, 150).await;
         let copied = cx.update(|app| app.read_from_clipboard().and_then(|i| i.text())).unwrap_or_default();
         ensure!(copied == fork_text, "the copy button put {copied:?} on the clipboard, not {fork_text:?}");
-        let playing_now = |cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.state_json()["read_aloud"].clone())?) };
-        // Each press logs the bridge's answer, what the synthesizer reads after it.
-        let answers = |cx: &mut AsyncApp| -> Result<Vec<String>> { Ok(log_now(cx)?.into_iter().filter(|l| l.contains(&format!("read aloud row {fork_row}: "))).collect()) };
-        // The press logs its answer as it runs, so the log changing (it is capped, so never its
-        // length) means the newest answer line is this press's.
-        macro_rules! play_answer {
-            () => {{
-                let before = log_now(cx)?;
-                press(&native, at("play", cx)?.unwrap());
-                let mut answer = None;
-                for _ in 0..100 {
-                    if log_now(cx)? != before {
-                        answer = answers(cx)?.last().cloned();
-                        break;
-                    }
-                    tick(cx, 20).await;
-                }
-                answer.ok_or_else(|| anyhow::anyhow!("the play button got no answer from the bridge"))?
-            }};
-        }
-        let want = json!(key).to_string();
-        let heard = play_answer!();
-        ensure!(heard.ends_with(&format!(": {want}")), "the play button's press answered {heard:?}, not {want}");
-        // The window hears what the synthesizer reads by an event and draws the stop button; a
-        // press then stops it. A reply that finished first (the event of a short one can come
-        // after its end) is spoken again, and the press that restarts it is the next try.
-        let (mut playing, mut stopped, mut restarts) = (Value::Null, false, 0);
-        while !stopped && restarts < 8 {
-            playing = Value::Null;
-            let mut shown = false;
-            for _ in 0..100 {
-                tick(cx, 20).await;
-                if playing_now(cx)? == json!(key) {
-                    shown = true;
-                    break;
-                }
-            }
-            if shown {
-                draw(window, Some(output.join("client-reply-buttons.png")), cx)?;
-                playing = json!(key);
-            }
-            let answer = play_answer!();
-            if answer.ends_with(": null") {
-                stopped = true;
-            } else {
-                ensure!(answer.ends_with(&format!(": {want}")), "a press on play answered {answer:?}");
-                restarts += 1;
-            }
-        }
-        ensure!(stopped && playing == json!(key), "the play button never showed and stopped the reply: shown {playing}, {restarts} restart(s)");
-        let mut cleared = Value::Null;
-        for _ in 0..100 {
-            cleared = playing_now(cx)?;
-            if cleared.is_null() {
-                break;
-            }
-            tick(cx, 20).await;
-        }
-        draw(window, None, cx)?;
-        ensure!(cleared.is_null(), "a second press on play left the window reading {cleared}");
-        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text, "playing": playing, "log": heard, "stopped": stopped, "restarts": restarts})
+        json!({"row": fork_row, "buttons": buttons, "x": lefts, "copied": copied == fork_text})
     };
     press(&native, fork_at);
     let mut forked = None;
@@ -6663,7 +6556,7 @@ async fn notices(run: Run, native_panes: Vec<(String, String)>, cx: &mut AsyncAp
     ensure!(cleared == Some(true) && after_clear.is_none(), "the clear left {after_clear:?} ({cleared:?})");
     ensure!(left == Some(false) && after_left.as_deref() == Some("copied since"), "the clear took what was copied since: {after_left:?} ({left:?})");
     let device = ServerMsg::DeviceConnected { device: "d1".into(), name: "Check phone".into(), address: "127.0.0.1:5".into(), paired: true };
-    window.update(cx, |c, _, cx| c.on_event(Event::Message(Box::new(device)), cx))?;
+    window.update(cx, |c, _, _| c.on_event(Event::Message(Box::new(device))))?;
     let (connected, close_at) = window.update(cx, |c, _, _| (c.pairing.connected.clone(), c.pairing.close_at))?;
     ensure!(connected.as_deref() == Some("Check phone") && close_at.is_some(), "the window did not take the connection: {connected:?} {close_at:?}");
     let mut pairing_closed = false;
