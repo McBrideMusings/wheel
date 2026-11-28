@@ -12,6 +12,7 @@
 -- calls `wheel.agent.send` with it, then `turn-feed.delivered`. An answer stored with `delivered == false` can be
 -- sent again from its Send button. All three answers arrive in `update` as `{action, result | error}` in the order
 -- the calls were made, so each action keeps a queue of the post ids it was called for.
+-- The list draws the newest PAGE cards that match, and a "Show older" button under them adds PAGE more.
 local NONE = {}
 
 local COLOUR = { fg = "primary", muted = "secondary", ok = "green", warn = "orange", bad = "red" }
@@ -20,6 +21,10 @@ local ANSWER, SEND, DELIVERED, DELETE, FOCUS = "turn-feed.answer", "wheel.agent.
 
 -- The last value drawn per space: a read that answers nil draws this meanwhile, so the pane keeps its list.
 local LAST_POSTS, LAST_AGENTS = {}, nil
+
+-- Cards drawn at first and added by each "Show older": a card with its page is about 600 values, and a view
+-- holds at most 100,000, so drawing a space's whole history (up to 200 posts) would fail every render.
+local PAGE = 30
 
 -- ───────────────────────────── pieces ─────────────────────────────
 
@@ -325,6 +330,9 @@ local function update(state, msg)
         wheel.action(FOCUS, { post = msg.post })
     elseif msg.type == "query" then
         state.query = if type(msg.value) == "string" then msg.value else ""
+        state.shown = PAGE
+    elseif msg.type == "older" then
+        state.shown = (state.shown or PAGE) + PAGE
     elseif msg.type == "delete" then
         state.problems[msg.post] = nil
         push(state, DELETE, msg.post)
@@ -336,6 +344,7 @@ local function update(state, msg)
     elseif msg.type == "agent" then
         local v = if type(msg.value) == "table" then msg.value[1] else msg.value
         state.agent = if type(v) == "string" then v else "all"
+        state.shown = PAGE
     elseif msg.type == "draft" then
         state.drafts[msg.post] = if type(msg.value) == "string" then msg.value else ""
     elseif msg.type == "pick" then
@@ -407,15 +416,21 @@ local function view(state, data)
         on_change = { type = "query" },
         modifiers = { { frame = { maxWidth = "infinity" } } },
     }
-    local cards, seen = {}, {}
+    local cards, seen, older = {}, {}, 0
+    local shown = state.shown or PAGE
     for _, post in posts do
         local p = tostring(post.agent_pane)
         local latest = not seen[p]
         seen[p] = true
-        if (pick == "all" or p == pick) and matches(post, query) then table.insert(cards, post_view(state, post, running, latest)) end
+        if (pick == "all" or p == pick) and matches(post, query) then
+            if #cards < shown then table.insert(cards, post_view(state, post, running, latest)) else older += 1 end
+        end
     end
     if #cards == 0 then
         table.insert(cards, text("No post holds \"" .. trimmed(query) .. "\".", { tone = "muted", flex = true }))
+    elseif older > 0 then
+        local label = "Show " .. math.min(older, PAGE) .. " older"
+        table.insert(cards, button(label, { type = "older" }, label .. " of " .. older .. " not shown"))
     end
     cards.spacing = 12
     cards.modifiers = { { padding = { 4, 12, 12, 12 } } }
