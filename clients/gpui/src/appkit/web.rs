@@ -910,8 +910,8 @@ mod tests {
         assert!(script.starts_with("(function () {\n  if (window.__wheelConsole) return;"), "{script}");
         assert!(script.ends_with("})();"), "{script}");
         assert!(script.contains("window.webkit.messageHandlers.wheelConsole.postMessage(message)"));
-        // The Swift literal's closing-delimiter indentation is gone from every line.
-        assert!(script.lines().all(|l| !l.starts_with("    (") && !l.starts_with("    }")), "{script}");
+        // The Swift literal's closing-delimiter indentation is gone: the outermost lines start at column 0.
+        assert_eq!((script.lines().next(), script.lines().last()), (Some("(function () {"), Some("})();")), "{script}");
     }
 
     #[test]
