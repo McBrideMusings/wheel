@@ -64,7 +64,7 @@ use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMs
 use gpui_component::{Root, input::{Input, InputEvent, InputState}};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc};
 
-/// A footer's control labels and whether it showed.
+/// The footer items that fit, in order, and whether the "…" stands for the rest.
 type FooterShown = (Vec<(String, String)>, bool);
 /// A card slot's bounds and the clip it had when its view was placed.
 type CardPlace = (Bounds<Pixels>, Bounds<Pixels>);
