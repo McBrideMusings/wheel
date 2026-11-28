@@ -12,9 +12,10 @@ items under, so `make deploy-client` and `make deploy-dev` install these bundles
 
 The bridge is `native/Bridge.swift` and WheelUI's `KeyEvents.swift`, linked with WheelKit, which
 swiftc compiles from `apple/WheelKit/Sources` (a package with no dependencies) into
-`target/swift/WheelKit.o`. No Xcode build, WheelUI, Luau or Ghostty object goes in the app, and
-`check_no_swift_ui` fails the build if a symbol of one does. CARGO_TARGET_DIR is honoured for the
-client's own crates.
+`target/swift/WheelKit.o`; no Xcode build runs. `check_no_swift_ui` fails the build if a symbol of
+the Swift modules WheelUI, WheelLuau, GhosttyKit or GhosttyTerminal, or of libghostty's surface or
+app API, is in the app; GPUI's own Rust Luau and ghostty-vt are expected. CARGO_TARGET_DIR is
+honoured for the client's own crates.
 
 The server goes in the same way as the Mac app's: `apple/Mac/embed-wheeld.sh`, the Xcode build
 phase, run with the variables Xcode would set (CONFIGURATION Release or Debug picks the variant),

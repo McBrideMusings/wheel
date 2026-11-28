@@ -28,9 +28,8 @@ Run the full `cargo test` once per round of edits, not after every file.
 
 ## The GPUI app a check runs
 
-`clients/gpui/tools/build.py` links the Swift bridge against the Release products in the
-worktree's own `DerivedData-deploy-release.noindex`, and builds them first with
-`tools/swift-objects.sh` (xcodebuild's output in `clients/gpui/target/swift-objects.log`), so every
+`clients/gpui/tools/build.py` compiles the Swift bridge (`native/Bridge.swift`, WheelUI's
+`KeyEvents.swift`) and WheelKit from this checkout's source with swiftc, with no Xcode build, so every
 `make -C clients/gpui build`, `build-dev`, `build-check` and `check` links this checkout's Swift.
 The installed Wheel Dev.app predates plugin panes; a check that draws one uses the app built here.
 
