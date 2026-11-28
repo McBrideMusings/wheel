@@ -2046,16 +2046,20 @@ async fn statuses(run: Run, agent_pane: String, agent_name: String, agent_rect: 
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, buttons_inside_short_pane, resolved_from_cli, status_report))
 }
 
-/// An agent pane shown as its `agent/view` page (wheel-4r73.6): while its agent waits on a request the client
-/// draws the agent pane's card above the page and places the page's view under it; Allow on that card answers
-/// the request in wheeld, and the page takes the whole body back.
+/// An agent pane shown as its `agent/view` page (wheel-4r73.6), which GPUI runs and draws: while its agent waits
+/// on a request the client draws the agent pane's card above the page and the page under it; Allow on that card
+/// answers the request in wheeld, and the page takes the whole body back.
 async fn agent_view_card(run: Run, agent_pane: String, agent_name: String, cx: &mut AsyncApp) -> Result<(Run, Value)> {
     let Run { bridge, mut connection, mut layouts, window, native, markers, output } = run;
     let replies = |cx: &mut AsyncApp| -> Result<String> { Ok(window.update(cx, |c, _, _| c.transcripts.get(&agent_name).map(|t| t.rows.iter().filter_map(|r| match &r.kind { Kind::Reply(x) => Some(x.clone()), _ => None }).collect::<Vec<_>>().join("\n")).unwrap_or_default())?) };
     let pane_rect = |cx: &mut AsyncApp| -> Result<Rect> {
         window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == agent_pane).map(|p| p.rect))?.ok_or_else(|| anyhow::anyhow!("pane {agent_pane} is not in the grid"))
     };
-    let page = |cx: &mut AsyncApp| -> Result<[f64; 4]> { Ok(frame(&native.status(), &agent_pane)) };
+    // Where GPUI drew the page in the last frame, or nothing while it runs no `agent/view` script.
+    let page = |cx: &mut AsyncApp| -> Result<[f64; 4]> {
+        let hosted = !plugin_preview(window, &agent_pane, cx)?.is_null();
+        Ok(window.update(cx, |c, _, _| c.control_bounds(&agent_pane, "body"))?.filter(|_| hosted).map_or([-1.; 4], |(x, y, w, h)| [x, y, w, h].map(f64::from)))
+    };
     let card = |cx: &mut AsyncApp| window.update(cx, |c, _, _| c.control_bounds(&agent_name, "perm-card"));
     window.update(cx, |c, _, cx| {
         c.run_header_menu("agent-view", &agent_pane);
@@ -2065,16 +2069,16 @@ async fn agent_view_card(run: Run, agent_pane: String, agent_name: String, cx: &
     for _ in 0..100 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
         draw(window, None, cx)?;
-        let s = native.status();
-        if s["panes"][agent_pane.as_str()]["kind"] == "plugin" && s["panes"][agent_pane.as_str()]["hidden"] == false && frame(&s, &agent_pane)[3] > 0. {
+        if plugin_preview(window, &agent_pane, cx)?["runs"] == "agent/view" && page(cx)?[3] > 0. {
             opened = true;
             break;
         }
     }
-    ensure!(opened, "the agent view never opened: {}", native.status()["panes"][agent_pane.as_str()]);
+    ensure!(opened, "the agent view never opened: {}", plugin_preview(window, &agent_pane, cx)?);
     let r = pane_rect(cx)?;
     let idle = page(cx)?;
-    let body_top = f64::from(r.y + TITLE);
+    // Inside the pane's 1-point border, as a terminal's body.
+    let body_top = f64::from(r.y + TITLE + 1.);
     ensure!((idle[1] - body_top).abs() < 0.5 && card(cx)?.is_none(), "with nothing waiting the page should start under the header at {body_top} with no card: page {idle:?}, card {:?}", card(cx)?);
     draw(window, Some(output.join("client-agent-view-idle.png")), cx)?;
     shot(&native, &output.join("agent-view-idle"), cx).await?;
@@ -2124,11 +2128,11 @@ async fn agent_view_card(run: Run, agent_pane: String, agent_name: String, cx: &
     for _ in 0..50 {
         pump(&mut connection, 100, &mut layouts, window, cx).await?;
         draw(window, None, cx)?;
-        if native.status()["panes"][agent_pane.as_str()].is_null() {
+        if plugin_preview(window, &agent_pane, cx)?.is_null() {
             break;
         }
     }
-    ensure!(native.status()["panes"][agent_pane.as_str()].is_null(), "the native agent view never came back: {}", native.status()["panes"][agent_pane.as_str()]);
+    ensure!(plugin_preview(window, &agent_pane, cx)?.is_null(), "the agent view's script kept running after the native view came back: {}", plugin_preview(window, &agent_pane, cx)?);
     let report = json!({"idle_page": idle, "waiting_page": waiting, "card": [drawn.0, drawn.1, drawn.2, drawn.3], "answered_page": after, "allow": allow_id, "request": perm["id"]});
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, report))
 }
@@ -5789,6 +5793,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let mut seen = None;
         for _ in 0..100 {
             pump(&mut connection, 100, &mut layouts, window, cx).await?;
+            draw(window, None, cx)?;
             let found = window.update(cx, |c, _, _| (c.control_bounds(&pane, "pane-title"), c.control_bounds(&pane, "plugin-error")))?;
             if found.0.is_some() && found.1.is_some() {
                 seen = Some(found);
@@ -5900,18 +5905,17 @@ fn plugin_op(window: ClientWindow, pane: &str, args: Value, cx: &mut AsyncApp) -
     window.update(cx, |c, _, cx| c.plugin_op(pane, &args, cx))
 }
 
-/// Runs plugin pane `pane`'s script in GPUI afresh once its leaf shows `entry` (`<plugin>/<pane>`),
-/// so the script is the one `wheel pane kind` just set.
+/// Waits until GPUI runs `entry` (`<plugin>/<pane>`) in plugin pane `pane`, the script `wheel pane
+/// kind` just set: the pane's own layout change starts it.
 async fn host_plugin(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, pane: &str, entry: &str, cx: &mut AsyncApp) -> Result<()> {
     for _ in 0..100 {
-        let leaf = window.update(cx, |c, _, _| c.scene().0.into_iter().find(|p| p.leaf.id == pane).map(|p| (p.leaf.kind, p.leaf.label)))?;
-        if leaf.as_ref().is_some_and(|(kind, label)| kind == "plugin" && label == entry) {
-            ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {entry}");
+        draw(window, None, cx)?;
+        if plugin_preview(window, pane, cx)?["runs"] == entry {
             return Ok(());
         }
         pump(connection, 100, layouts, window, cx).await?;
     }
-    anyhow::bail!("pane {pane} never showed plugin pane {entry} in GPUI's grid")
+    anyhow::bail!("pane {pane} never ran plugin pane {entry} in GPUI: {}", plugin_preview(window, pane, cx)?["runs"])
 }
 
 /// Whether the tree `entries` of plugin pane `what` shows its content rather than a loading line:
@@ -6359,7 +6363,7 @@ fn serve_page(title: &'static str) -> Result<String> {
 /// embed drew at, not zero by either measure, and looks at the region the page names with both its
 /// pins. A non-http url and a url beside an artifact show their notes and no slot. A WebView on a
 /// loopback page the check serves: its slot lies on the embed's rect and the page loads; the
-/// picture of the page with both native views drawn in goes beside the bridge's `pane shot`. Scrolled
+/// picture of the page with both native views drawn in goes beside `wheel pane shot`'s. Scrolled
 /// partly out of the page, the slot is cut at the page's top; scrolled out, it hides. A WebView on
 /// the fixture's `embedded` artifact opens wheeld's page for it in the artifact's own store; a name
 /// with no artifact shows wheeld's refusal. Ending the preview closes both slots.
@@ -6454,9 +6458,23 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
             let s = scale as f32;
             image::imageops::crop_imm(&frame, (body.0 * s) as u32, (body.1 * s) as u32, (body.2 * s) as u32, (body.3 * s) as u32).to_image().save(&picture)?;
         }
+        // `wheel pane shot`: GPUI cuts the page from its frame and draws the two native views in.
         let swift = output.join("client-plugin-embeds-web.png");
         let (ok, _, err) = run_pumped(&["pane", "shot", pane, &swift.display().to_string()], connection, layouts, window, cx).await?;
         ensure!(ok, "pane shot of the web embeds pane: {err}");
+        let shot_png = image::open(&swift)?.to_rgba8();
+        let scale = f64::from(shot_png.width()) / f64::from(body.2.max(1.));
+        ensure!((f64::from(shot_png.height()) - f64::from(body.3) * scale).abs() < 2., "pane shot of the web embeds pane should be its page {body:?}: {}x{}", shot_png.width(), shot_png.height());
+        // The middle of each embed's slot holds its view's own pixels, never GPUI's empty slot under it.
+        let frame = image::open(&frame_png)?.to_rgba8();
+        let frame_scale = f64::from(frame.width()) / f64::from(window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?.max(1.));
+        for (v, what) in [(&w, "web page"), (&m, "map")] {
+            let f = nums(&v["slot"]["frame_top"]);
+            let (mx, my) = (f[0] + f[2] / 2., f[1] + f[3] / 2.);
+            let mine = *shot_png.get_pixel(((mx - f64::from(body.0)) * scale) as u32, ((my - f64::from(body.1)) * scale) as u32);
+            let under = *frame.get_pixel((mx * frame_scale) as u32, (my * frame_scale) as u32);
+            ensure!(mine != under, "pane shot of the web embeds pane drew GPUI's empty slot {under:?} where the {what} lies, at ({mx}, {my})");
+        }
         // Scrolled so the page's top cuts through the WebView: the slot follows the rect, its part above the page cut.
         let into = (wb[1] - f64::from(body.1)) as f32 + 60.;
         ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, into))?, "the web embeds pane is not previewed");

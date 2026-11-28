@@ -25,7 +25,7 @@ use std::{
     ptr::NonNull,
     rc::Rc,
 };
-use wheel_gpui_core::native::{Embedded, Host, Mouse, MouseKind, StreamTouch};
+use wheel_gpui_core::native::{EmbedPicture, Embedded, Host, Mouse, MouseKind, StreamTouch};
 
 /// A page's `ui.Map` in its slot: where it was asked to look (latitude, longitude, span), whether
 /// it has looked there yet, and the markers it shows.
@@ -507,12 +507,41 @@ impl Host for PaneHost {
         self.pages.reload(pane)
     }
 
-    fn compose(&self, id: u64, pane: &str, base: Result<Vec<u8>, String>) {
-        let view = self.slots.borrow().get(pane).and_then(|s| s.subviews().firstObject());
-        match view {
-            Some(view) => self.pages.compose(id, &view, base),
-            None => self.pages.compose(id, &self.root, Err("the pane is not shown".into())),
+    fn embed_pictures(&self, pane: &str, done: Box<dyn FnOnce(Vec<EmbedPicture>)>) {
+        let prefix = format!("{pane}#");
+        let height = self.root.bounds().size.height;
+        let top = |r: NSRect| [r.origin.x, if self.root.isFlipped() { r.origin.y } else { height - r.origin.y - r.size.height }, r.size.width, r.size.height];
+        let shown: Vec<(String, Retained<Slot>)> = self.slots.borrow().iter().filter(|(k, s)| k.starts_with(&prefix) && !s.isHidden()).map(|(k, s)| (k.clone(), s.clone())).collect();
+        let pictures: Rc<RefCell<Vec<EmbedPicture>>> = Rc::default();
+        let left = Rc::new(Cell::new(shown.len() + 1));
+        let done = Rc::new(RefCell::new(Some(done)));
+        let finish = {
+            let pictures = pictures.clone();
+            Rc::new(move |picture: Option<EmbedPicture>| {
+                pictures.borrow_mut().extend(picture);
+                left.set(left.get() - 1);
+                if left.get() == 0 && let Some(done) = done.borrow_mut().take() {
+                    done(std::mem::take(&mut *pictures.borrow_mut()));
+                }
+            })
+        };
+        for (key, slot) in shown {
+            let frame = top(slot.frame());
+            // The slot is flipped, so what its holes leave counts from its top left as the window's rects do.
+            let visible: Vec<[f64; 4]> = remainder(slot.bounds(), &slot.ivars().holes.borrow()).into_iter().map(|r| [frame[0] + r.origin.x, frame[1] + r.origin.y, r.size.width, r.size.height]).collect();
+            let picture = move |png: Option<Vec<u8>>| png.map(|png| EmbedPicture { frame, visible, png });
+            if let Some(map) = self.maps.borrow().get(&key) {
+                finish(picture(super::web::cached_png(&map.view)));
+            } else if let Some(stream) = self.streams.borrow().get(&key) {
+                finish(picture(stream.png()));
+            } else if let Some(web) = Self::web_view(&slot) {
+                let finish = finish.clone();
+                super::web::snapshot_image(&web, None, move |r| finish(picture(r.ok().and_then(|i| super::web::image_png(&i)))));
+            } else {
+                finish(None);
+            }
         }
+        finish(None);
     }
 
     fn render(&self, id: u64, pane: &str, full: bool) -> bool {

@@ -14,9 +14,9 @@ use objc2::{
     rc::Retained,
     runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject},
 };
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSGraphicsContext, NSImage, NSView, NSWorkspace};
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSView, NSWorkspace};
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPURLResponse, NSJSONSerialization, NSJSONWritingOptions, NSKeyValueChangeKey,
+    NSArray, NSDictionary, NSError, NSHTTPURLResponse, NSJSONSerialization, NSJSONWritingOptions, NSKeyValueChangeKey,
     NSKeyValueObservingOptions, NSNumber, NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest, NSUUID,
 };
 use objc2_web_kit::{
@@ -283,19 +283,6 @@ fn evaluate(view: &WKWebView, script: &str, done: impl FnOnce(Result<Option<Reta
 /// `script`'s result as text, for a script that returns a string.
 fn evaluate_text(view: &WKWebView, script: &str, done: impl FnOnce(Result<Option<String>, String>) + 'static) {
     evaluate(view, script, move |r| done(r.map(|v| v.and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string()))));
-}
-
-/// Every WKWebView shown inside `view`, at any depth.
-fn web_views(view: &NSView, out: &mut Vec<Retained<WKWebView>>) {
-    for sub in view.subviews() {
-        if sub.isHiddenOrHasHiddenAncestor() || sub.bounds().size.width <= 0. || sub.bounds().size.height <= 0. {
-            continue;
-        }
-        match sub.downcast::<WKWebView>() {
-            Ok(web) => out.push(web),
-            Err(sub) => web_views(&sub, out),
-        }
-    }
 }
 
 /// The view's own drawing of the page, or why WebKit drew none.
@@ -1026,57 +1013,6 @@ impl Pages {
                 Err(message) => json!({"answer": "refused", "id": id, "message": message}),
             });
         });
-    }
-
-    /// `render_pane` `id` of a plugin pane: `base` is the PNG of `view` as the bridge drew it, in
-    /// which no WKWebView draws, so every WKWebView shown inside `view` is drawn over it here.
-    pub fn compose(&self, id: u64, view: &NSView, base: Result<Vec<u8>, String>) {
-        let refuse = move |me: &Self, message: String| me.emit(json!({"answer": "refused", "id": id, "message": message}));
-        let base = match base {
-            Ok(png) => png,
-            Err(message) => return refuse(self, message),
-        };
-        let mut webs = vec![];
-        web_views(view, &mut webs);
-        let bounds = view.bounds();
-        let flipped = view.isFlipped();
-        let rects: Vec<NSRect> = webs.iter().map(|w| view.convertRect_fromView(w.bounds(), Some(w))).collect();
-        let shots: Rc<RefCell<Vec<Option<Retained<NSImage>>>>> = Rc::new(RefCell::new(vec![None; webs.len()]));
-        let left = Rc::new(Cell::new(webs.len()));
-        let me = self.me.clone();
-        let finish = Rc::new(move |shots: &[Option<Retained<NSImage>>]| {
-            let Some(me) = me.upgrade() else { return };
-            let Some(rep) = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(&base)) else { return refuse(&me, "the bridge's picture could not be read".into()) };
-            rep.setSize(bounds.size);
-            if let Some(context) = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep) {
-                NSGraphicsContext::saveGraphicsState_class();
-                NSGraphicsContext::setCurrentContext(Some(&context));
-                for (rect, image) in rects.iter().zip(shots).filter_map(|(r, s)| s.as_ref().map(|s| (r, s))) {
-                    // The bitmap's origin is bottom-left; a flipped view's frames count from the top.
-                    let y = if flipped { bounds.size.height - rect.origin.y - rect.size.height } else { rect.origin.y };
-                    image.drawInRect(NSRect::new(NSPoint::new(rect.origin.x, y), rect.size));
-                }
-                NSGraphicsContext::restoreGraphicsState_class();
-            }
-            // SAFETY: an empty properties dictionary is what the PNG encoder accepts.
-            match unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) } {
-                Some(png) => me.emit(json!({"answer": "rendered", "id": id, "png": base64::engine::general_purpose::STANDARD.encode(png.to_vec())})),
-                None => refuse(&me, "the page could not be encoded as a PNG".into()),
-            }
-        });
-        if webs.is_empty() {
-            return finish(&[]);
-        }
-        for (i, web) in webs.iter().enumerate() {
-            let (shots, left, finish) = (shots.clone(), left.clone(), finish.clone());
-            snapshot_image(web, None, move |r| {
-                shots.borrow_mut()[i] = r.ok();
-                left.set(left.get() - 1);
-                if left.get() == 0 {
-                    finish(&shots.borrow());
-                }
-            });
-        }
     }
 
     /// The check's snapshot of WKWebView `view` in `pane`, written to `<directory>/<pane>-web.png`

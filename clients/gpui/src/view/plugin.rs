@@ -1,16 +1,18 @@
 //! A plugin pane's script run by wheel-luau and fed on this window's own wheeld connection
 //! (ADR-0056, ADR-0052): the source, its feeds and its actions travel as `plugin_source`,
-//! `feed_subscribe`, `feed_update` and `plugin_action`, and `plugin_draw.rs` draws the tree. Until
-//! the cutover (wheel-4d1o.7) only the hidden check previews a pane this way (`preview_plugin`);
-//! the app's plugin panes keep drawing in the Swift bridge.
+//! `feed_subscribe`, `feed_update` and `plugin_action`, and `plugin_draw.rs` draws the tree. Every
+//! plugin pane runs this way, and so does an agent pane shown as its `agent/view` page.
 use super::*;
 use serde_json::Value as Json;
 use wheel_luau::pane::{Effect, PluginPane};
 
-/// One previewed plugin pane: its script and the requests it waits on.
+/// One plugin pane run here: its script and the requests it waits on.
 #[derive(Default)]
 pub struct PluginHost {
     pub pane: PluginPane,
+    /// The `<plugin>/<pane>` it runs and the directory of its pane's space: a pane that comes to name
+    /// another, or to sit in another space, runs afresh.
+    runs: (String, String),
     /// The `plugin_source` request in flight.
     source_req: Option<u64>,
     /// Each `feed_subscribe` in flight, as (feed, params).
@@ -222,15 +224,40 @@ impl PluginHost {
     }
 }
 
+/// The `<plugin>/<pane>` `leaf` runs: a plugin pane's own, or `agent/view` for an agent pane shown
+/// as its view (`agent_view`); None for any other pane.
+fn runs_of(leaf: &Leaf, agent_view: bool) -> Option<String> {
+    match leaf.kind.as_str() {
+        "plugin" => Some(leaf.label.clone()),
+        "agent" if agent_view => Some("agent/view".to_owned()),
+        _ => None,
+    }
+}
+
 impl Client {
-    /// Runs plugin pane `pane`'s script in this client: it asks wheeld for the source and draws the
-    /// tree in the pane's slot under the Swift view. Only the hidden check calls this before the
-    /// cutover. False when no space holds a plugin pane `pane`.
+    /// What pane `pane` runs ([`runs_of`]) and the directory of its space, None when it runs no script.
+    fn pane_runs(&self, pane: &str) -> Option<(String, String)> {
+        self.spaces.iter().find_map(|s| s.all().find(|l| l.id == pane).map(|l| (s, l))).and_then(|(s, l)| Some((runs_of(l, self.agent_views.contains(pane))?, s.cwd.clone())))
+    }
+
+    /// Runs pane `pane`'s script in this client unless it runs it already: it asks wheeld for the
+    /// source and draws the tree in the pane's body. False when `pane` runs no script.
+    pub(super) fn host_plugin(&mut self, pane: &str) -> bool {
+        let Some(runs) = self.pane_runs(pane) else { return false };
+        if self.plugins.get(pane).is_some_and(|h| h.runs == runs) {
+            return true;
+        }
+        self.preview_plugin(pane)
+    }
+
+    /// Runs pane `pane`'s script afresh, ending the run it had: a check's clean start. False when
+    /// `pane` runs no script.
     pub fn preview_plugin(&mut self, pane: &str) -> bool {
-        let Some((space, leaf)) = self.spaces.iter().find_map(|s| s.all().find(|l| l.id == pane && l.kind == "plugin").map(|l| (s, l))) else { return false };
-        let mut host = PluginHost::default();
-        // The context Bridge.swift's open gives the script's `view` as `data`.
-        let mut ids = leaf.label.splitn(2, '/');
+        let Some(runs) = self.pane_runs(pane) else { return false };
+        let Some(space) = self.spaces.iter().find(|s| s.all().any(|l| l.id == pane)) else { return false };
+        let mut host = PluginHost { runs: runs.clone(), ..Default::default() };
+        // The context the script's `view` gets as `data`.
+        let mut ids = runs.0.splitn(2, '/');
         let (plugin, plugin_pane) = (ids.next().map(str::to_owned), ids.next().map(str::to_owned));
         let cwd = (!space.cwd.is_empty()).then(|| space.cwd.clone());
         for (k, v) in [("pane", Some(pane.to_owned())), ("space", Some(space.id.clone())), ("cwd", cwd), ("plugin", plugin), ("plugin_pane", plugin_pane)] {
@@ -243,7 +270,24 @@ impl Client {
         true
     }
 
-    /// Ends the preview of `pane`: its feeds are dropped with wheeld.
+    /// Whether agent pane `pane` draws its `agent/view` page here: the person chose it and the
+    /// script runs (the Agents surface draws the chat).
+    pub(super) fn agent_view_shown(&self, pane: &str) -> bool {
+        self.mode != "agents" && self.agent_views.contains(pane) && self.plugins.contains_key(pane)
+    }
+
+    /// Plugin pane `leaf`'s script error, shown beside its title; None for any other pane.
+    pub(super) fn plugin_error(&self, leaf: &Leaf) -> Option<String> {
+        (leaf.kind == "plugin").then(|| self.plugins.get(&leaf.id)?.pane.error().map(str::to_owned)).flatten()
+    }
+
+    /// Pane `pane`'s page `w` by `h`, with `body` recording where it lies (the check's pictures and `pane shot`).
+    pub(super) fn plugin_body(&mut self, pane: &str, w: f32, h: f32, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let el = self.plugin_element(pane, w, h, window, cx);
+        div().relative().flex_none().w(px(w)).h(px(h)).overflow_hidden().children(el).child(recorded(pane, "body", &self.controls))
+    }
+
+    /// Ends pane `pane`'s script: its feeds are dropped with wheeld.
     pub fn end_plugin(&mut self, pane: &str) {
         if let Some(host) = self.plugins.remove(pane) {
             self.close_plugin(pane, host);
@@ -412,9 +456,10 @@ impl Client {
         }
     }
 
-    /// Previews of panes no space holds as plugin panes any more end.
+    /// The scripts of panes that run none any more end: a pane gone, of another kind, or an agent
+    /// pane back on its native view.
     pub(super) fn prune_plugins(&mut self) {
-        let gone: Vec<String> = self.plugins.keys().filter(|p| !self.spaces.iter().any(|s| s.all().any(|l| &l.id == *p && l.kind == "plugin"))).cloned().collect();
+        let gone: Vec<String> = self.plugins.keys().filter(|p| self.pane_runs(p).is_none()).cloned().collect();
         for pane in gone {
             self.end_plugin(&pane);
         }
@@ -654,12 +699,12 @@ fn host_state(host: &PluginHost, embeds: Vec<Json>) -> Json {
 }
 
 impl Client {
-    /// Previewed pane `pane` for a check: the fields the bridge's `plugin` `state` answers with.
+    /// Plugin pane `pane` for a check: the `<plugin>/<pane>` it runs and the fields the `plugin` op's `state` answers with.
     pub fn plugin_preview_json(&self, pane: &str) -> Json {
         let Some(host) = self.plugins.get(pane) else { return Json::Null };
         let p = &host.pane;
         serde_json::json!({
-            "state": p.state_json(), "error": p.error(), "running": p.running(), "reloads": p.reloads(), "restarts": p.restarts(),
+            "runs": host.runs.0, "state": p.state_json(), "error": p.error(), "running": p.running(), "reloads": p.reloads(), "restarts": p.restarts(),
             "components": p.component_texts(), "feeds": p.feed_json(), "fills": p.fills_pane(), "cwd": p.context.get("cwd"),
             "fields": host.fields.iter().map(|(id, (_, _, text))| (id.clone(), Json::String(text.clone()))).collect::<serde_json::Map<_, _>>(),
             "open": host.open.iter().collect::<Vec<_>>(),

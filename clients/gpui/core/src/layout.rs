@@ -124,19 +124,6 @@ impl Space {
     }
 }
 
-/// Every pane of every space and what it holds, as the bridge's `pane_targets` takes it: pane id to
-/// `{"term": <term>}` and/or `{"agent": <agent>}`; a pane with neither is left out.
-pub fn pane_targets(spaces: &[Space]) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    for leaf in spaces.iter().flat_map(Space::all) {
-        let mut held = serde_json::Map::new();
-        if let Some(term) = &leaf.term { held.insert("term".into(), term.clone().into()); }
-        if let Some(agent) = &leaf.agent { held.insert("agent".into(), agent.clone().into()); }
-        if !held.is_empty() { map.insert(leaf.id.clone(), held.into()); }
-    }
-    map.into()
-}
-
 /// The daemon's split tree as the view draws it.
 impl From<&Node> for Tree {
     fn from(node: &Node) -> Self {
@@ -398,18 +385,6 @@ mod tests {
         place(&tree(), Rect { x: 0., y: 10., w: 1006., h: 506. }, overrides, &mut leaves, &mut dividers);
         (leaves, dividers)
     }
-
-    #[test]
-    fn pane_targets_cover_grid_popped_and_tray() {
-        let space = Space {
-            id: "s1".into(), name: "w".into(), cwd: "/w".into(), root: tree(), status: None,
-            popped: vec![node(json!({"node":"pane","id":"p4","kind":"agent","agent":"w1","harness":"claude"}))],
-            backgrounded: vec![node(json!({"node":"pane","id":"p5","kind":"terminal","term":"t2","cwd":"/tmp"}))],
-            frames: Default::default(),
-        };
-        assert_eq!(pane_targets(&[space]), json!({"p2":{"term":"t1"},"p4":{"agent":"w1"},"p5":{"term":"t2"}}));
-    }
-
 
     #[test]
     fn places_every_leaf_and_divider() {

@@ -242,8 +242,8 @@ fn opening(text: String) -> gpui::Div {
     div().size_full().p(px(8.)).flex().items_center().justify_center().text_center().text_size(px(10.)).text_color(rgba(SECONDARY)).child(text)
 }
 
-/// What a `component` embed naming pane `pane` shows among `leaves`, as the bridge resolves it from
-/// `pane_targets` (a pane holding neither a term nor an agent is not among them): Ok the pane, or Err
+/// What a `component` embed naming pane `pane` shows among `leaves` (a pane holding neither a term
+/// nor an agent is not among them): Ok the pane, or Err
 /// the note in its place. An AgentChat says nothing until the first listing has come (`known`).
 pub(super) fn resolve<'a>(component: &str, pane: &str, mut leaves: impl Iterator<Item = &'a Leaf>, known: bool) -> Result<&'a Leaf, String> {
     if pane.is_empty() {

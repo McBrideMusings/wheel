@@ -804,7 +804,7 @@ impl Client {
         out["chat_charts"] = self.charts.json();
         // The plugin panes each space's empty panes offer, as `<plugin>/<pane>` (the buttons' own list), and each plugin pane's header error.
         out["plugins"] = self.plugin_packages.iter().map(|(space, list)| (space.clone(), serde_json::json!(list.iter().flat_map(|p| p.panes.iter().map(move |pane| format!("{}/{}", p.id, pane.id))).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>().into();
-        out["plugin_errors"] = serde_json::json!(self.plugin_errors);
+        out["plugin_errors"] = self.spaces.iter().flat_map(|s| s.all()).filter(|l| l.kind == "plugin" && self.plugins.contains_key(&l.id)).map(|l| (l.id.clone(), json!(self.plugin_error(l)))).collect::<serde_json::Map<_, _>>().into();
         // The popped cards, bottom first, in window coordinates.
         out["cards"] = layers.iter().filter_map(|l| l.card.as_ref()).map(|c| json!({"panes": c.panes, "frame": [c.frame.x, c.frame.y, c.frame.w, c.frame.h], "grip": [c.grip.x, c.grip.y, c.grip.w, c.grip.h]})).collect();
         out["tray"] = self.tray_json();

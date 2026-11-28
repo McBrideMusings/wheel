@@ -7,7 +7,6 @@
 //! relayed arrive as frames on the window's channel, from the host or through the callback
 //! `attach` is given, each read as a [`Frame`].
 use anyhow::{Context as _, Result};
-use base64::Engine as _;
 use futures::channel::mpsc as fmpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -119,9 +118,9 @@ pub trait Host {
     fn reload(&self, pane: &str) -> bool;
     /// `render_pane` `id` when `pane`'s slot holds a WKWebView, answered with a frame; false when it holds none.
     fn render(&self, id: u64, pane: &str, full: bool) -> bool;
-    /// Answer `render_pane` `id` of plugin pane `pane` from `base`, the bridge's PNG of its view (or why it drew none),
-    /// with every WKWebView inside the view drawn over it.
-    fn compose(&self, id: u64, pane: &str, base: Result<Vec<u8>, String>);
+    /// The pictures of plugin pane `pane`'s shown embed slots (`<pane>#<node>`: a web page, a map, a
+    /// video stream), handed to `done` once every one is drawn; a slot that drew nothing is left out.
+    fn embed_pictures(&self, pane: &str, done: Box<dyn FnOnce(Vec<EmbedPicture>)>);
     /// `inspect_pane` `id` on a browser's page, answered with a frame.
     fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>);
     /// The check's snapshot of every shown WKWebView, each written to `<directory>/<pane>-web.png`, and
@@ -133,6 +132,15 @@ pub trait Host {
     /// A check's stand-in for a person's input on the video stream in embed `key`'s slot, handed to
     /// the stream view's own handlers; false when the slot holds no stream taking input.
     fn stream_touch(&self, key: &str, touch: &StreamTouch) -> bool;
+}
+
+/// One embed slot's picture for a plugin pane's `pane shot`: where the slot lies and the parts of it
+/// not cut out (window points from the top left), and its pixels as a PNG.
+#[derive(Clone, Debug)]
+pub struct EmbedPicture {
+    pub frame: [f64; 4],
+    pub visible: Vec<[f64; 4]>,
+    pub png: Vec<u8>,
 }
 
 /// What a check does on a `VideoStream` with no real input (the bridge's `stream_key` and `stream_click`).
@@ -288,18 +296,6 @@ impl Native {
                 self.status()
             }
             (Some("reload"), Some(h)) if h.reload(value["pane"].as_str().unwrap_or_default()) => self.status(),
-            (Some("render"), Some(h)) => {
-                let (id, pane) = (value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default().to_owned());
-                if !h.render(id, &pane, value["full"] == true) {
-                    let reply = self.bridge_call(value);
-                    let base = match (reply["png"].as_str(), reply["refused"].as_str()) {
-                        (Some(png), _) => base64::engine::general_purpose::STANDARD.decode(png).map_err(|e| e.to_string()),
-                        (None, refused) => Err(refused.unwrap_or("the bridge drew nothing").to_owned()),
-                    };
-                    h.compose(id, &pane, base);
-                }
-                self.status()
-            }
             (Some("inspect"), Some(h)) => {
                 h.inspect(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), value["arg"].as_str());
                 self.status()
@@ -359,17 +355,6 @@ impl Native {
     pub fn open_artifact(&self, pane: &str, name: &str, scope: &str, space: Option<&str>, cwd: &str, ws: &str) {
         self.call(json!({"op":"open","pane":pane,"kind":"web","artifact":name,"scope":scope,"space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
     }
-    /// Show plugin pane `pane` (ADR-0041): the bridge draws its Luau script as WheelUI components, asking wheeld at `ws`
-    /// for the script and again whenever it changes on disk. `label` is `<plugin>/<pane id>`; the script's `data` gets
-    /// the pane, `space`, the space directory `cwd` and those two ids.
-    pub fn open_plugin(&self, pane: &str, label: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":label,"space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
-    }
-    /// Show agent pane `pane` as the built-in `agent/view` Luau view: a plugin pane the bridge hosts. The client draws
-    /// the permission card of the pane's agent above it.
-    pub fn open_agent_view(&self, pane: &str, space: Option<&str>, cwd: &str, ws: &str) {
-        self.call(json!({"op":"open","pane":pane,"kind":"plugin","label":"agent/view","space":space,"cwd":cwd,"ws":ws,"slot":self.slot(pane)}));
-    }
     /// Show a browser pane on `url` (ADR-0005), made by the window's host. `remote` says wheeld
     /// runs on another machine, so a file page names a path this Mac does not have. Opening it
     /// again makes `url` the pane's home.
@@ -386,21 +371,25 @@ impl Native {
         }
         self.call(value);
     }
-    /// wheeld's `render_pane` `id`: the host draws a WKWebView, the bridge a plugin pane, and either answers through a frame.
-    pub fn render(&self, id: u64, pane: &str, full: bool) {
-        self.call(json!({"op":"render","id":id,"pane":pane,"full":full}));
+    /// wheeld's `render_pane` `id` of a pane whose slot holds a WKWebView, answered through a frame;
+    /// false when it holds none.
+    pub fn render(&self, id: u64, pane: &str, full: bool) -> bool {
+        self.host().is_some_and(|h| h.render(id, pane, full))
+    }
+    /// Plugin pane `pane`'s embed slot pictures ([`Host::embed_pictures`]); none without a host.
+    pub fn embed_pictures(&self, pane: &str, done: Box<dyn FnOnce(Vec<EmbedPicture>)>) {
+        match self.host() {
+            Some(h) => h.embed_pictures(pane, done),
+            None => done(vec![]),
+        }
     }
     /// wheeld's `inspect_pane` `id`: the host runs `action` on `pane`'s browser page (or, for `open`, sends the browser to the page `arg`) and answers through a frame.
     pub fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>) {
         self.call(json!({"op":"inspect","id":id,"pane":pane,"action":action,"arg":arg}));
     }
-    /// `pane_reload`: open `pane`'s artifact page again, reload its browser's page, or run its plugin script again from the top.
+    /// `pane_reload`: open `pane`'s artifact page again or reload its browser's page.
     pub fn reload(&self, pane: &str) {
         self.call(json!({"op":"reload","pane":pane}));
-    }
-    /// Every pane and the terminal or agent it holds (`layout::pane_targets`), for the terminals a page embeds.
-    pub fn pane_targets(&self, panes: &serde_json::Value) {
-        self.call(json!({"op":"pane_targets","panes":panes}));
     }
     /// Put `pane`'s view on `rect` (x, y, w, h in window points, top-left origin), with `holes`
     /// (the same coordinates) cut out of it: the cards drawn over it. `alpha` is how opaque it draws.
@@ -415,14 +404,6 @@ impl Native {
         if let Some(host) = self.host() {
             host.overlay(rect);
         }
-    }
-    /// The daemon socket the plugin panes kept across a reconnect ask for their scripts on.
-    pub fn plugin_endpoint(&self, ws: &str) {
-        self.call(json!({"op":"plugin_endpoint","ws":ws}));
-    }
-    /// Drop the bridge's daemon socket, so the next terminal opened connects anew.
-    pub fn disconnect(&self) {
-        self.call(json!({"op":"disconnect"}));
     }
     /// Give `pane`'s native view the keyboard; a pane with none (GPUI draws it) gives it to the GPUI view.
     pub fn focus(&self, pane: &str) {
@@ -510,8 +491,6 @@ pub enum BrowserEvent {
     Typed { pane: String, text: String },
     /// The page wrote to its console (`pane_console`); `reset` says it just loaded.
     Console { pane: String, reset: bool, entries: Vec<ConsoleEntry> },
-    /// A plugin pane drew its view or failed: `error` is the one-line message in the pane's header, or None.
-    Plugin { pane: String, error: Option<String> },
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
@@ -541,10 +520,6 @@ mod tests {
         assert!(matches!(typed, Frame::Event(BrowserEvent::Typed { ref text, .. }) if text == "example.com"));
         let console: Frame = serde_json::from_str(r#"{"event":"console","pane":"p3","reset":true,"entries":[{"time":5,"level":"log","text":"hi"}]}"#).unwrap();
         assert!(matches!(console, Frame::Event(BrowserEvent::Console { reset: true, ref entries, .. }) if entries.len() == 1 && entries[0].text == "hi"));
-        let plugin: Frame = serde_json::from_str(r#"{"event":"plugin","pane":"p5","error":"sample/main.luau:3: boom"}"#).unwrap();
-        assert!(matches!(plugin, Frame::Event(BrowserEvent::Plugin { ref pane, error: Some(ref e) }) if pane == "p5" && e.contains("boom")));
-        let healthy: Frame = serde_json::from_str(r#"{"event":"plugin","pane":"p5","error":null}"#).unwrap();
-        assert!(matches!(healthy, Frame::Event(BrowserEvent::Plugin { error: None, .. })));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
         let ended: Frame = serde_json::from_str(r#"{"event":"stream_ended","pane":"p4#n7","socket":"/tmp/s/demo.sock","why":"The stream ended"}"#).unwrap();

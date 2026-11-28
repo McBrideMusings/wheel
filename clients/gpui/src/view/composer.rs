@@ -109,7 +109,8 @@ impl Client {
         let pane = self.keyboard_target()?;
         let leaf = match self.embedded_agent_leaf(&pane) {
             Some(leaf) => leaf,
-            None => self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane && l.kind == "agent")?,
+            // An agent pane showing its `agent/view` page has no composer: the page's own fields take the keys.
+            None => self.spaces.iter().flat_map(|s| s.shown()).find(|l| l.id == pane && l.kind == "agent" && !self.agent_view_shown(&l.id))?,
         };
         Some((leaf.agent.clone()?, leaf.harness.clone().unwrap_or_default()))
     }

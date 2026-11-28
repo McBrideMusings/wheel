@@ -309,7 +309,7 @@ pub fn create_window(
 /// How long the snapshot waits for the bridge to draw every native pane it asked for.
 const NATIVE_RENDER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// The native views over the window (terminals, pages, plugin panes), each drawn by the bridge and
+/// The native views over the window (browser and web pages), each drawn by its WKWebView and
 /// pasted over `frame` at its place, except where the window cuts it (a card over it, the
 /// palette): the window's own drawing has only empty slots there. Answers each pane's outcome.
 async fn paste_native_panes(window: view::ClientWindow, frame: &mut image::RgbaImage, cx: &mut gpui::AsyncApp) -> Result<serde_json::Value> {

@@ -172,12 +172,8 @@ pub struct Client {
     tray_drag: Option<crate::tray::Drag>,
     /// Panes drawn by the native views in the space shown, in layout order.
     pub native_panes: Vec<String>,
-    /// The pane to target map of the layout held, built when the layout changes.
-    pane_targets: serde_json::Value,
-    /// The last `pane_targets` map sent to the bridge.
-    pane_targets_sent: serde_json::Value,
     /// Set by a reconnect until the new daemon's layout arrives: the cleared spaces then name no pane, and the
-    /// plugin views kept across the reconnect are not closed for it.
+    /// plugin panes kept across the reconnect are not ended for it.
     awaiting_layout: bool,
     /// Every pane that has a native view, with its kind, and where it was last placed.
     opened: HashMap<String, String>,
@@ -296,10 +292,8 @@ pub struct Client {
     next_req: u64,
     /// Each browser pane's chrome state, as the bridge last emitted it.
     browsers: HashMap<String, BrowserState>,
-    /// Each plugin pane's last failure as the bridge reported it (None once its script loads), shown in the pane's header.
-    plugin_errors: HashMap<String, Option<String>>,
-    /// Plugin panes whose script this client runs and draws (`plugin.rs`); only the hidden check
-    /// previews one before wheel-4d1o.7.
+    /// The plugin panes and `agent/view` panes whose script this client runs and draws (`plugin.rs`),
+    /// each made when its space is first shown and kept until its pane goes.
     plugins: HashMap<String, plugin::PluginHost>,
     /// The native slots previewed pages' WebView and Map embeds show in, by `<host>#<node>`: what each
     /// shows and where it was last put (`plugin_embeds.rs`).
@@ -562,10 +556,10 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), terms: Default::default(), reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
+            native_panes: vec![], awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugins: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugin_packages: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugins: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugin_packages: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -685,14 +679,15 @@ impl Client {
                             }
                             return false;
                         }
-                        // `wheel pane shot`: the bridge draws the pane and answers through a frame.
+                        // `wheel pane shot`: GPUI's own drawing of a terminal or a plugin page, or a page view's.
                         ServerMsg::RenderPane { id, pane, full } => {
                             if self.terms.panes.contains_key(pane) {
                                 // GPUI draws a terminal: its rectangle is cut from the window's next frame.
                                 self.pane_images.render_for_wheeld(*id, pane);
-                            } else if self.opened.contains_key(pane) {
-                                self.native.render(*id, pane, *full);
-                            } else {
+                            } else if self.plugins.contains_key(pane) {
+                                // A plugin page is cut from the next frame too, its embeds' native views drawn in.
+                                self.pane_images.render_plugin(Some(*id), pane);
+                            } else if !(self.opened.contains_key(pane) && self.native.render(*id, pane, *full)) {
                                 self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
                             }
                             return false;
@@ -797,26 +792,21 @@ impl Client {
             },
             Event::Up(endpoint) => {
                 // The daemon may have restarted: its terminals and its token are new, so every
-                // native view but a plugin pane's is closed, the bridge's socket dropped, and the
-                // views open again against the new endpoint and layout. A plugin pane keeps its
-                // view and its script's state: the bridge reloads its script from the new endpoint.
+                // native view is closed and opens again against the new endpoint and layout. A
+                // plugin pane keeps its script's state and asks the new endpoint for its script
+                // (`plugin_link_up`).
                 if self.link != Link::Connecting {
-                    // The socket goes first: a detach sent down a dead socket never finishes.
-                    self.native.disconnect();
-                    for id in self.opened.iter().filter(|(_, kind)| !kind.starts_with("plugin:")).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
+                    for id in self.opened.keys().cloned().collect::<Vec<_>>() {
                         self.native.close(&id);
                     }
-                    self.opened.retain(|_, kind| kind.starts_with("plugin:"));
+                    self.opened.clear();
                     self.awaiting_layout = true;
-                    // The bridge's embedded terminals and chats attach again once it hears the new targets.
-                    self.pane_targets_sent = serde_json::Value::Null;
                     self.placed.clear();
                     self.attached.clear();
                     self.transcripts.clear();
                     // The layout we hold is the old daemon's: its terminal ids mean nothing to the
                     // new one. Nothing opens until the layout that follows this event arrives.
                     self.spaces.clear();
-                    self.pane_targets = pane_targets(&self.spaces);
                     self.sessions.clear();
                     self.reported = None;
                     self.overrides.clear();
@@ -838,8 +828,6 @@ impl Client {
                     self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": "The connection to wheeld dropped before it read this address."}));
                 }
                 self.endpoint = endpoint;
-                // The kept plugin panes ask the new endpoint for their scripts.
-                self.native.plugin_endpoint(&self.endpoint.ws);
                 self.link = Link::Up;
                 // A subscription lives on one connection: the next layout subscribes again.
                 self.queue.subscribed = None;
@@ -900,7 +888,6 @@ impl Client {
                 // layout is not read, so the old one's panes would be stale. The next `Up` applies
                 // a layout again.
                 self.spaces.clear();
-                self.pane_targets = pane_targets(&self.spaces);
                 self.sessions.clear();
                 false
             }
@@ -914,7 +901,6 @@ impl Client {
         let old_root = self.space().map(|s| s.root.clone());
         self.spaces = layout.spaces;
         self.awaiting_layout = false;
-        self.pane_targets = pane_targets(&self.spaces);
         self.sync_card_agents();
         self.sessions = layout.sessions;
         let dragged = std::mem::take(&mut self.overrides);
@@ -1504,12 +1490,6 @@ impl Client {
         match frame {
             Frame::Event(BrowserEvent::Browser(state)) => {
                 self.browsers.insert(state.pane.clone(), state);
-            }
-            Frame::Event(BrowserEvent::Plugin { pane, error }) => {
-                if self.plugin_errors.get(&pane) != Some(&error) {
-                    self.log(format!("plugin pane {pane}: {}", error.as_deref().unwrap_or("ok")));
-                }
-                self.plugin_errors.insert(pane, error);
             }
             Frame::Event(BrowserEvent::Typed { pane, text }) => {
                 if self.link != Link::Up {
@@ -2165,12 +2145,10 @@ impl Client {
     /// put each on its pane's body, hide the views of panes in other spaces, and close the views
     /// of panes no space has any more.
     /// A view in a layer has every card above it cut out of it, and its own card's resize corner.
+    /// The plugin panes and `agent/view` panes shown get their scripts here, as the bridge opened
+    /// the views it was shown; each keeps running while its space is hidden.
     fn sync_native(&mut self, layers: &[Layer]) {
         self.native_panes.clear();
-        if self.pane_targets != self.pane_targets_sent {
-            self.native.pane_targets(&self.pane_targets);
-            self.pane_targets_sent = self.pane_targets.clone();
-        }
         // The first time a space with an empty pane is shown, its plugins are listed (a layout change lists them again).
         self.ask_plugins(false);
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
@@ -2188,20 +2166,17 @@ impl Client {
                     continue;
                 }
                 crate::crash_guard::mark_pane(&p.leaf.id);
+                self.host_plugin(&p.leaf.id);
                 let scope = p.leaf.scope.as_deref().unwrap_or("project");
-                let kind = match (p.leaf.kind.as_str(), &p.leaf.term) {
+                let kind = match p.leaf.kind.as_str() {
                     // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
-                    ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
-                    ("browser", _) => "browser".to_owned(),
-                    ("plugin", _) => format!("plugin:{}:{cwd}", p.leaf.label),
-                    ("agent", _) if self.agent_views.contains(&p.leaf.id) => format!("agent-view:{cwd}"),
+                    "web" => format!("web:{scope}:{}:{cwd}", p.leaf.label),
+                    "browser" => "browser".to_owned(),
                     _ => continue,
                 };
                 if self.opened.get(&p.leaf.id) != Some(&kind) {
-                    match (&p.leaf.term, p.leaf.kind.as_str()) {
-                        (_, "agent") => self.native.open_agent_view(&p.leaf.id, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
-                        (_, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
-                        (_, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
+                    match p.leaf.kind.as_str() {
+                        "browser" => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
                         _ => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                     }
                     self.opened.insert(p.leaf.id.clone(), kind);
@@ -2209,10 +2184,9 @@ impl Client {
                     self.placed.remove(&p.leaf.id);
                 }
                 // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
-                // card while a load has failed; an agent pane's `agent/view` page sits under its agent's waiting request.
+                // card while a load has failed.
                 let (top, failed) = match p.leaf.kind.as_str() {
                     "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
-                    "agent" => (TITLE + self.view_card_height(p.leaf.agent.as_deref(), p.rect.h - TITLE), false),
                     _ => (TITLE, false),
                 };
                 // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
@@ -2239,22 +2213,17 @@ impl Client {
                 self.opened.remove(&id);
                 self.placed.remove(&id);
                 self.browsers.remove(&id);
-                self.plugin_errors.remove(&id);
-                self.agent_views.remove(&id);
             }
         }
         // A pane that no longer holds an agent forgets its choice, so an agent started in it again opens on the native view.
         let agents: HashSet<&str> = self.spaces.iter().flat_map(|s| s.shown()).filter(|l| l.kind == "agent").map(|l| l.id.as_str()).collect();
         self.agent_views.retain(|id| agents.contains(id.as_str()));
-        // An agent pane back on the native view closes the bridge's view of it; the GPUI agent view draws again.
-        for id in self.opened.iter().filter(|(id, kind)| kind.starts_with("agent-view:") && !self.agent_views.contains(*id)).map(|(id, _)| id.clone()).collect::<Vec<_>>() {
-            self.native.close(&id);
-            self.opened.remove(&id);
-            self.placed.remove(&id);
-            self.plugin_errors.remove(&id);
-        }
         if self.address_edit.as_ref().is_some_and(|(pane, _)| !alive.contains(pane.as_str())) {
             self.address_edit = None;
+        }
+        // A pane gone, of another kind or back on the native agent view ends its script.
+        if !self.awaiting_layout {
+            self.prune_plugins();
         }
     }
     /// The pointer moved anywhere in the window: what the root hears, and the capture layer while
@@ -2477,12 +2446,16 @@ impl Client {
                 body
             }
             // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
-            "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
+            "agent" if self.agent_view_shown(&p.leaf.id) => {
+                let [_, _, w, h] = terminal::body_of(r);
+                let card_h = self.view_card_height(p.leaf.agent.as_deref(), h);
+                let card = self.view_card(p.leaf.agent.as_deref(), h, cx);
+                div().flex().flex_col().w(px(w)).h(px(h)).children(card).child(self.plugin_body(&p.leaf.id, w, h - card_h, window, cx))
+            }
             "terminal" if p.leaf.term.is_some() => self.term_element(&p.leaf.id, terminal::body_of(r)[3], window, cx),
             "plugin" if self.plugins.contains_key(&p.leaf.id) => {
-                let el = self.plugin_element(&p.leaf.id, r.w, r.h - TITLE, window, cx);
-                // `body` records where the page lies, for the check's pictures.
-                div().relative().w(px(r.w)).h(px(r.h - TITLE)).overflow_hidden().children(el).child(recorded(&p.leaf.id, "body", &self.controls))
+                let [_, _, w, h] = terminal::body_of(r);
+                self.plugin_body(&p.leaf.id, w, h, window, cx)
             }
             _ if native => div(),
             // The body draws as a cached view of its own (`body.rs`); the frame and header draw here.
@@ -2598,7 +2571,7 @@ impl Client {
                 }))
                 .child({
                     // With an error beside it the title keeps its own width and the error gives way first.
-                    let failed = p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some());
+                    let failed = self.plugin_error(&p.leaf).is_some();
                     let title = div().relative().min_w(px(0.)).overflow_hidden().whitespace_nowrap();
                     // The title hugs its text, so a double-click on the header beside it zooms and one on the text renames.
                     let title = if failed { title.flex_none().max_w(px(r.w * 0.6)) } else { title.flex_initial() };
@@ -2628,7 +2601,7 @@ impl Client {
                     }).child(recorded(&p.leaf.id, "pane-title", &self.controls)).into_any_element()
                     }
                 })
-                .when(!(p.leaf.kind == "plugin" && self.plugin_errors.get(&p.leaf.id).is_some_and(|e| e.is_some())), |d| d.child(div().flex_1()))
+                .when(self.plugin_error(&p.leaf).is_none(), |d| d.child(div().flex_1()))
                 .children(p.leaf.mirror.as_ref().map(|m| {
                     // A mirror's header shows its source in one click.
                     let (pane, source) = (p.leaf.id.clone(), m.source.clone());
@@ -2643,14 +2616,14 @@ impl Client {
                         }))
                         .child(recorded(&p.leaf.id, "mirror-source", &self.controls))
                 }))
-                .children(self.plugin_errors.get(&p.leaf.id).cloned().flatten().filter(|_| p.leaf.kind == "plugin").map(|error| {
+                .children(self.plugin_error(&p.leaf).map(|error| {
                     div().id(gpui::ElementId::Name(format!("plugin-error-{}", p.leaf.id).into())).relative().ml_2().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
                         .text_color(rgb(0xe0715f)).tooltip(crate::tooltip::tip(&error)).child(error).child(recorded(&p.leaf.id, "plugin-error", &self.controls))
                 }))
                 .child(if self.mode == "agents" { self.card_header_buttons(&p.leaf.id, cx) } else { self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx) })
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot_with(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()), spinner.clone())))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
-            .child(if (matches!(p.leaf.kind.as_str(), "browser" | "agent") && native) || (p.leaf.kind == "terminal" && p.leaf.term.is_some()) { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
+            .child(if (p.leaf.kind == "browser" && native) || (p.leaf.kind == "terminal" && p.leaf.term.is_some()) || (p.leaf.kind == "plugin" && self.plugins.contains_key(&p.leaf.id)) || (p.leaf.kind == "agent" && self.agent_view_shown(&p.leaf.id)) { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
             .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, self.field_element(&fields::FieldId::ArtifactSearch(p.leaf.id.clone()), &palette.query), r.w, r.h - TITLE, cx)))
     }
     /// A card's resize corner, over its panes and their views.
