@@ -578,6 +578,8 @@ fn prepare_globals(lua: &Lua, shared: &Rc<Shared>) -> mlua::Result<(Table, Table
     let wheel = lua.create_table()?;
     wheel.raw_set("action", wrapper.call::<Function>((action_host, 0))?)?;
     globals.raw_set("wheel", wheel)?;
+    // mlua adds `loadstring` to Luau's libraries; WheelLuau's `luaL_openlibs` VM has none.
+    globals.raw_set("loadstring", Value::Nil)?;
     lua.sandbox(true)?;
     Ok((require, sizes, canvases, feed))
 }
@@ -603,7 +605,9 @@ fn compile(lua: &Lua, source: &str, name: &str) -> mlua::Result<Function> {
     meta.raw_set("__index", lua.globals())?;
     meta.set_readonly(true);
     env.set_metatable(Some(meta))?;
-    lua.load(source).set_name(name).set_environment(env).into_function()
+    // Text only: mlua would otherwise run a source that starts with a bytecode version byte as
+    // unverified Luau bytecode, which WheelLuau's `luau_compile` never does.
+    lua.load(source).set_name(name).set_mode(mlua::chunk::ChunkMode::Text).set_environment(env).into_function()
 }
 
 /// The text a failure carries: the script's own message, without the wrapping mlua adds.

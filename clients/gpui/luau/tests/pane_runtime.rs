@@ -503,3 +503,28 @@ fn a_syntax_error_in_a_module_names_the_module() {
     let Failure::Runtime(message) = &e else { panic!("{e:?}") };
     assert!(message.contains("demo/lib/x.luau"), "{message}");
 }
+
+#[test]
+fn a_source_starting_with_a_bytecode_byte_is_compiled_as_text() {
+    for b in 0u8..8 {
+        let source = format!("{}return {{ view = function() return ui.Text('x') end }}", b as char);
+        let e = err(try_new(&source));
+        assert!(matches!(e, Failure::Syntax(_)), "{b}: {e:?}");
+    }
+}
+
+#[test]
+fn the_globals_are_luaus_libraries_and_wheels_own() {
+    let mut pane = new(r#"
+local names = {}
+for k in pairs(getmetatable(_G) and getmetatable(_G).__index or _G) do table.insert(names, k) end
+for k in pairs(_G) do table.insert(names, k) end
+table.sort(names)
+local text = table.concat(names, " ")
+return { view = function() return ui.Text(text) end }
+"#);
+    let names = text(&pane.view(&null()).unwrap()).unwrap();
+    for gone in ["loadstring", "os", "io", "load", "dofile", "loadfile"] {
+        assert!(!names.split(' ').any(|n| n == gone), "{gone} in {names}");
+    }
+}
