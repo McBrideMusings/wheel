@@ -730,7 +730,7 @@ impl Client {
         let mut wanted: HashMap<String, (Embedded, Placement)> = HashMap::new();
         for (h, host) in &self.plugins {
             let cwd = host.pane.context.get("cwd").and_then(serde_json::Value::as_str).unwrap_or("");
-            let page = self.placed.get(h);
+            let page = self.pages.get(h);
             let hidden = !hosts.contains(h) || page.is_none_or(|p| p.1) || super::plugin_controls::page_overlaid(&host.pane.tree, host);
             for n in host.pane.tree.all() {
                 let what = match n.component.as_str() {

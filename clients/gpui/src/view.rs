@@ -178,6 +178,9 @@ pub struct Client {
     /// Every pane that has a native view, with its kind, and where it was last placed.
     opened: HashMap<String, String>,
     placed: HashMap<String, Placement>,
+    /// Where each plugin page and `agent/view` page this frame draws lies, as `placed` holds a native
+    /// view's: the page's embed slots are placed and hidden with it. A page not drawn has no entry.
+    pages: HashMap<String, Placement>,
     viewport: (f32, f32),
     /// The conversation of every agent pane seen, by agent name, and the agents attached to on
     /// this connection.
@@ -556,7 +559,7 @@ impl Client {
         Self {
             native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), terms: Default::default(), reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
-            native_panes: vec![], awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
+            native_panes: vec![], awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), pages: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
             browsers: HashMap::new(), plugins: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugin_packages: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
@@ -2149,6 +2152,7 @@ impl Client {
     /// the views it was shown; each keeps running while its space is hidden.
     fn sync_native(&mut self, layers: &[Layer]) {
         self.native_panes.clear();
+        self.pages.clear();
         // The first time a space with an empty pane is shown, its plugins are listed (a layout change lists them again).
         self.ask_plugins(false);
         let cwd = self.space().map(|s| s.cwd.clone()).unwrap_or_default();
@@ -2166,7 +2170,21 @@ impl Client {
                     continue;
                 }
                 crate::crash_guard::mark_pane(&p.leaf.id);
-                self.host_plugin(&p.leaf.id);
+                // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
+                // card while a load has failed; an agent pane's `agent/view` page sits under its agent's waiting request.
+                let (top, failed) = match p.leaf.kind.as_str() {
+                    "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
+                    "agent" => (TITLE + self.view_card_height(p.leaf.agent.as_deref(), p.rect.h - TITLE), false),
+                    _ => (TITLE, false),
+                };
+                // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
+                let alpha = (if n == 0 { f64::from(self.grid_opacity(&p.leaf.id)) } else { 1. }) * f64::from(self.link_opacity());
+                let failed = failed || gone || alpha <= 0.;
+                let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
+                if self.host_plugin(&p.leaf.id) {
+                    self.pages.insert(p.leaf.id.clone(), (rect, failed, holes, alpha));
+                    continue;
+                }
                 let scope = p.leaf.scope.as_deref().unwrap_or("project");
                 let kind = match p.leaf.kind.as_str() {
                     // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
@@ -2183,16 +2201,6 @@ impl Client {
                     // A view opened in place of another starts unplaced, so it is placed below.
                     self.placed.remove(&p.leaf.id);
                 }
-                // A browser pane's view sits under the chrome GPUI draws, and gives way to the failure
-                // card while a load has failed.
-                let (top, failed) = match p.leaf.kind.as_str() {
-                    "browser" => (TITLE + CHROME, self.browsers.get(&p.leaf.id).is_some_and(|s| s.failure.is_some())),
-                    _ => (TITLE, false),
-                };
-                // Under Reduce Motion a grid view fades as its pane does, and a faded-out one hides.
-                let alpha = (if n == 0 { f64::from(self.grid_opacity(&p.leaf.id)) } else { 1. }) * f64::from(self.link_opacity());
-                let failed = failed || gone || alpha <= 0.;
-                let rect = [f64::from(p.rect.x), f64::from(p.rect.y + top), f64::from(p.rect.w), f64::from((p.rect.h - top).max(1.))];
                 if self.placed.get(&p.leaf.id).is_none_or(|(r, f, h, a)| (*r, *f, *a) != (rect, failed, alpha) || *h != holes) {
                     self.native.place(&p.leaf.id, rect, failed, &holes, alpha);
                     self.placed.insert(p.leaf.id.clone(), (rect, failed, holes.clone(), alpha));
