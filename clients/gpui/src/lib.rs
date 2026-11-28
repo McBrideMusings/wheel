@@ -282,8 +282,9 @@ pub fn create_window(
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
-        native.set_host(appkit::pane_host::PaneHost::new(handle.ns_view.as_ptr(), frames.clone()));
-        native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
+        native.set_host(appkit::pane_host::PaneHost::new(handle.ns_view.as_ptr(), frames));
+        // SAFETY: the content view is the window's, and the window's close detaches the bridge first.
+        unsafe { native.attach_to(handle.ns_view.as_ptr(), hidden) };
         // Every move and resize is saved with the window (saved.rs).
         cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
         if let Some([x, y, ..]) = frame {
@@ -764,7 +765,7 @@ pub fn launch(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::Endpo
 
 /// What launch does with a saved window, by its wheeld.
 enum Reach {
-    Open(daemon::Endpoint),
+    Open(Box<daemon::Endpoint>),
     Hold,
     Drop,
 }
@@ -778,7 +779,7 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
     // the file; one whose wheeld is no longer paired stays closed and leaves it.
     let paired = servers::read(&servers::default_file());
     let on = |server: &Option<String>| -> Reach {
-        let Some(id) = server else { return Reach::Open(endpoint.clone()) };
+        let Some(id) = server else { return Reach::Open(Box::new(endpoint.clone())) };
         let paired = match &paired {
             Ok(paired) => paired,
             Err(e) => {
@@ -796,7 +797,7 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
                 Reach::Hold
             }
             Some(s) => match servers::endpoint(s) {
-                Ok(endpoint) => Reach::Open(endpoint),
+                Ok(endpoint) => Reach::Open(Box::new(endpoint)),
                 Err(e) => {
                     eprintln!("wheel-gpui: a saved window on {id} stays closed: {e:#}");
                     Reach::Hold
@@ -813,7 +814,7 @@ pub fn open_saved(cx: &mut App, bridge: &Rc<native::Bridge>, endpoint: daemon::E
             saved::Launch::Little(l) => &l.server,
         };
         match (on(server), launch) {
-            (Reach::Open(endpoint), launch) => opening.push((endpoint, launch)),
+            (Reach::Open(endpoint), launch) => opening.push((*endpoint, launch)),
             (Reach::Hold, saved::Launch::Main(w)) => held.windows.push(w),
             (Reach::Hold, saved::Launch::Little(l)) => held.littles.push(l),
             (Reach::Drop, _) => {}

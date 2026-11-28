@@ -507,7 +507,7 @@ impl Client {
         let blink_on = if blinks {
             let since = self.terms.blink_from.map_or(0, |t| t.elapsed().as_millis() as u64);
             self.redraw_in(BLINK_MS - since % BLINK_MS, cx);
-            (since / BLINK_MS) % 2 == 0
+            (since / BLINK_MS).is_multiple_of(2)
         } else {
             true
         };

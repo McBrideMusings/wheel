@@ -531,6 +531,7 @@ impl Client {
     /// A click on row `row` (its own `id`) of Table `id`: with a `selectAction` it selects the
     /// row (⌘ adds or removes it) and a double click raises `rowAction`; without one a click
     /// raises `rowAction`.
+    #[allow(clippy::too_many_arguments)] // mirrors the click's own fields, called from three sites
     pub fn plugin_table_click(&mut self, pane: &str, id: &str, row: &str, clicks: usize, toggle: bool, range: bool, cx: &mut App) {
         let Some(host) = self.plugins.get(pane) else { return };
         let Some(n) = host.pane.tree.node(id) else { return };

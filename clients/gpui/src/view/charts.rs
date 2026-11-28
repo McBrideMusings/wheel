@@ -8,6 +8,9 @@ use gpui_component::plot::{IntoPlot, Plot, label::{PlotLabel, Text}};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+/// A chart's spec parsed once, or the parse error.
+type Parsed = Rc<Result<Rc<Spec>, String>>;
+
 /// The plot's height in points, legend and header aside.
 pub const HEIGHT: f32 = 200.;
 
@@ -260,7 +263,7 @@ type Shown = BTreeMap<(usize, usize), Value>;
 /// Every chart the transcripts parsed, by source, and what each reply showed.
 #[derive(Default)]
 pub struct Charts {
-    parsed: RefCell<HashMap<String, Rc<Result<Rc<Spec>, String>>>>,
+    parsed: RefCell<HashMap<String, Parsed>>,
     shown: RefCell<HashMap<String, Shown>>,
 }
 

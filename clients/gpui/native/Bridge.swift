@@ -7,10 +7,6 @@ import WheelKit
 // to GPUI's view before it lands, a key equivalent pressed in a native view stays that view's, and a
 // check posts keys and menu items without the OS keyboard. Every C entrypoint is called on the main thread.
 
-/// A frame the bridge sends the Rust side on its own initiative: the C callback `attach` was
-/// given, with the bridge's window id and one JSON object.
-public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
-
 @MainActor final class Native: NSObject {
     let root: NSView
     /// The address of the slot view (a subview of `root`) that held the keyboard before the key
@@ -178,7 +174,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 @MainActor private var natives: [Int32: Native] = [:]
 @MainActor private var nextWindow: Int32 = 1
 @_cdecl("wheel_native_attach") @MainActor
-public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32, _ emit: @escaping Emit) -> Int32 {
+public func attach(_ pointer: UnsafeMutableRawPointer, _ hidden: Int32) -> Int32 {
     let id = nextWindow
     nextWindow += 1
     natives[id] = Native(root: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue(), hidden: hidden != 0)

@@ -21,7 +21,7 @@ pub fn start(cx: &mut gpui::App, file: Option<PathBuf>, restore: bool) {
         use futures::StreamExt as _;
         while changes.next().await.is_some() {
             // A drag moves the window many times a frame apart: one write for every change waiting.
-            while let Ok(Some(())) = changes.try_next() {}
+            while changes.try_recv().is_ok() {}
             save();
         }
     })

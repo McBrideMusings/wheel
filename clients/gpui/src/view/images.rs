@@ -9,6 +9,9 @@ use base64::Engine;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Each (row, source) a reply drew, with the directory it was read against.
+type Drawn = BTreeMap<(usize, String), String>;
+
 /// The tallest an image is drawn, in points (WheelKit's `chat.images.max_height` default).
 pub const MAX_HEIGHT: f32 = 220.;
 
@@ -34,7 +37,7 @@ pub struct ImageState {
     /// Each agent's row count when its images were last asked about.
     rows_seen: HashMap<String, usize>,
     /// Per agent, each (row, source) a reply drew and the directory it was read against.
-    shown: RefCell<HashMap<String, BTreeMap<(usize, String), String>>>,
+    shown: RefCell<HashMap<String, Drawn>>,
 }
 
 /// The file a Markdown image's address names, or None for a web or other-scheme address, which

@@ -44,6 +44,8 @@ pub struct Mirror {
     pub title: String,
 }
 #[derive(Clone, Debug, PartialEq)]
+// Boxing Leaf would change every `Tree::Pane(leaf)` pattern; a tree holds few nodes.
+#[allow(clippy::large_enum_variant)]
 pub enum Tree {
     Pane(Leaf),
     Split { id: String, horizontal: bool, ratio: f64, a: Box<Tree>, b: Box<Tree> },

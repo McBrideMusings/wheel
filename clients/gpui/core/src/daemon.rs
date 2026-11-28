@@ -221,7 +221,7 @@ pub enum Event {
     Message(Box<ServerMsg>),
     /// A socket is open and wheeld answered `status` at this client's compatibility level. The
     /// endpoint carries the token read for this attempt.
-    Up(Endpoint),
+    Up(Box<Endpoint>),
     /// The socket closed or could not open; the connection retries on its own. Sent once until
     /// the cause changes or the link comes up.
     Down(String),
@@ -308,7 +308,7 @@ fn take(hub: &mut Hub, out: Out, live: Option<(&mut Socket, &wheel_proto::Offer,
             match (&hub.up, live) {
                 (Some(endpoint), Some((ws, _, unsent))) => {
                     let endpoint = endpoint.clone();
-                    hub.tell(n, Event::Up(endpoint));
+                    hub.tell(n, Event::Up(Box::new(endpoint)));
                     write(ws, unsent, json_status(crate::route::join(n, 1)))?;
                 }
                 _ => {
@@ -335,7 +335,7 @@ fn take(hub: &mut Hub, out: Out, live: Option<(&mut Socket, &wheel_proto::Offer,
             match hub.router.outgoing(n, &text) {
                 crate::route::Outgoing::Send(text) => write(ws, unsent, text)?,
                 crate::route::Outgoing::Hold => {}
-                crate::route::Outgoing::Answer(message) => hub.tell(n, Event::Message(Box::new(message))),
+                crate::route::Outgoing::Answer(message) => hub.tell(n, Event::Message(message)),
             }
         }
     }
@@ -523,7 +523,7 @@ fn session(endpoint: &Endpoint, outgoing: &mpsc::Receiver<Out>, woken: &std::os:
                             hub.up = Some(endpoint.clone());
                             hub.outage = None;
                             hub.announced = None;
-                            hub.broadcast(|| Event::Up(endpoint.clone()));
+                            hub.broadcast(|| Event::Up(Box::new(endpoint.clone())));
                         }
                     } else if offer.is_none() {
                         continue;

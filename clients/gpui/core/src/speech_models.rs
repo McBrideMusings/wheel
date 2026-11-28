@@ -154,11 +154,14 @@ impl std::fmt::Display for Failed {
     }
 }
 
+/// Opens a catalogue URL for reading.
+type Opener<'a> = dyn FnMut(&str) -> Result<Box<dyn Read>, String> + 'a;
+
 /// Download `model` into `root`: each file from `open(url)` into `<root>/.<folder>.partial`, its
 /// SHA-256 checked against the catalogue, then the folder renamed into place. `progress` hears the
 /// bytes written so far; `cancel` stops it between reads. A failed or cancelled download leaves no
 /// staging folder behind.
-pub fn install(root: &Path, model: &Model, open: &mut dyn FnMut(&str) -> Result<Box<dyn Read>, String>, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), Failed> {
+pub fn install(root: &Path, model: &Model, open: &mut Opener, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), Failed> {
     let staging = root.join(format!(".{}.partial", model.folder));
     let result = fill(&staging, model, open, progress, cancel).and_then(|()| {
         let dir = model.dir(root);
@@ -174,7 +177,7 @@ pub fn install(root: &Path, model: &Model, open: &mut dyn FnMut(&str) -> Result<
     result
 }
 
-fn fill(staging: &Path, model: &Model, open: &mut dyn FnMut(&str) -> Result<Box<dyn Read>, String>, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), Failed> {
+fn fill(staging: &Path, model: &Model, open: &mut Opener, progress: &mut dyn FnMut(u64), cancel: &AtomicBool) -> Result<(), Failed> {
     let _ = std::fs::remove_dir_all(staging);
     std::fs::create_dir_all(staging).map_err(|e| Failed::Other(format!("could not make {}: {e}", staging.display())))?;
     let mut done = 0u64;

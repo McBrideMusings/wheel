@@ -87,7 +87,7 @@ impl Client {
     /// The grid's panes as the zoom and a running animation draw them: the zoomed pane takes the
     /// whole grid and draws last, every other one slides out past its nearest edge (stays in place
     /// under Reduce Motion, faded by `grid_opacity`), and no divider shows while zoomed or moving.
-    pub(super) fn move_grid(&self, space: &Space, area: Rect, leaves: &mut Vec<Placed>, dividers: &mut Vec<Divider>) {
+    pub(super) fn move_grid(&self, space: &Space, area: Rect, leaves: &mut [Placed], dividers: &mut Vec<Divider>) {
         let zoomed = self.zoomed_pane(space).map(str::to_owned);
         if let Some(z) = &zoomed {
             for p in leaves.iter_mut() {

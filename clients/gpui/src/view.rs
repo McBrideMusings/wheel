@@ -64,6 +64,13 @@ use wheel_proto::{PluginInfo, TitleButtonInfo, AgentInfo, ArtifactInfo, ClientMs
 use gpui_component::{Root, input::{Input, InputEvent, InputState}};
 use std::{cell::RefCell, collections::{BTreeMap, HashMap, HashSet}, ops::Range, rc::Rc};
 
+/// A footer's control labels and whether it showed.
+type FooterShown = (Vec<(String, String)>, bool);
+/// A card slot's bounds and the clip it had when its view was placed.
+type CardPlace = (Bounds<Pixels>, Bounds<Pixels>);
+/// What a pane press holds: its pane, its label, the press point and the offset into the pane.
+type PanePress = (String, String, f32, f32, (f32, f32));
+
 /// A client window: GPUI's `Root` (gpui-component's inputs read it) wrapping a `Client`. It
 /// updates the client as a `WindowHandle<Client>` would.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -267,14 +274,14 @@ pub struct Client {
     menu_at: usize,
     /// What each agent's footer drew in the last frame: the items that fit, in order, and whether
     /// the "…" stands for the rest.
-    footer_shown: RefCell<HashMap<String, (Vec<(String, String)>, bool)>>,
+    footer_shown: RefCell<HashMap<String, FooterShown>>,
     /// Where the footer's controls were drawn in the last frame, so a check can press them.
     controls: Rc<crate::view::scoped::Scoped<Control>>,
     /// The artifact card slots painted in the frame being drawn, the bounds and clip each had when
     /// their views were last placed, each open card view's placement, and the panes cards name
     /// (`card_rows`).
     card_slots: Rc<crate::view::scoped::Scoped<card_rows::CardSlot>>,
-    card_last: Rc<RefCell<HashMap<String, (Bounds<Pixels>, Bounds<Pixels>)>>>,
+    card_last: Rc<RefCell<HashMap<String, CardPlace>>>,
     /// Each agent pane's body, drawn as a cached view of its own.
     bodies: body::Bodies,
     /// Each working pane's arc, a view of its own (`status::Spinner`), and the panes this frame drew one for.
@@ -427,7 +434,7 @@ pub struct Client {
     /// A pane held by its header, and the press that may become one: (pane, label, x, y, grab).
     pub pane_drag: Option<crate::sidebar::PaneDrag>,
     pub pane_out: sidebar::PaneOut,
-    pane_press: Option<(String, String, f32, f32, (f32, f32))>,
+    pane_press: Option<PanePress>,
     /// A space's name being edited in its row.
     pub rename: Option<crate::sidebar::Rename>,
     /// A space's context menu: the space and where it was opened.
@@ -586,10 +593,8 @@ impl Client {
                     if let ServerMsg::Status { agents, perms, uptime_secs, .. } = message.as_ref() {
                         let offer = message.offer();
                         let new_offer = self.server_offer != offer;
-                        if new_offer {
-                            if let Some(offer) = &offer {
-                                self.log(format!("server protocol {}, level {}; lacks {:?}", offer.protocol, offer.compat, offer.lacks()));
-                            }
+                        if new_offer && let Some(offer) = &offer {
+                            self.log(format!("server protocol {}, level {}; lacks {:?}", offer.protocol, offer.compat, offer.lacks()));
                         }
                         self.server_offer = offer;
                         // A watch lives on one connection, and this is the first status on a new one.
@@ -785,10 +790,10 @@ impl Client {
                     for (agent, t) in &mut self.transcripts {
                         t.on_message(&message, agent);
                     }
-                    if let ServerMsg::Agent { agent, event } = &*message {
-                        if matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn") {
-                            self.voice_turn_ended(agent);
-                        }
+                    if let ServerMsg::Agent { agent, event } = &*message
+                        && matches!(&event.event, wheel_proto::AgentEvent::TurnEnd { stop_reason, .. } if stop_reason == "end_turn")
+                    {
+                        self.voice_turn_ended(agent);
                     }
                     false
                 }
@@ -830,7 +835,7 @@ impl Client {
                 for (pane, text) in std::mem::take(&mut self.open_reqs).into_values() {
                     self.native.browser(&pane, "refused", serde_json::json!({"text": text, "message": "The connection to wheeld dropped before it read this address."}));
                 }
-                self.endpoint = endpoint;
+                self.endpoint = *endpoint;
                 self.link = Link::Up;
                 // A subscription lives on one connection: the next layout subscribes again.
                 self.queue.subscribed = None;
@@ -1749,10 +1754,10 @@ impl Client {
         }
     }
     fn end_drag(&mut self) {
-        if let Some((split, _, _)) = self.drag.take() {
-            if let Some(ratio) = self.overrides.get(&split) {
-                self.send(&ClientMsg::SplitRatio { req: None, split: split.clone(), ratio: *ratio });
-            }
+        if let Some((split, _, _)) = self.drag.take()
+            && let Some(ratio) = self.overrides.get(&split)
+        {
+            self.send(&ClientMsg::SplitRatio { req: None, split: split.clone(), ratio: *ratio });
         }
     }
     fn move_drag(&mut self, x: f32, y: f32) {
@@ -3421,6 +3426,7 @@ fn composer_extras_for(window: &Window, t: Option<&Transcript>, raw: bool, pane_
 
 /// The context ring in the composer row: the share of the window in use as an arc from the top,
 /// tinted as `footer::tint` says, with the percent beside it while `figure`; a click reads the raw figures instead.
+#[allow(clippy::too_many_arguments)] // one call site; each argument is a distinct input of the ring
 fn context_ring(pane: &str, agent: &str, t: Option<&Transcript>, raw: bool, figure: bool, harness: &str, controls: &Rc<crate::view::scoped::Scoped<Control>>, cx: &mut Context<Client>) -> gpui::Stateful<gpui::Div> {
     let context = t.and_then(|t| t.context);
     let fraction = context.as_ref().map(footer::fraction).unwrap_or(0.);

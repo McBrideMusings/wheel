@@ -32,7 +32,7 @@ pub enum Outgoing {
     /// Send nothing: the merged state already says it.
     Hold,
     /// Send nothing and answer the subscriber with this frame.
-    Answer(ServerMsg),
+    Answer(Box<ServerMsg>),
 }
 
 /// What one socket's lifetime holds per subscriber; a new socket starts empty, and each window
@@ -330,7 +330,7 @@ fn params_key(params: &Value) -> String {
 
 fn answer_ok(_n: u32, req: Option<u64>) -> Outgoing {
     match req {
-        Some(req) => Outgoing::Answer(ServerMsg::Ok { req }),
+        Some(req) => Outgoing::Answer(Box::new(ServerMsg::Ok { req })),
         None => Outgoing::Hold,
     }
 }

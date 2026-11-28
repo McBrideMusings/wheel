@@ -7,7 +7,6 @@ use gpui::{
 
 use crate::{
     plot::{origin_point, StrokeStyle},
-    PixelsExt,
 };
 
 #[allow(clippy::type_complexity)]

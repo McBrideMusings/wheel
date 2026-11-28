@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn the_order_is_by_rank_then_by_pane() {
         let needs = PaneStatus::NeedsYou { waiting: 1, reason: None };
-        let mut cards = vec![("p9", None), ("p3", Some(&PaneStatus::Done)), ("p1", None), ("p7", Some(&needs)), ("p5", Some(&PaneStatus::Stopped)), ("p2", Some(&PaneStatus::Working))];
+        let mut cards = [("p9", None), ("p3", Some(&PaneStatus::Done)), ("p1", None), ("p7", Some(&needs)), ("p5", Some(&PaneStatus::Stopped)), ("p2", Some(&PaneStatus::Working))];
         cards.sort_by(|a, b| order_key(a.1, a.0).cmp(&order_key(b.1, b.0)));
         assert_eq!(cards.iter().map(|c| c.0).collect::<Vec<_>>(), ["p7", "p5", "p2", "p3", "p1", "p9"]);
     }

@@ -6,37 +6,20 @@
 //! daemon requests the view relayed arrive as frames on the window's channel, each read as a
 //! [`Frame`].
 use anyhow::{Context as _, Result};
-use futures::channel::mpsc as fmpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
-    collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     path::PathBuf,
     rc::Rc,
-    sync::Mutex,
 };
 use wheel_proto::ConsoleEntry;
-
-/// The bridge's callback: its window id and one JSON object.
-type Emit = unsafe extern "C" fn(i32, *const c_char);
-
-/// Where each bridge window's frames go: the channel `attach_to` registered for it.
-static EMITS: Mutex<Option<HashMap<i32, fmpsc::UnboundedSender<String>>>> = Mutex::new(None);
-
-unsafe extern "C" fn on_emit(window: i32, json: *const c_char) {
-    // The bridge owns the string for the length of the call; it is copied here.
-    let text = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
-    if let Some(sender) = EMITS.lock().unwrap().as_ref().and_then(|m| m.get(&window)) {
-        let _ = sender.unbounded_send(text);
-    }
-}
 
 /// The loaded bridge library, shared by every window.
 pub struct Bridge {
     _library: libloading::Library,
-    attach: unsafe extern "C" fn(*mut c_void, i32, Emit) -> i32,
+    attach: unsafe extern "C" fn(*mut c_void, i32) -> i32,
     command: unsafe extern "C" fn(*const c_char) -> *mut c_char,
     free: unsafe extern "C" fn(*mut c_void),
 }
@@ -64,7 +47,7 @@ impl Bridge {
 impl Bridge {
     /// A bridge that answers every command with `{}`, for a test that draws a client with no Swift side.
     pub fn stub() -> Rc<Self> {
-        unsafe extern "C" fn attach(_: *mut c_void, _: i32, _: Emit) -> i32 {
+        unsafe extern "C" fn attach(_: *mut c_void, _: i32) -> i32 {
             1
         }
         unsafe extern "C" fn command(_: *const c_char) -> *mut c_char {
@@ -221,12 +204,14 @@ impl Native {
         self.host().map_or(0, |h| h.slot(pane))
     }
     /// Attach to the window's content view. `hidden` is the test mode: no Dock icon, never
-    /// active, deaf to the pointer. The bridge's own frames for this window go to `frames`.
-    pub fn attach_to(&self, ns_view: *mut c_void, hidden: bool, frames: fmpsc::UnboundedSender<String>) {
-        let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden), on_emit) };
+    /// active, deaf to the pointer.
+    ///
+    /// # Safety
+    /// `ns_view` must be the live `NSView` of a window that outlives this `Native`'s `detach`.
+    pub unsafe fn attach_to(&self, ns_view: *mut c_void, hidden: bool) {
+        let window = unsafe { (self.bridge.attach)(ns_view, i32::from(hidden)) };
         self.window.set(window);
         self.ns_view.set(ns_view as usize);
-        EMITS.lock().unwrap().get_or_insert_with(HashMap::new).insert(window, frames);
     }
     /// The window's content view, null before `attach_to` and after `detach`.
     pub fn ns_view(&self) -> *mut c_void {
@@ -237,9 +222,6 @@ impl Native {
         self.call(json!({"op":"detach"}));
         if let Some(host) = self.host.borrow_mut().take() {
             host.detach();
-        }
-        if let Some(map) = EMITS.lock().unwrap().as_mut() {
-            map.remove(&self.window.get());
         }
         self.window.set(0);
         self.ns_view.set(0);

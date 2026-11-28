@@ -71,7 +71,7 @@ impl Registry {
         self.watchers.retain(|w| w.unbounded_send(()).is_ok());
     }
     pub fn put_little(&mut self, little: Little) {
-        if self.littles.iter().any(|l| *l == little) {
+        if self.littles.contains(&little) {
             return;
         }
         match self.littles.iter_mut().find(|l| l.id == little.id) {
@@ -100,7 +100,7 @@ impl Registry {
         self.focused().filter(holds).or_else(|| self.windows.iter().find(holds))
     }
     pub fn put(&mut self, record: Record) {
-        if self.windows.iter().any(|w| *w == record) {
+        if self.windows.contains(&record) {
             return;
         }
         match self.windows.iter_mut().find(|w| w.id == record.id) {

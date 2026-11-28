@@ -17,6 +17,13 @@ use std::{cell::Cell, collections::HashSet, sync::Arc};
 use serde_json::{Value, json};
 use wheel_proto::PermInfo;
 
+/// The app icon and its size once loaded, or `None` inside when there is none.
+type AppIcon = Option<Option<(Arc<Image>, f32)>>;
+/// A card's id and its rect as four floats.
+type CardRect = (String, [f32; 4]);
+/// What a header button does to the menu bar.
+type HeadAct = Rc<dyn Fn(&mut MenuBar, &mut Context<MenuBar>)>;
+
 thread_local! {
     /// The app's one menu bar item, from launch until the app quits.
     static MENU_BAR: RefCell<Option<Entity<MenuBar>>> = const { RefCell::new(None) };
@@ -65,7 +72,7 @@ pub struct MenuBar {
     paired: Vec<String>,
     /// The right-click menu's titles as it was built last.
     status_menu: Value,
-    app_icon: RefCell<Option<Option<(Arc<Image>, f32)>>>,
+    app_icon: RefCell<AppIcon>,
     sessions: Vec<Session>,
     spaces: Vec<Space>,
     perms: Vec<PermInfo>,
@@ -799,7 +806,7 @@ pub struct Popover {
     /// The space whose row the pointer is over: it shows its Little Window button.
     hover: Option<String>,
     /// Each session's card frame in the popover, as last laid out: a space drag's targets.
-    cards: Rc<RefCell<Vec<(String, [f32; 4])>>>,
+    cards: Rc<RefCell<Vec<CardRect>>>,
     /// The popover's AppKit view, once drawn, for the bridge to measure and size its window.
     view: Rc<Cell<u64>>,
 }
@@ -849,7 +856,7 @@ impl Popover {
         }
         let count = card.rows.len();
         head = head.child(div().flex_1()).child(div().text_xs().text_color(rgb(DIM)).child(format!("{count} {}", if count == 1 { "space" } else { "spaces" })));
-        let head_button = |symbol: &str, name: String, help: String, act: Rc<dyn Fn(&mut MenuBar, &mut Context<MenuBar>)>| {
+        let head_button = |symbol: &str, name: String, help: String, act: HeadAct| {
             let held = self.menu.clone();
             let button = div().id(SharedString::from(name.clone())).w(px(16.)).h(px(16.)).flex().items_center().justify_center().rounded_sm().cursor_pointer()
                 .hover(|s| s.bg(rgb(LINE))).tooltip(crate::tooltip::tip(&help)).children(menu.symbol(symbol, 12., DIM))

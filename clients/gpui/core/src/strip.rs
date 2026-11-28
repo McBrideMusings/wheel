@@ -17,6 +17,8 @@ pub const LABELS: [&str; 3] = ["billing", "folder", "email"];
 
 /// One entry of the strip: an agent's note, or one of its accounts.
 #[derive(Clone, Debug, PartialEq)]
+// Items are built once per refresh and few; boxing would only add an allocation per account.
+#[allow(clippy::large_enum_variant)]
 pub enum Item {
     Note { agent: UsageAgent, note: String },
     Account { agent: UsageAgent, account: UsageAccount },
@@ -208,7 +210,7 @@ pub struct LocalTime {
 
 /// "7:00 PM".
 pub fn clock(l: &LocalTime) -> String {
-    format!("{}:{:02} {}", if l.hour % 12 == 0 { 12 } else { l.hour % 12 }, l.minute, if l.hour < 12 { "AM" } else { "PM" })
+    format!("{}:{:02} {}", if l.hour.is_multiple_of(12) { 12 } else { l.hour % 12 }, l.minute, if l.hour < 12 { "AM" } else { "PM" })
 }
 
 /// `unix` broken into the local hour, minute and weekday through the C library.

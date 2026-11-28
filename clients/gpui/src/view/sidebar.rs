@@ -795,12 +795,11 @@ impl Client {
         } else {
             self.place_dragged(space, &pending.window, None, cx);
         }
-        if let Some(at) = pending.little {
-            if let Some(id) = self.open_little(space, cx)
-                && let Some(at) = at
-            {
-                self.grow_little(&id, at, cx);
-            }
+        if let Some(at) = pending.little
+            && let Some(id) = self.open_little(space, cx)
+            && let Some(at) = at
+        {
+            self.grow_little(&id, at, cx);
         }
     }
     /// Release: dock beside a pane, move to a space's end or into a new space (AppModel.dropAway).
@@ -1183,7 +1182,7 @@ impl Client {
     /// or tool call, the last line of a terminal, a browser's address, a web pane's artifact.
     pub fn last_line(&self, leaf: &Leaf) -> Option<String> {
         fn last(text: &str) -> Option<String> {
-            text.lines().map(str::trim).filter(|l| !l.is_empty()).next_back().map(str::to_owned)
+            text.lines().map(str::trim).rfind(|l| !l.is_empty()).map(str::to_owned)
         }
         match leaf.kind.as_str() {
             "agent" => {

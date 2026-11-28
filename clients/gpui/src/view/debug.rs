@@ -645,7 +645,7 @@ impl Client {
                         if !crate::strip::LABELS.contains(&label.as_str()) {
                             return refuse(BAD, "label is billing, folder or email");
                         }
-                        let on = self.settings.usage.labels.iter().any(|l| *l == label);
+                        let on = self.settings.usage.labels.contains(&label);
                         if q("on").as_deref().map(|v| v == "true") != Some(on) {
                             self.toggle_usage_label(&label);
                         }

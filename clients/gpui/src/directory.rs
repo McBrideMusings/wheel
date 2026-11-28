@@ -156,7 +156,7 @@ fn on_event(cx: &mut App, key: &str, event: Event) {
         match event {
             Event::Up(endpoint) => {
                 log(format!("server {key}: up"));
-                entry.endpoint = endpoint;
+                entry.endpoint = *endpoint;
                 entry.group.up = true;
                 let _ = entry.out.send(daemon::frame(&ClientMsg::SettingsLs { req: Some(SETTINGS_REQ), space: None }));
             }

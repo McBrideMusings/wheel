@@ -1039,7 +1039,7 @@ mod tests {
         assert_eq!(m.encode_focus(true), b"\x1b[I");
         // Button-event tracking: a drag with the button held reports each cell entered, once.
         m.feed(b"\x1b[?1002h");
-        assert!(m.encode_mouse(MouseAction::Motion, Some(MouseButton::Left), 50.0, 20.0, 800.0, 600.0, cell, false, false, false).len() > 0);
+        assert!(!m.encode_mouse(MouseAction::Motion, Some(MouseButton::Left), 50.0, 20.0, 800.0, 600.0, cell, false, false, false).is_empty());
         assert!(m.encode_mouse(MouseAction::Motion, Some(MouseButton::Left), 51.0, 21.0, 800.0, 600.0, cell, false, false, false).is_empty());
         m.encode_mouse(MouseAction::Release, Some(MouseButton::Left), 51.0, 21.0, 800.0, 600.0, cell, false, false, false);
         assert!(m.encode_mouse(MouseAction::Motion, None, 90.0, 20.0, 800.0, 600.0, cell, false, false, false).is_empty());

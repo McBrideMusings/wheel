@@ -761,7 +761,7 @@ impl Draw<'_> {
     }
 
     fn chart(&self, n: &ViewNode, outer: Env) -> gpui::AnyElement {
-        let mark = match n.string("mark") { Some(m @ ("line" | "point" | "area")) => m, _ => "bar" };
+        let mark = n.string("mark").filter(|m| matches!(*m, "line" | "point" | "area")).unwrap_or("bar");
         let data: Vec<Json> = n.props.get("data").and_then(Json::as_array).into_iter().flatten()
             .map(|d| json!({"x": d.get("x").cloned().unwrap_or(json!("")), "y": d.get("y").cloned().unwrap_or(json!(0)), "series": d.get("series").cloned().unwrap_or(json!(""))})).collect();
         match charts::parse(&json!({"mark": mark, "data": data}).to_string()) {
@@ -983,7 +983,7 @@ impl gpui::Element for Fits {
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: gpui::Bounds<Pixels>, sizes: &mut Vec<(f32, f32)>, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
         let w = f32::from(bounds.size.width);
-        let at = pick(sizes, Some(w), Some(f32::from(bounds.size.height)).filter(|_| self.axis != "horizontal"), &self.axis);
+        let at = pick(sizes, Some(w), (self.axis != "horizontal").then_some(f32::from(bounds.size.height)), &self.axis);
         let chosen = self.finals.get_mut(at)?.take()?;
         let mut el = div().w(bounds.size.width).flex().flex_col().child(chosen).into_any_element();
         let size = el.layout_as_root(Size { width: AvailableSpace::Definite(bounds.size.width), height: AvailableSpace::MaxContent }, window, cx);
@@ -1005,6 +1005,21 @@ impl gpui::Element for Fits {
             el.paint(window, cx);
         }
     }
+}
+
+
+/// A Modal opened by its own trigger, drawn as a sheet over the page.
+fn is_open_sheet(n: &ViewNode, host: &super::plugin::PluginHost) -> bool {
+    n.component == "Modal" && n.bool("presented").is_none() && host.open.contains(&n.id) && n.parts().len() >= 2
+}
+
+fn is_presented_alert(n: &ViewNode) -> bool {
+    matches!(n.component.as_str(), "Alert" | "ConfirmationDialog") && n.bool("presented") == Some(true)
+}
+
+/// Whether anything draws over `host`'s page: a presented Modal, an opened sheet, an Alert or a dialog.
+pub(super) fn page_overlaid(tree: &wheel_luau::tree::ViewTree, host: &super::plugin::PluginHost) -> bool {
+    tree.modals().next().is_some() || tree.all().any(|n| is_open_sheet(n, host) || is_presented_alert(n))
 }
 
 #[cfg(test)]
@@ -1045,18 +1060,4 @@ mod tests {
         assert_eq!(hex("FF8800"), None);
         assert_eq!(hex("#F80"), None);
     }
-}
-
-/// A Modal opened by its own trigger, drawn as a sheet over the page.
-fn is_open_sheet(n: &ViewNode, host: &super::plugin::PluginHost) -> bool {
-    n.component == "Modal" && n.bool("presented").is_none() && host.open.contains(&n.id) && n.parts().len() >= 2
-}
-
-fn is_presented_alert(n: &ViewNode) -> bool {
-    matches!(n.component.as_str(), "Alert" | "ConfirmationDialog") && n.bool("presented") == Some(true)
-}
-
-/// Whether anything draws over `host`'s page: a presented Modal, an opened sheet, an Alert or a dialog.
-pub(super) fn page_overlaid(tree: &wheel_luau::tree::ViewTree, host: &super::plugin::PluginHost) -> bool {
-    tree.modals().next().is_some() || tree.all().any(|n| is_open_sheet(n, host) || is_presented_alert(n))
 }

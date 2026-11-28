@@ -9,6 +9,9 @@ use crate::popped::Frames;
 use serde_json::json;
 
 use super::settings::{ACCENT, DIM, LINE, PANEL as CARD_BG, TEXT};
+
+/// What a card header button does with the client and its pane.
+type CardRun = Box<dyn Fn(&mut Client, &str)>;
 /// The "+ Agent" button and the zoom readout: their size and their inset from the area's corners.
 const CONTROL: (f32, f32) = (104., 30.);
 const READOUT_W: f32 = 56.;
@@ -382,7 +385,7 @@ impl Client {
     /// The buttons a card's header carries in place of the pane's: one line or full, and close.
     pub(super) fn card_header_buttons(&self, pane: &str, cx: &mut Context<Self>) -> gpui::Div {
         let summary = self.surface.prefs.borrow().summary.contains(pane);
-        let button = |name: &'static str, glyph: &'static str, pane: String, cx: &mut Context<Self>, run: Box<dyn Fn(&mut Client, &str)>| {
+        let button = |name: &'static str, glyph: &'static str, pane: String, cx: &mut Context<Self>, run: CardRun| {
             div().id(gpui::ElementId::Name(format!("card-{name}-{pane}").into())).relative().w(px(18.)).h(px(18.)).flex().items_center().justify_center().rounded_sm().cursor_pointer().hover(|s| s.bg(rgb(ACCENT)))
                 .child(glyph).child(recorded(&pane, name, &self.controls))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {

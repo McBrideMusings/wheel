@@ -12,6 +12,11 @@ use wheel_luau::CanvasFont;
 use wheel_luau::canvas::{self as cv, Camera, Color, Paint, Scene, Seg};
 use wheel_luau::tree::ViewNode;
 
+type ImageCache = (HashMap<String, Arc<gpui::RenderImage>>, Vec<String>, usize);
+type Sender = Rc<dyn Fn(&str, (f32, f32), f32, f32, &mut Window, &mut App)>;
+type CanvasAct = Rc<dyn Fn(&mut CanvasView, &Scene)>;
+type Fire = Rc<dyn Fn(&str, Json, &mut App)>;
+
 const FG: u32 = 0xffffffd9;
 const TERTIARY: u32 = 0xffffff40;
 /// NSColor.gridColor and controlBackgroundColor in the dark appearance (`separatorStrong`, `group`).
@@ -121,7 +126,7 @@ thread_local! {
     /// The family name of each design's system font, the face `measureText` measures, found once.
     static FAMILIES: RefCell<HashMap<wheel_luau::Design, gpui::SharedString>> = RefCell::new(HashMap::new());
     /// Decoded drawImage pixels by size and data, so a redraw decodes nothing it has decoded before.
-    static IMAGES: RefCell<(HashMap<String, Arc<gpui::RenderImage>>, Vec<String>, usize)> = RefCell::new(Default::default());
+    static IMAGES: RefCell<ImageCache> = RefCell::new(Default::default());
 }
 
 /// The GPUI font that draws the face `CanvasFont::measure` measures.
@@ -338,7 +343,7 @@ impl Draw<'_> {
                     return;
                 }
                 // Moves and drag steps wait for the next frame and merge; every other kind sends what waits, then itself.
-                let send: Rc<dyn Fn(&str, (f32, f32), f32, f32, &mut Window, &mut App)> = {
+                let send: Sender = {
                     let (state, client, pane, id, pointer) = (state.clone(), client.clone(), pane.clone(), id.clone(), pointer.clone());
                     Rc::new(move |kind, p, dx, dy, _window, cx| {
                         let deliver = |k: &str, x: f32, y: f32, dx: f32, dy: f32, cx: &mut App| {
@@ -450,7 +455,7 @@ impl Draw<'_> {
     /// and Fit, + and − in its top right corner.
     fn scene_canvas(&self, n: &ViewNode, outer: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         let viewport = self.host.viewport.get();
-        let height = n.number("height").map_or_else(|| (n.number("minHeight").unwrap_or(480.)).max(f64::from(viewport) - n.number("reserve").unwrap_or(0.)), |h| h) as f32;
+        let height = n.number("height").unwrap_or_else(|| (n.number("minHeight").unwrap_or(480.)).max(f64::from(viewport) - n.number("reserve").unwrap_or(0.))) as f32;
         let scene = Rc::new(Scene::parse(&n.props));
         let state = self.canvas_state(&n.id);
         let focus = state.borrow_mut().focus.get_or_insert_with(|| cx.focus_handle()).clone();
@@ -509,7 +514,7 @@ impl Draw<'_> {
         let tip = s.hover.filter(|_| s.drag.is_none()).and_then(|p| scene.hit(f64::from(p.0), f64::from(p.1), c).map(|i| (p, i))).filter(|(_, i)| !scene.hits[*i].tip.is_empty())
             .map(|(p, i)| tooltip(&scene.hits[i], p, s.size));
         drop(s);
-        let control = |label: &'static str, tag: &str, act: Rc<dyn Fn(&mut CanvasView, &Scene)>| {
+        let control = |label: &'static str, tag: &str, act: CanvasAct| {
             let (state, scene) = (state.clone(), scene.clone());
             div().id(el_id(self.pane, &n.id, tag)).occlude().relative().child(recorded(self.pane, &format!("{}#{tag}", n.id), self.controls)).px(px(8.)).h(px(24.)).flex().items_center().text_size(px(12.)).text_color(rgba(FG))
                 .bg(rgba(GROUP)).rounded(px(6.)).border_1().border_color(rgba(LINE)).child(label)
@@ -721,7 +726,7 @@ fn map(t: &cv::Affine, s: Seg) -> Seg {
 /// scroll to zoom or pan, and pinch to zoom.
 #[allow(clippy::too_many_arguments)]
 fn scene_events(scene: &Rc<Scene>, state: &Shared, client: &gpui::WeakEntity<Client>, pane: &str, id: &str, bounds: Bounds<Pixels>, hitbox: Hitbox, window: &mut Window) {
-    let fire: Rc<dyn Fn(&str, Json, &mut App)> = {
+    let fire: Fire = {
         let (client, pane, id) = (client.clone(), pane.to_owned(), id.to_owned());
         Rc::new(move |key, context, cx| raise(&client, &pane, &id, key, context, cx))
     };
