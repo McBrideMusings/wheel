@@ -11,6 +11,7 @@ base64 = "0.22"
 # Luau 0.748 compiled from source (luau0-src 0.24.1+luau748), interpreter only: no `luau-jit`.
 mlua = { version = "0.12.3", features = ["luau", "vendored"] }
 serde_json = "1"
+json-patch = "5.0.0"
 # measureText: the system font the Canvas `font` names, measured by CoreText as Canvas 2D does.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSAttributedString", "NSDictionary", "NSObjCRuntime"] }

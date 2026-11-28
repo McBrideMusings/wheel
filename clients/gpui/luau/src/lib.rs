@@ -19,6 +19,8 @@
 //! outside the limits.
 
 mod canvas_font;
+pub mod pane;
+pub mod tree;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
