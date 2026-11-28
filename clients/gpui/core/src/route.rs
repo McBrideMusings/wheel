@@ -266,7 +266,7 @@ impl Router {
                 return to(holders, message);
             }
             ServerMsg::FeedUpdate { pane, feed, params, .. } => {
-                let key = (pane.clone(), feed.clone(), params.to_string());
+                let key = (pane.clone(), feed.clone(), params_key(params));
                 let Some(holders) = self.held.feeds.get(&key) else { return vec![] };
                 let mut out = vec![];
                 for (n, req) in holders.clone() {
@@ -307,7 +307,25 @@ impl Router {
 
 fn feed_key(frame: &serde_json::Map<String, Value>) -> (String, String, String) {
     let s = |k: &str| frame.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
-    (s("pane"), s("feed"), frame.get("params").cloned().unwrap_or(Value::Null).to_string())
+    (s("pane"), s("feed"), params_key(frame.get("params").unwrap_or(&Value::Null)))
+}
+
+/// A feed's params as wheeld keys them: JSON text with every object's keys sorted. This crate's
+/// serde_json keeps insertion order (`preserve_order`), and wheeld's echo of the params comes back
+/// sorted, so the order a script wrote them in never reaches the key.
+fn params_key(params: &Value) -> String {
+    fn sorted(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&m[k]))).collect())
+            }
+            Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    sorted(params).to_string()
 }
 
 fn answer_ok(_n: u32, req: Option<u64>) -> Outgoing {
@@ -393,6 +411,18 @@ mod tests {
         let un = r#"{"op":"feed_unsubscribe","pane":"p","feed":"q","params":{"dir":"/d"}}"#;
         assert_eq!(r.outgoing(1, un), Outgoing::Hold);
         assert_eq!(sent(r.outgoing(2, un))["op"], "feed_unsubscribe");
+    }
+
+    #[test]
+    fn a_feed_whose_params_wheeld_echoes_in_another_key_order_reaches_its_holder() {
+        let (mut r, _rx) = router(1);
+        sent(r.outgoing(1, r#"{"op":"feed_subscribe","req":4,"pane":"p","feed":"q","params":{"view":"graph","dir":"/d","list":{"q":"","not":[]}}}"#));
+        let (m, raw) = msg(json!({"ev":"feed_update","req": join(1, 4),"pane":"p","feed":"q","params":{"dir":"/d","list":{"not":[],"q":""},"view":"graph"},"value":1}));
+        let reqs: Vec<(u32, Option<u64>)> = r.incoming(m, &raw).into_iter().map(|(n, m)| (n, match m { ServerMsg::FeedUpdate { req, .. } => req, _ => None })).collect();
+        assert_eq!(reqs, [(1, Some(4))]);
+        let un = r#"{"op":"feed_unsubscribe","pane":"p","feed":"q","params":{"list":{"not":[],"q":""},"dir":"/d","view":"graph"}}"#;
+        assert_eq!(sent(r.outgoing(1, un))["op"], "feed_unsubscribe");
+        assert!(r.held.feeds.is_empty());
     }
 
     #[test]
