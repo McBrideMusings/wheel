@@ -525,7 +525,9 @@ impl Client {
                     _ => continue,
                 };
                 let bounds = host.embeds.get(&n.id).map_or([0.; 4], Embed::shown);
-                let placement = place_embed(bounds, page.map(|p| p.0), page.map_or(&[][..], |p| &p.2), hidden, page.map_or(1., |p| p.3));
+                // The page's body as drawn (below the title row and inside the padding), not the pane's slot rect.
+                let body = self.control_bounds(h, "body").map(|(x, y, w, b)| [f64::from(x), f64::from(y), f64::from(w), f64::from(b)]).or(page.map(|p| p.0));
+                let placement = place_embed(bounds, body, page.map_or(&[][..], |p| &p.2), hidden, page.map_or(1., |p| p.3));
                 wanted.insert(embed_key(h, &n.id), (what, placement));
             }
         }
