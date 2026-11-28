@@ -300,9 +300,8 @@ impl Draw<'_> {
                 };
                 self.push_button(n, "doc.on.clipboard", "Paste".into(), inner, Some(Box::new(on)), cx)
             }
-            "Unsupported" | "AudioPlayer" | "Map" => {
+            "Unsupported" | "AudioPlayer" => {
                 let name = match n.component.as_str() { "Unsupported" => n.string("name").unwrap_or("?").to_owned(), other => other.to_owned() };
-                // hack: a Map draws as unsupported until MKMapView is ported with the embeds (wheel-4d1o.5).
                 div().flex().flex_row().items_center().gap(px(4.)).p(px(6.)).rounded(px(6.)).border_1().border_dashed().border_color(rgba(0xffffff46)).text_size(px(12.)).text_color(rgba(SECONDARY))
                     .children(title::symbol(self.symbols, "questionmark.square.dashed", 12., SECONDARY >> 8))
                     .child(format!("Unsupported component: {name}"))
@@ -782,15 +781,15 @@ impl Draw<'_> {
     /// What draws over the page: presented Modals, opened sheets, and Alerts and dialogs.
     pub(super) fn overlays(&self, cx: &mut Context<Client>) -> Option<gpui::AnyElement> {
         let env = Env { color: 0xffffffd9, size: BODY, disabled: false, in_row: false, in_form: false };
+        if !page_overlaid(self.tree, self.host) {
+            return None;
+        }
         let mut modals: Vec<&ViewNode> = self.tree.modals().collect();
-        let mut sheets: Vec<&ViewNode> = self.tree.all().filter(|n| n.component == "Modal" && n.bool("presented").is_none() && self.host.open.contains(&n.id) && n.parts().len() >= 2).collect();
-        let mut alerts: Vec<&ViewNode> = self.tree.all().filter(|n| matches!(n.component.as_str(), "Alert" | "ConfirmationDialog") && n.bool("presented") == Some(true)).collect();
+        let mut sheets: Vec<&ViewNode> = self.tree.all().filter(|n| is_open_sheet(n, self.host)).collect();
+        let mut alerts: Vec<&ViewNode> = self.tree.all().filter(|n| is_presented_alert(n)).collect();
         sheets.sort_by(|a, b| a.id.cmp(&b.id));
         alerts.sort_by(|a, b| a.id.cmp(&b.id));
         modals.dedup_by(|a, b| a.id == b.id);
-        if modals.is_empty() && sheets.is_empty() && alerts.is_empty() {
-            return None;
-        }
         let mut layer = div().absolute().inset_0();
         for m in modals {
             layer = layer.child(self.presented(m, env, cx));
@@ -1045,4 +1044,18 @@ mod tests {
         assert_eq!(hex("FF8800"), None);
         assert_eq!(hex("#F80"), None);
     }
+}
+
+/// A Modal opened by its own trigger, drawn as a sheet over the page.
+fn is_open_sheet(n: &ViewNode, host: &super::plugin::PluginHost) -> bool {
+    n.component == "Modal" && n.bool("presented").is_none() && host.open.contains(&n.id) && n.parts().len() >= 2
+}
+
+fn is_presented_alert(n: &ViewNode) -> bool {
+    matches!(n.component.as_str(), "Alert" | "ConfirmationDialog") && n.bool("presented") == Some(true)
+}
+
+/// Whether anything draws over `host`'s page: a presented Modal, an opened sheet, an Alert or a dialog.
+pub(super) fn page_overlaid(tree: &wheel_luau::tree::ViewTree, host: &super::plugin::PluginHost) -> bool {
+    tree.modals().next().is_some() || tree.all().any(|n| is_open_sheet(n, host) || is_presented_alert(n))
 }

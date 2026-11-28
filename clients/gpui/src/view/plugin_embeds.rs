@@ -1,16 +1,22 @@
-//! A plugin pane's `ui.Terminal` and `ui.AgentChat` drawn by GPUI (wheel-4d1o.5), as the Swift
-//! bridge's `EmbedTerminal` and `EmbeddedAgentChat` draw them: the named pane's live terminal or
-//! agent conversation, as wide as it is offered and `height` tall (default 320), or a note saying
-//! why it shows nothing (`PaneEmbedNote` in WheelUI's `Embed.swift`). Each embed's terminal pane
-//! and agent body go under its own key, `<host pane>#<node id>`, so it is drawn, sized, focused
-//! and typed into as a pane of its own.
+//! A plugin pane's embeds drawn by GPUI (wheel-4d1o.5), as the Swift bridge draws them. `ui.Terminal`
+//! and `ui.AgentChat` (`EmbedTerminal`, `EmbeddedAgentChat`) show the named pane's live terminal or
+//! agent conversation; `ui.WebView` (`PaneWebViewView`) a WKWebView on an http or https address or
+//! on an artifact's page wheeld keeps for the pane (`ArtifactEmbeds`, ADR-0047); `ui.Map`
+//! (`PaneMapView`) an MKMapView. Each is as wide as it is offered and `height` tall (default 320; a
+//! Map at least 160), or shows a note saying why it shows nothing (`PaneEmbedNote` in WheelUI's
+//! `Embed.swift`). Everything an embed shows goes under its own key, `<host pane>#<node id>`: a
+//! terminal pane and agent body GPUI draws, or the native slot a WebView or Map is placed in on the
+//! embed's drawn rect, cut to the page's visible body.
 use super::*;
 use super::plugin_draw::{Draw, Env, SECONDARY, greedy};
 use std::cell::Cell;
+use wheel_gpui_core::native::Embedded;
 use wheel_luau::tree::ViewNode;
 
 /// An embed's height when its node names none.
 const HEIGHT: f32 = 320.;
+/// A Map's least height (`.frame(minHeight: 160)`).
+const MAP_HEIGHT: f32 = 160.;
 /// A note's dashed border: `.secondary` at half its opacity.
 const NOTE_BORDER: u32 = 0xffffff46;
 
@@ -24,11 +30,93 @@ pub(super) fn is_pane_embed(component: &str) -> bool {
     matches!(component, "Terminal" | "AgentChat")
 }
 
+/// Whether `component` shows in a native slot of its own.
+fn is_native_embed(component: &str) -> bool {
+    matches!(component, "WebView" | "Map")
+}
+
 /// One embed's own state, kept by node id on its host while the node keeps its component.
 pub struct Embed {
     pub component: String,
     /// Where the embed drew in the last frame, in window points: x, y, width, height.
     pub bounds: Rc<Cell<[f32; 4]>>,
+    /// A `WebView{artifact}`'s page, while the node names that artifact.
+    pub artifact: Option<ArtifactEmbed>,
+}
+
+/// The page wheeld keeps for a `WebView{artifact}` (`plugin_embed`): the request in flight, then
+/// the page id and where the name resolved, or wheeld's refusal.
+#[derive(Debug, Default)]
+pub struct ArtifactEmbed {
+    pub name: String,
+    pub req: Option<u64>,
+    pub id: Option<String>,
+    pub scope: Option<wheel_proto::ArtifactScope>,
+    pub error: Option<String>,
+}
+
+/// What a `WebView` shows, as `PaneWebViewView` chooses from its `url` and `artifact`.
+#[derive(Debug, PartialEq)]
+pub(super) enum WebChoice {
+    Url(String),
+    Artifact(String),
+    Note(String),
+}
+
+pub(super) fn web_choice(url: &str, artifact: &str) -> WebChoice {
+    if !artifact.is_empty() && !url.is_empty() {
+        return WebChoice::Note("WebView names both a url and an artifact".into());
+    }
+    if !artifact.is_empty() {
+        return WebChoice::Artifact(artifact.to_owned());
+    }
+    // `URL(string:)`'s scheme: letters first, then letters, digits, `+`, `-` and `.`, up to the first colon.
+    let scheme = url.split_once(':').map(|(s, _)| s).filter(|s| s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)));
+    if scheme.is_some_and(|s| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https")) {
+        return WebChoice::Url(url.to_owned());
+    }
+    WebChoice::Note(if url.is_empty() { "WebView names no url".into() } else { format!("WebView shows only http and https addresses, not {url}") })
+}
+
+/// Where embed slot `bounds` goes on a page whose visible body is `body` (both window points), with
+/// `holes` (the cards and bars over the host pane) cut out of it: the parts the page's scroll has
+/// carried past the body's edges are cut too, and an embed with no part inside the body, or none
+/// drawn yet, hides. No body (the host has no slot) hides it.
+pub(super) fn place_embed(bounds: [f32; 4], body: Option<[f64; 4]>, holes: &[[f64; 4]], hidden: bool, alpha: f64) -> Placement {
+    let b = bounds.map(f64::from);
+    let Some(body) = body else { return (b, true, vec![], alpha) };
+    let (x1, y1, bx1, by1) = (b[0] + b[2], b[1] + b[3], body[0] + body[2], body[1] + body[3]);
+    let inside = b[2] > 0. && b[3] > 0. && b[0] < bx1 && x1 > body[0] && b[1] < by1 && y1 > body[1];
+    let mut cut = holes.to_vec();
+    if b[1] < body[1] {
+        cut.push([b[0], b[1], b[2], body[1] - b[1]]);
+    }
+    if y1 > by1 {
+        cut.push([b[0], by1, b[2], y1 - by1]);
+    }
+    if b[0] < body[0] {
+        cut.push([b[0], b[1], body[0] - b[0], b[3]]);
+    }
+    if x1 > bx1 {
+        cut.push([bx1, b[1], x1 - bx1, b[3]]);
+    }
+    (b, hidden || !inside, cut, alpha)
+}
+
+/// `ui.Map`'s markers: (title, latitude, longitude), a missing field empty or 0 as the bridge reads it.
+fn markers(n: &ViewNode) -> Vec<(String, f64, f64)> {
+    n.props.get("markers").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(serde_json::Value::as_object)
+        .map(|m| {
+            let num = |k: &str| m.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.);
+            (m.get("title").and_then(serde_json::Value::as_str).unwrap_or("").to_owned(), num("latitude"), num("longitude"))
+        })
+        .collect()
+}
+
+/// An artifact embed's words while it has no page: "Opening <name>", or wheeld's refusal, in the
+/// footnote style `ArtifactEmbedView` draws them in.
+fn opening(text: String) -> gpui::Div {
+    div().size_full().p(px(8.)).flex().items_center().justify_center().text_center().text_size(px(10.)).text_color(rgba(SECONDARY)).child(text)
 }
 
 /// What a `component` embed naming pane `pane` shows among `leaves`, as the bridge resolves it from
@@ -125,13 +213,27 @@ impl Client {
         let Some(host) = self.plugin_previews.get(pane) else { return };
         let nodes: Vec<(String, String, f32, Result<Leaf, String>)> = host.pane.tree.all().filter(|n| is_pane_embed(&n.component))
             .map(|n| (n.id.clone(), n.component.clone(), n.number("height").unwrap_or(f64::from(HEIGHT)) as f32, self.embed_target(n).cloned())).collect();
+        let natives: Vec<(String, String, Option<WebChoice>)> = host.pane.tree.all().filter(|n| is_native_embed(&n.component))
+            .map(|n| (n.id.clone(), n.component.clone(), (n.component == "WebView").then(|| web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or(""))))).collect();
         let host = self.plugin_previews.get_mut(pane).unwrap();
-        for (id, component, ..) in &nodes {
+        for (id, component) in nodes.iter().map(|(i, c, ..)| (i, c)).chain(natives.iter().map(|(i, c, _)| (i, c))) {
             if host.embeds.get(id).is_none_or(|e| &e.component != component) {
-                host.embeds.insert(id.clone(), Embed { component: component.clone(), bounds: Rc::new(Cell::new([0.; 4])) });
+                host.embeds.insert(id.clone(), Embed { component: component.clone(), bounds: Rc::new(Cell::new([0.; 4])), artifact: None });
             }
         }
         let mut els = HashMap::new();
+        for (id, _, choice) in natives {
+            let el = match choice {
+                Some(WebChoice::Note(text)) => note(&text).into_any_element(),
+                Some(WebChoice::Artifact(name)) => match self.ask_artifact_embed(pane, &id, &name) {
+                    Some(text) => opening(text).into_any_element(),
+                    None => div().into_any_element(),
+                },
+                // The native slot is placed over this rect (`sync_embed_slots`).
+                _ => div().into_any_element(),
+            };
+            els.insert(id, el);
+        }
         for (id, component, height, target) in nodes {
             let key = embed_key(pane, &id);
             let bounds = self.plugin_previews[pane].embeds[&id].bounds.get();
@@ -167,6 +269,33 @@ impl Client {
     /// the term or agent it shows, where it drew and, for a terminal, its grid and the last grid sent.
     pub(super) fn plugin_embeds_json(&self, pane: &str) -> serde_json::Value {
         let Some(host) = self.plugin_previews.get(pane) else { return serde_json::Value::Null };
+        let natives = host.pane.tree.all().filter(|n| is_native_embed(&n.component)).map(|n| {
+            let key = embed_key(pane, &n.id);
+            let embed = host.embeds.get(&n.id);
+            let mut e = serde_json::json!({
+                "component": n.component, "key": key, "bounds": embed.map(|e| e.bounds.get()),
+                "slot": self.embed_slots.get(&key).map(|_| self.native.embed_facts(&key)),
+                "placed": self.embed_slots.get(&key).and_then(|(_, p)| p.as_ref()).map(|p| serde_json::json!({"rect": p.0, "hidden": p.1, "holes": p.2})),
+            });
+            if n.component == "Map" {
+                e["asked"] = serde_json::json!({"latitude": n.number("latitude").unwrap_or(0.), "longitude": n.number("longitude").unwrap_or(0.), "span": n.number("span").unwrap_or(10.), "markers": markers(n).len()});
+                return (n.id.clone(), e);
+            }
+            match web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or("")) {
+                WebChoice::Note(text) => e["note"] = text.into(),
+                WebChoice::Url(url) => e["url"] = url.into(),
+                WebChoice::Artifact(name) => {
+                    e["artifact"] = name.into();
+                    if let Some(a) = embed.and_then(|e| e.artifact.as_ref()) {
+                        e["id"] = a.id.clone().into();
+                        e["scope"] = a.scope.map(|s| s.name()).into();
+                        e["error"] = a.error.clone().into();
+                        e["waiting"] = a.req.is_some().into();
+                    }
+                }
+            }
+            (n.id.clone(), e)
+        }).collect::<Vec<_>>();
         host.pane.tree.all().filter(|n| is_pane_embed(&n.component)).map(|n| {
             let target = self.embed_target(n);
             let key = embed_key(pane, &n.id);
@@ -194,13 +323,152 @@ impl Client {
                 Err(_) => {}
             }
             (n.id.clone(), e)
-        }).collect::<serde_json::Map<_, _>>().into()
+        }).chain(natives).collect::<serde_json::Map<_, _>>().into()
+    }
+
+    /// The artifact page `WebView` node `node` of plugin pane `pane` names (`name`), asked of wheeld
+    /// once (again after a refusal only when the name changes): None once it has a page id to show,
+    /// else the words shown in its place.
+    fn ask_artifact_embed(&mut self, pane: &str, node: &str, name: &str) -> Option<String> {
+        let lacking = self.server_offer.as_ref().map(|o| !o.has("plugin_embed"));
+        let up = self.link == Link::Up;
+        let embed = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?;
+        // Another artifact is another page, as `ArtifactEmbedView` is identified by its name.
+        if embed.artifact.as_ref().is_none_or(|a| a.name != name) {
+            embed.artifact = Some(ArtifactEmbed { name: name.to_owned(), ..Default::default() });
+        }
+        let a = embed.artifact.as_mut().unwrap();
+        if a.id.is_none() && a.req.is_none() && a.error.is_none() && up {
+            match lacking {
+                Some(true) => a.error = Some("This wheeld cannot show an artifact inside a page".into()),
+                Some(false) => {
+                    let req = self.next_req;
+                    self.next_req += 1;
+                    self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?.artifact.as_mut()?.req = Some(req);
+                    self.send(&ClientMsg::PluginEmbed { req: Some(req), pane: pane.to_owned(), artifact: name.to_owned() });
+                }
+                // wheeld's offer comes with its first status; the page is asked for then.
+                None => {}
+            }
+        }
+        let a = self.plugin_previews.get(pane)?.embeds.get(node)?.artifact.as_ref()?;
+        match (&a.error, &a.id) {
+            (Some(error), _) => Some(error.clone()),
+            (None, Some(_)) => None,
+            (None, None) => Some(format!("Opening {name}")),
+        }
+    }
+
+    /// wheeld's answer to a `plugin_embed`: the page to show, or why there is none. Returns whether it was one.
+    pub(super) fn on_embed_message(&mut self, message: &ServerMsg) -> bool {
+        let (req, answer) = match message {
+            ServerMsg::PluginEmbed { req, scope, id, .. } => (*req, Ok((id.clone(), *scope))),
+            ServerMsg::Error { req: Some(req), message, .. } => (*req, Err(message.clone())),
+            _ => return false,
+        };
+        let Some(a) = self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()).find(|a| a.req == Some(req)) else { return false };
+        a.req = None;
+        match answer {
+            Ok((id, scope)) => {
+                a.id = Some(id);
+                a.scope = Some(scope);
+                a.error = None;
+            }
+            Err(message) => {
+                a.id = None;
+                a.error = Some(message);
+            }
+        }
+        true
+    }
+
+    /// A new connection: wheeld may have restarted and forgotten every embed's page, so each is asked for again.
+    pub(super) fn embeds_link_up(&mut self) {
+        let asks: Vec<(String, String, String)> = self.plugin_previews.iter()
+            .flat_map(|(h, host)| host.embeds.iter().filter_map(move |(n, e)| e.artifact.as_ref().map(|a| (h.clone(), n.clone(), a.name.clone()))))
+            .collect();
+        for (pane, node, name) in asks {
+            let req = self.req();
+            if let Some(a) = self.plugin_previews.get_mut(&pane).and_then(|h| h.embeds.get_mut(&node)).and_then(|e| e.artifact.as_mut()) {
+                a.req = Some(req);
+                a.error = None;
+            }
+            self.send(&ClientMsg::PluginEmbed { req: Some(req), pane, artifact: name });
+        }
+    }
+
+    /// The connection dropped: no answer to a `plugin_embed` asked on it comes.
+    pub(super) fn embeds_link_down(&mut self) {
+        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()) {
+            a.req = None;
+        }
+    }
+
+    /// `pane_reload` of page `id`: every embed showing that artifact page opens it again.
+    pub(super) fn reload_embedded_page(&self, id: &str) {
+        for (key, _) in self.embed_slots.iter().filter(|(_, (what, _))| matches!(what, Embedded::Artifact { id: i, .. } if i == id)) {
+            self.native.reload_embed(key);
+        }
+    }
+
+    /// Each previewed page's WebView and Map in its native slot: opened with what it shows, placed
+    /// on the rect it drew at in the last frame within its page's body (hidden while its host is not
+    /// drawn, is hidden, or has a sheet or alert over its page), and closed once its node, its page or
+    /// its host is gone. `hosts` are the previewed panes drawn this frame.
+    pub(super) fn sync_embed_slots(&mut self, hosts: &[String]) {
+        let mut wanted: HashMap<String, (Embedded, Placement)> = HashMap::new();
+        for (h, host) in &self.plugin_previews {
+            let cwd = host.pane.context.get("cwd").and_then(serde_json::Value::as_str).unwrap_or("");
+            let page = self.placed.get(h);
+            let hidden = !hosts.contains(h) || page.is_none_or(|p| p.1) || super::plugin_controls::page_overlaid(&host.pane.tree, host);
+            for n in host.pane.tree.all() {
+                let what = match n.component.as_str() {
+                    "Map" => Embedded::Map {
+                        latitude: n.number("latitude").unwrap_or(0.),
+                        longitude: n.number("longitude").unwrap_or(0.),
+                        span: n.number("span").unwrap_or(10.),
+                        markers: markers(n),
+                    },
+                    "WebView" => match web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or("")) {
+                        WebChoice::Url(url) => Embedded::Web { url },
+                        WebChoice::Artifact(name) => match host.embeds.get(&n.id).and_then(|e| e.artifact.as_ref()).filter(|a| a.name == name && a.error.is_none()) {
+                            Some(ArtifactEmbed { id: Some(id), scope: Some(scope), .. }) => {
+                                Embedded::Artifact { id: id.clone(), name, scope: scope.name().into(), cwd: cwd.into(), ws: self.endpoint.ws.clone() }
+                            }
+                            _ => continue,
+                        },
+                        WebChoice::Note(_) => continue,
+                    },
+                    _ => continue,
+                };
+                let bounds = host.embeds.get(&n.id).map_or([0.; 4], |e| e.bounds.get());
+                let placement = place_embed(bounds, page.map(|p| p.0), page.map_or(&[][..], |p| &p.2), hidden, page.map_or(1., |p| p.3));
+                wanted.insert(embed_key(h, &n.id), (what, placement));
+            }
+        }
+        let gone: Vec<String> = self.embed_slots.keys().filter(|k| !wanted.contains_key(*k)).cloned().collect();
+        for key in gone {
+            self.native.close_embed(&key);
+            self.embed_slots.remove(&key);
+        }
+        for (key, (what, placement)) in wanted {
+            let slot = self.embed_slots.entry(key.clone()).or_insert_with(|| (what.clone(), None));
+            if slot.1.is_none() || slot.0 != what {
+                self.native.open_embed(&key, &what);
+                slot.0 = what;
+            }
+            if slot.1.as_ref() != Some(&placement) {
+                self.native.place(&key, placement.0, placement.1, &placement.2, placement.3);
+                slot.1 = Some(placement);
+            }
+        }
     }
 }
 
 impl Draw<'_> {
-    /// A Terminal or AgentChat node: the body `sync_plugin_embeds` built, as wide as it is offered and
-    /// `height` tall, recording where it drew so the next frame sizes the terminal or the agent to it.
+    /// A Terminal, AgentChat, WebView or Map node: the body `sync_plugin_embeds` built, as wide as it
+    /// is offered and `height` tall (a Map at least 160), recording where it drew so the next frame
+    /// sizes the terminal or the agent to it, or places the native view on it.
     pub(super) fn embed(&self, n: &ViewNode, outer: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         let height = n.number("height").unwrap_or(f64::from(HEIGHT)) as f32;
         let body = self.host.embed_els.borrow_mut().remove(&n.id).unwrap_or_else(|| div().into_any_element());
@@ -216,7 +484,9 @@ impl Draw<'_> {
                 });
             }
         }, |_, _, _, _| ()).absolute().top_0().left_0().size_full();
-        greedy(div().relative().flex().flex_col(), outer).h(px(height)).overflow_hidden().child(mark).child(body).into_any_element()
+        let frame = greedy(div().relative().flex().flex_col(), outer);
+        let frame = if n.component == "Map" { frame.min_h(px(MAP_HEIGHT)) } else { frame.h(px(height)) };
+        frame.overflow_hidden().child(mark).child(body).into_any_element()
     }
 }
 
@@ -226,6 +496,33 @@ mod tests {
 
     fn leaf(id: &str, term: Option<&str>, agent: Option<&str>) -> Leaf {
         Leaf { id: id.into(), kind: String::new(), label: String::new(), term: term.map(Into::into), url: None, scope: None, agent: agent.map(Into::into), harness: None, status: None, name: None, title: None, mirror: None, visited: vec![], quiet: false }
+    }
+
+    #[test]
+    fn a_web_view_shows_a_web_address_an_artifact_or_why_not() {
+        use WebChoice::*;
+        assert_eq!(web_choice("https://example.com/a", ""), Url("https://example.com/a".into()));
+        assert_eq!(web_choice("HTTP://127.0.0.1:8080/", ""), Url("HTTP://127.0.0.1:8080/".into()));
+        assert_eq!(web_choice("", "notes"), Artifact("notes".into()));
+        assert_eq!(web_choice("https://example.com", "notes"), Note("WebView names both a url and an artifact".into()));
+        assert_eq!(web_choice("", ""), Note("WebView names no url".into()));
+        assert_eq!(web_choice("file:///etc/hosts", ""), Note("WebView shows only http and https addresses, not file:///etc/hosts".into()));
+        assert_eq!(web_choice("example.com", ""), Note("WebView shows only http and https addresses, not example.com".into()));
+        assert_eq!(web_choice("httpx://a", ""), Note("WebView shows only http and https addresses, not httpx://a".into()));
+    }
+
+    #[test]
+    fn a_slot_is_cut_to_the_visible_page() {
+        let body = Some([0., 100., 400., 300.]);
+        // Inside the body: placed on its rect with the host's holes only.
+        assert_eq!(place_embed([10., 150., 200., 100.], body, &[[1., 1., 1., 1.]], false, 1.), ([10., 150., 200., 100.], false, vec![[1., 1., 1., 1.]], 1.));
+        // Scrolled half above the body: the part above is cut.
+        assert_eq!(place_embed([10., 50., 200., 100.], body, &[], false, 1.), ([10., 50., 200., 100.], false, vec![[10., 50., 200., 50.]], 1.));
+        // Below the body, not drawn yet, or the host hidden: hidden.
+        assert!(place_embed([10., 450., 200., 100.], body, &[], false, 1.).1);
+        assert!(place_embed([0., 0., 0., 0.], body, &[], false, 1.).1);
+        assert!(place_embed([10., 150., 200., 100.], body, &[], true, 1.).1);
+        assert!(place_embed([10., 150., 200., 100.], None, &[], false, 1.).1);
     }
 
     #[test]

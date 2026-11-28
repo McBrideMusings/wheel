@@ -57,6 +57,9 @@ objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["st
 block2 = "0.6"
 # Browser and plain web panes (src/appkit/web.rs): WKWebView, and a recording of one written as a movie.
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKUserScript", "WKScriptMessage", "WKScriptMessageHandler", "WKNavigationDelegate", "WKUIDelegate", "WKNavigationAction", "WKNavigationResponse", "WKNavigation", "WKSnapshotConfiguration", "WKFrameInfo", "WKWindowFeatures", "WKURLSchemeHandler", "WKURLSchemeTask", "WKWebsiteDataStore"] }
+# A page's ui.Map (src/appkit/pane_host.rs): an MKMapView with one pin per marker.
+objc2-map-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-location", "objc2-core-foundation", "MKMapView", "MKGeometry", "MKAnnotation", "MKShape", "MKPointAnnotation"] }
+objc2-core-location = { version = "0.3.2", default-features = false, features = ["std", "CLLocation"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-core-media", "objc2-core-video", "AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings"] }
 objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMTime"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-graphics", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVReturn"] }

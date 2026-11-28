@@ -5914,6 +5914,18 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(components(&seen).iter().any(|c| c["type"] == "AgentChat") && seen["error"].is_null(), "the embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
     draw(window, Some(output.join("client-plugin-embeds.png")), cx)?;
     report.insert("embeds".into(), json!({"gpui_embeds": embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?}));
+    // Its `web` pane draws a WebView whose url and artifact its two fields hold, and a Map.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "embeds", "--plugin-pane", "web"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin embeds web: {err}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if components(&seen).iter().any(|c| c["type"] == "Map") {
+            break;
+        }
+    }
+    ensure!(components(&seen).iter().any(|c| c["type"] == "Map") && seen["error"].is_null(), "the web embeds pane never drew: error {} types {:?}", seen["error"], components(&seen).iter().map(|c| c["type"].clone()).collect::<Vec<_>>());
+    report.insert("web_embeds".into(), web_embeds_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
@@ -5997,7 +6009,7 @@ fn press_recorded(window: ClientWindow, pane: &str, id: &str, cx: &mut AsyncApp)
 }
 
 /// The components a pane script names that GPUI's preview draws as nothing until the embeds are ported (wheel-4d1o.5).
-const PLUGIN_EMBEDS: [&str; 3] = ["WebView", "VideoStream", "Map"];
+const PLUGIN_EMBEDS: [&str; 1] = ["VideoStream"];
 
 /// Plugin pane `pane`, showing plugin pane `name`, drawn by GPUI beside the bridge's view
 /// (wheel-4d1o.3): previewed, waited on until its tree holds the bridge's components, its page cut
@@ -6334,6 +6346,168 @@ async fn embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window
         let _ = run_pumped(&["pane", "close", &term_pane], connection, layouts, window, cx).await;
     }
     steps
+}
+
+/// An http server on a loopback port the check's WebView embed loads: every request gets one page
+/// titled `title`. Its thread ends with the check.
+fn serve_page(title: &'static str) -> Result<String> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://127.0.0.1:{}/embedded.html", listener.local_addr()?.port());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = format!("<!doctype html><html><meta charset=\"utf-8\"><title>{title}</title><body style=\"background:#f4efe6;font:20px system-ui;padding:20px\"><h1>{title}</h1></body></html>");
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    Ok(url)
+}
+
+/// GPUI's own WebView and Map embeds (wheel-4d1o.5) on a fresh preview of the fixture's `embeds/web`
+/// plugin pane `pane`, each in a native slot of its own. The Map: its slot lies on the rect the
+/// embed drew at, not zero by either measure, and looks at the region the page names with both its
+/// pins. A non-http url and a url beside an artifact show their notes and no slot. A WebView on a
+/// loopback page the check serves: its slot lies on the embed's rect and the page loads; the
+/// picture of the page with both native views drawn in goes beside the bridge's `pane shot`. Scrolled
+/// partly out of the page, the slot is cut at the page's top; scrolled out, it hides. A WebView on
+/// the fixture's `embedded` artifact opens wheeld's page for it in the artifact's own store; a name
+/// with no artifact shows wheeld's refusal. Ending the preview closes both slots.
+#[allow(clippy::too_many_arguments)]
+async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    let served = serve_page("Embedded page")?;
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for the web embeds");
+    let mut keys = vec![];
+    let steps = async {
+        let began = std::time::Instant::now();
+        plugin_preview_matches(connection, layouts, window, native, pane, "embeds web", cx).await?;
+        let preview = plugin_preview(window, pane, cx)?;
+        let comps = preview["components"].clone();
+        let cwd = preview["cwd"].as_str().unwrap_or_default().to_owned();
+        let field = |label: &str| comps.as_array().into_iter().flatten().find(|c| c["type"] == "TextField" && c["label"] == label)
+            .and_then(|c| c["id"].as_str().map(str::to_owned)).ok_or_else(|| anyhow::anyhow!("the web embeds pane has no {label} field: {comps}"));
+        let (url_field, artifact_field) = (field("Web url")?, field("Web artifact")?);
+        let embed = |e: &Value, component: &str| e.as_object().into_iter().flatten().find(|(_, v)| v["component"] == component).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+        let nums = |v: &Value| -> Vec<f64> { v.as_array().into_iter().flatten().filter_map(Value::as_f64).collect() };
+        // The slot shown, on the rect the embed drew at, with a width and a height that are not zero.
+        let on_bounds = |v: &Value| {
+            let (b, f) = (nums(&v["bounds"]), nums(&v["slot"]["frame_top"]));
+            b.len() == 4 && f.len() == 4 && b[2] > 0. && b[3] > 0. && f[2] > 0. && f[3] > 0. && b.iter().zip(&f).all(|(a, b)| (a - b).abs() < 0.5) && v["slot"]["hidden"] == false
+        };
+        let set = |id: &str, value: &str, cx: &mut AsyncApp| -> Result<()> {
+            ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, id, json!(value), cx))?, "the web embeds pane has no field {id}");
+            Ok(())
+        };
+        macro_rules! until {
+            ($what:expr, $ok:expr) => {{
+                let mut now = Value::Null;
+                for _ in 0..150 {
+                    draw(window, None, cx)?;
+                    pump(connection, 100, layouts, window, cx).await?;
+                    draw(window, None, cx)?;
+                    now = plugin_preview(window, pane, cx)?["embeds"].clone();
+                    if $ok(&now) {
+                        break;
+                    }
+                }
+                ensure!($ok(&now), "GPUI's web embeds: {}: {now}", $what);
+                now
+            }};
+        }
+        // The Map, and the WebView naming nothing.
+        let mapped = until!("the Map's slot should lie on its rect and look where the page says, with both pins", |e: &Value| {
+            let m = embed(e, "Map");
+            let map = &m["slot"]["map"];
+            let c = nums(&map["center"]);
+            on_bounds(&m) && map["set"] == true && map["markers"] == 2 && c.len() == 2 && (c[0] - 51.5).abs() < 0.01 && (c[1] + 0.12).abs() < 0.01
+                && embed(e, "WebView")["note"] == "WebView names no url" && embed(e, "WebView")["slot"].is_null()
+        });
+        let m = embed(&mapped, "Map");
+        let span = nums(&m["slot"]["map"]["span"]);
+        ensure!(m["slot"]["map"]["asked"] == json!([51.5, -0.12, 0.2]) && span.len() == 2 && span.iter().any(|s| (s - 0.2).abs() < 0.05) && nums(&m["bounds"])[3] >= 159.5,
+            "the Map should look 0.2 degrees across and be at least 160 tall: {m}");
+        keys.push(m["key"].as_str().unwrap_or_default().to_owned());
+        // The notes, and no slot for either.
+        set(&url_field, "file:///etc/hosts", cx)?;
+        until!("a file url should say the WebView shows only web addresses", |e: &Value| embed(e, "WebView")["note"] == "WebView shows only http and https addresses, not file:///etc/hosts" && embed(e, "WebView")["slot"].is_null());
+        set(&artifact_field, "embedded", cx)?;
+        until!("a url beside an artifact should say it names both", |e: &Value| embed(e, "WebView")["note"] == "WebView names both a url and an artifact" && embed(e, "WebView")["slot"].is_null());
+        set(&artifact_field, "", cx)?;
+        // Case 1: the served page, loaded in a slot on the embed's rect.
+        set(&url_field, &served, cx)?;
+        let loaded = until!("the WebView's slot should lie on its rect and load the served page", |e: &Value| {
+            let w = embed(e, "WebView");
+            on_bounds(&w) && w["slot"]["url"] == served.as_str() && w["slot"]["embedded"] == true && w["slot"]["loads"].as_array().and_then(|l| l.last()) == Some(&json!("Embedded page"))
+        });
+        let w = embed(&loaded, "WebView");
+        let wb = nums(&w["bounds"]);
+        ensure!((wb[3] - 200.).abs() < 0.5, "the WebView drew {}x{}, not 200 tall", wb[2], wb[3]);
+        keys.push(w["key"].as_str().unwrap_or_default().to_owned());
+        // The page as the window draws it, the two native views' own pixels laid over their slots.
+        let body = plugin_body(window, pane, cx)?;
+        let shots = output.join("gpui-plugin-embeds-web");
+        shot(native, &shots, cx).await?;
+        let frame_png = output.join("gpui-plugin-embeds-web-frame.png");
+        draw(window, Some(frame_png.clone()), cx)?;
+        let picture = output.join("gpui-plugin-embeds-web.png");
+        {
+            let mut frame = image::open(&frame_png)?.to_rgba8();
+            let width = window.update(cx, |_, w, _| f32::from(w.viewport_size().width))?;
+            let scale = f64::from(frame.width()) / f64::from(width.max(1.));
+            for (v, suffix) in [(&w, "web"), (&m, "map")] {
+                let f = nums(&v["slot"]["frame_top"]);
+                let path = shots.join(format!("{}-{suffix}.png", v["key"].as_str().unwrap_or_default().replace('/', "_")));
+                let page = image::open(&path).map_err(|e| anyhow::anyhow!("no picture of the {suffix} embed's view at {}: {e}", path.display()))?.to_rgba8();
+                let page = image::imageops::resize(&page, (f[2] * scale) as u32, (f[3] * scale) as u32, image::imageops::FilterType::Triangle);
+                image::imageops::overlay(&mut frame, &page, (f[0] * scale) as i64, (f[1] * scale) as i64);
+            }
+            let s = scale as f32;
+            image::imageops::crop_imm(&frame, (body.0 * s) as u32, (body.1 * s) as u32, (body.2 * s) as u32, (body.3 * s) as u32).to_image().save(&picture)?;
+        }
+        let swift = output.join("client-plugin-embeds-web.png");
+        let (ok, _, err) = run_pumped(&["pane", "shot", pane, &swift.display().to_string()], connection, layouts, window, cx).await?;
+        ensure!(ok, "pane shot of the web embeds pane: {err}");
+        // Scrolled so the page's top cuts through the WebView: the slot follows the rect, its part above the page cut.
+        let into = (wb[1] - f64::from(body.1)) as f32 + 60.;
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, into))?, "the web embeds pane is not previewed");
+        let cut = until!("scrolled partly out of the page, the WebView's slot should follow its rect and be cut at the page's top", |e: &Value| {
+            let w = embed(e, "WebView");
+            let b = nums(&w["bounds"]);
+            on_bounds(&w) && b[1] < f64::from(body.1) && w["slot"]["holes"].as_array().into_iter().flatten().any(|h| { let h = nums(h); h.len() == 4 && (h[1] + h[3] - f64::from(body.1)).abs() < 0.5 && (h[1] - b[1]).abs() < 0.5 })
+        });
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, 4000.))?, "the web embeds pane is not previewed");
+        until!("scrolled out of the page, both slots should hide", |e: &Value| embed(e, "WebView")["slot"]["hidden"] == true && embed(e, "Map")["slot"]["hidden"] == true);
+        ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, 0.))?, "the web embeds pane is not previewed");
+        until!("scrolled back, the WebView's slot should lie on its rect again", |e: &Value| on_bounds(&embed(e, "WebView")));
+        // Case 3: the fixture's artifact, opened from wheeld's page in that artifact's store.
+        set(&url_field, "", cx)?;
+        set(&artifact_field, "embedded", cx)?;
+        let store = wheel_gpui::artifact_page::store_id(&cwd, false, "embedded");
+        let opened = until!("the artifact should open wheeld's page for it in its own store", |e: &Value| {
+            let w = embed(e, "WebView");
+            on_bounds(&w) && w["scope"] == "project" && w["id"].is_string() && w["slot"]["page"] == w["id"] && w["slot"]["store"] == store.as_str()
+                && w["slot"]["loads"].as_array().and_then(|l| l.last()) == Some(&json!("Embedded artifact"))
+        });
+        let page_id = embed(&opened, "WebView")["id"].clone();
+        set(&artifact_field, "no-such-artifact", cx)?;
+        let refused = until!("a name with no artifact should show wheeld's refusal and no slot", |e: &Value| {
+            let w = embed(e, "WebView");
+            w["error"].as_str().is_some_and(|t| t.starts_with("no artifact no-such-artifact")) && w["slot"].is_null()
+        });
+        set(&artifact_field, "", cx)?;
+        let out = json!({"web_embeds_ms": began.elapsed().as_millis() as u64, "served": served, "web": {"bounds": wb, "slot": w["slot"]["frame_top"]}, "map": {"bounds": m["bounds"], "slot": m["slot"]["map"]},
+            "cut": embed(&cut, "WebView")["slot"]["holes"], "artifact": {"page": page_id, "store": store}, "refused": embed(&refused, "WebView")["error"], "pictures": [picture, swift]});
+        eprintln!("wheel-gpui: web embeds in GPUI: {out}");
+        Ok::<Value, anyhow::Error>(out)
+    }.await;
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    let left: Vec<&String> = keys.iter().filter(|k| !native.embed_facts(k).is_null()).collect();
+    let out = steps?;
+    ensure!(left.is_empty(), "ending the preview left the embeds' slots open: {left:?}");
+    Ok(out)
 }
 
 /// The gallery drawn by GPUI beside the bridge's SwiftUI (wheel-4d1o.2): the client runs the

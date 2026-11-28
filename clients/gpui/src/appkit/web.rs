@@ -77,6 +77,8 @@ struct Browser {
 /// view, since the store and handler are bound to both), its store and its scheme handler.
 struct Artifact {
     key: String,
+    /// wheeld's page id: the page opens at `/artifacts/<id>/` and stays in that folder. A web pane's is its pane id.
+    id: String,
     store: String,
     scheme: Retained<PageScheme>,
 }
@@ -88,6 +90,8 @@ struct Page {
     browser: Option<Browser>,
     /// An artifact page's; None for a browser or a web pane on a plain URL.
     artifact: Option<Artifact>,
+    /// A plugin page's `WebView{url}`: it navigates only to http, https and about, a new window in place.
+    embedded: bool,
     /// The page the view is on, or the one it was given before anything committed.
     url: String,
     /// Each finished load's title.
@@ -214,6 +218,15 @@ fn once<A, F: FnOnce(A) + 'static>(f: F) -> impl Fn(A) + 'static {
     }
 }
 
+/// Whether a plugin page's `WebView{url}` may go to `target` (`EmbeddedWebLoader.allowed`).
+fn embedded_allows(target: Option<&NSURL>) -> bool {
+    target.and_then(|t| t.scheme()).is_some_and(|s| embedded_scheme(&s.to_string()))
+}
+
+fn embedded_scheme(scheme: &str) -> bool {
+    matches!(scheme.to_lowercase().as_str(), "http" | "https" | "about")
+}
+
 fn url_of(text: &str) -> Option<Retained<NSURL>> {
     NSURL::URLWithString(&NSString::from_str(text))
 }
@@ -308,7 +321,7 @@ pub fn image_png(image: &NSImage) -> Option<Vec<u8>> {
 }
 
 /// `view` drawn by AppKit, as a PNG: a view showing no page, which WebKit may never snapshot.
-fn cached_png(view: &NSView) -> Option<Vec<u8>> {
+pub(super) fn cached_png(view: &NSView) -> Option<Vec<u8>> {
     let rep = view.bitmapImageRepForCachingDisplayInRect(view.bounds())?;
     view.cacheDisplayInRect_toBitmapImageRep(view.bounds(), &rep);
     unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }.map(|d| d.to_vec())
@@ -381,6 +394,15 @@ impl Pages {
         self.pages.borrow().get(pane).is_some_and(|p| p.artifact.is_some())
     }
 
+    /// The page id an artifact page stays inside.
+    fn artifact_id(&self, pane: &str) -> Option<String> {
+        self.pages.borrow().get(pane).and_then(|p| p.artifact.as_ref()).map(|a| a.id.clone())
+    }
+
+    fn is_embedded(&self, pane: &str) -> bool {
+        self.pages.borrow().get(pane).is_some_and(|p| p.embedded)
+    }
+
     fn is_browser(&self, pane: &str) -> bool {
         self.pages.borrow().get(pane).is_some_and(|p| p.browser.is_some())
     }
@@ -388,7 +410,7 @@ impl Pages {
     /// A browser on `url`, or a web pane on the plain URL `url`, in `slot`. Opening a browser
     /// again makes `url` its home; opening a web pane again on another URL loads it.
     pub fn open(&self, pane: &str, slot: &NSView, browser: bool, url: &str, remote: bool) {
-        let again = self.pages.borrow().get(pane).filter(|p| p.artifact.is_none()).map(|p| (p.browser.is_some(), p.url.clone()));
+        let again = self.pages.borrow().get(pane).filter(|p| p.artifact.is_none() && !p.embedded).map(|p| (p.browser.is_some(), p.url.clone()));
         if again.is_none() {
             self.close(pane);
         }
@@ -456,7 +478,7 @@ impl Pages {
         });
         self.pages
             .borrow_mut()
-            .insert(pane.to_owned(), Page { view, delegate, browser: model, artifact: None, url: url.to_owned(), loads: vec![], reloads: 0, status: None, text: None });
+            .insert(pane.to_owned(), Page { view, delegate, browser: model, artifact: None, embedded: false, url: url.to_owned(), loads: vec![], reloads: 0, status: None, text: None });
         if browser {
             self.go(pane, url);
         } else if let (Some(view), Some(target)) = (self.view(pane), url_of(url)) {
@@ -464,14 +486,55 @@ impl Pages {
         }
     }
 
+    /// A plugin page's `WebView{url}` in `slot`, as WheelUI's `EmbeddedWebLoader` makes it: a WKWebView
+    /// with the default configuration, loading `url` once and again only when it names another.
+    pub fn open_embedded(&self, key: &str, slot: &NSView, url: &str) {
+        let again = self.pages.borrow().get(key).filter(|p| p.embedded).map(|p| p.url.clone());
+        match again {
+            Some(was) if was == url => return,
+            Some(_) => {
+                self.pages.borrow_mut().get_mut(key).unwrap().url = url.to_owned();
+                if let (Some(view), Some(target)) = (self.view(key), url_of(url)) {
+                    unsafe { drop(view.loadRequest(&NSURLRequest::requestWithURL(&target))) };
+                }
+                return;
+            }
+            None => self.close(key),
+        }
+        let mtm = main_thread();
+        let delegate = PageDelegate::new(key, self.me.clone());
+        let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
+        let view = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &configuration) };
+        unsafe {
+            view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            view.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        }
+        view.setFrame(slot.bounds());
+        slot.addSubview(&view);
+        self.pages
+            .borrow_mut()
+            .insert(key.to_owned(), Page { view, delegate, browser: None, artifact: None, embedded: true, url: url.to_owned(), loads: vec![], reloads: 0, status: None, text: None });
+        if let (Some(view), Some(target)) = (self.view(key), url_of(url)) {
+            unsafe { drop(view.loadRequest(&NSURLRequest::requestWithURL(&target))) };
+        }
+    }
+
     /// Artifact `name` (`scope` project or machine) of the space at `cwd` in `slot`: its page at
     /// `wheel-page://pages/artifacts/<pane>/`, fetched from wheeld at `ws` (its token in the query).
     /// Opening the same artifact for the same space again keeps the view.
     pub fn open_artifact(&self, pane: &str, slot: &NSView, name: &str, scope: &str, cwd: &str, ws: &str) {
+        self.open_artifact_page(pane, pane, slot, name, scope, cwd, ws);
+    }
+
+    /// Artifact `name`'s page `id` under `key`: a web pane's own (`id` its pane id), or a plugin page's
+    /// `WebView{artifact}` (`id` the page wheeld keeps for it). Another page id is another view.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_artifact_page(&self, key: &str, id: &str, slot: &NSView, name: &str, scope: &str, cwd: &str, ws: &str) {
+        let pane = key;
         if let Some(daemon) = artifact_page::daemon_of(ws) {
             *self.daemon.borrow_mut() = Some(daemon);
         }
-        let key = format!("{scope}/{name}\n{cwd}");
+        let key = format!("{scope}/{name}\n{cwd}\n{id}");
         if self.pages.borrow().get(pane).and_then(|p| p.artifact.as_ref()).is_some_and(|a| a.key == key) {
             return;
         }
@@ -482,17 +545,17 @@ impl Pages {
         if let Some(id) = NSUUID::from_string(&NSString::from_str(&store)) {
             unsafe { configuration.setWebsiteDataStore(&WKWebsiteDataStore::dataStoreForIdentifier(&id, mtm)) };
         }
-        let scheme = PageScheme::new(pane, self.me.clone());
+        let scheme = PageScheme::new(pane, id, self.me.clone());
         unsafe { configuration.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(&*scheme)), &NSString::from_str(artifact_page::SCHEME)) };
         let delegate = PageDelegate::new(pane, self.me.clone());
         let view = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &configuration) };
         unsafe { view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
         view.setFrame(slot.bounds());
         slot.addSubview(&view);
-        let url = artifact_page::page_url(pane);
+        let url = artifact_page::page_url(id);
         self.pages.borrow_mut().insert(
             pane.to_owned(),
-            Page { view, delegate, browser: None, artifact: Some(Artifact { key, store, scheme }), url: url.clone(), loads: vec![], reloads: 0, status: None, text: None },
+            Page { view, delegate, browser: None, artifact: Some(Artifact { key, id: id.to_owned(), store, scheme }), embedded: false, url: url.clone(), loads: vec![], reloads: 0, status: None, text: None },
         );
         self.load_page(pane);
     }
@@ -500,7 +563,8 @@ impl Pages {
     /// Open an artifact pane's page address, which also serves as its reload: `WKWebView.reload()`
     /// does nothing when the first load never committed (wheeld was down).
     fn load_page(&self, pane: &str) {
-        if let (Some(view), Some(target)) = (self.view(pane), url_of(&artifact_page::page_url(pane))) {
+        let Some(id) = self.artifact_id(pane) else { return };
+        if let (Some(view), Some(target)) = (self.view(pane), url_of(&artifact_page::page_url(&id))) {
             unsafe { drop(view.loadRequest(&NSURLRequest::requestWithURL(&target))) };
         }
     }
@@ -706,6 +770,9 @@ impl Pages {
         if self.is_artifact(pane) {
             return self.artifact_allows(pane, action);
         }
+        if self.is_embedded(pane) {
+            return embedded_allows((unsafe { action.request() }).URL().as_deref());
+        }
         if !self.is_browser(pane) {
             return true;
         }
@@ -730,7 +797,8 @@ impl Pages {
         let Some(target) = (unsafe { action.request() }).URL() else { return false };
         let main = unsafe { action.targetFrame() }.is_none_or(|f: Retained<WKFrameInfo>| unsafe { f.isMainFrame() });
         let address = absolute(&target);
-        if artifact_page::allows_inline_frame(&address, main) || artifact_page::in_folder(&address, pane) {
+        let id = self.artifact_id(pane).unwrap_or_default();
+        if artifact_page::allows_inline_frame(&address, main) || artifact_page::in_folder(&address, &id) {
             return true;
         }
         if unsafe { action.navigationType() } == WKNavigationType::LinkActivated {
@@ -819,6 +887,12 @@ impl Pages {
     /// the disk.
     fn new_window(&self, pane: &str, web: &WKWebView, action: &WKNavigationAction) {
         let request = unsafe { action.request() };
+        if self.is_embedded(pane) {
+            if embedded_allows(request.URL().as_deref()) {
+                unsafe { drop(web.loadRequest(&request)) };
+            }
+            return;
+        }
         let Some(target) = request.URL() else { return };
         if target.isFileURL() {
             let from = unsafe { web.URL() };
@@ -1005,9 +1079,10 @@ impl Pages {
         }
     }
 
-    /// The check's snapshot of WKWebView `view` in `pane`, written to `<directory>/<pane>-web.png`.
+    /// The check's snapshot of WKWebView `view` in `pane`, written to `<directory>/<pane>-web.png`
+    /// (an embed's key with each `/` of its node id as `_`).
     pub fn snapshot_to(&self, pane: &str, view: &WKWebView, directory: &str) {
-        let path = format!("{directory}/{pane}-web.png");
+        let path = format!("{directory}/{}-web.png", pane.replace('/', "_"));
         let blank = unsafe { view.URL() }.is_none_or(|u| absolute(&u) == "about:blank");
         if blank {
             // A view showing no page has nothing for WebKit to snapshot, and its snapshot can go unanswered: AppKit draws it instead.
@@ -1051,6 +1126,10 @@ impl Pages {
                     "status": p.status, "text": p.text.clone().unwrap_or_default()});
                 if let Some(a) = &p.artifact {
                     entry["store"] = json!(a.store);
+                    entry["page"] = json!(a.id);
+                }
+                if p.embedded {
+                    entry["embedded"] = json!(true);
                 }
                 if let Some(b) = &p.browser {
                     entry["title"] = json!(b.title);
@@ -1080,6 +1159,12 @@ mod tests {
         assert!(script.contains("window.webkit.messageHandlers.wheelConsole.postMessage(message)"));
         // The Swift literal's closing-delimiter indentation is gone: the outermost lines start at column 0.
         assert_eq!((script.lines().next(), script.lines().last()), (Some("(function () {"), Some("})();")), "{script}");
+    }
+
+    #[test]
+    fn an_embedded_page_goes_only_to_web_and_about() {
+        assert!(embedded_scheme("http") && embedded_scheme("HTTPS") && embedded_scheme("about"));
+        assert!(!embedded_scheme("file") && !embedded_scheme("wheel-page") && !embedded_scheme("mailto"));
     }
 
     #[test]

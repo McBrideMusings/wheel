@@ -301,6 +301,9 @@ pub struct Client {
     /// Plugin panes whose script this client runs and draws (`plugin.rs`); only the hidden check
     /// previews one before wheel-4d1o.7.
     plugin_previews: HashMap<String, plugin::PluginHost>,
+    /// The native slots previewed pages' WebView and Map embeds show in, by `<host>#<node>`: what each
+    /// shows and where it was last put (`plugin_embeds.rs`).
+    embed_slots: HashMap<String, (wheel_gpui_core::native::Embedded, Option<Placement>)>,
     /// Text a previewed pane's Button copied, put on the pasteboard by the next draw or press.
     plugin_copied: Vec<String>,
     /// The context menus and pop-up menus previewed plugin panes open, and what each item does.
@@ -562,7 +565,7 @@ impl Client {
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
             status_dots: status::all_ranks(), footer_items: HashMap::new(), agents: vec![], raw_context: HashSet::new(), menu: None, menu_at: 0, footer_shown: RefCell::default(), controls: Rc::default(), card_slots: Rc::default(), bodies: body::Bodies::default(), spinners: HashMap::new(), spinners_seen: HashSet::new(), spin_clock: None, card_last: Rc::default(), card_views: HashMap::new(), card_panes: HashSet::new(), footer_overlay: false, presses: vec![], palettes: HashMap::new(), next_req: 100_000,
-            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugin_previews: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
+            browsers: HashMap::new(), plugin_errors: HashMap::new(), plugin_previews: HashMap::new(), embed_slots: HashMap::new(), plugin_copied: vec![], plugin_menu: Default::default(), agent_views: HashSet::new(), plugins: HashMap::new(), plugin_reqs: HashMap::new(), plugins_asked: HashMap::new(), plugins_due: None, plugins_timer: false, address_edit: None, open_reqs: HashMap::new(),
             keymap: Keymap::default(), keybind: String::new(), runners: vec![], runners_space: None, command_palette: None, recent_dirs: vec![], palette_artifacts: vec![], palette_reqs: commands::PaletteReqs::default(),
             shortcuts_open: false, confirmation: None, routed: vec![], actions_log: vec![], close_window_requested: false,
             settings_open: false, settings: crate::settings::Model::default(), settings_reqs: SettingsReqs::default(), settings_edit: None, command_line_result: std::sync::Arc::default(), qr_cache: None, pending_open: None, redraw_due: None, running: Default::default(),
@@ -627,6 +630,7 @@ impl Client {
                         }
                         // `pane_reload`: a web pane's page opens again, a browser reloads its page, a plugin pane runs its script from the top.
                         ServerMsg::PaneReload { pane } => {
+                            self.reload_embedded_page(pane);
                             if self.opened.contains_key(pane) {
                                 self.native.reload(pane);
                             }
@@ -855,6 +859,7 @@ impl Client {
                 // Each term the panes draw streams again on this connection; its replay redraws it.
                 self.reattach_terms();
                 self.plugin_link_up();
+                self.embeds_link_up();
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 // wheeld answers a listing only when it carries a req.
                 let req = self.settings_req();
@@ -865,6 +870,7 @@ impl Client {
             }
             Event::Down(reason) => {
                 self.plugin_link_down(&reason);
+                self.embeds_link_down();
                 self.link = Link::Down(reason);
                 server::link(&self.endpoint, false);
                 self.drop_earlier();
@@ -2715,6 +2721,7 @@ impl Render for Client {
         self.sync_agents(cards.iter().filter(|c| c.leaf.kind == "agent").filter_map(|c| c.leaf.agent.clone()).collect::<Vec<_>>());
         let hosts = self.embed_hosts(&leaves);
         self.sync_agents(self.embed_agents(&hosts));
+        self.sync_embed_slots(&hosts);
         self.frames += 1;
         self.settle_selection();
         if let Some((agent, address, command)) = self.links.pending.take() {

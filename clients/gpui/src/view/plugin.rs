@@ -44,7 +44,7 @@ pub struct PluginHost {
     pub(super) viewport: std::cell::Cell<f32>,
     /// Each Canvas's camera, pointer, replayed commands and reported size, by node id.
     pub(super) canvases: RefCell<HashMap<String, Rc<RefCell<super::plugin_canvas::CanvasView>>>>,
-    /// Each Terminal and AgentChat embed's state, by node id, and the embed holding the keyboard
+    /// Each Terminal, AgentChat, WebView and Map embed's state, by node id, and the embed holding the keyboard
     /// while the pane has it.
     pub(super) embeds: HashMap<String, super::plugin_embeds::Embed>,
     pub(super) focused_embed: Option<String>,
@@ -243,6 +243,9 @@ impl Client {
     /// Returns whether it was one; a `feed_update` for any other pane is left for the queue and
     /// the rest.
     pub fn on_plugin_message(&mut self, message: &ServerMsg) -> bool {
+        if self.on_embed_message(message) {
+            return true;
+        }
         let pane = match message {
             ServerMsg::PluginSource { req, pane, chunk, source, modules, .. } => {
                 let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
@@ -514,7 +517,7 @@ impl Client {
         let p = &host.pane;
         serde_json::json!({
             "state": p.state_json(), "error": p.error(), "running": p.running(), "reloads": p.reloads(), "restarts": p.restarts(),
-            "components": p.component_texts(), "feeds": p.feed_json(), "fills": p.fills_pane(),
+            "components": p.component_texts(), "feeds": p.feed_json(), "fills": p.fills_pane(), "cwd": p.context.get("cwd"),
             "fields": host.fields.iter().map(|(id, (_, _, text))| (id.clone(), Json::String(text.clone()))).collect::<serde_json::Map<_, _>>(),
             "open": host.open.iter().collect::<Vec<_>>(),
             "fits": host.fits.borrow().iter().map(|(id, f)| (id.clone(), serde_json::json!({"choice": f.choice, "width": f.width, "height": f.height}))).collect::<serde_json::Map<_, _>>(),

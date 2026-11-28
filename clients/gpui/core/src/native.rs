@@ -109,6 +109,10 @@ pub trait Host {
     fn close_page(&self, pane: &str);
     /// Show artifact `name` (`scope`) of the space at `cwd` in `pane`'s slot, fetched from wheeld at `ws`.
     fn open_artifact(&self, pane: &str, name: &str, scope: &str, cwd: &str, ws: &str);
+    /// Show `what` in the slot under `key`, a plugin page's embed (`<host pane>#<node>`). Opening the
+    /// same kind again keeps the view: a web page loads a new address, an artifact a new page id, and
+    /// a map takes the new markers but keeps where it looks.
+    fn open_embed(&self, key: &str, what: &Embedded);
     /// One of a browser's actions (see [`Native::browser`]), with its fields in `value`.
     fn browser(&self, pane: &str, action: &str, value: &Value);
     /// `pane_reload` on a browser or web page; false when `pane` holds neither.
@@ -120,11 +124,26 @@ pub trait Host {
     fn compose(&self, id: u64, pane: &str, base: Result<Vec<u8>, String>);
     /// `inspect_pane` `id` on a browser's page, answered with a frame.
     fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>);
-    /// The check's snapshot of every shown WKWebView, each written to `<directory>/<pane>-web.png`.
+    /// The check's snapshot of every shown WKWebView, each written to `<directory>/<pane>-web.png`, and
+    /// of every shown map to `<directory>/<key>-map.png` (a `/` in an embed's key written as `_`).
     fn snapshot(&self, directory: &str);
     /// Each page's status entry by pane (`kind`, `url`, `loads` and the rest), and the window's own
     /// (`snapshots_pending`, `snapshots_waiting`, `logs`, `errors`).
     fn pages(&self) -> (serde_json::Map<String, Value>, Value);
+}
+
+/// What a plugin page's `WebView` or `Map` shows in a slot of its own (wheel-4d1o.5).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Embedded {
+    /// An http or https address in a WKWebView with the default data store. It navigates only to
+    /// http, https and about, and a link asking for a new window opens in place.
+    Web { url: String },
+    /// Artifact `name` (`scope` project or machine) as wheeld's page `id` at `/artifacts/<id>/`,
+    /// fetched from wheeld at `ws`, in the store of that artifact in the space at `cwd`.
+    Artifact { id: String, name: String, scope: String, cwd: String, ws: String },
+    /// An MKMapView on the region around `latitude`, `longitude`, `span` degrees across both ways,
+    /// with a titled pin per marker: (title, latitude, longitude).
+    Map { latitude: f64, longitude: f64, span: f64, markers: Vec<(String, f64, f64)> },
 }
 
 /// One synthesized pointer event (the check's and the debug route's `post_mouse`). A context menu
@@ -399,6 +418,35 @@ impl Native {
         if let Some(host) = self.host() {
             host.close(pane);
         }
+    }
+    /// Show `what` in embed `key`'s own slot, made on first ask; the bridge never sees it.
+    pub fn open_embed(&self, key: &str, what: &Embedded) {
+        if let Some(host) = self.host() {
+            host.open_embed(key, what);
+        }
+    }
+    /// Remove embed `key`'s slot and its view.
+    pub fn close_embed(&self, key: &str) {
+        if let Some(host) = self.host() {
+            host.close(key);
+        }
+    }
+    /// `pane_reload` of the artifact page embed `key` shows.
+    pub fn reload_embed(&self, key: &str) {
+        if let Some(host) = self.host() {
+            host.reload(key);
+        }
+    }
+    /// Embed `key`'s slot facts (`frame_top`, `hidden`, `holes`, a map's `map`) with its page's
+    /// status entry (`url`, `loads`, `store`, `page`) folded in; null when it has no slot.
+    pub fn embed_facts(&self, key: &str) -> Value {
+        let Some(host) = self.host() else { return Value::Null };
+        let (mut facts, _) = host.facts();
+        let Some(mut entry) = facts.remove(key) else { return Value::Null };
+        if let (Some(into), Some(Value::Object(page))) = (entry.as_object_mut(), host.pages().0.remove(key)) {
+            into.extend(page);
+        }
+        entry
     }
 }
 

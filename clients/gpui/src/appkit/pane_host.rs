@@ -2,15 +2,19 @@
 //! GPUI's content view that holds the pane's content: a browser or a plain web page made here
 //! (`web.rs`), or what the bridge adds (an artifact page, a plugin view). Here each slot is placed,
 //! hidden, faded and masked around the cards and the overlay drawn over it, given the keyboard,
-//! and reached by the check's synthetic pointer. A press that lands in a slot reaches the GPUI
+//! and reached by the check's synthetic pointer. A plugin page's `WebView` and `Map` get slots of
+//! their own too, keyed `<host pane>#<node>`: a web page or artifact page from `web.rs`, or an
+//! MKMapView made here. A press that lands in a slot reaches the GPUI
 //! view as a `pressed` frame, since GPUI never sees it.
 use super::{main_thread, web::Pages};
 use block2::RcBlock;
 use futures::channel::mpsc::UnboundedSender;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::AnyObject};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::{AnyObject, ProtocolObject}};
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSResponder, NSView};
 use objc2_core_graphics::CGMutablePath;
-use objc2_foundation::{NSPoint, NSProcessInfo, NSRect, NSSize};
+use objc2_core_location::CLLocationCoordinate2D;
+use objc2_foundation::{NSPoint, NSProcessInfo, NSRect, NSSize, NSString};
+use objc2_map_kit::{MKAnnotation, MKCoordinateRegion, MKCoordinateSpan, MKMapView, MKPointAnnotation};
 use objc2_quartz_core::CAShapeLayer;
 use objc2_web_kit::WKWebView;
 use serde_json::{Map, Value, json};
@@ -21,7 +25,52 @@ use std::{
     ptr::NonNull,
     rc::Rc,
 };
-use wheel_gpui_core::native::{Host, Mouse, MouseKind};
+use wheel_gpui_core::native::{Embedded, Host, Mouse, MouseKind};
+
+/// A page's `ui.Map` in its slot: where it was asked to look (latitude, longitude, span), whether
+/// it has looked there yet, and the markers it shows.
+struct MapEmbed {
+    view: Retained<MKMapView>,
+    asked: [f64; 3],
+    /// SwiftUI's `Map(initialPosition:)` looks once: the region is set the first time the view has a size, never again.
+    set: bool,
+    markers: Vec<(String, f64, f64)>,
+}
+
+impl MapEmbed {
+    fn look(&mut self) {
+        let b = self.view.bounds().size;
+        if self.set || b.width <= 0. || b.height <= 0. {
+            return;
+        }
+        let [latitude, longitude, span] = self.asked;
+        let region = MKCoordinateRegion { center: CLLocationCoordinate2D { latitude, longitude }, span: MKCoordinateSpan { latitudeDelta: span, longitudeDelta: span } };
+        unsafe { self.view.setRegion(region) };
+        self.set = true;
+    }
+
+    fn mark(&mut self, markers: &[(String, f64, f64)]) {
+        if self.markers == markers {
+            return;
+        }
+        unsafe {
+            self.view.removeAnnotations(&self.view.annotations());
+            for (title, latitude, longitude) in markers {
+                let pin = MKPointAnnotation::new();
+                pin.setCoordinate(CLLocationCoordinate2D { latitude: *latitude, longitude: *longitude });
+                pin.setTitle(Some(&NSString::from_str(title)));
+                self.view.addAnnotation(ProtocolObject::from_ref(&*pin));
+            }
+        }
+        self.markers = markers.to_vec();
+    }
+
+    fn facts(&self) -> Value {
+        let r = unsafe { self.view.region() };
+        let titles: Vec<String> = unsafe { self.view.annotations() }.iter().filter_map(|a| unsafe { a.title() }.map(|t| t.to_string())).collect();
+        json!({"asked": self.asked, "set": self.set, "center": [r.center.latitude, r.center.longitude], "span": [r.span.latitudeDelta, r.span.longitudeDelta], "markers": titles.len(), "titles": titles})
+    }
+}
 
 #[derive(Default)]
 pub struct SlotIvars {
@@ -145,6 +194,8 @@ pub struct PaneHost {
     press_monitor: RefCell<Option<Retained<AnyObject>>>,
     /// The browsers and plain web pages in this window's slots.
     pages: Rc<Pages>,
+    /// The maps pages embed, by slot key.
+    maps: RefCell<HashMap<String, MapEmbed>>,
 }
 
 impl PaneHost {
@@ -161,6 +212,7 @@ impl PaneHost {
             mouse_target: RefCell::default(),
             mouse_number: Cell::new(0),
             press_monitor: RefCell::default(),
+            maps: RefCell::default(),
         });
         // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
         // and closes what a press away closes (its popovers), as a Swift popover closes on one.
@@ -256,6 +308,9 @@ impl Host for PaneHost {
             content.setFrame(bounds);
         }
         slot.cut(&self.cuts(&slot));
+        if let Some(map) = self.maps.borrow_mut().get_mut(pane) {
+            map.look();
+        }
     }
 
     fn overlay(&self, rect: Option<[f64; 4]>) {
@@ -279,6 +334,7 @@ impl Host for PaneHost {
 
     fn close(&self, pane: &str) {
         self.pages.close(pane);
+        self.maps.borrow_mut().remove(pane);
         if let Some(slot) = self.slots.borrow_mut().remove(pane) {
             slot.removeFromSuperview();
         }
@@ -290,6 +346,7 @@ impl Host for PaneHost {
             unsafe { NSEvent::removeMonitor(&monitor) };
         }
         self.pages.close_all();
+        self.maps.borrow_mut().clear();
         for (_, slot) in self.slots.borrow_mut().drain() {
             slot.removeFromSuperview();
         }
@@ -353,6 +410,7 @@ impl Host for PaneHost {
 
     fn facts(&self) -> (Map<String, Value>, Option<[f64; 4]>) {
         let height = self.root.bounds().size.height;
+        let maps = self.maps.borrow();
         let top = |r: NSRect| [r.origin.x, if self.root.isFlipped() { r.origin.y } else { height - r.origin.y - r.size.height }, r.size.width, r.size.height];
         let panes = self
             .slots
@@ -363,6 +421,10 @@ impl Host for PaneHost {
                     "hidden": s.isHidden(), "alpha": s.alphaValue(), "frame_top": top(s.frame()),
                     "masked": s.layer().is_some_and(|l| l.mask().is_some()), "holes": *s.ivars().holes_top.borrow(), "mask_rects": s.ivars().shown.get(),
                 });
+                let mut facts = facts;
+                if let Some(map) = maps.get(id) {
+                    facts["map"] = map.facts();
+                }
                 (id.clone(), facts)
             })
             .collect();
@@ -383,6 +445,32 @@ impl Host for PaneHost {
 
     fn close_page(&self, pane: &str) {
         self.pages.close(pane);
+    }
+
+    fn open_embed(&self, key: &str, what: &Embedded) {
+        self.slot(key);
+        let Some(slot) = self.slots.borrow().get(key).cloned() else { return };
+        if !matches!(what, Embedded::Map { .. })
+            && let Some(map) = self.maps.borrow_mut().remove(key)
+        {
+            map.view.removeFromSuperview();
+        }
+        match what {
+            Embedded::Web { url } => self.pages.open_embedded(key, &slot, url),
+            Embedded::Artifact { id, name, scope, cwd, ws } => self.pages.open_artifact_page(key, id, &slot, name, scope, cwd, ws),
+            Embedded::Map { latitude, longitude, span, markers } => {
+                self.pages.close(key);
+                let mut maps = self.maps.borrow_mut();
+                let map = maps.entry(key.to_owned()).or_insert_with(|| {
+                    // SAFETY: MKMapView's designated initializer, on the main thread.
+                    let view = unsafe { MKMapView::initWithFrame(MKMapView::alloc(main_thread()), slot.bounds()) };
+                    slot.addSubview(&view);
+                    MapEmbed { view, asked: [*latitude, *longitude, *span], set: false, markers: vec![] }
+                });
+                map.mark(markers);
+                map.look();
+            }
+        }
     }
 
     fn browser(&self, pane: &str, action: &str, value: &Value) {
@@ -417,6 +505,13 @@ impl Host for PaneHost {
             self.slots.borrow().iter().filter(|(_, s)| !s.isHidden()).filter_map(|(id, s)| Self::web_view(s).map(|v| (id.clone(), v))).collect();
         for (pane, view) in shown {
             self.pages.snapshot_to(&pane, &view, directory);
+        }
+        // A map draws through AppKit's cache, written at once.
+        let slots = self.slots.borrow();
+        for (key, map) in self.maps.borrow().iter().filter(|(k, _)| slots.get(*k).is_some_and(|s| !s.isHidden())) {
+            if let Some(png) = super::web::cached_png(&map.view) {
+                let _ = std::fs::write(format!("{directory}/{}-map.png", key.replace('/', "_")), png);
+            }
         }
     }
 

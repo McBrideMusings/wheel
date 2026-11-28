@@ -100,9 +100,14 @@ def wheelhouse_project(root):
     beads database holding a three-bead epic, so Beads, Issues and Repo each have rows to draw."""
     project = root / 'wheelhouse-project'
     project.mkdir()
+    # The artifact the `embeds/web` plugin pane's WebView names, committed so the Repo pane shows a clean tree.
+    (project / 'embedded').mkdir()
+    (project / 'embedded/index.html').write_text('<!doctype html><html><meta charset="utf-8"><title>Embedded artifact</title><h1>Embedded artifact</h1></html>')
+    (project / 'wheel.toml').write_text('[artifacts.embedded]\npath="embedded"\n')
     git = lambda *a: subprocess.run(['git', '-C', str(project), *a], check=True, capture_output=True)  # noqa: E731
     git('init', '-q', '-b', 'main')
     git('remote', 'add', 'origin', 'https://github.com/o/fixture.git')
+    git('add', '-A')
     git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', 'commit', '-q', '--allow-empty', '-m', 'first')
     bd = lambda *a: subprocess.run(['bd', *a], cwd=project, check=True, capture_output=True, text=True).stdout  # noqa: E731
     bd('init', '--quiet', '--prefix', 'fx')
@@ -225,7 +230,8 @@ def fixture():
         # A plugin whose page embeds a terminal and an agent pane by id, each id typed into a field,
         # so the check names the panes it makes (ADR-0042).
         (root / 'plugins/embeds/panes').mkdir(parents=True)
-        (root / 'plugins/embeds/wheel-plugin.toml').write_text('[plugin]\nid = "embeds"\nversion = "0.1.0"\n\n[[pane]]\nid = "embeds"\ntitle = "Embeds"\nscript = "panes/embeds.luau"\n')
+        (root / 'plugins/embeds/wheel-plugin.toml').write_text('[plugin]\nid = "embeds"\nversion = "0.1.0"\n\n[[pane]]\nid = "embeds"\ntitle = "Embeds"\nscript = "panes/embeds.luau"\n\n'
+                                                              '[[pane]]\nid = "web"\ntitle = "Web embeds"\nscript = "panes/web.luau"\n')
         (root / 'plugins/embeds/panes/embeds.luau').write_text(
             'local function init(previous) return previous or { term = "", agent = "" } end\n'
             'local function update(state, msg)\n'
@@ -237,6 +243,25 @@ def fixture():
             '        ui.TextField{ label = "Terminal pane", value = state.term, variant = "shortText", on_change = { type = "set", which = "term" } },\n'
             '        ui.TextField{ label = "Agent pane", value = state.agent, variant = "shortText", on_change = { type = "set", which = "agent" } },\n'
             '        ui.Row{ ui.Terminal{ pane = state.term, height = 160 }, ui.AgentChat{ pane = state.agent, height = 360 }, align = "start" },\n'
+            '    })\n'
+            'end\n'
+            'return { init = init, update = update, view = view }\n')
+        # Its second pane: a WebView whose url and artifact are typed into fields, a Map with two pins,
+        # and rows below them so the page scrolls them out of view (ADR-0047).
+        (root / 'plugins/embeds/panes/web.luau').write_text(
+            'local function init(previous) return previous or { url = "", artifact = "" } end\n'
+            'local function update(state, msg)\n'
+            '    if msg.type == "set" then state[msg.which] = msg.value end\n'
+            '    return state\n'
+            'end\n'
+            'local function view(state, data)\n'
+            '    local rows = {}\n    for i = 1, 40 do rows[i] = ui.Text("Below the map " .. i) end\n'
+            '    return ui.Column({\n'
+            '        ui.TextField{ label = "Web url", value = state.url, variant = "shortText", on_change = { type = "set", which = "url" } },\n'
+            '        ui.TextField{ label = "Web artifact", value = state.artifact, variant = "shortText", on_change = { type = "set", which = "artifact" } },\n'
+            '        ui.WebView{ url = state.url, artifact = state.artifact, height = 200 },\n'
+            '        ui.Map{ latitude = 51.5, longitude = -0.12, span = 0.2, markers = { { title = "Fixture pin", latitude = 51.5, longitude = -0.12 }, { title = "Second pin", latitude = 51.52, longitude = -0.1 } } },\n'
+            '        ui.Column(rows),\n'
             '    })\n'
             'end\n'
             'return { init = init, update = update, view = view }\n')

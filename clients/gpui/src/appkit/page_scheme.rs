@@ -78,7 +78,10 @@ struct Request {
 
 pub struct SchemeIvars {
     id: usize,
+    /// The pane or embed whose page this is, as `Pages` keys it.
     pane: String,
+    /// The page's folder: `/artifacts/<folder>/` is all it may reach.
+    folder: String,
     pages: Weak<Pages>,
     session: RefCell<Option<Retained<NSURLSession>>>,
     requests: RefCell<HashMap<usize, Request>>,
@@ -195,11 +198,12 @@ fn drain(stream: &NSInputStream) -> Vec<u8> {
 }
 
 impl PageScheme {
-    pub fn new(pane: &str, pages: Weak<Pages>) -> Retained<Self> {
+    pub fn new(pane: &str, folder: &str, pages: Weak<Pages>) -> Retained<Self> {
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let this = main_thread().alloc::<Self>().set_ivars(SchemeIvars {
             id,
             pane: pane.to_owned(),
+            folder: folder.to_owned(),
             pages,
             session: RefCell::default(),
             requests: RefCell::default(),
@@ -267,7 +271,7 @@ impl PageScheme {
             return unsafe { task.didFailWithError(&url_error(-1004)) };
         };
         // An artifact's page reaches its own folder; nothing else the token opens.
-        let Some(target) = artifact_page::daemon_url(&address, &ws, pane).and_then(|t| NSURL::URLWithString(&NSString::from_str(&t))) else {
+        let Some(target) = artifact_page::daemon_url(&address, &ws, &self.ivars().folder).and_then(|t| NSURL::URLWithString(&NSString::from_str(&t))) else {
             self.log(format!("web pane {pane} request refused outside its folder: {}", shown(&address)));
             return unsafe { task.didFailWithError(&url_error(-1102)) };
         };
