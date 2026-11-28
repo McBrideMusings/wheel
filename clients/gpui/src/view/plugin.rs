@@ -43,7 +43,7 @@ impl Client {
             host.pane.context.insert(k.into(), v.map_or(Json::Null, Json::String));
         }
         if let Some(old) = self.plugin_previews.insert(pane.to_owned(), host) {
-            self.unsubscribe_plugin(pane, &old);
+            self.close_plugin(pane, old);
         }
         self.request_plugin_source(pane);
         true
@@ -51,15 +51,21 @@ impl Client {
 
     /// Ends the preview of `pane`: its feeds are dropped with wheeld.
     pub fn end_plugin_preview(&mut self, pane: &str) {
-        if let Some(mut host) = self.plugin_previews.remove(pane) {
-            host.pane.close();
-            self.unsubscribe_plugin(pane, &host);
+        if let Some(host) = self.plugin_previews.remove(pane) {
+            self.close_plugin(pane, host);
         }
     }
 
-    fn unsubscribe_plugin(&self, pane: &str, host: &PluginHost) {
-        for (feed, params) in host.pane.feeds() {
-            self.send(&ClientMsg::FeedUnsubscribe { req: None, pane: pane.into(), feed, params });
+    /// Ends `host`'s script and drops its feeds with wheeld: `close` puts their unsubscribes in
+    /// its outbox, which nothing else drains once the host is gone.
+    fn close_plugin(&self, pane: &str, mut host: PluginHost) {
+        host.pane.close();
+        for effect in host.pane.take_effects() {
+            if let Effect::Feeds { unsubscribe, .. } = effect {
+                for (feed, params) in unsubscribe {
+                    self.send(&ClientMsg::FeedUnsubscribe { req: None, pane: pane.into(), feed, params });
+                }
+            }
         }
     }
 
@@ -133,7 +139,10 @@ impl Client {
                 pane.clone()
             }
             ServerMsg::FeedUpdate { req, pane, feed, params, value, patch, stale } => {
-                let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
+                // Only a feed the script reads: the same pane may carry another reader's feed (the queue's).
+                let Some(host) = self.plugin_previews.get_mut(pane).filter(|h| {
+                    req.is_some_and(|r| h.feed_reqs.contains_key(&r)) || h.pane.feeds().iter().any(|(f, p)| f == feed && wheel_luau::tree::json_eq(p, params))
+                }) else { return false };
                 if let Some(req) = req {
                     host.feed_reqs.remove(req);
                 }
@@ -249,7 +258,7 @@ impl Client {
         let Some(host) = self.plugin_previews.get(pane) else { return Json::Null };
         let p = &host.pane;
         serde_json::json!({
-            "state": p.state_json(), "error": p.error(), "reloads": p.reloads(), "restarts": p.restarts(),
+            "state": p.state_json(), "error": p.error(), "running": p.running(), "reloads": p.reloads(), "restarts": p.restarts(),
             "components": p.component_texts(), "feeds": p.feed_json(), "fills": p.fills_pane(),
             "fields": host.fields.iter().map(|(id, (_, _, text))| (id.clone(), Json::String(text.clone()))).collect::<serde_json::Map<_, _>>(),
         })

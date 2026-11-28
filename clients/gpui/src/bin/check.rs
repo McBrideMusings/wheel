@@ -6006,7 +6006,7 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
 /// the script's state, and `wheel pane reload` runs the script from the top.
 async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
     let bridge = |native: &Native| native.call(json!({"op":"plugin","pane":pane,"action":"state"}));
-    let preview = |window: ClientWindow, cx: &mut AsyncApp| -> Result<Value> { Ok(window.update(cx, |c, _, _| c.plugin_preview_json(pane))?) };
+    let preview = |window: ClientWindow, cx: &mut AsyncApp| -> Result<Value> { window.update(cx, |c, _, _| c.plugin_preview_json(pane)) };
     let entries = |s: &Value| -> Vec<(String, String, String)> {
         s["components"].as_array().cloned().unwrap_or_default().iter()
             .map(|c| (c["id"].as_str().unwrap_or("").to_owned(), c["type"].as_str().unwrap_or("").to_owned(), c["text"].as_str().unwrap_or("").to_owned())).collect()
@@ -6084,7 +6084,6 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
     native.call(json!({"op":"plugin","pane":pane,"action":"scroll","to":"top"}));
     // Case 2: a TextField's value set as typing sets it reaches the script and stays drawn.
     let field = ours.iter().find(|(_, k, _)| k == "TextField").map(|(id, ..)| id.clone()).ok_or_else(|| anyhow::anyhow!("the gallery has no TextField"))?;
-    let before = preview(window, cx)?["state"].clone();
     ensure!(window.update(cx, |c, _, cx| c.plugin_set(pane, &field, json!("typed in GPUI"), cx))?, "plugin_set {field} refused");
     draw(window, None, cx)?;
     let typed = preview(window, cx)?;
@@ -6100,7 +6099,7 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
             break;
         }
     }
-    ensure!(pressed.is_some() || typed["state"] != before, "no Button pressed through GPUI changed the gallery's state");
+    ensure!(pressed.is_some(), "no Button pressed through GPUI changed the gallery's state");
     // Case 4: `wheel pane reload` runs the script from the top.
     let restarts = preview(window, cx)?["restarts"].as_u64().unwrap_or(0);
     let (ok, _, err) = run_pumped(&["pane", "reload", pane], connection, layouts, window, cx).await?;
@@ -6109,11 +6108,12 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
     for _ in 0..100 {
         pump(connection, 100, layouts, window, cx).await?;
         reloaded = preview(window, cx)?;
-        if reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["error"].is_null() && !entries(&reloaded).is_empty() {
+        // `restart` counts at once; the script runs again only when the new source has loaded.
+        if reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["running"] == true && reloaded["error"].is_null() && !entries(&reloaded).is_empty() {
             break;
         }
     }
-    ensure!(reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["error"].is_null(), "the reload did not restart GPUI's script: {} error {}", reloaded["restarts"], reloaded["error"]);
+    ensure!(reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["running"] == true && reloaded["error"].is_null(), "the reload did not restart GPUI's script: {} error {}", reloaded["restarts"], reloaded["error"]);
     window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
     draw(window, None, cx)?;
     eprintln!("wheel-gpui: the gallery in GPUI: {} components, {pages} pages, {} classes", ours.len(), classes.len());
