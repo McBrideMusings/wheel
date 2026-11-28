@@ -199,18 +199,18 @@ impl PaneHost {
     }
 
     /// `[x, y, w, h]` from the window's top left as a rect in the root's coordinates.
-    fn from_top(&self, a: [f64; 4]) -> NSRect {
+    fn rect_from_top(&self, a: [f64; 4]) -> NSRect {
         let y = if self.root.isFlipped() { a[1] } else { self.root.bounds().size.height - a[1] - a[3] };
         NSRect::new(NSPoint::new(a[0], y), NSSize::new(a[2], a[3]))
     }
 
-    fn point_from_top(&self, p: [f64; 2]) -> NSPoint {
+    fn point_rect_from_top(&self, p: [f64; 2]) -> NSPoint {
         NSPoint::new(p[0], if self.root.isFlipped() { p[1] } else { self.root.bounds().size.height - p[1] })
     }
 
     /// What is cut out of `slot`: the overlay's rect and the cards over it, in the root's coordinates.
     fn cuts(&self, slot: &Slot) -> Vec<NSRect> {
-        self.overlay.get().into_iter().chain(slot.ivars().holes_top.borrow().iter().map(|a| self.from_top(*a))).collect()
+        self.overlay.get().into_iter().chain(slot.ivars().holes_top.borrow().iter().map(|a| self.rect_from_top(*a))).collect()
     }
 
     /// The view the window's hit test reaches at `point` (the window's top left).
@@ -240,7 +240,7 @@ impl Host for PaneHost {
         slot.setHidden(hidden);
         slot.setAlphaValue(alpha);
         *slot.ivars().holes_top.borrow_mut() = holes.to_vec();
-        slot.setFrame(self.from_top(rect));
+        slot.setFrame(self.rect_from_top(rect));
         let bounds = slot.bounds();
         for content in slot.subviews().iter() {
             content.setFrame(bounds);
@@ -249,7 +249,7 @@ impl Host for PaneHost {
     }
 
     fn overlay(&self, rect: Option<[f64; 4]>) {
-        self.overlay.set(rect.map(|a| self.from_top(a)));
+        self.overlay.set(rect.map(|a| self.rect_from_top(a)));
         if rect.is_some()
             && let Some(window) = self.root.window()
         {
@@ -285,7 +285,7 @@ impl Host for PaneHost {
     }
 
     fn mouse(&self, m: &Mouse) -> Option<String> {
-        let point = self.point_from_top(m.point);
+        let point = self.point_rect_from_top(m.point);
         // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit does
         // after its own step: hit test, then the view gets the NSEvent. A drag or release goes to
         // the view that took the press.
@@ -335,7 +335,7 @@ impl Host for PaneHost {
     }
 
     fn hit(&self, point: [f64; 2]) -> (Option<String>, Option<String>) {
-        let hit = self.view_at(self.point_from_top(point));
+        let hit = self.view_at(self.point_rect_from_top(point));
         (hit.as_deref().map(class_name), hit.as_deref().and_then(|v| self.owner(v)))
     }
 
