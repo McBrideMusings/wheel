@@ -8766,6 +8766,196 @@
                                         "fontWeight" : "semibold"
                                       }
                                     ],
+                                    "text" : ""
+                                  }
+                                ],
+                                "component" : "Column",
+                                "modifiers" : [
+                                  {
+                                    "frame" : {
+                                      "alignment" : "leading",
+                                      "width" : 130
+                                    }
+                                  },
+                                  {
+                                    "padding" : {
+                                      "trailing" : 12,
+                                      "vertical" : 8
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "align" : "start",
+                                "children" : [
+                                  {
+                                    "component" : "Text",
+                                    "modifiers" : [
+                                      {
+                                        "foregroundStyle" : "secondary"
+                                      }
+                                    ],
+                                    "text" : ""
+                                  }
+                                ],
+                                "component" : "Column",
+                                "modifiers" : [
+                                  {
+                                    "frame" : {
+                                      "alignment" : "leading",
+                                      "width" : 130
+                                    }
+                                  },
+                                  {
+                                    "padding" : {
+                                      "trailing" : 12,
+                                      "vertical" : 8
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "align" : "start",
+                                "children" : [
+                                  {
+                                    "component" : "Text",
+                                    "modifiers" : [
+                                      {
+                                        "foregroundStyle" : "secondary"
+                                      }
+                                    ],
+                                    "text" : "justify start with two Dividers, which take the width: they share all of it, half each, and the space after them gets none",
+                                    "variant" : "caption"
+                                  }
+                                ],
+                                "component" : "Column",
+                                "modifiers" : [
+                                  {
+                                    "frame" : {
+                                      "alignment" : "leading",
+                                      "width" : 230
+                                    }
+                                  },
+                                  {
+                                    "padding" : {
+                                      "trailing" : 12,
+                                      "vertical" : 8
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "align" : "start",
+                                "children" : [
+                                  {
+                                    "children" : [
+                                      {
+                                        "component" : "Divider"
+                                      },
+                                      {
+                                        "component" : "Divider"
+                                      }
+                                    ],
+                                    "component" : "Row",
+                                    "justify" : "start"
+                                  }
+                                ],
+                                "component" : "Column",
+                                "modifiers" : [
+                                  {
+                                    "frame" : {
+                                      "alignment" : "leading",
+                                      "maxWidth" : "infinity"
+                                    }
+                                  },
+                                  {
+                                    "padding" : {
+                                      "trailing" : 12,
+                                      "vertical" : 8
+                                    }
+                                  }
+                                ]
+                              }
+                            ],
+                            "component" : "Row",
+                            "justify" : "start"
+                          },
+                          {
+                            "component" : "Divider"
+                          }
+                        ],
+                        "component" : "Column"
+                      },
+                      {
+                        "children" : [
+                          {
+                            "align" : "start",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "foregroundStyle" : "secondary"
+                                  }
+                                ],
+                                "text" : "justify start with two Dividers, which take the width: they share all of it, half each, and the space after them gets none",
+                                "variant" : "caption"
+                              },
+                              {
+                                "children" : [
+                                  {
+                                    "component" : "Divider"
+                                  },
+                                  {
+                                    "component" : "Divider"
+                                  }
+                                ],
+                                "component" : "Row",
+                                "justify" : "start"
+                              }
+                            ],
+                            "component" : "Column",
+                            "modifiers" : [
+                              {
+                                "padding" : {
+                                  "vertical" : 8
+                                }
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ]
+                          },
+                          {
+                            "component" : "Divider"
+                          }
+                        ],
+                        "component" : "Column"
+                      }
+                    ],
+                    "component" : "ViewThatFits",
+                    "in" : "horizontal"
+                  },
+                  {
+                    "children" : [
+                      {
+                        "children" : [
+                          {
+                            "align" : "start",
+                            "children" : [
+                              {
+                                "align" : "start",
+                                "children" : [
+                                  {
+                                    "component" : "Text",
+                                    "modifiers" : [
+                                      {
+                                        "fontWeight" : "semibold"
+                                      }
+                                    ],
                                     "text" : "Column"
                                   }
                                 ],

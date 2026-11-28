@@ -6439,7 +6439,7 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
         set(&url_field, &served, cx)?;
         let loaded = until!("the WebView's slot should lie on its rect and load the served page", |e: &Value| {
             let w = embed(e, "WebView");
-            on_bounds(&w) && w["slot"]["url"] == served.as_str() && w["slot"]["embedded"] == true && w["slot"]["loads"].as_array().and_then(|l| l.last()) == Some(&json!("Embedded page"))
+            on_bounds(&w) && w["slot"]["url"] == served.as_str() && w["slot"]["embedded"] == true && w["slot"]["text"] == "Embedded page"
         });
         let w = embed(&loaded, "WebView");
         let wb = nums(&w["bounds"]);
@@ -6488,7 +6488,7 @@ async fn web_embeds_in_gpui(connection: &mut Connection, layouts: &mut usize, wi
         let opened = until!("the artifact should open wheeld's page for it in its own store", |e: &Value| {
             let w = embed(e, "WebView");
             on_bounds(&w) && w["scope"] == "project" && w["id"].is_string() && w["slot"]["page"] == w["id"] && w["slot"]["store"] == store.as_str()
-                && w["slot"]["loads"].as_array().and_then(|l| l.last()) == Some(&json!("Embedded artifact"))
+                && w["slot"]["text"] == "Embedded artifact"
         });
         let page_id = embed(&opened, "WebView")["id"].clone();
         set(&artifact_field, "no-such-artifact", cx)?;
