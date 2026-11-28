@@ -284,6 +284,7 @@ impl Draw<'_> {
             }
             "Gauge" => self.gauge(n, outer),
             "Chart" => self.chart(n, outer),
+            "Canvas" => self.canvas(n, outer, cx),
             "ShareLink" => {
                 let title = n.string("title").unwrap_or("Share").to_owned();
                 // hack: draws the button; the sharing picker is wheel-4d1o.9.

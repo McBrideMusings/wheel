@@ -578,6 +578,21 @@ local function table_class()
     })
 end
 
+-- ---- Canvas: an `ops` scene, in scene units, with each op kind and style
+local CANVAS_SCENE = {
+    { op = "path", d = { "M140 42 C 190 42, 190 118, 240 118" }, stroke = "muted", width = 1.5 },
+    { op = "path", d = { "M80 64 Q 80 140 240 130" }, stroke = "accent", width = 1, dash = { 4, 3 } },
+    { op = "rect", r = { { 20, 20, 120, 44 } }, fill = "fill", stroke = "ok", width = 1.5, radius = 6 },
+    { op = "rect", r = { { 240, 96, 140, 44 } }, fill = "accentFill", stroke = "accent", width = 1, radius = 6 },
+    { op = "circle", c = { { 200, 42, 14 } }, fill = "purple", opacity = 0.8 },
+    { op = "rect", r = { { 300, 20, 60, 30 } }, fill = "#ff9f0a66", stroke = "warn", width = 2, px = true },
+    { op = "text", t = { { 30, 36, "wheel-a" } }, size = 10, weight = "bold", mono = true, fill = "ok" },
+    { op = "text", t = { { 30, 52, "Node A title" } }, size = 11 },
+    { op = "text", t = { { 250, 118, "Node B: a long label cut to its box" } }, size = 11, maxw = 120 },
+    { op = "text", t = { { 200, 72, "middle" } }, size = 10, anchor = "middle", fill = "muted" },
+    { op = "text", t = { { 360, 64, "end" } }, size = 10, anchor = "end", fill = "faint" },
+}
+
 -- ---- Canvas: a 16x16 RGBA gradient, base64 of its bytes
 local ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
@@ -643,8 +658,12 @@ local function own_class(data)
     if type(input) == "table" and input.last then last = input.count .. " events; last: " .. input.last end
     return klass("Wheel's own component", "Only where neither the library nor SwiftUI has one.", {
         { "Canvas", "Canvas", {
-            { "a display list with a camera and hit regions; needs a scene, not shown",
-                secondary("Used by pages that draw graphs, such as the Beads dependency graph. A hit's tip grows to the height of its lines, and the hover outline follows the pointer when a scroll pans or zooms the canvas under it.") },
+            { "ops: a display list with a camera (drag to pan, scroll to zoom, Fit + −) and hit regions that outline on hover and show their tip; used by the Beads dependency graph",
+                put("Canvas", nil, { height = 220, bounds = { 0, 0, 400, 160 }, ops = CANVAS_SCENE, hits = {
+                    { id = "a", rect = { 20, 20, 120, 44 }, tip = { "Node A", { { t = "ready", tone = "ok" }, { t = " · P1", tone = "muted" } } } },
+                    { id = "b", rect = { 240, 96, 140, 44 }, tip = { "Node B: a long label cut to its box" } },
+                    { id = "c", circle = { 200, 42, 14 }, tip = { { { t = "circle", mono = true, bold = true } } } },
+                } }) },
             { "commands: a Canvas 2D command list a pane script records (paths, curves, arc, rect, roundRect, styles, globalAlpha, save/restore, translate, scale, rotate, fillText, drawImage); no camera, controls, background or border, `height` points tall, as wide as it is offered; reports its size as canvas-size:<canvasKey>; pointerAction raises {kind, x, y, button, dx, dy}",
                 put("Canvas", nil, { commands = CANVAS_COMMANDS, height = 240, canvasKey = "gallery" }) },
         } },

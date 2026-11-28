@@ -35,6 +35,7 @@ pub use pairing_copy::{copied as copied_pairing_code, ensure as ensure_pairing_c
 pub use sidebar::pane_window_closed;
 mod perms;
 mod plugin;
+mod plugin_canvas;
 mod plugin_controls;
 mod plugin_draw;
 mod procs;

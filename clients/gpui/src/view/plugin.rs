@@ -40,6 +40,10 @@ pub struct PluginHost {
     pub(super) width: Option<f32>,
     /// The width the page was last drawn at.
     pub(super) drawn: std::cell::Cell<f32>,
+    /// The pane's height, which a scene Canvas with `minHeight` and `reserve` sizes itself from.
+    pub(super) viewport: std::cell::Cell<f32>,
+    /// Each Canvas's camera, pointer, replayed commands and reported size, by node id.
+    pub(super) canvases: RefCell<HashMap<String, Rc<RefCell<super::plugin_canvas::CanvasView>>>>,
 }
 
 /// The child a ViewThatFits drew, at what width, and that child's height there.
@@ -122,6 +126,7 @@ impl PluginHost {
         self.anchors.retain(|id, _| tree.node(id).is_some());
         self.fits.borrow_mut().retain(|id, _| tree.node(id).is_some());
         self.tables.borrow_mut().retain(|id, _| tree.node(id).is_some());
+        self.canvases.borrow_mut().retain(|id, _| tree.node(id).is_some_and(|n| n.component == "Canvas"));
     }
 
     pub(super) fn table_scroll(&self, id: &str) -> gpui::UniformListScrollHandle {
@@ -357,6 +362,13 @@ impl Client {
         ok
     }
 
+    /// Hands the size command Canvas `key` measured to the script, which draws again when it changed.
+    pub fn plugin_canvas_size(&mut self, pane: &str, key: &str, width: f64, height: f64) {
+        let Some(host) = self.plugin_previews.get_mut(pane) else { return };
+        host.pane.canvas_size(key, width, height);
+        self.drain_plugin(pane);
+    }
+
     /// Opens or closes Modal sheet or Popover `id`, which SwiftUI keeps in the view's own state.
     pub fn plugin_toggle_open(&mut self, pane: &str, id: &str) {
         if let Some(h) = self.plugin_previews.get_mut(pane) && !h.open.remove(id) {
@@ -505,6 +517,7 @@ impl Client {
                 }).collect();
                 (n.id.clone(), Json::Array(lines))
             }).collect::<serde_json::Map<_, _>>(),
+            "canvases": host.canvases.borrow().iter().map(|(id, c)| (id.clone(), c.borrow().json())).collect::<serde_json::Map<_, _>>(),
             "menu": self.plugin_menu.open.as_ref().filter(|(p, _)| p == pane).map(|_| self.plugin_menu.built.clone()),
         })
     }

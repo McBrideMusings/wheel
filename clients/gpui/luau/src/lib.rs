@@ -18,6 +18,7 @@
 //! before failing. The module's fields are read raw, so a metatable on it runs no script code
 //! outside the limits.
 
+pub mod canvas;
 mod canvas_font;
 pub mod pane;
 pub mod tree;

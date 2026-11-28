@@ -158,6 +158,7 @@ impl Client {
         let host = self.plugin_previews.get(pane)?;
         let w = host.width.unwrap_or(w);
         host.drawn.set(w);
+        host.viewport.set(h);
         let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols, width: w };
         let env = Env { color: 0xffffffd9, size: BODY, disabled: false, in_row: false, in_form: false };
         let mut page = div().flex().flex_col().w(px(w)).text_size(px(BODY)).line_height(gpui::relative(1.23)).text_color(rgba(env.color));
