@@ -517,6 +517,7 @@ impl Client {
                 }).collect();
                 (n.id.clone(), Json::Array(lines))
             }).collect::<serde_json::Map<_, _>>(),
+            "pending_feeds": host.feed_reqs.values().map(|(f, p)| format!("{f} {p}")).collect::<Vec<_>>(),
             "canvases": host.canvases.borrow().iter().map(|(id, c)| (id.clone(), c.borrow().json())).collect::<serde_json::Map<_, _>>(),
             "menu": self.plugin_menu.open.as_ref().filter(|(p, _)| p == pane).map(|_| self.plugin_menu.built.clone()),
         })

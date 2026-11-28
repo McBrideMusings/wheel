@@ -6061,8 +6061,8 @@ async fn canvas_in_gpui(connection: &mut Connection, layouts: &mut usize, window
                 break;
             }
         }
-        ensure!(!id.is_empty() && seen["error"].is_null(), "GPUI's {name} drew no Canvas: error {} canvases {} view {} feeds {} types {:?}", seen["error"], seen["canvases"],
-            plugin_preview_state(window, pane, cx)?["view"], seen["feeds"], seen["components"].as_array().into_iter().flatten().map(|c| c["type"].clone()).collect::<Vec<_>>());
+        ensure!(!id.is_empty() && seen["error"].is_null(), "GPUI's {name} drew no Canvas: error {} canvases {} view {} pending {} feeds {} types {:?}", seen["error"], seen["canvases"],
+            plugin_preview_state(window, pane, cx)?["view"], seen["pending_feeds"], seen["feeds"], seen["components"].as_array().into_iter().flatten().map(|c| c["type"].clone()).collect::<Vec<_>>());
         let bounds = window.update(cx, |c, _, _| c.control_bounds(pane, &id))?.ok_or_else(|| anyhow::anyhow!("GPUI recorded no bounds for {name}'s Canvas {id}"))?;
         let canvas = seen["canvases"][&id].clone();
         // measureText of every label against the width GPUI drew it at.
