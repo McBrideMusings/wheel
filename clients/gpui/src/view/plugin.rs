@@ -31,6 +31,8 @@ pub struct PluginHost {
     pub(super) open: HashSet<String>,
     pub(super) tabs: HashMap<String, usize>,
     pub(super) sorts: HashMap<String, (String, bool)>,
+    /// The row each Table's last plain or ⌘ click selected, where a shift-click's range starts.
+    pub(super) anchors: HashMap<String, String>,
     pub(super) fits: Rc<RefCell<HashMap<String, Fit>>>,
     /// Each Table's list scroll, by node id.
     tables: RefCell<HashMap<String, gpui::UniformListScrollHandle>>,
@@ -57,16 +59,71 @@ pub enum Pick {
     Separator,
 }
 
+/// One item of a menu a plugin pane opens: its title, whether it shows a checkmark, what it does,
+/// and the submenu it opens instead.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub title: String,
+    pub on: bool,
+    pub pick: Pick,
+    pub submenu: Vec<Entry>,
+}
+
+impl Entry {
+    pub fn new(title: String, on: bool, pick: Pick) -> Self {
+        Self { title, on, pick, submenu: vec![] }
+    }
+}
+
+/// `entries`' picks depth-first, each answering item's id its place in that order.
+fn flatten(entries: &[Entry], out: &mut Vec<Pick>) {
+    for e in entries {
+        if e.submenu.is_empty() {
+            if !matches!(e.pick, Pick::Separator) {
+                out.push(e.pick.clone());
+            }
+        } else {
+            flatten(&e.submenu, out);
+        }
+    }
+}
+
+/// `entries` as AppKit's menu items, numbered as [`flatten`] numbers their picks.
+fn menu_items<'a>(entries: &'a [Entry], ids: &'a [String], next: &mut usize) -> Vec<crate::appkit::MenuItem<'a>> {
+    entries.iter().map(|e| {
+        if matches!(e.pick, Pick::Separator) && e.submenu.is_empty() {
+            return crate::appkit::MenuItem { id: "-", title: "", enabled: false, on: false, submenu: vec![] };
+        }
+        if e.submenu.is_empty() {
+            *next += 1;
+            return crate::appkit::MenuItem { id: &ids[*next - 1], title: &e.title, enabled: true, on: e.on, submenu: vec![] };
+        }
+        crate::appkit::MenuItem { id: "", title: &e.title, enabled: true, on: false, submenu: menu_items(&e.submenu, ids, next) }
+    }).collect()
+}
+
 /// The menus previewed panes open: the AppKit menus (built lazily, answers through `answers`) and
 /// the last one opened, with its pane and its items.
 #[derive(Default)]
 pub struct Menus {
     dialogs: Option<crate::appkit::Dialogs>,
-    open: Option<(String, Vec<(String, bool, Pick)>)>,
+    open: Option<(String, Vec<Pick>)>,
     built: Vec<Json>,
 }
 
 impl PluginHost {
+    /// Drops the view's own state for nodes the tree no longer holds, as SwiftUI's `@State` goes
+    /// with its view: a node that comes back starts fresh.
+    pub(super) fn prune_view_state(&mut self) {
+        let tree = &self.pane.tree;
+        self.open.retain(|id| tree.node(id).is_some());
+        self.tabs.retain(|id, _| tree.node(id).is_some());
+        self.sorts.retain(|id, _| tree.node(id).is_some());
+        self.anchors.retain(|id, _| tree.node(id).is_some());
+        self.fits.borrow_mut().retain(|id, _| tree.node(id).is_some());
+        self.tables.borrow_mut().retain(|id, _| tree.node(id).is_some());
+    }
+
     pub(super) fn table_scroll(&self, id: &str) -> gpui::UniformListScrollHandle {
         self.tables.borrow_mut().entry(id.to_owned()).or_default().clone()
     }
@@ -326,18 +383,32 @@ impl Client {
     /// A click on row `row` (its own `id`) of Table `id`: with a `selectAction` it selects the
     /// row (⌘ adds or removes it) and a double click raises `rowAction`; without one a click
     /// raises `rowAction`.
-    pub fn plugin_table_click(&mut self, pane: &str, id: &str, row: &str, clicks: usize, toggle: bool, cx: &mut App) {
-        let Some(n) = self.plugin_previews.get(pane).and_then(|h| h.pane.tree.node(id)) else { return };
+    pub fn plugin_table_click(&mut self, pane: &str, id: &str, row: &str, clicks: usize, toggle: bool, range: bool, cx: &mut App) {
+        let Some(host) = self.plugin_previews.get(pane) else { return };
+        let Some(n) = host.pane.tree.node(id) else { return };
         if n.action("selectAction").is_empty() || clicks >= 2 {
-            self.plugin_raise(pane, id, n.action("rowAction"), &serde_json::json!({"id": row}), cx);
+            if !row.is_empty() {
+                self.plugin_raise(pane, id, n.action("rowAction"), &serde_json::json!({"id": row}), cx);
+            }
             return;
         }
+        let anchor = host.anchors.get(id).cloned();
         let mut ids: Vec<String> = n.props.get("selected").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).map(str::to_owned).collect();
-        if toggle {
+        let order: Vec<String> = super::plugin_controls::table_lines(&host.pane.tree, n, if n.action("sortAction").is_empty() { host.sorts.get(id) } else { None })
+            .into_iter().filter_map(|l| match l { super::plugin_controls::Line::Row(r) => host.pane.tree.node(&r).map(|r| r.row_id.clone()), _ => None }).collect();
+        if row.is_empty() {
+            ids.clear();
+        } else if let (true, Some(a), Some(b)) = (range, anchor.as_ref().and_then(|a| order.iter().position(|r| r == a)), order.iter().position(|r| r == row)) {
+            ids = order[a.min(b)..=a.max(b)].to_vec();
+        } else if toggle {
             match ids.iter().position(|i| i == row) { Some(i) => { ids.remove(i); } None => ids.push(row.to_owned()) }
         } else {
             ids = vec![row.to_owned()];
         }
+        if !row.is_empty() && !range && let Some(h) = self.plugin_previews.get_mut(pane) {
+            h.anchors.insert(id.to_owned(), row.to_owned());
+        }
+        let Some(n) = self.plugin_previews.get(pane).and_then(|h| h.pane.tree.node(id)) else { return };
         ids.sort();
         ids.dedup();
         let now: Vec<&str> = n.props.get("selected").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).collect();
@@ -360,15 +431,15 @@ impl Client {
     /// Row `row`'s context menu in Table `table`: each `menu` item raises its own `action` on the row.
     pub(super) fn plugin_row_menu(&mut self, pane: &str, _table: &str, row: &str, cx: &mut Context<Self>) {
         let Some(r) = self.plugin_previews.get(pane).and_then(|h| h.pane.tree.node(row)) else { return };
-        let items: Vec<(String, bool, Pick)> = r.props.get("menu").and_then(Json::as_array).into_iter().flatten().enumerate()
-            .map(|(i, m)| (m.get("label").map(wheel_luau::tree::text).unwrap_or_default(), false, Pick::Raise(row.to_owned(), format!("menu.{i}.action"), m.get("context").cloned().unwrap_or(Json::Object(Default::default()))))).collect();
+        let items: Vec<Entry> = r.props.get("menu").and_then(Json::as_array).into_iter().flatten().enumerate()
+            .map(|(i, m)| Entry::new(m.get("label").map(wheel_luau::tree::text).unwrap_or_default(), false, Pick::Raise(row.to_owned(), format!("menu.{i}.action"), m.get("context").cloned().unwrap_or(Json::Object(Default::default()))))).collect();
         if !items.is_empty() {
             self.plugin_open_menu(pane, items, cx);
         }
     }
 
     /// Opens an AppKit menu of `items` at the pointer for pane `pane`; a pick runs its [`Pick`].
-    pub(super) fn plugin_open_menu(&mut self, pane: &str, items: Vec<(String, bool, Pick)>, cx: &mut Context<Self>) {
+    pub(super) fn plugin_open_menu(&mut self, pane: &str, items: Vec<Entry>, cx: &mut Context<Self>) {
         if self.plugin_menu.dialogs.is_none() {
             let (tx, mut rx) = futures::channel::mpsc::unbounded();
             self.plugin_menu.dialogs = Some(crate::appkit::Dialogs::new(self.hidden, tx));
@@ -381,18 +452,18 @@ impl Client {
                 }
             }).detach();
         }
-        let ids: Vec<String> = (0..items.len()).map(|i| i.to_string()).collect();
-        let entries: Vec<crate::appkit::MenuItem> = items.iter().zip(&ids).map(|((title, _, pick), id)| crate::appkit::MenuItem { id: if matches!(pick, Pick::Separator) { "-" } else { id }, title, enabled: true }).collect();
-        let built = self.plugin_menu.dialogs.as_mut().unwrap().context_menu(&entries);
-        // The item's on state shows as a leading checkmark, as NSMenuItem's state does.
-        self.plugin_menu.built = built.into_iter().zip(&items).map(|(mut b, (_, on, _))| { b["on"] = Json::Bool(*on); b }).collect();
-        self.plugin_menu.open = Some((pane.to_owned(), items));
+        let mut picks = vec![];
+        flatten(&items, &mut picks);
+        let ids: Vec<String> = (0..picks.len()).map(|i| i.to_string()).collect();
+        let entries = menu_items(&items, &ids, &mut 0);
+        self.plugin_menu.built = self.plugin_menu.dialogs.as_mut().unwrap().context_menu(&entries);
+        self.plugin_menu.open = Some((pane.to_owned(), picks));
     }
 
     /// Item `item` (its index) of the open menu was picked.
     pub fn plugin_menu_chosen(&mut self, item: &str, cx: &mut App) {
         let Some((pane, items)) = self.plugin_menu.open.take() else { return };
-        let Some((_, _, pick)) = item.parse::<usize>().ok().and_then(|i| items.into_iter().nth(i)) else { return };
+        let Some(pick) = item.parse::<usize>().ok().and_then(|i| items.into_iter().nth(i)) else { return };
         match pick {
             Pick::Press(id) => { self.plugin_press(&pane, &id, cx); }
             Pick::Set(id, v) => { self.plugin_set(&pane, &id, v, cx); }

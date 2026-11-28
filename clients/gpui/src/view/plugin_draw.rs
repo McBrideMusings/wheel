@@ -179,6 +179,7 @@ impl Client {
     /// Gives each TextField of `pane`'s tree an input, and the script's value when it changed.
     fn sync_plugin_fields(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.plugin_previews.get_mut(pane) else { return };
+        host.prune_view_state();
         let mut fields: Vec<(String, u64, String, String, Option<String>)> = host.pane.tree.all().filter(|n| n.component == "TextField")
             .map(|n| (n.id.clone(), n.serial, n.value().map(json_text).unwrap_or_default(), n.string("label").unwrap_or("").to_owned(), n.string("variant").map(str::to_owned)))
             .collect();
@@ -252,6 +253,8 @@ impl Draw<'_> {
         let lit = n.component == "Button" && n.string("variant") == Some("borderless") && !n.modifiers().any(|m| m.contains_key("hoverEffect")) && !inner.disabled;
         let outer = |d: gpui::Div| if wide { greedy(d, env) } else { d };
         let wrapped = outer(div().relative().flex().flex_col().items_start()).child(modified).child(recorded(self.pane, &n.id, self.controls));
+        // A disabled node and everything in it ignores the pointer, as SwiftUI's `disabled` does.
+        let wrapped = if inner.disabled && !env.disabled { wrapped.child(div().id(el_id(self.pane, &n.id, "disabled")).absolute().inset_0().occlude()) } else { wrapped };
         if lit { outer(div().flex().flex_col().items_start()).id(el_id(self.pane, &n.id, "hover")).rounded(px(6.)).hover(|s| s.bg(rgba(0xffffff29))).child(wrapped).into_any_element() } else { wrapped.into_any_element() }
     }
 

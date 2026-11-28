@@ -18,11 +18,14 @@ pub enum Answer {
     Alert { id: String, button: i64 },
 }
 
-/// One entry of a context menu: `id` "-" is a separator.
+/// One entry of a context menu: `id` "-" is a separator. `on` draws its checkmark; an item with
+/// a `submenu` opens it instead of answering.
 pub struct MenuItem<'a> {
     pub id: &'a str,
     pub title: &'a str,
     pub enabled: bool,
+    pub on: bool,
+    pub submenu: Vec<MenuItem<'a>>,
 }
 
 /// A question with its buttons, the first the default; `id` comes back with the answer.
@@ -116,35 +119,64 @@ impl Dialogs {
     /// A context menu of `items`, opened at the pointer after this call returns; a pick arrives as
     /// [`Answer::Menu`]. Returns the menu as built, for the check.
     pub fn context_menu(&mut self, items: &[MenuItem]) -> Vec<Value> {
-        let mtm = super::main_thread();
-        let menu = NSMenu::new(mtm);
-        menu.setAutoenablesItems(false);
         let mut ids = vec![];
-        for entry in items {
-            if entry.id == "-" {
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-                continue;
-            }
-            // SAFETY: `chose:` is the target's method, taking the menu item that sent it.
-            let item = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(entry.title), Some(sel!(chose:)), &NSString::new()) };
-            // SAFETY: the target lives as long as this struct, which the app holds for its life.
-            unsafe { item.setTarget(Some(&self.target)) };
-            item.setTag(ids.len() as isize);
-            item.setEnabled(entry.enabled);
-            ids.push(entry.id.to_owned());
-            menu.addItem(&item);
-        }
+        let menu = self.build(items, &mut ids);
         *self.target.ivars().ids.borrow_mut() = ids;
-        self.built = menu
-            .itemArray()
-            .iter()
-            .map(|i| if i.isSeparatorItem() { json!({"title": "-", "enabled": false}) } else { json!({"title": i.title().to_string(), "enabled": i.isEnabled()}) })
-            .collect();
+        self.built = Self::listed(&menu);
         if !self.hidden {
             *self.target.ivars().menu.borrow_mut() = Some(menu);
             self.target.later(sel!(openMenu:));
         }
         self.built.clone()
+    }
+
+    /// `items` as an NSMenu, each answering item's id pushed to `ids` at its tag.
+    fn build(&self, items: &[MenuItem], ids: &mut Vec<String>) -> Retained<NSMenu> {
+        let mtm = super::main_thread();
+        let menu = NSMenu::new(mtm);
+        menu.setAutoenablesItems(false);
+        for entry in items {
+            if entry.id == "-" {
+                menu.addItem(&NSMenuItem::separatorItem(mtm));
+                continue;
+            }
+            let action = entry.submenu.is_empty().then_some(sel!(chose:));
+            // SAFETY: `chose:` is the target's method, taking the menu item that sent it.
+            let item = unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(entry.title), action, &NSString::new()) };
+            item.setEnabled(entry.enabled);
+            if entry.on {
+                item.setState(objc2_app_kit::NSControlStateValueOn);
+            }
+            if entry.submenu.is_empty() {
+                // SAFETY: the target lives as long as this struct, which the app holds for its life.
+                unsafe { item.setTarget(Some(&self.target)) };
+                item.setTag(ids.len() as isize);
+                ids.push(entry.id.to_owned());
+            } else {
+                let sub = self.build(&entry.submenu, ids);
+                sub.setTitle(&NSString::from_str(entry.title));
+                item.setSubmenu(Some(&sub));
+            }
+            menu.addItem(&item);
+        }
+        menu
+    }
+
+    /// `menu` as the check reads it: each item's title, whether it is enabled and on, and its submenu.
+    fn listed(menu: &NSMenu) -> Vec<Value> {
+        menu.itemArray()
+            .iter()
+            .map(|i| {
+                if i.isSeparatorItem() {
+                    return json!({"title": "-", "enabled": false});
+                }
+                let mut v = json!({"title": i.title().to_string(), "enabled": i.isEnabled(), "on": i.state() == objc2_app_kit::NSControlStateValueOn});
+                if let Some(sub) = i.submenu() {
+                    v["submenu"] = Value::Array(Self::listed(&sub));
+                }
+                v
+            })
+            .collect()
     }
 
     /// Pick `id` from the context menu as its action does (the check's stand-in for the person).

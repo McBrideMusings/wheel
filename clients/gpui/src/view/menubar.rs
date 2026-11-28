@@ -522,9 +522,9 @@ impl MenuBar {
         let mut listed = vec![];
         for (i, item) in items.iter().enumerate() {
             if i > 0 && items[i - 1].section != item.section {
-                listed.push(crate::appkit::MenuItem { id: "-", title: "", enabled: false });
+                listed.push(crate::appkit::MenuItem { id: "-", title: "", enabled: false, on: false, submenu: vec![] });
             }
-            listed.push(crate::appkit::MenuItem { id: &item.id, title: &item.title, enabled: item.enabled });
+            listed.push(crate::appkit::MenuItem { id: &item.id, title: &item.title, enabled: item.enabled, on: false, submenu: vec![] });
         }
         self.space_menu = Some(space.to_owned());
         self.context_menu = self.dialogs.context_menu(&listed);

@@ -4,7 +4,7 @@
 //! Menu, Toolbar, the navigation and split views, ViewThatFits, Gauge, Chart, ShareLink,
 //! PasteButton and the Unsupported placeholder, with the defaults `SystemControls.swift`,
 //! `Basics.swift` and `Table.swift` give them. Canvas, the embeds and VideoStream are later slices.
-use super::plugin::{Fit, Pick};
+use super::plugin::{Entry, Fit, Pick};
 use super::plugin_draw::{ACCENT, BODY, Draw, Env, SECONDARY, el_id, greedy, pane_color};
 use super::*;
 use gpui::{AvailableSpace, GlobalElementId, InspectorElementId, LayoutId, Size, Style};
@@ -372,6 +372,12 @@ impl Draw<'_> {
         let (pane, id) = (self.pane.to_owned(), n.id.clone());
         let rows = gpui::uniform_list(el_id(self.pane, &n.id, "rows"), count, cx.processor(move |this: &mut Client, range: Range<usize>, _, cx| this.plugin_table_rows(&pane, &id, range, cx)))
             .flex_1().min_h_0().track_scroll(&self.host.table_scroll(&n.id));
+        // A click below the last row clears a selection the page owns.
+        let (pane, id) = (self.pane.to_owned(), n.id.clone());
+        let rows = div().id(el_id(self.pane, &n.id, "ground")).flex_1().min_h_0().flex().flex_col().child(rows).on_click(cx.listener(move |this, _, _, cx| {
+            this.plugin_table_click(&pane, &id, "", 1, false, false, cx);
+            cx.notify();
+        }));
         let empty = (count == 0).then(|| div().absolute().inset_0().flex().items_center().justify_center().text_color(rgba(SECONDARY)).child(n.string("empty").unwrap_or("Nothing matches the search and filters.").to_owned()));
         greedy(div().relative().flex().flex_col().flex_1().min_h(px(120.)), outer).child(header).child(rows).children(empty).child(recorded(self.pane, &format!("{}#rows", n.id), self.controls)).into_any_element()
     }
@@ -409,7 +415,8 @@ impl Draw<'_> {
                     }
                     let (pane, table, rid, row_node) = (self.pane.to_owned(), n.id.clone(), row.row_id.clone(), row.id.clone());
                     r = r.on_click(cx.listener(move |this, e: &gpui::ClickEvent, _, cx| {
-                        this.plugin_table_click(&pane, &table, &rid, e.click_count(), e.modifiers().platform, cx);
+                        this.plugin_table_click(&pane, &table, &rid, e.click_count(), e.modifiers().platform, e.modifiers().shift, cx);
+                        cx.stop_propagation();
                         cx.notify();
                     }));
                     let (pane, table) = (self.pane.to_owned(), n.id.clone());
@@ -561,9 +568,11 @@ impl Draw<'_> {
         };
         let set = Rc::new(set);
         let (down, moved) = (set.clone(), set);
+        // A drag keeps tracking outside the slider until the button comes up, as AppKit's does.
         let area = div().id(el_id(self.pane, &n.id, "slider")).flex_1().min_w(px(60.)).py(px(8.)).child(track.child(recorded(self.pane, &track_id, self.controls)))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, e: &MouseDownEvent, _, cx| down(this, e.position.x, cx)))
-            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| if e.pressed_button == Some(MouseButton::Left) { moved(this, e.position.x, cx) }));
+            .on_drag(SliderDrag, |_, _, _, cx| cx.new(|_| gpui::Empty))
+            .on_drag_move(cx.listener(move |this, e: &gpui::DragMoveEvent<SliderDrag>, _, cx| moved(this, e.event.position.x, cx)));
         greedy(div().flex().flex_row().items_center().gap(px(8.)), outer).child(Self::label(n.string("label").unwrap_or("").to_owned())).child(area).into_any_element()
     }
 
@@ -634,7 +643,7 @@ impl Draw<'_> {
             seg.into_any_element()
         } else {
             let current = options.iter().find(|(_, v)| value.contains(v)).map(|(l, _)| l.clone()).unwrap_or_default();
-            let picks: Vec<(String, bool, Pick)> = shown.iter().map(|(l, v)| (l.clone(), value.contains(v), Pick::Set(n.id.clone(), json!([v])))).collect();
+            let picks: Vec<Entry> = shown.iter().map(|(l, v)| Entry::new(l.clone(), value.contains(v), Pick::Set(n.id.clone(), json!([v])))).collect();
             let menu = self.popup(n, current, picks, inner, cx);
             if inner.in_form { div().flex().flex_row().items_center().gap(px(8.)).child(Self::label(label)).child(menu).into_any_element() } else { menu }
         };
@@ -642,7 +651,7 @@ impl Draw<'_> {
     }
 
     /// A pop-up button showing `title` whose press opens a menu of `items`.
-    fn popup(&self, n: &ViewNode, title: String, items: Vec<(String, bool, Pick)>, inner: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
+    fn popup(&self, n: &ViewNode, title: String, items: Vec<Entry>, inner: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         let b = div().id(el_id(self.pane, &n.id, "popup")).flex().flex_row().items_center().gap(px(6.)).pl(px(8.)).pr(px(4.)).py(px(2.)).rounded(px(5.)).bg(rgba(CONTROL_BG))
             .child(Self::label(title)).children(title::symbol(self.symbols, "chevron.up.chevron.down", 9., inner.color >> 8));
         if inner.disabled {
@@ -652,22 +661,26 @@ impl Draw<'_> {
         b.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.plugin_open_menu(&pane, items.clone(), cx))).into_any_element()
     }
 
-    fn menu_button(&self, n: &ViewNode, inner: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
+    /// Menu `n`'s children as menu items: Buttons, CheckBoxes, Dividers and nested Menus.
+    fn entries(&self, n: &ViewNode) -> Vec<Entry> {
         let mut items = vec![];
         for k in self.kids(n.parts()) {
             match k.component.as_str() {
-                "Button" => {
-                    let title = self.texts(k);
-                    items.push((title, false, Pick::Press(k.id.clone())));
-                }
+                "Button" => items.push(Entry::new(self.texts(k), false, Pick::Press(k.id.clone()))),
                 "CheckBox" => {
                     let on = k.value().and_then(Json::as_bool).unwrap_or(false);
-                    items.push((k.string("label").unwrap_or("").to_owned(), on, Pick::Set(k.id.clone(), Json::Bool(!on))));
+                    items.push(Entry::new(k.string("label").unwrap_or("").to_owned(), on, Pick::Set(k.id.clone(), Json::Bool(!on))));
                 }
-                "Divider" => items.push(("-".into(), false, Pick::Separator)),
+                "Divider" => items.push(Entry::new(String::new(), false, Pick::Separator)),
+                "Menu" => items.push(Entry { title: k.string("title").unwrap_or("").to_owned(), on: false, pick: Pick::Separator, submenu: self.entries(k) }),
                 _ => {}
             }
         }
+        items
+    }
+
+    fn menu_button(&self, n: &ViewNode, inner: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
+        let items = self.entries(n);
         let b = div().id(el_id(self.pane, &n.id, "menu")).flex().flex_row().items_center().gap(px(6.)).pl(px(8.)).pr(px(4.)).py(px(2.)).rounded(px(5.)).bg(rgba(CONTROL_BG))
             .child(Self::label(n.string("title").unwrap_or("").to_owned())).children(title::symbol(self.symbols, "chevron.down", 9., inner.color >> 8));
         let pane = self.pane.to_owned();
@@ -903,6 +916,9 @@ fn align(name: &str) -> (fn(gpui::Div) -> gpui::Div, fn(gpui::Div) -> gpui::Div)
     };
     (h, v)
 }
+
+/// What a Slider's drag carries: nothing, it only keeps the drag going outside the slider.
+struct SliderDrag;
 
 /// ViewThatFits as SwiftUI lays it out: each child measured at its ideal size, the first that
 /// fits the space offered drawn.

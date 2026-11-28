@@ -6216,11 +6216,15 @@ async fn dialogs_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         dialogs.push(json!({"node": node, "chose": st["chose"], "picture": png}));
     }
     let table = find("Table", None)?;
-    for (row, clicks, toggle, key, want) in [("b", 1, false, "selected", json!(["b"])), ("c", 1, true, "selected", json!(["b", "c"])), ("c", 2, false, "opened", json!("c"))] {
-        window.update(cx, |c, _, cx| c.plugin_table_click(pane, &table, row, clicks, toggle, cx))?;
+    // A click, a ⌘-click, a shift-click from row a, a click on empty ground ("" row), then a double click.
+    let steps = [("b", 1, false, false, "selected", json!(["b"])), ("c", 1, true, false, "selected", json!(["b", "c"])), ("a", 1, false, false, "selected", json!(["a"])), ("c", 1, false, true, "selected", json!(["a", "b", "c"])), ("", 1, false, false, "selected", json!([])), ("c", 2, false, false, "opened", json!("c"))];
+    for (row, clicks, toggle, range, key, want) in steps {
+        window.update(cx, |c, _, cx| c.plugin_table_click(pane, &table, row, clicks, toggle, range, cx))?;
         draw(window, None, cx)?;
         let st = plugin_preview_state(window, pane, cx)?;
-        ensure!(st[key] == want, "{} on row {row} of {table} should leave {key} {want}: state {st}", match (clicks, toggle) { (2, _) => "a double click", (_, true) => "a ⌘-click", _ => "a click" });
+        let what = match (clicks, toggle, range, row) { (2, ..) => "a double click", (_, true, ..) => "a ⌘-click", (_, _, true, _) => "a shift-click", (.., "") => "a click on empty ground", _ => "a click" };
+        // Luau has one table type, so an empty list may come back as an empty object.
+        ensure!(st[key] == want || (want == json!([]) && st[key] == json!({})), "{what} on row {row:?} of {table} should leave {key} {want}: state {st}");
     }
     let st = plugin_preview_state(window, pane, cx)?;
     window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
