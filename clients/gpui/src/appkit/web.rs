@@ -338,10 +338,6 @@ impl Pages {
         self.pages.borrow().get(pane).map(|p| p.view.clone())
     }
 
-    pub fn holds(&self, pane: &str) -> bool {
-        self.pages.borrow().contains_key(pane)
-    }
-
     fn is_browser(&self, pane: &str) -> bool {
         self.pages.borrow().get(pane).is_some_and(|p| p.browser.is_some())
     }

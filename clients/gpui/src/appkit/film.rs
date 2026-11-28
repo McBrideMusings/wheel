@@ -117,6 +117,7 @@ fn start(view: Retained<WKWebView>, seconds: f64, first: &CGImage) -> Result<Rec
     let adaptor = unsafe { AVAssetWriterInputPixelBufferAdaptor::assetWriterInputPixelBufferAdaptorWithAssetWriterInput_sourcePixelBufferAttributes(&input, Some(&attributes)) };
     unsafe { writer.addInput(&input) };
     if !unsafe { writer.startWriting() } {
+        let _ = std::fs::remove_file(&path);
         return Err(unsafe { writer.error() }.map_or("the movie file could not be started".into(), |e| e.localizedDescription().to_string()));
     }
     unsafe { writer.startSessionAtSourceTime(CMTime::new(0, 1000)) };
