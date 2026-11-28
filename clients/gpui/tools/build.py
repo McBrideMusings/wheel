@@ -91,8 +91,7 @@ subprocess.run(['turnstile', 'run', '--', 'xcrun', 'swiftc', '-O', '-emit-librar
     str(client / 'native/Bridge.swift'),
     # The Swift app's own source for how `terminal.*` settings become a Ghostty configuration.
     str(repo / 'apple/Shared/TerminalStyle.swift'),
-    # WheelUI's browser pieces are the iPhone's; the pane host makes the Mac's browsers in Rust (web.rs).
-    *[str(o) for o in sorted(products.glob('*.o')) if o.stem not in ('BrowserPane', 'BrowserInspect', 'BrowserConsole')],
+    *[str(o) for o in sorted(products.glob('*.o'))],
     str(products / 'libghostty.a'), '-lc++', '-framework', 'Carbon', '-framework', 'Metal', '-framework', 'WebKit',
     '-o', str(contents / 'MacOS/libWheelGpuiBridge.dylib')], check=True)
 sign(contents / 'MacOS/libWheelGpuiBridge.dylib')
