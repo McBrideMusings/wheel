@@ -43,11 +43,10 @@ fn cell_field(tree: &PaneNode, field: &str) -> BTreeMap<String, BTreeMap<String,
         let Some(Json::Array(cells)) = r.row.get("cells") else { continue };
         let mut m = BTreeMap::new();
         for c in cells {
-            if let Json::Object(c) = c {
-                if let Some(k) = s(c.get("key")) {
+            if let Json::Object(c) = c
+                && let Some(k) = s(c.get("key")) {
                     m.insert(k, s(c.get(field)).unwrap_or_default());
                 }
-            }
         }
         out.insert(r.id, m);
     }

@@ -13,11 +13,10 @@ fn data() -> Json {
 /// Every Button below `node`: its hover text (the `help` modifier) and its action.
 fn buttons_of(node: &PaneNode) -> Vec<(String, Json)> {
     let mut out = vec![];
-    if node.component == "Button" {
-        if let Some(action) = node.props.get("action") {
+    if node.component == "Button"
+        && let Some(action) = node.props.get("action") {
             out.push((button_mods(&node.props).0, action.clone()));
         }
-    }
     for c in &node.children {
         out.extend(buttons_of(c));
     }
@@ -88,7 +87,7 @@ fn run_starts_a_command_through_the_backend() {
     let actions = rec();
     let mut rt = commands_pane(actions.clone());
     let mut tree = rt.view(&data()).unwrap();
-    tree = press(&mut rt, &tree, "Run Build");
+    press(&mut rt, &tree, "Run Build");
     assert!(actions.borrow().len() == 1 && actions.borrow()[0].0 == "runner.run");
     same(&actions.borrow()[0].1, json!({"dir": "/p", "name": "build"}));
     // The answer clears nothing to show; a guard that failed shows its message in the fixed line.
@@ -116,7 +115,7 @@ fn a_command_with_a_question_asks_in_its_row_and_cancel_starts_nothing() {
     assert!(!has(&texts_child(&tree), "Ends every agent."));
     // Ask again and answer: the run starts with the command text it was asked about.
     tree = press(&mut rt, &tree, "Run Deploy");
-    tree = press(&mut rt, &tree, "Run Deploy: Ends every agent.");
+    press(&mut rt, &tree, "Run Deploy: Ends every agent.");
     assert!(actions.borrow().len() == 1 && actions.borrow()[0].0 == "runner.run");
     same(&actions.borrow()[0].1, json!({"dir": "/p", "name": "deploy", "confirmed": "make deploy"}));
     rt.send(&parse(r#"{"action":"runner.run","result":{"started":true,"id":"r3"}}"#)).unwrap();
@@ -137,7 +136,7 @@ fn search_narrows_the_list_and_folding_a_group_hides_its_rows() {
     tree = press(&mut rt, &tree, "Open prototypes");
     assert!(has(&texts_child(&tree), "dev"));
     // Search narrows to what holds the text, groups with nothing left go, and a fold never hides a match.
-    tree = press(&mut rt, &tree, "Fold machine");
+    press(&mut rt, &tree, "Fold machine");
     rt.send(&parse(r#"{"type":"query","value":"HELLO"}"#)).unwrap();
     tree = rt.view(&data()).unwrap();
     // The Running section stays above the list whatever the search says; the list is the fourth child.

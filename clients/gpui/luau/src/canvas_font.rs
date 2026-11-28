@@ -81,13 +81,13 @@ impl CanvasFont {
     pub fn weight_name(&self) -> &'static str {
         match self.weight {
             ..150 => "ultraLight",
-            ..250 => "thin",
-            ..350 => "light",
-            ..450 => "regular",
-            ..550 => "medium",
-            ..650 => "semibold",
-            ..750 => "bold",
-            ..850 => "heavy",
+            150..250 => "thin",
+            250..350 => "light",
+            350..450 => "regular",
+            450..550 => "medium",
+            550..650 => "semibold",
+            650..750 => "bold",
+            750..850 => "heavy",
             _ => "black",
         }
     }

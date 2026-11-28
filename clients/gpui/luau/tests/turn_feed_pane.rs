@@ -16,12 +16,11 @@ struct B {
 /// Every Button below `node`: its hover text, its action and whether it is disabled.
 fn buttons(node: &PaneNode) -> Vec<B> {
     let mut out = vec![];
-    if node.component == "Button" {
-        if let Some(action) = node.props.get("action") {
+    if node.component == "Button"
+        && let Some(action) = node.props.get("action") {
             let (help, disabled) = button_mods(&node.props);
             out.push(B { help, action: action.clone(), disabled });
         }
-    }
     for c in &node.children {
         out.extend(buttons(c));
     }

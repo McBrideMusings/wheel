@@ -241,11 +241,10 @@ pub fn rows(tree: &PaneNode) -> Vec<Row> {
             let mut title = String::new();
             if let Some(Json::Array(cells)) = o.get("cells") {
                 for c in cells {
-                    if let Json::Object(c) = c {
-                        if s(c.get("key")).as_deref() == Some("title") {
+                    if let Json::Object(c) = c
+                        && s(c.get("key")).as_deref() == Some("title") {
                             title = s(c.get("text")).unwrap_or_default();
                         }
-                    }
                 }
             }
             Some(Row { id, title, row: o.clone() })
