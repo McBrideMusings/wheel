@@ -5651,6 +5651,10 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
         entry["gpui_preview"] = plugin_picture(window, &output, &pane, &name, cx)?;
+        // The fixture's `gh` and `kennel` name a command they cannot answer: a pane showing that read something the fixture lacks.
+        let unanswered: Vec<String> = texts(&seen).into_iter().filter(|t| t.contains("fake gh:") || t.contains("fake kennel:")).collect();
+        ensure!(unanswered.is_empty(), "the {name} plugin pane asked the fixture for something it cannot answer: {unanswered:?}");
+        eprintln!("wheel-gpui: plugin pane {plugin}/{name}: {} components, texts {:?}", components(&seen).len(), texts(&seen).into_iter().take(4).collect::<Vec<_>>());
         if name == "beads" {
             // The Table fills the pane, so the pane has no ScrollView of its own to scroll.
             ensure!(seen["fills"] == true && seen["scroll"].is_null(), "the Beads Table should fill its pane: fills {} scroll {}", seen["fills"], seen["scroll"]);
@@ -5919,13 +5923,21 @@ async fn host_plugin(connection: &mut Connection, layouts: &mut usize, window: C
 }
 
 /// Whether the tree `entries` of plugin pane `what` shows its content rather than a loading line:
-/// Beads and Issues their Actions button, Graph its count, the gallery its last class's heading,
-/// dialogs its Show alert, the embeds panes their AgentChat or Map.
+/// Beads, Issues and PRs their Actions button, Graph its count, the gallery its last class's heading,
+/// dialogs its Show alert, the embeds panes their AgentChat or Map, Diff its scope picker, Project its
+/// Edit vision, Queue its first group, Runner the fixture's command, the turn feed its empty line and
+/// kennel this folder's profile.
 fn plugin_drawn(what: &str, entries: &[PluginEntry]) -> bool {
     let text = |want: &dyn Fn(&str) -> bool| entries.iter().any(|(_, _, t)| want(t));
     let kind = |k: &str| entries.iter().any(|(_, t, _)| t == k);
     let shown = match what {
-        "beads" | "issues" => text(&|t| t == "Actions ⌄"),
+        "beads" | "issues" | "prs" => text(&|t| t == "Actions ⌄"),
+        "diff" => kind("ChoicePicker"),
+        "project" => text(&|t| t == "Edit vision"),
+        "queue" => text(&|t| t.starts_with("NEEDS YOU")),
+        "runner" => text(&|t| t.contains("fixture-list")),
+        "feed" => text(&|t| t.starts_with("No posts yet")),
+        "kennel" => text(&|t| t.contains("profile: fixture")),
         "graph" => text(&|t| t.contains(" open issues")),
         "gallery" | "gallery streams" => text(&|t| t == "Wheel's own component"),
         "dialogs" => text(&|t| t == "Show alert"),

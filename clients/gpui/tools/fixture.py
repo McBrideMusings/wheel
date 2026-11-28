@@ -11,10 +11,11 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 # The repository's cargo target directory: the client's own CARGO_TARGET_DIR is another workspace's.
 TARGET = pathlib.Path(os.environ.get('WHEEL_FIXTURE_TARGET', REPO / 'target'))
 # `-p wheeld` builds every binary of that package, `wheel-fake-agent` included.
-BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse --bins'
+BUILD = 'cargo build -p wheeld -p wheel-cli -p wheelhouse -p wheel-runner -p turn-feed --bins'
 # The plugin panes the check opens in the GPUI client, one after another in one pane, as `<plugin>/<pane>`:
-# the Wheelhouse views and the component gallery whole.
-PLUGIN_PANES = ['wheelhouse/beads', 'wheelhouse/issues', 'wheelhouse/repo', 'wheelhouse/graph', 'gallery/gallery']
+# the Wheelhouse views, the component gallery whole, the runner, the turn feed and kennel's Harness pane.
+PLUGIN_PANES = ['wheelhouse/beads', 'wheelhouse/issues', 'wheelhouse/repo', 'wheelhouse/graph', 'gallery/gallery', 'wheelhouse/prs',
+                'wheelhouse/diff', 'wheelhouse/project', 'wheelhouse/queue', 'runner/runner', 'turn-feed/feed', 'kennel/kennel']
 # The rows of the `tall` plugin's one pane.
 TALL_ROWS = 80
 
@@ -77,14 +78,26 @@ icon = "shippingbox"
 '''
 
 
-# A `gh` for the Issues pane: the plugin's backend asks it for the repository and its issues.
+# A `gh` for the Issues, PRs and Repo panes: the plugin's backend asks it for the repository, its issues and its open PRs.
 FAKE_GH = '''#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]
-if args[:2] == ["repo", "view"]:
+def pr(n, title, author, draft):
+    return {"number": n, "title": title, "headRefName": "fx-%d" % n, "isDraft": draft, "mergeable": "MERGEABLE", "updatedAt": "2026-11-01T00:00:00Z",
+            "reviewDecision": None, "url": "https://github.com/o/fixture/pull/%d" % n, "additions": 12, "deletions": 3, "changedFiles": 2, "bodyText": "",
+            "author": {"login": author, "__typename": "User"}, "assignees": {"nodes": []}, "reviewRequests": {"nodes": []}, "labels": {"nodes": []},
+            "reviews": {"nodes": []}, "comments": {"nodes": []}, "reviewThreads": {"nodes": []},
+            "commits": {"totalCount": 1, "nodes": [{"commit": {"committedDate": "2026-11-01T00:00:00Z", "statusCheckRollup": {"state": "SUCCESS"}}}]}}
+if args[:2] == ["api", "graphql"] and any("pullRequests(states:OPEN" in a for a in args):
+    nodes = [pr(31, "Fix the crash on open", "me", False), pr(32, "Dark mode", "ann", True)]
+    print(json.dumps({"data": {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}))
+elif args[:2] == ["repo", "view"]:
     print("o/fixture")
 elif args[:2] == ["api", "user"]:
     print("me")
+elif args[:2] == ["pr", "list"]:
+    # The Repo pane's branch rows: no branch of the fixture has a PR.
+    print("[]")
 elif args[:2] == ["issue", "list"]:
     print(json.dumps([{"number": n, "title": t, "state": "OPEN", "labels": [{"name": l}], "assignees": [], "author": {"login": "ann"}, "body": "",
                        "url": "https://github.com/o/fixture/issues/%d" % n, "updatedAt": "2026-11-01T00:00:00Z"}
@@ -92,6 +105,16 @@ elif args[:2] == ["issue", "list"]:
 else:
     sys.stderr.write("fake gh: no answer for %s\\n" % " ".join(args))
     sys.exit(1)
+'''
+
+
+# A `kennel` for kennel's Harness pane, which opens on its Routes view: `kennel route list` and `kennel which`.
+FAKE_KENNEL = '''#!/bin/sh
+case "$1 $2" in
+"route list") printf 'Routes\\n  /tmp/fixture-route → fixture\\nProfiles\\n  fixture  /tmp/fixture-home\\n' ;;
+"which "*) printf 'profile\\tfixture\\nhome\\t/tmp/fixture-home\\n' ;;
+*) echo "fake kennel: no answer for $*" >&2; exit 1 ;;
+esac
 '''
 
 
@@ -103,7 +126,8 @@ def wheelhouse_project(root):
     # The artifact the `embeds/web` plugin pane's WebView names, committed so the Repo pane shows a clean tree.
     (project / 'embedded').mkdir()
     (project / 'embedded/index.html').write_text('<!doctype html><html><meta charset="utf-8"><title>Embedded artifact</title><h1>Embedded artifact</h1></html>')
-    (project / 'wheel.toml').write_text('[artifacts.embedded]\npath="embedded"\n')
+    # The Runner pane lists its one `[runner]` command.
+    (project / 'wheel.toml').write_text('[artifacts.embedded]\npath="embedded"\n\n[runner]\nfixture-list = "ls"\n')
     git = lambda *a: subprocess.run(['git', '-C', str(project), *a], check=True, capture_output=True)  # noqa: E731
     git('init', '-q', '-b', 'main')
     git('remote', 'add', 'origin', 'https://github.com/o/fixture.git')
@@ -171,6 +195,10 @@ def fixture():
         (root / 'plugins').mkdir()
         (root / 'plugins/wheelhouse').symlink_to(REPO / 'plugins/wheelhouse')
         (root / 'plugins/gallery').symlink_to(REPO / 'plugins/gallery')
+        for name in ['runner', 'turn-feed', 'kennel']:
+            (root / f'plugins/{name}').symlink_to(REPO / f'plugins/{name}')
+        # The runner's runs and the turn feed's posts stay in the fixture, never in ~/.wheel.
+        env.update(WHEEL_RUNNER_DIR=str(root / 'runs'), TURN_FEED_DIR=str(root / 'turn-feed'))
         # A plugin whose one pane is `TALL_ROWS` Text rows and nothing that fills the pane, so the pane scrolls as a whole.
         (root / 'plugins/tall/panes').mkdir(parents=True)
         (root / 'plugins/tall/wheel-plugin.toml').write_text('[plugin]\nid = "tall"\nversion = "0.1.0"\n\n[[pane]]\nid = "tall"\ntitle = "Tall"\nscript = "panes/tall.luau"\n')
@@ -278,6 +306,10 @@ def fixture():
         (root / 'bin/claude').symlink_to(built('wheel-fake-agent'))
         (root / 'bin/gh').write_text(FAKE_GH)
         (root / 'bin/gh').chmod(0o755)
+        (root / 'bin/kennel').write_text(FAKE_KENNEL)
+        (root / 'bin/kennel').chmod(0o755)
+        # The runner plugin's backend is `wheel-runner backend` on PATH: this build, not an installed one.
+        (root / 'bin/wheel-runner').symlink_to(built('wheel-runner'))
         env['PATH'] = f"{root / 'bin'}:{env.get('PATH', '')}"
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
