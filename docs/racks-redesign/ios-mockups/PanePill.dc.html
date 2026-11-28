@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pane pill (shared)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="display:inline-flex;align-items:center;gap:8px;height:36px;font-family:Inter,system-ui,sans-serif;color:#F2F3F5">
+<div role="tablist" aria-label="Panes" style="height:36px;box-sizing:border-box;border-radius:18px;display:flex;align-items:center;padding:0 3px;gap:2px;{{shell}}">
+<sc-for list="{{items}}" as="item" hint-placeholder-count="4">
+<a href="{{item.href}}" role="tab" aria-label="{{item.label}}" aria-selected="{{item.selected}}" style="position:relative;width:40px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;text-decoration:none;color:#F2F3F5;background:{{item.bg}}">
+<sc-if value="{{item.isHub}}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="currentColor"></circle><circle cx="12" cy="4" r="2"></circle><circle cx="4.5" cy="17" r="2"></circle><circle cx="19.5" cy="17" r="2"></circle><path d="M12 6v3M6.2 16l3.3-2.2M17.8 16l-3.3-2.2"></path></svg></sc-if>
+<sc-if value="{{item.isCC}}" hint-placeholder-val="{{ false }}"><span style="font-size:10px;font-weight:700">CC</span></sc-if>
+<sc-if value="{{item.isCX}}" hint-placeholder-val="{{ false }}"><span style="font-family:'JetBrains Mono',monospace;font-size:10px">CX</span></sc-if>
+<sc-if value="{{item.isTerm}}" hint-placeholder-val="{{ false }}"><span style="font-family:'JetBrains Mono',monospace;font-size:11px">&gt;_</span></sc-if>
+<sc-if value="{{item.isWeb}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"></path></svg></sc-if>
+<sc-if value="{{item.isDoc}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"></path><path d="M9 12h7M9 16h5"></path></svg></sc-if>
+<sc-if value="{{item.isPlugin}}" hint-placeholder-val="{{ false }}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="2.5"></circle><circle cx="18" cy="8" r="2.5"></circle><circle cx="10" cy="18" r="2.5"></circle><path d="M8 7l8 1M7 8l2 8M16 10l-5 6"></path></svg></sc-if>
+<sc-if value="{{item.isFiles}}" hint-placeholder-val="{{ false }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path><path d="M9 13l-2 2 2 2M15 13l2 2-2 2"></path></svg></sc-if>
+<sc-if value="{{item.needs}}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:7px;top:4px;width:6px;height:6px;border-radius:3px;background:#FF9F0A"></span></sc-if>
+</a>
+</sc-for>
+</div>
+<a href="R-Overview.dc.html" aria-label="All panes" style="width:36px;height:36px;box-sizing:border-box;border-radius:18px;display:flex;align-items:center;justify-content:center;color:#F2F3F5;{{shell}}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></a>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"space":{"editor":"enum","options":["wheel","game-port","weblogs","orchestrator"],"default":"wheel"},"active":{"editor":"enum","options":["lead","agent","terminal","browser","artifact","plugin","files"],"default":"agent"},"floating":{"editor":"boolean","default":false},"$preview":{"width":218,"height":36}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const space = this.props.space ?? 'wheel';
+    const active = this.props.active ?? 'agent';
+    const floating = this.props.floating === true || this.props.floating === 'true';
+    const sets = {
+      'wheel': [
+        { kind: 'CC', id: 'agent', label: 'ios-redesign agent', href: 'R-Chat.dc.html' },
+        { kind: 'Term', id: 'terminal', label: 'zsh terminal', href: 'R-Terminal.dc.html' },
+        { kind: 'Web', id: 'browser', label: 'Browser', href: 'R-Browser.dc.html' },
+        { kind: 'Doc', id: 'artifact', label: 'Composer decisions artifact', href: 'R-Artifact.dc.html' },
+        { kind: 'Files', id: 'files', label: 'Files and editor', href: 'R-Editor.dc.html' }
+      ],
+      'game-port': [
+        { kind: 'CX', id: 'agent', label: 'render-fix agent, needs you', href: 'R-Chat.dc.html', needs: true },
+        { kind: 'Term', id: 'terminal', label: 'zsh terminal', href: 'R-Terminal.dc.html' },
+        { kind: 'Plugin', id: 'plugin', label: 'deps-graph plugin pane', href: 'R-Overview.dc.html' },
+        { kind: 'Web', id: 'browser', label: 'Browser', href: 'R-Browser.dc.html' }
+      ],
+      'orchestrator': [
+        { kind: 'Hub', id: 'lead', label: 'Orchestrator chat', href: 'R-Orchestrator.dc.html' },
+        { kind: 'CX', id: 'agent', label: 'render-fix, mirrored from game-port, needs you', href: 'R-Orch-Mirror.dc.html', needs: true },
+        { kind: 'Doc', id: 'artifact', label: 'Composer decisions, mirrored from wheel', href: 'R-Artifact.dc.html' },
+        { kind: 'Plugin', id: 'plugin', label: 'deps-graph, mirrored from game-port', href: 'R-Overview.dc.html' }
+      ],
+      'weblogs': [
+        { kind: 'CX', id: 'agent', label: 'capture-daemon agent', href: 'R-Chat.dc.html' },
+        { kind: 'Term', id: 'terminal', label: 'zsh terminal', href: 'R-Terminal.dc.html' },
+        { kind: 'Web', id: 'browser', label: 'Browser', href: 'R-Browser.dc.html' },
+        { kind: 'Doc', id: 'artifact', label: 'Artifact', href: 'R-Artifact.dc.html' }
+      ]
+    };
+    const items = (sets[space] || sets.wheel).map((it) => ({
+      href: it.href, label: it.label,
+      selected: it.id === active ? 'true' : 'false',
+      bg: it.id === active ? '#2E3138' : 'transparent',
+      isHub: it.kind === 'Hub', isCC: it.kind === 'CC', isCX: it.kind === 'CX', isTerm: it.kind === 'Term',
+      isWeb: it.kind === 'Web', isDoc: it.kind === 'Doc', isFiles: it.kind === 'Files', isPlugin: it.kind === 'Plugin',
+      needs: !!it.needs && it.id !== active
+    }));
+    const shell = floating
+      ? 'background:rgba(26,29,35,0.88);border:1px solid #2A2D33;box-shadow:0 8px 24px rgba(0,0,0,0.35)'
+      : 'background:#1A1D23;border:1px solid #23262C';
+    return { items, shell };
+  }
+}
+</script>
+</body>
+</html>

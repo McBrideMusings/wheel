@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R7 Command palette</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width:393px;height:852px;position:relative;overflow:hidden;background:#05070A;color:#F2F3F5;font-family:Inter,system-ui,sans-serif">
+<section aria-label="Command palette" style="position:absolute;left:8px;right:8px;top:64px;background:#14161B;border:1px solid #23262C;border-radius:34px;padding:12px;display:flex;flex-direction:column;gap:4px">
+<div style="display:flex;gap:10px;margin-bottom:8px">
+<label style="flex:1;height:46px;border-radius:23px;background:#24272D;display:flex;align-items:center;gap:10px;padding:0 16px;font-size:17px;color:#8E9199"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="M15.5 15.5L21 21"></path></svg>Search commands, sessions…</label>
+<button aria-label="Close" style="width:46px;height:46px;border-radius:23px;border:none;background:#24272D;color:#F2F3F5;display:flex;align-items:center;justify-content:center"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M2 2l12 12M14 2L2 14"></path></svg></button>
+</div>
+<button style="height:48px;border-radius:24px;border:none;background:#1B2B47;color:#F2F3F5;display:flex;align-items:center;gap:10px;padding:0 16px;font-size:17px;text-align:left"><span style="width:8px;height:8px;border-radius:4px;background:#FF9F0A"></span><span style="flex:1">Needs you</span><span style="font-size:15px;color:#FF9F0A;font-weight:600">3</span><span style="font-size:14px;color:#8E9199">⌘I</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Allow all low-risk requests</span><span style="font-size:14px;color:#8E9199">2</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Talk to Lead</span><span style="font-size:14px;color:#8E9199">⌘⇧V</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Go to Session…</span><span style="font-size:14px;color:#8E9199">⌘K ›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Go to Anything…</span><span style="font-size:14px;color:#8E9199">⌘P ›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">New Agent…</span><span style="font-size:14px;color:#8E9199">Claude Code · Codex · pi ›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">New Terminal</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Pin Pane…</span><span style="font-size:14px;color:#8E9199">›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Queue…</span><span style="font-size:14px;color:#8E9199">›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Switch Host</span><span style="font-size:14px;color:#8E9199">Studio ›</span></button>
+<button style="height:48px;border-radius:24px;border:none;background:transparent;color:#F2F3F5;display:flex;align-items:center;padding:0 16px;font-size:17px;text-align:left"><span style="flex:1">Pair a Mac…</span></button>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":393,"height":852}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

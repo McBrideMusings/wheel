@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R16 Slash menu in the composer</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+button{font-family:inherit;cursor:pointer}
+</style>
+</helmet>
+<div style="width:393px;height:852px;position:relative;overflow:hidden;background:#0E111A;color:#F2F3F5;font-family:Inter,system-ui,sans-serif">
+
+<header style="padding:58px 14px 10px 14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #181B21">
+<a href="R-Chat.dc.html" aria-label="Back" style="width:44px;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C;display:flex;align-items:center;justify-content:center;color:#F2F3F5;flex:none"><svg width="11" height="18" viewBox="0 0 12 20" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M10 2L2 10l8 8"></path></svg></a>
+<div style="flex:1;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:14px;font-weight:600;line-height:17px">ios-redesign</span><span style="font-size:12px;color:#8E9199;line-height:15px">wheel · Claude Code</span></div>
+<div style="width:84px;height:44px;border-radius:22px;background:#1A1D23;border:1px solid #23262C;flex:none"></div>
+</header>
+
+<div aria-hidden="true" style="padding:14px 20px;font-size:17px;line-height:26px;color:#4A4E57">All 14 tests pass. Pushing ios-composer next.</div>
+
+<section role="listbox" aria-label="Commands and skills" style="position:absolute;left:12px;right:12px;bottom:415px;background:#1A1D23;border:1px solid #2A2D33;border-radius:22px;padding:6px;box-shadow:0 -8px 30px rgba(0,0,0,0.4)">
+<div style="padding:8px 12px 4px 12px;font-size:12px;font-weight:600;letter-spacing:0.04em;color:#6E727A">SKILLS · wheel</div>
+<button role="option" aria-selected="true" style="width:100%;height:46px;border:none;border-radius:16px;background:#1B2B47;color:#F2F3F5;display:flex;align-items:center;gap:12px;padding:0 12px;text-align:left">
+<span style="font-family:'JetBrains Mono',monospace;font-size:14px;width:120px;flex:none">/swiftui-review</span><span style="flex:1;font-size:13px;color:#C9CCD1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Check views against HIG</span></button>
+<button role="option" aria-selected="false" style="width:100%;height:46px;border:none;border-radius:16px;background:transparent;color:#F2F3F5;display:flex;align-items:center;gap:12px;padding:0 12px;text-align:left">
+<span style="font-family:'JetBrains Mono',monospace;font-size:14px;width:120px;flex:none">/testflight</span><span style="flex:1;font-size:13px;color:#8E9199;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Archive and upload a build</span></button>
+<div style="padding:8px 12px 4px 12px;font-size:12px;font-weight:600;letter-spacing:0.04em;color:#6E727A">COMMANDS</div>
+<button role="option" aria-selected="false" style="width:100%;height:46px;border:none;border-radius:16px;background:transparent;color:#F2F3F5;display:flex;align-items:center;gap:12px;padding:0 12px;text-align:left">
+<span style="font-family:'JetBrains Mono',monospace;font-size:14px;width:120px;flex:none">/compact</span><span style="flex:1;font-size:13px;color:#8E9199">Free up context</span></button>
+<button role="option" aria-selected="false" style="width:100%;height:46px;border:none;border-radius:16px;background:transparent;color:#F2F3F5;display:flex;align-items:center;gap:12px;padding:0 12px;text-align:left">
+<span style="font-family:'JetBrains Mono',monospace;font-size:14px;width:120px;flex:none">/review</span><span style="flex:1;font-size:13px;color:#8E9199">Review the current diff</span></button>
+<button role="option" aria-selected="false" style="width:100%;height:46px;border:none;border-radius:16px;background:transparent;color:#F2F3F5;display:flex;align-items:center;gap:12px;padding:0 12px;text-align:left">
+<span style="font-family:'JetBrains Mono',monospace;font-size:14px;width:120px;flex:none">/clear</span><span style="flex:1;font-size:13px;color:#8E9199">Start a fresh conversation</span></button>
+</section>
+
+<div style="position:absolute;left:12px;right:12px;bottom:299px;background:#1E2025;border:1px solid #3B82F6;border-radius:26px;padding:14px 8px 8px 8px;display:flex;flex-direction:column;gap:12px">
+<label style="font-size:17px;padding:0 10px;font-family:'JetBrains Mono',monospace;color:#F2F3F5">/<span style="display:inline-block;width:2px;height:20px;background:#3B82F6;vertical-align:middle;margin-left:1px"></span></label>
+<div style="display:flex;align-items:center;gap:8px">
+<button aria-label="Attach, skills" style="width:40px;height:40px;border-radius:20px;border:none;background:#2A2D33;color:#F2F3F5;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+<a href="R-Model.dc.html" style="height:40px;padding:0 16px;border-radius:20px;background:#2A2D33;color:#F2F3F5;font-size:15px;display:flex;align-items:center;gap:6px;text-decoration:none">Opus 5.5 <span style="color:#8E9199">High</span></a>
+<button aria-label="Dictate" style="margin-left:auto;width:40px;height:40px;border-radius:20px;border:none;background:#2A2D33;color:#F2F3F5;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0014 0M12 18v3"></path></svg></button>
+<button aria-label="Send" style="width:40px;height:40px;border-radius:20px;border:none;background:#F2F3F5;color:#0E111A;display:flex;align-items:center;justify-content:center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+</div>
+</div>
+
+<div aria-label="System keyboard area" style="position:absolute;left:0;right:0;bottom:0;height:291px;background:#16181D;border-top:1px solid #23262C;display:flex;align-items:center;justify-content:center;color:#3A3D44;font-size:13px">system keyboard</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":393,"height":852}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
