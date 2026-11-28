@@ -266,8 +266,8 @@ impl Client {
         }
         if let Some(command) = &task.command {
             let first = command.lines().next().unwrap_or_default();
-            view = view.child(div().flex_none().h(px(24.)).px_3().flex().items_center().truncate().text_xs().font_family("Menlo").text_color(rgb(MUTED))
-                .child(if task.kind == TaskKind::Shell { format!("$ {first}") } else { first.to_owned() })).child(rule());
+            view = view.child(div().flex_none().h(px(24.)).px_3().flex().items_center().text_xs().font_family("Menlo").text_color(rgb(MUTED))
+                .child(div().flex_1().min_w_0().truncate().child(if task.kind == TaskKind::Shell { format!("$ {first}") } else { first.to_owned() }))).child(rule());
         }
         let mut output = div().flex_1().min_h_0().px_3().py_2().flex().flex_col().justify_end().overflow_hidden().text_xs().font_family("Menlo").text_color(rgb(0xd9e8e1));
         if read.is_some_and(|(_, truncated)| *truncated) {
@@ -275,6 +275,8 @@ impl Client {
         }
         output = output.children(lines.into_iter().map(|l| div().flex_none().h(px(running::LINE)).truncate().child(if l.is_empty() { " ".to_owned() } else { l })));
         view.child(output).child(rule())
-            .child(div().flex_none().h(px(24.)).px_3().flex().items_center().truncate().text_xs().text_color(rgb(FAINT)).child(format!("{} \u{b7} following the end", running::facts(task, now))))
+            // The text is its own min_w_0 child: a flex row's text keeps its full width and clips instead of ending in "…".
+            .child(div().flex_none().h(px(24.)).px_3().flex().items_center().text_xs().text_color(rgb(FAINT))
+                .child(div().flex_1().min_w_0().truncate().child(format!("{} \u{b7} following the end", running::facts(task, now)))))
     }
 }
