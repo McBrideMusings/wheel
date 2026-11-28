@@ -148,6 +148,7 @@ fn takes_width(n: &ViewNode) -> bool {
 impl Client {
     /// Previewed plugin pane `pane`'s tree drawn `w` × `h`, or None when it is not previewed.
     pub(super) fn plugin_element(&mut self, pane: &str, w: f32, h: f32, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        self.flush_plugin_copies(cx);
         self.sync_plugin_fields(pane, window, cx);
         let host = self.plugin_previews.get(pane)?;
         let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols };

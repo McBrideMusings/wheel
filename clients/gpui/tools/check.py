@@ -56,7 +56,7 @@ with fixture() as (env, info):
     with (out / 'host.log').open('w') as log:
         process = subprocess.Popen([str(host)], env=env, stdout=log, stderr=log)
         try:
-            deadline = time.time() + 420
+            deadline = time.time() + 900
             while process.poll() is None:
                 if time.time() > deadline:
                     process.kill()

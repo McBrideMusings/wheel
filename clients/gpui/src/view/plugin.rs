@@ -85,7 +85,7 @@ impl Client {
 
     /// Sends what pane `pane`'s script asked for since the last call: its feed changes, its actions
     /// and the text its buttons copy.
-    pub(super) fn drain_plugin(&mut self, pane: &str, cx: &mut App) {
+    pub(super) fn drain_plugin(&mut self, pane: &str) {
         loop {
             let Some(effects) = self.plugin_previews.get_mut(pane).map(|h| h.pane.take_effects()) else { return };
             if effects.is_empty() {
@@ -117,9 +117,7 @@ impl Client {
                             self.plugin_previews.get_mut(pane).unwrap().pane.action_failed(&name, "no connection to wheeld");
                         }
                     }
-                    Effect::Copy(text) => {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                    }
+                    Effect::Copy(text) => self.plugin_copied.push(text),
                 }
             }
         }
@@ -128,7 +126,7 @@ impl Client {
     /// A `plugin_source`, `feed_update`, `plugin_action` or `error` for a previewed plugin pane.
     /// Returns whether it was one; a `feed_update` for any other pane is left for the queue and
     /// the rest.
-    pub fn on_plugin_message(&mut self, message: &ServerMsg, cx: &mut App) -> bool {
+    pub fn on_plugin_message(&mut self, message: &ServerMsg) -> bool {
         let pane = match message {
             ServerMsg::PluginSource { req, pane, chunk, source, modules, .. } => {
                 let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
@@ -169,8 +167,17 @@ impl Client {
             }
             _ => return false,
         };
-        self.drain_plugin(&pane, cx);
+        self.drain_plugin(&pane);
         true
+    }
+
+    /// Puts what previewed panes' Buttons copied on the pasteboard, the last copy winning.
+    pub(super) fn flush_plugin_copies(&mut self, cx: &mut App) {
+        let last = self.plugin_copied.pop();
+        self.plugin_copied.clear();
+        if let Some(text) = last {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
     }
 
     /// `pane_reload` for a previewed pane: its script runs from the top with the source read again.
@@ -226,7 +233,8 @@ impl Client {
         if ok && copies {
             host.copied.insert(id.to_owned(), std::time::Instant::now());
         }
-        self.drain_plugin(pane, cx);
+        self.drain_plugin(pane);
+        self.flush_plugin_copies(cx);
         ok
     }
 
@@ -234,7 +242,8 @@ impl Client {
     pub fn plugin_set(&mut self, pane: &str, id: &str, value: Json, cx: &mut App) -> bool {
         let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
         let ok = host.pane.set(id, value);
-        self.drain_plugin(pane, cx);
+        self.drain_plugin(pane);
+        self.flush_plugin_copies(cx);
         ok
     }
 
@@ -242,7 +251,8 @@ impl Client {
     pub fn plugin_raise(&mut self, pane: &str, id: &str, key: &str, context: &Json, cx: &mut App) -> bool {
         let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
         let ok = host.pane.raise(id, key, context);
-        self.drain_plugin(pane, cx);
+        self.drain_plugin(pane);
+        self.flush_plugin_copies(cx);
         ok
     }
 
