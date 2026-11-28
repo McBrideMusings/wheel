@@ -322,6 +322,9 @@ impl PageScheme {
 
     /// Send request `key` to wheeld; false when it was stopped while it waited, so its place passes on.
     fn begin(&self, key: usize) -> bool {
+        if self.ivars().closed.get() || !self.ivars().requests.borrow().contains_key(&key) {
+            return false;
+        }
         let session = self.session();
         let mut requests = self.ivars().requests.borrow_mut();
         let Some(r) = requests.get_mut(&key) else { return false };
@@ -336,6 +339,9 @@ impl PageScheme {
     /// WebKit stopped task `key` (or the view is closing): its fetch ends, and a gated one's place passes on.
     fn stop(&self, key: usize) {
         let Some(r) = self.ivars().requests.borrow_mut().remove(&key) else { return };
+        // A request still waiting its turn leaves the line, so a later task at the same address is not started in its place.
+        let me = self as *const Self;
+        GATE.with_borrow_mut(|g| g.waiting.retain(|(h, k)| !(*k == key && h.load().is_some_and(|h| std::ptr::eq(&*h, me)))));
         if let Some(fetch) = &r.fetch {
             self.ivars().fetches.borrow_mut().remove(&fetch.taskIdentifier());
             fetch.cancel();
