@@ -1,18 +1,18 @@
 //! A plugin pane's WheelUI tree drawn by GPUI (wheel-4d1o.2): Column, Row, Text, Divider, Button,
 //! TextField, List, Icon, Image, Link, ProgressView, Card and their modifiers, with the defaults
-//! WheelUI's `Basics.swift` and `Modifiers.swift` give them. A component this slice does not draw
-//! yet draws nothing, as WheelUI's catalog does for a name it lacks.
+//! WheelUI's `Basics.swift` and `Modifiers.swift` give them; `plugin_controls.rs` draws the rest.
+//! A name neither draws draws nothing, as WheelUI's catalog does for a name it lacks.
 use super::*;
 use super::plugin::PluginHost;
 use serde_json::{Map, Value as Json};
 use wheel_luau::tree::{ViewNode, ViewTree, child_id, text as json_text};
 
 /// The page's body text, as WheelUI sets it on the whole tree "so a page reads the same on a phone".
-const BODY: f32 = 13.;
+pub(super) const BODY: f32 = 13.;
 /// Swift's `.secondary` and `.tertiary` label colours in the dark appearance.
-const SECONDARY: u32 = 0xffffff8c;
+pub(super) const SECONDARY: u32 = 0xffffff8c;
 const TERTIARY: u32 = 0xffffff40;
-const ACCENT: u32 = 0x0a84ff;
+pub(super) const ACCENT: u32 = 0x0a84ff;
 
 /// A colour name a modifier may give (`paneColor`, Modifiers.swift), as RGBA in the dark
 /// appearance the app draws in; None for any other name, which shows the warning marker.
@@ -104,31 +104,35 @@ pub fn padding(arg: &Json) -> Option<[f32; 4]> {
 /// What a node's children inherit from it, as SwiftUI's environment carries it: the parts a GPUI
 /// div cannot pass down itself.
 #[derive(Clone, Copy)]
-struct Env {
+pub(super) struct Env {
     /// The colour and size an Icon's symbol is drawn in.
-    color: u32,
-    size: f32,
-    disabled: bool,
+    pub color: u32,
+    pub size: f32,
+    pub disabled: bool,
     /// The parent lays its children out in a row, so a greedy width grows along the row.
-    in_row: bool,
+    pub in_row: bool,
+    /// Inside a Form, where a picker shows its label and a Section its grouped box.
+    pub in_form: bool,
 }
 
 /// One draw of one pane's tree.
-struct Draw<'a> {
-    pane: &'a str,
-    tree: &'a ViewTree,
-    host: &'a PluginHost,
-    controls: &'a Rc<crate::view::scoped::Scoped<Control>>,
-    symbols: &'a title::Symbols,
+pub(super) struct Draw<'a> {
+    pub pane: &'a str,
+    pub tree: &'a ViewTree,
+    pub host: &'a PluginHost,
+    pub controls: &'a Rc<crate::view::scoped::Scoped<Control>>,
+    pub symbols: &'a title::Symbols,
+    /// The width the page is drawn at: a Table drops its `wide` columns under 640 pt.
+    pub width: f32,
 }
 
-fn el_id(pane: &str, id: &str, tag: &str) -> gpui::ElementId {
+pub(super) fn el_id(pane: &str, id: &str, tag: &str) -> gpui::ElementId {
     gpui::ElementId::Name(format!("plugin-{pane}-{id}-{tag}").into())
 }
 
 /// Takes the width it is offered: along the row in a Row, across the column in a Column. A
 /// stretch, not a percentage: a percentage of a parent its content sizes resolves to nothing.
-fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
+pub(super) fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
     if env.in_row { d.flex_1().min_w_0() } else { d.self_stretch().min_w_0() }
 }
 
@@ -137,7 +141,8 @@ fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
 /// a justify spacer pushes to its edges.
 fn takes_width(n: &ViewNode) -> bool {
     match n.component.as_str() {
-        "Column" | "Card" | "TextField" | "List" | "ViewThatFits" => true,
+        "Column" | "Card" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
+        "Gauge" => !matches!(n.string("style"), Some("accessoryCircular" | "accessoryCircularCapacity")),
         "Divider" => n.string("axis") != Some("vertical"),
         "ProgressView" => n.number("value").is_some(),
         "Row" => matches!(n.string("justify").unwrap_or("start"), "start" | "center" | "end" | "spaceEvenly" | "spaceAround"),
@@ -151,8 +156,10 @@ impl Client {
         self.flush_plugin_copies(cx);
         self.sync_plugin_fields(pane, window, cx);
         let host = self.plugin_previews.get(pane)?;
-        let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols };
-        let env = Env { color: 0xffffffd9, size: BODY, disabled: false, in_row: false };
+        let w = host.width.unwrap_or(w);
+        host.drawn.set(w);
+        let d = Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols, width: w };
+        let env = Env { color: 0xffffffd9, size: BODY, disabled: false, in_row: false, in_form: false };
         let mut page = div().flex().flex_col().w(px(w)).text_size(px(BODY)).line_height(gpui::relative(1.23)).text_color(rgba(env.color));
         if let Some(error) = host.pane.error() {
             page = page.child(div().p_2().text_color(rgba(pane_color("red").unwrap())).child(error.to_owned()));
@@ -161,19 +168,26 @@ impl Client {
             page = page.child(d.node(root, env, cx));
         }
         let fills = host.pane.fills_pane();
-        Some(if fills {
+        let body = if fills {
             page.h(px(h)).overflow_hidden().into_any_element()
         } else {
             div().id(el_id(pane, "root", "scroll")).w(px(w)).h(px(h)).overflow_y_scroll().track_scroll(&host.scroll).child(page).into_any_element()
-        })
+        };
+        Some(div().relative().w(px(w)).h(px(h)).child(body).children(d.overlays(cx)).into_any_element())
     }
 
     /// Gives each TextField of `pane`'s tree an input, and the script's value when it changed.
     fn sync_plugin_fields(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(host) = self.plugin_previews.get_mut(pane) else { return };
-        let fields: Vec<(String, u64, String, String, Option<String>)> = host.pane.tree.all().filter(|n| n.component == "TextField")
+        let mut fields: Vec<(String, u64, String, String, Option<String>)> = host.pane.tree.all().filter(|n| n.component == "TextField")
             .map(|n| (n.id.clone(), n.serial, n.value().map(json_text).unwrap_or_default(), n.string("label").unwrap_or("").to_owned(), n.string("variant").map(str::to_owned)))
             .collect();
+        // A filterable ChoicePicker's filter is the view's own text, kept as typed (`#filter`).
+        for n in host.pane.tree.all().filter(|n| n.component == "ChoicePicker" && n.bool("filterable") == Some(true)) {
+            let id = format!("{}#filter", n.id);
+            let typed = host.fields.get(&id).map(|(_, _, t)| t.clone()).unwrap_or_default();
+            fields.push((id, n.serial, typed, "Filter".into(), None));
+        }
         host.fields.retain(|id, (serial, _, _)| fields.iter().any(|(i, s, ..)| i == id && s == serial));
         for (id, serial, value, label, variant) in fields {
             let host = self.plugin_previews.get_mut(pane).unwrap();
@@ -194,7 +208,9 @@ impl Client {
                                 }
                                 *synced = text.clone();
                             }
-                            this.plugin_set(&pane, &node, Json::String(text), cx);
+                            if !node.ends_with("#filter") {
+                                this.plugin_set(&pane, &node, Json::String(text), cx);
+                            }
                             cx.notify();
                         }
                     })
@@ -212,12 +228,12 @@ impl Client {
 }
 
 impl Draw<'_> {
-    fn kids<'n>(&'n self, ids: impl IntoIterator<Item = &'n str>) -> Vec<&'n ViewNode> {
+    pub(super) fn kids<'n>(&'n self, ids: impl IntoIterator<Item = &'n str>) -> Vec<&'n ViewNode> {
         ids.into_iter().filter_map(|id| self.tree.node(id)).collect()
     }
 
     /// Node `n` with its modifiers, as WheelUI's `PaneNodeView` wraps it.
-    fn node(&self, n: &ViewNode, env: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
+    pub(super) fn node(&self, n: &ViewNode, env: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         // What the node's own modifiers set for everything inside it.
         let mut inner = env;
         for m in n.modifiers() {
@@ -325,12 +341,7 @@ impl Draw<'_> {
                 }
                 card.into_any_element()
             }
-            // hack: draws its first choice only until wheel-4d1o.3 measures which one fits.
-            "ViewThatFits" => match n.parts().first().and_then(|id| self.tree.node(id)) {
-                Some(child) => greedy(div(), outer).child(self.node(child, Env { in_row: false, ..inner }, cx)).into_any_element(),
-                None => div().into_any_element(),
-            },
-            _ => div().into_any_element(),
+            _ => self.control(n, inner, outer, cx).unwrap_or_else(|| div().into_any_element()),
         }
     }
 

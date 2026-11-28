@@ -26,6 +26,50 @@ pub struct PluginHost {
     pub(super) scrolled: RefCell<HashMap<String, (gpui::ScrollHandle, Option<String>)>>,
     /// The pane's own scroll when the tree does not fill it.
     pub(super) scroll: gpui::ScrollHandle,
+    /// What SwiftUI keeps in a view's own `@State`: the Modal sheets and Popovers open, each Tabs'
+    /// tab, each Table's own sort (column key, ascending) and each ViewThatFits' last choice.
+    pub(super) open: HashSet<String>,
+    pub(super) tabs: HashMap<String, usize>,
+    pub(super) sorts: HashMap<String, (String, bool)>,
+    pub(super) fits: Rc<RefCell<HashMap<String, Fit>>>,
+    /// Each Table's list scroll, by node id.
+    tables: RefCell<HashMap<String, gpui::UniformListScrollHandle>>,
+    /// The width a check draws the page at instead of the pane's.
+    pub(super) width: Option<f32>,
+    /// The width the page was last drawn at.
+    pub(super) drawn: std::cell::Cell<f32>,
+}
+
+/// The child a ViewThatFits drew, at what width, and that child's height there.
+#[derive(Clone, Copy, Debug)]
+pub struct Fit {
+    pub choice: usize,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// What a menu item a plugin pane opened does.
+#[derive(Clone, Debug)]
+pub enum Pick {
+    Press(String),
+    Set(String, Json),
+    Raise(String, String, Json),
+    Separator,
+}
+
+/// The menus previewed panes open: the AppKit menus (built lazily, answers through `answers`) and
+/// the last one opened, with its pane and its items.
+#[derive(Default)]
+pub struct Menus {
+    dialogs: Option<crate::appkit::Dialogs>,
+    open: Option<(String, Vec<(String, bool, Pick)>)>,
+    built: Vec<Json>,
+}
+
+impl PluginHost {
+    pub(super) fn table_scroll(&self, id: &str) -> gpui::UniformListScrollHandle {
+        self.tables.borrow_mut().entry(id.to_owned()).or_default().clone()
+    }
 }
 
 impl Client {
@@ -256,6 +300,114 @@ impl Client {
         ok
     }
 
+    /// Opens or closes Modal sheet or Popover `id`, which SwiftUI keeps in the view's own state.
+    pub(super) fn plugin_toggle_open(&mut self, pane: &str, id: &str) {
+        if let Some(h) = self.plugin_previews.get_mut(pane) && !h.open.remove(id) {
+            h.open.insert(id.to_owned());
+        }
+    }
+
+    /// A header click on Table `id`'s column `key`: the page sorts when it has a `sortAction`,
+    /// else the view does; the same column again flips the order.
+    pub fn plugin_table_sort(&mut self, pane: &str, id: &str, key: &str, cx: &mut App) {
+        let Some(host) = self.plugin_previews.get_mut(pane) else { return };
+        let Some(n) = host.pane.tree.node(id) else { return };
+        if n.action("sortAction").is_empty() {
+            let asc = !matches!(host.sorts.get(id), Some((k, true)) if k == key);
+            host.sorts.insert(id.to_owned(), (key.to_owned(), asc));
+            return;
+        }
+        let now = n.props.get("sort").and_then(Json::as_object);
+        let same = now.and_then(|s| s.get("key")).and_then(Json::as_str) == Some(key);
+        let asc = !(same && now.and_then(|s| s.get("asc")).and_then(Json::as_bool).unwrap_or(true));
+        self.plugin_raise(pane, id, "sortAction", &serde_json::json!({"key": key, "asc": asc}), cx);
+    }
+
+    /// A click on row `row` (its own `id`) of Table `id`: with a `selectAction` it selects the
+    /// row (⌘ adds or removes it) and a double click raises `rowAction`; without one a click
+    /// raises `rowAction`.
+    pub fn plugin_table_click(&mut self, pane: &str, id: &str, row: &str, clicks: usize, toggle: bool, cx: &mut App) {
+        let Some(n) = self.plugin_previews.get(pane).and_then(|h| h.pane.tree.node(id)) else { return };
+        if n.action("selectAction").is_empty() || clicks >= 2 {
+            self.plugin_raise(pane, id, n.action("rowAction"), &serde_json::json!({"id": row}), cx);
+            return;
+        }
+        let mut ids: Vec<String> = n.props.get("selected").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).map(str::to_owned).collect();
+        if toggle {
+            match ids.iter().position(|i| i == row) { Some(i) => { ids.remove(i); } None => ids.push(row.to_owned()) }
+        } else {
+            ids = vec![row.to_owned()];
+        }
+        ids.sort();
+        ids.dedup();
+        let now: Vec<&str> = n.props.get("selected").and_then(Json::as_array).into_iter().flatten().filter_map(Json::as_str).collect();
+        let mut was: Vec<&str> = now.clone();
+        was.sort();
+        if was != ids.iter().map(String::as_str).collect::<Vec<_>>() {
+            self.plugin_raise(pane, id, "selectAction", &serde_json::json!({"ids": ids}), cx);
+        }
+    }
+
+    /// Lines `range` of Table `id` in pane `pane`, for its list.
+    pub(super) fn plugin_table_rows(&mut self, pane: &str, id: &str, range: Range<usize>, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let Some(host) = self.plugin_previews.get(pane) else { return vec![] };
+        let Some(n) = host.pane.tree.node(id) else { return vec![] };
+        let width = host.drawn.get();
+        let d = super::plugin_draw::Draw { pane, tree: &host.pane.tree, host, controls: &self.controls, symbols: &self.symbols, width };
+        d.table_rows(n, range, cx)
+    }
+
+    /// Row `row`'s context menu in Table `table`: each `menu` item raises its own `action` on the row.
+    pub(super) fn plugin_row_menu(&mut self, pane: &str, _table: &str, row: &str, cx: &mut Context<Self>) {
+        let Some(r) = self.plugin_previews.get(pane).and_then(|h| h.pane.tree.node(row)) else { return };
+        let items: Vec<(String, bool, Pick)> = r.props.get("menu").and_then(Json::as_array).into_iter().flatten().enumerate()
+            .map(|(i, m)| (m.get("label").map(wheel_luau::tree::text).unwrap_or_default(), false, Pick::Raise(row.to_owned(), format!("menu.{i}.action"), m.get("context").cloned().unwrap_or(Json::Object(Default::default()))))).collect();
+        if !items.is_empty() {
+            self.plugin_open_menu(pane, items, cx);
+        }
+    }
+
+    /// Opens an AppKit menu of `items` at the pointer for pane `pane`; a pick runs its [`Pick`].
+    pub(super) fn plugin_open_menu(&mut self, pane: &str, items: Vec<(String, bool, Pick)>, cx: &mut Context<Self>) {
+        if self.plugin_menu.dialogs.is_none() {
+            let (tx, mut rx) = futures::channel::mpsc::unbounded();
+            self.plugin_menu.dialogs = Some(crate::appkit::Dialogs::new(self.hidden, tx));
+            cx.spawn(async move |this, cx| {
+                use futures::StreamExt;
+                while let Some(answer) = rx.next().await {
+                    if let crate::appkit::Answer::Menu(item) = answer && this.update(cx, |c, cx| { c.plugin_menu_chosen(&item, cx); cx.notify(); }).is_err() {
+                        break;
+                    }
+                }
+            }).detach();
+        }
+        let ids: Vec<String> = (0..items.len()).map(|i| i.to_string()).collect();
+        let entries: Vec<crate::appkit::MenuItem> = items.iter().zip(&ids).map(|((title, _, pick), id)| crate::appkit::MenuItem { id: if matches!(pick, Pick::Separator) { "-" } else { id }, title, enabled: true }).collect();
+        let built = self.plugin_menu.dialogs.as_mut().unwrap().context_menu(&entries);
+        // The item's on state shows as a leading checkmark, as NSMenuItem's state does.
+        self.plugin_menu.built = built.into_iter().zip(&items).map(|(mut b, (_, on, _))| { b["on"] = Json::Bool(*on); b }).collect();
+        self.plugin_menu.open = Some((pane.to_owned(), items));
+    }
+
+    /// Item `item` (its index) of the open menu was picked.
+    pub fn plugin_menu_chosen(&mut self, item: &str, cx: &mut App) {
+        let Some((pane, items)) = self.plugin_menu.open.take() else { return };
+        let Some((_, _, pick)) = item.parse::<usize>().ok().and_then(|i| items.into_iter().nth(i)) else { return };
+        match pick {
+            Pick::Press(id) => { self.plugin_press(&pane, &id, cx); }
+            Pick::Set(id, v) => { self.plugin_set(&pane, &id, v, cx); }
+            Pick::Raise(id, key, fields) => { self.plugin_raise(&pane, &id, &key, &fields, cx); }
+            Pick::Separator => {}
+        }
+    }
+
+    /// Draws previewed pane `pane` at `width` instead of the pane's own, for a check; None goes back.
+    pub fn plugin_preview_width(&mut self, pane: &str, width: Option<f32>) -> bool {
+        let Some(host) = self.plugin_previews.get_mut(pane) else { return false };
+        host.width = width;
+        true
+    }
+
     /// Scrolls previewed pane `pane`'s page so `y` points of it lie above the top.
     pub fn plugin_preview_scroll(&self, pane: &str, y: f32) -> bool {
         let Some(host) = self.plugin_previews.get(pane) else { return false };
@@ -271,6 +423,18 @@ impl Client {
             "state": p.state_json(), "error": p.error(), "running": p.running(), "reloads": p.reloads(), "restarts": p.restarts(),
             "components": p.component_texts(), "feeds": p.feed_json(), "fills": p.fills_pane(),
             "fields": host.fields.iter().map(|(id, (_, _, text))| (id.clone(), Json::String(text.clone()))).collect::<serde_json::Map<_, _>>(),
+            "open": host.open.iter().collect::<Vec<_>>(),
+            "fits": host.fits.borrow().iter().map(|(id, f)| (id.clone(), serde_json::json!({"choice": f.choice, "width": f.width, "height": f.height}))).collect::<serde_json::Map<_, _>>(),
+            "sorts": host.sorts.iter().map(|(id, (k, asc))| (id.clone(), serde_json::json!({"key": k, "asc": asc}))).collect::<serde_json::Map<_, _>>(),
+            "tables": p.tree.all().filter(|n| n.component == "Table").map(|n| {
+                let sort = if n.action("sortAction").is_empty() { host.sorts.get(&n.id) } else { None };
+                let lines: Vec<Json> = super::plugin_controls::table_lines(&p.tree, n, sort).into_iter().map(|l| match l {
+                    super::plugin_controls::Line::Title(t) => serde_json::json!({"title": t}),
+                    super::plugin_controls::Line::Row(r) => serde_json::json!({"row": p.tree.node(&r).map(|r| r.row_id.clone())}),
+                }).collect();
+                (n.id.clone(), Json::Array(lines))
+            }).collect::<serde_json::Map<_, _>>(),
+            "menu": self.plugin_menu.open.as_ref().filter(|(p, _)| p == pane).map(|_| self.plugin_menu.built.clone()),
         })
     }
 }

@@ -151,8 +151,18 @@ impl Spec {
 
 /// The plot: axis, grid and marks, painted into its bounds.
 #[derive(IntoPlot)]
-struct ChartPlot {
+pub(super) struct ChartPlot {
     spec: Rc<Spec>,
+}
+
+/// The plot of `spec` for a plugin pane's Chart.
+pub(super) fn plot(spec: Rc<Spec>) -> ChartPlot {
+    ChartPlot { spec }
+}
+
+/// Series `si`'s colour, as its legend shows it.
+pub(super) fn series_color(si: usize) -> gpui::Hsla {
+    color(si, 1.)
 }
 
 fn color(si: usize, alpha: f32) -> gpui::Hsla {
