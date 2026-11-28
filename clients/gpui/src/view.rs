@@ -45,6 +45,7 @@ mod sidebar;
 mod title;
 mod toasts;
 mod tray;
+pub mod terminal;
 mod windows;
 mod zoom;
 pub use windows::{NameEdit, NameTarget};
@@ -141,7 +142,7 @@ pub struct Client {
     /// frame mid-way whatever the machine's load; None runs motions on the wall clock.
     pub motion_hold: Option<f32>,
     grid_drawn: HashMap<String, Rect>,
-    resizes_held: bool,
+    pub terms: terminal::Terms,
     /// The system's Reduce Motion, as the bridge reports it: a zoom keeps the other panes in
     /// place and fades them instead of sliding them out (SpaceGrid's `reduceMotion`).
     reduce_motion: bool,
@@ -544,7 +545,7 @@ impl Client {
         let popped_frames = crate::popped::Frames::shared((!hidden).then(|| crate::popped::Frames::default_file(&endpoint.ws)));
         let surface = agents::Surface::new(hidden, &endpoint.ws);
         Self {
-            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), resizes_held: false, reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
+            native, bridge, hidden, window_id, sessions: vec![], session_id: prefer_session, reported: None, out, endpoint, spaces: vec![], space_id: prefer_space, overrides: HashMap::new(), zoomed: HashMap::new(), motion: None, motion_hold: None, grid_drawn: HashMap::new(), terms: Default::default(), reduce_motion: false, unzoomed: None, zoom_fade: false, drag: None,
             popped_frames, card_drag: None, toast_frames: Rc::default(), tray_store: crate::tray::Store::shared((!hidden).then(crate::tray::Store::default_file)), header_layout: crate::pane_header::Store::shared((!hidden).then(crate::pane_header::Store::default_file)), header_settings_kind: "terminal", tray_open: None, tray_drag: None,
             native_panes: vec![], pane_targets: serde_json::Value::Null, pane_targets_sent: serde_json::Value::Null, awaiting_layout: false, opened: HashMap::new(), placed: HashMap::new(), viewport: (1200., 720.), transcripts: HashMap::new(), columns: HashMap::new(), row_texts: RefCell::default(), frames: 0, attached: HashSet::new(), focus: Focus::default(), key_down: None, drafts: HashMap::new(), pickers: HashMap::new(), attachments: HashMap::new(), file_drag: None, editing: HashMap::new(), sending_now: HashSet::new(), agent_reqs: HashMap::new(), composer_errors: HashMap::new(), inputs: HashMap::new(), fields: HashMap::new(), stale_inputs: HashSet::new(), handle, link: Link::Connecting,
             drawn: Rc::default(), selection: None, pending_down: None, pending_move: None, pending_up: false, links: links::LinkState::default(), highlights: RefCell::default(), images: images::ImageState::default(), diagrams: diagrams::Diagrams::default(), charts: charts::Charts::default(), parsed: RefCell::default(),
@@ -563,6 +564,10 @@ impl Client {
     }
     /// Take one thing the connection reported. Returns true when it was a layout.
     pub fn on_event(&mut self, event: Event) -> bool {
+        // A term's stream goes to the model drawing it (`terminal.rs`); the window redraws after any event.
+        if let Event::Message(message) = &event && self.term_message(message.as_ref()) {
+            return false;
+        }
         match event {
             Event::Message(message) => match crate::layout::parse_layout(&message) {
                 Some(layout) => {
@@ -664,7 +669,10 @@ impl Client {
                         }
                         // `wheel pane shot`: the bridge draws the pane and answers through a frame.
                         ServerMsg::RenderPane { id, pane, full } => {
-                            if self.opened.contains_key(pane) {
+                            if self.terms.panes.contains_key(pane) {
+                                // GPUI draws a terminal: its rectangle is cut from the window's next frame.
+                                self.pane_images.render_for_wheeld(*id, pane);
+                            } else if self.opened.contains_key(pane) {
                                 self.native.render(*id, pane, *full);
                             } else {
                                 self.send(&ClientMsg::RenderRefused { id: *id, message: "not shown".into() });
@@ -683,7 +691,7 @@ impl Client {
                         ServerMsg::Settings { req, settings, space } => {
                             // A space's terminals draw from its `terminal.*` settings.
                             if let Some(space) = space {
-                                self.native.terminal_look(space, settings);
+                                self.set_term_look(space, wheel_gpui_core::terminal::Look::from_settings(settings));
                             }
                             // A broadcast changes what every other space falls back to (a machine-wide
                             // write is resolved for none): ask for each again (`refreshAppearances`).
@@ -700,6 +708,7 @@ impl Client {
                                             self.show_orchestrator_space();
                                             self.follow_orchestrator();
                                             self.sync_queue();
+                                            self.sync_earlier();
                                             self.read_topic();
                                         }
                                     }
@@ -829,6 +838,8 @@ impl Client {
                 self.send(&ClientMsg::RenderOffer {});
                 // This app owns its windows: wheeld may forward `wheel window` commands to it.
                 self.send(&ClientMsg::WindowOffer {});
+                // Each term the panes draw streams again on this connection; its replay redraws it.
+                self.reattach_terms();
                 // The dots and the footer follow two settings; a later change arrives as a broadcast.
                 // wheeld answers a listing only when it carries a req.
                 let req = self.settings_req();
@@ -1959,6 +1970,13 @@ impl Client {
                 return true;
             }
         }
+        if let Some(leaf) = &focused
+            && leaf.kind == "terminal"
+            && leaf.term.is_some()
+        {
+            let pane = leaf.id.clone();
+            return self.term_key(&pane, e, cx);
+        }
         let agent = focused.filter(|l| l.kind == "agent").and_then(|l| l.agent);
         let Some(agent) = agent else { return false };
         // Files or an image on the pasteboard attach as chips; text pastes in the input.
@@ -2117,18 +2135,16 @@ impl Client {
                     // The view is bound to its artifact's scope, name and space directory (its store and scheme handler).
                     ("web", _) => format!("web:{scope}:{}:{cwd}", p.leaf.label),
                     ("browser", _) => "browser".to_owned(),
-                    ("terminal", Some(_)) => "terminal".to_owned(),
                     ("plugin", _) => format!("plugin:{}:{cwd}", p.leaf.label),
                     ("agent", _) if self.agent_views.contains(&p.leaf.id) => format!("agent-view:{cwd}"),
                     _ => continue,
                 };
                 if self.opened.get(&p.leaf.id) != Some(&kind) {
                     match (&p.leaf.term, p.leaf.kind.as_str()) {
-                        (Some(term), _) => self.native.open_terminal(&p.leaf.id, term, self.space_id.as_deref(), &self.endpoint.ws),
-                        (None, "agent") => self.native.open_agent_view(&p.leaf.id, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
-                        (None, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
-                        (None, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
-                        (None, _) => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
+                        (_, "agent") => self.native.open_agent_view(&p.leaf.id, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
+                        (_, "plugin") => self.native.open_plugin(&p.leaf.id, &p.leaf.label, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
+                        (_, "browser") => self.native.open_browser(&p.leaf.id, p.leaf.url.as_deref().unwrap_or("about:blank"), self.daemon_is_remote()),
+                        _ => self.native.open_artifact(&p.leaf.id, &p.leaf.label, scope, self.space_id.as_deref(), &cwd, &self.endpoint.ws),
                     }
                     self.opened.insert(p.leaf.id.clone(), kind);
                     // A view opened in place of another starts unplaced, so it is placed below.
@@ -2386,7 +2402,7 @@ impl Client {
     pub fn invalidate_bodies(&self, cx: &mut App) {
         self.bodies.invalidate(cx);
     }
-    fn pane_element(&mut self, p: &Placed, _window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn pane_element(&mut self, p: &Placed, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let r = p.rect;
         let native = self.native_panes.contains(&p.leaf.id);
         let id = p.leaf.id.clone();
@@ -2404,6 +2420,7 @@ impl Client {
             }
             // Above the `agent/view` page, which lies outside the script's surface: the agent's oldest waiting request.
             "agent" if native => self.view_card(p.leaf.agent.as_deref(), r.h - TITLE, cx).unwrap_or_else(div),
+            "terminal" if p.leaf.term.is_some() => self.term_element(p, window, cx),
             _ if native => div(),
             // The body draws as a cached view of its own (`body.rs`); the frame and header draw here.
             "agent" => div().child(self.bodies.view(p, (r.w - 2. - 2. * PAD, r.h - TITLE - 2. * PAD), cx)),
@@ -2570,7 +2587,7 @@ impl Client {
                 .child(if self.mode == "agents" { self.card_header_buttons(&p.leaf.id, cx) } else { self.header_buttons(&p.leaf.id, self.header_level_for(&p.leaf, r.w), cx) })
                 .child(div().ml(px(2.)).w(px(12.)).h(px(12.)).flex_none().children(p.leaf.status.as_ref().and_then(|s| status::dot_with(s, &self.status_dots, gpui::ElementId::Name(format!("pane-dot-{}", p.leaf.id).into()), spinner.clone())))
                     .child(recorded(&p.leaf.id, "status-dot", &self.controls))))
-            .child(if matches!(p.leaf.kind.as_str(), "browser" | "agent") && native { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
+            .child(if (matches!(p.leaf.kind.as_str(), "browser" | "agent") && native) || (p.leaf.kind == "terminal" && p.leaf.term.is_some()) { div().text_color(rgb(0x8fa89b)).child(body) } else { div().p_2().text_color(rgb(0x8fa89b)).child(body) })
             .children(self.palettes.get(&p.leaf.id).map(|palette| palette_overlay(&p.leaf.id, palette, self.field_element(&fields::FieldId::ArtifactSearch(p.leaf.id.clone()), &palette.query), r.w, r.h - TITLE, cx)))
     }
     /// A card's resize corner, over its panes and their views.
@@ -2652,10 +2669,9 @@ impl Render for Client {
         let leaves: Vec<Placed> = layers.iter().flat_map(|l| l.leaves.iter().cloned()).collect();
         self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
         let moving = self.tick_motion(window);
-        self.hold_resizes();
         self.sync_native(&layers);
+        self.sync_terms(&layers, window);
         self.sync_card_views();
-        self.release_resizes();
         // On the Agents surface every agent of the session is drawn, so each is attached.
         let cards = if self.mode == "agents" && !space_held && !server_stopped { self.agent_cards() } else { vec![] };
         self.sync_agents(&leaves);
@@ -3062,7 +3078,7 @@ fn agent_pane(label: &str, pane: &str, agent: Option<&str>, t: Option<&Transcrip
         .children(tasks.strip)
         .children(card)
         .children(list)
-        .child(composer::drop_target(agent, attach.over, div().flex_none().flex().flex_col()
+        .child(composer::drop_target(agent, attach.over, |c, a, p| c.attach_paths(a, p), div().flex_none().flex().flex_col()
             .children(attach.chips)
             .child(div().relative().flex_none().h(px(composer.fit.height)).mt_1().px_2().py_1().rounded_sm().bg(rgb(0x0e1311))
                 .border_1().border_color(rgb(if focused { 0x7fb89a } else { 0x2c3d34 }))

@@ -556,7 +556,8 @@ pub(super) const PLUS_MENU: &str = "+";
 /// and `drag_over` go by hover, which GPUI turns off after a key press, and a drag from Finder
 /// sends no mouse move: the drop is found by where the pointer is instead. The drag's moves name
 /// the files (`Client::file_drag`), and the release over the box's hitbox attaches them.
-pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &mut Context<Client>) -> gpui::Div {
+/// `key` names the target in `file_drag` (an agent id, or `term:<pane>`); `on_drop` takes the files.
+pub(super) fn drop_target(agent: Option<&str>, over: bool, on_drop: fn(&mut Client, &str, &[PathBuf]), el: gpui::Div, cx: &mut Context<Client>) -> gpui::Div {
     let Some(agent) = agent.map(str::to_owned) else { return el };
     let (moved, released, weak) = (agent.clone(), agent, cx.entity().downgrade());
     el.relative()
@@ -577,7 +578,7 @@ pub(super) fn drop_target(agent: Option<&str>, over: bool, el: gpui::Div, cx: &m
                 let Some(client) = weak.upgrade() else { return };
                 let dropped = client.update(cx, |c, cx| {
                     let Some((_, paths)) = c.file_drag.take_if(|(a, _)| *a == agent) else { return false };
-                    c.attach_paths(&agent, &paths);
+                    on_drop(c, &agent, &paths);
                     cx.notify();
                     true
                 });

@@ -145,24 +145,10 @@ impl Client {
         }
     }
     /// Whether a terminal's size is a step of a move whose end settles it (AppModel.settle): the
-    /// grid animates or a divider is under the pointer. A window edge being dragged the bridge
-    /// holds on its own, as AppKit posts the live resize.
+    /// grid animates or a divider is under the pointer. A window edge being dragged holds them
+    /// too (`appkit::live_resize`); `sync_terms` sends each grid once the hold ends.
     pub(super) fn resizes_wanted(&self) -> bool {
         self.motion.is_some() || self.drag.is_some()
-    }
-    /// Before the views are placed: a move that began holds the terminals' resizes.
-    pub(super) fn hold_resizes(&mut self) {
-        if self.resizes_wanted() && !self.resizes_held {
-            self.native.hold_resizes(true);
-            self.resizes_held = true;
-        }
-    }
-    /// After the views are placed where every move ends: each terminal sends the size it ended at.
-    pub(super) fn release_resizes(&mut self) {
-        if !self.resizes_wanted() && self.resizes_held {
-            self.native.hold_resizes(false);
-            self.resizes_held = false;
-        }
     }
     /// What a grid view has cut out while the grid moves or is zoomed (none otherwise): the
     /// window outside the grid at `area`, so a view sliding past its edge never draws over the
@@ -197,7 +183,7 @@ impl Client {
             "moving": self.motion.is_some(),
             "progress": self.motion.as_ref().map(|m| m.progress(now)),
             "length_ms": motion::duration().as_millis() as u64,
-            "resizes_held": self.resizes_held,
+            "resizes_held": self.terms.hold.held(),
             "dragging_divider": self.drag.is_some(),
             "zoomed": self.zoomed_here(),
             "reduce_motion": self.reduce_motion,

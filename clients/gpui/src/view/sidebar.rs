@@ -1195,7 +1195,7 @@ impl Client {
                     _ => None,
                 })
             }
-            "terminal" => self.native.status()["panes"][leaf.id.as_str()]["viewport"].as_str().and_then(last),
+            "terminal" => self.terms.texts.get(leaf.term.as_deref()?).and_then(|t| last(t)),
             "browser" => leaf.url.clone(),
             "web" | "plugin" => Some(leaf.label.clone()),
             _ => None,
@@ -1234,11 +1234,7 @@ impl Client {
         } else {
             self.preview_rect()
         };
-        let op = match rect {
-            Some(r) => serde_json::json!({"op": "overlay", "open": true, "rect": [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)]}),
-            None => serde_json::json!({"op": "overlay", "open": false}),
-        };
-        self.native.call(op);
+        self.native.overlay(rect.map(|r| [f64::from(r.x), f64::from(r.y), f64::from(r.w), f64::from(r.h)]));
     }
 
     /// The sidebar for `/state`.

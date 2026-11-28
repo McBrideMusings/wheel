@@ -1,0 +1,704 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 20,
+                    "weight" : "bold"
+                  }
+                }
+              ],
+              "text" : "Implement · wheel"
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                0,
+                0,
+                12,
+                0
+              ]
+            }
+          ],
+          "spacing" : 12
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Items"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Plan"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Edit"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Build"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Verify"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Review"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "align" : "start",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 20,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "Gate"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 8
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            }
+          ],
+          "component" : "Row",
+          "spacing" : 10
+        },
+        {
+          "align" : "stretch",
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "frame" : {
+                "alignment" : "center",
+                "height" : 44
+              }
+            }
+          ],
+          "spacing" : 0
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "TextField",
+              "label" : "Brief for a new agent",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity",
+                    "minWidth" : 120
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "set_brief"
+              },
+              "value" : "",
+              "variant" : "shortText"
+            },
+            {
+              "action" : {
+                "type" : "start_agent"
+              },
+              "child" : {
+                "component" : "Text",
+                "text" : "Start agent"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "disabled" : true
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                12,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "component" : "ProgressView",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "height" : 14,
+                        "width" : 14
+                      }
+                    }
+                  ]
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "foregroundStyle" : "secondary"
+                    }
+                  ],
+                  "text" : "Loading agents…"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 5
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                12,
+                0,
+                0,
+                0
+              ]
+            }
+          ],
+          "spacing" : 8
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            18,
+            16,
+            48,
+            16
+          ]
+        }
+      ],
+      "spacing" : 0
+    }
+  ],
+  "component" : "Column"
+}

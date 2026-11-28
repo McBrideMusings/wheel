@@ -1,0 +1,49 @@
+[
+ {
+  "name": "wheelhouse.prs",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "buttons": [
+    {
+     "label": "Review",
+     "name": "review",
+     "on": [
+      "needs-me",
+      "waiting",
+      "other"
+     ],
+     "worktree": true
+    },
+    {
+     "label": "Aaaa aaaaaaaaa",
+     "name": "mergeable",
+     "on": [
+      "fix"
+     ],
+     "worktree": true
+    },
+    {
+     "label": "Implement",
+     "name": "implement",
+     "on": [
+      "any"
+     ],
+     "worktree": true
+    }
+   ],
+   "error": null,
+   "fetched": 1795831256,
+   "fetched_clock": "21:00",
+   "me": "McBrideMusings",
+   "name": "wheel",
+   "next_clock": "21:02",
+   "now": 1795831256,
+   "prs": [],
+   "repo": "McBrideMusings/wheel",
+   "scripts": []
+  }
+ }
+]

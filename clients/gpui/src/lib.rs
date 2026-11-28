@@ -194,6 +194,14 @@ pub fn create_window(
     if !cx.has_global::<appkit::motion::ReduceMotion>() {
         appkit::motion::watch(cx);
     }
+    // A window edge being dragged holds every window's terminal resizes until it is let go.
+    if !cx.has_global::<appkit::live_resize::LiveResize>() {
+        appkit::live_resize::watch(cx);
+        // The terminal's own face, JetBrains Mono, as Ghostty bundles it.
+        if let Err(e) = cx.text_system().add_fonts(view::terminal::fonts()) {
+            eprintln!("terminal fonts: {e}");
+        }
+    }
     let window = view::ClientWindow::open(
         cx,
         WindowOptions {
@@ -229,6 +237,11 @@ pub fn create_window(
                     .detach();
                 }
                 cx.observe_global::<appkit::motion::ReduceMotion>(|client: &mut view::Client, cx| client.set_reduce_motion(appkit::motion::on(cx))).detach();
+                cx.observe_global::<appkit::live_resize::LiveResize>(|client: &mut view::Client, cx| {
+                    client.set_live_resize(appkit::live_resize::on(cx));
+                    cx.notify();
+                })
+                .detach();
                 let mut client = view::Client::new(n, b, hidden, window_id, connection_out, endpoint, prefer_session, prefer_space, cx.focus_handle());
                 client.little = little;
                 client.set_reduce_motion(appkit::motion::on(cx));
@@ -269,8 +282,8 @@ pub fn create_window(
         let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|e| anyhow::anyhow!("{e:?}"))?.as_raw() else {
             anyhow::bail!("not an AppKit window")
         };
-        // SAFETY: the handle is this window's content view, which lives until the window closes and `detach` runs.
-        unsafe { native.attach_to(handle.ns_view.as_ptr(), hidden, frames) };
+        native.set_host(appkit::pane_host::PaneHost::new(handle.ns_view.as_ptr(), frames.clone()));
+        native.attach_to(handle.ns_view.as_ptr(), hidden, frames);
         // Every move and resize is saved with the window (saved.rs).
         cx.observe_window_bounds(window, |client: &mut view::Client, _, _| client.measure_frame()).detach();
         if let Some([x, y, ..]) = frame {

@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import WebKit
 import IOSurface
 import QuartzCore
 import GhosttyTerminal
@@ -9,90 +8,25 @@ import SwiftUI
 import WheelKit
 import WheelUI
 
-// The native half of the GPUI client: real WKWebView and Ghostty terminal views as children
-// of the GPUI window's NSView, one per pane id. Every C entrypoint is called on the main thread.
-// Panes are opened, placed and closed by JSON commands; the Rust side owns what each pane is.
-
-/// A pane's container. Its holes (an overlay's, and the cards drawn over it) neither draw nor hit-test.
-final class Slot: NSView {
-    override var isFlipped: Bool { true }
-    var holes: [CGRect] = []
-    /// How many rects the mask keeps: 1 with no hole over the view.
-    var shown = 1
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        if holes.contains(where: { $0.contains(local) }) { return nil }
-        return super.hitTest(point)
-    }
-    /// Cut `rects` (the root's coordinates) out of the slot. The mask is what is left of the
-    /// bounds once every hole is taken away, so two holes that overlap stay holes.
-    func cut(_ rects: [CGRect]) {
-        holes = rects.map { convert($0, from: superview) }.filter { $0.intersects(bounds) }
-        var left = [bounds]
-        for hole in holes {
-            left = left.flatMap { r -> [CGRect] in
-                let h = r.intersection(hole)
-                if h.isNull || h.isEmpty { return [r] }
-                return [CGRect(x: r.minX, y: r.minY, width: r.width, height: h.minY - r.minY),
-                        CGRect(x: r.minX, y: h.maxY, width: r.width, height: r.maxY - h.maxY),
-                        CGRect(x: r.minX, y: h.minY, width: h.minX - r.minX, height: h.height),
-                        CGRect(x: h.maxX, y: h.minY, width: r.maxX - h.maxX, height: h.height)].filter { $0.width > 0 && $0.height > 0 }
-            }
-        }
-        shown = left.count
-        let path = CGMutablePath()
-        left.forEach { path.addRect($0) }
-        let mask = CAShapeLayer()
-        mask.path = path
-        layer?.mask = mask
-    }
-}
+// The native half of the GPUI client: plugin views, one per pane id, each in the slot view the Rust
+// pane host made for the pane (clients/gpui/src/appkit/pane_host.rs), which places, masks and focuses
+// it; every web, browser and artifact pane's WKWebView is made there (web.rs).
+// Every C entrypoint is called on the main thread. Panes are opened and closed by JSON commands;
+// the Rust side owns what each pane is.
 
 @MainActor final class PaneHost {
     let id: String
     let kind: String
-    let slot = Slot()
-    /// The cards drawn over this view, as GPUI placed them (x, y, w, h, top-left origin).
-    var holesTop: [[Double]] = []
-    var web: WKWebView?
-    var terminal: DropTerminalView?
-    var session: InMemoryTerminalSession?
-    var termID: String?
-    /// The space a terminal was opened in, whose controller styles it.
-    var space: String?
-    var url: String?
-    var loads: [String] = []
-    /// An artifact page: the address under `WebPanes.scheme` it opens at, how many times a
-    /// `pane_reload` opened it again, the HTTP status of the last document, the store its
-    /// browser storage lives in, and its visible text after the last load.
-    var pageURL: URL?
-    var reloads = 0
-    var status: Int?
-    var store: UUID?
-    var text: String?
-    /// The artifact the page belongs to, as `<scope>/<name>`, and the space directory it was opened
-    /// for: its store and scheme handler are bound to both, so another of either is another view.
-    var artifact: String?
+    /// The slot view the Rust pane host made for the pane: the content goes in it, and the host places, masks and focuses it.
+    let slot: NSView
+    /// The space directory the pane was opened for.
     var cwd: String?
     /// A plugin pane (ADR-0041): its Luau script drawn as WheelUI components, and the plugin and pane it runs, as wheeld names them.
     var plugin: PluginPane?
     var pluginView: NSHostingView<AnyView>?
     var pluginLabel: String?
-    /// A browser pane: WheelUI's model, the one the Swift Mac app shows under its chrome. Here the
-    /// GPUI view draws the chrome from the state the bridge emits on every change.
-    var browser: BrowserPane?
-    var browserChanges: AnyCancellable?
-    var grids: [[Int]] = []
-    /// The grids sent to wheeld as `term_resize`; the report waiting while the grid moves; and a
-    /// count of reports, so a lagging one's fallback knows a newer one came.
-    var sent: [[Int]] = []
-    var heldReport: InMemoryTerminalViewport?
-    var reports = 0
-    /// The reports that did not fit the view when they came.
-    var lagged = 0
-    var writes: [String] = []
-    init(id: String, kind: String) { self.id = id; self.kind = kind; slot.wantsLayer = true }
-    var content: NSView { pluginView ?? web ?? terminal! }
+    init(id: String, kind: String, slot: NSView) { self.id = id; self.kind = kind; self.slot = slot }
+    var content: NSView { pluginView ?? slot }
 }
 
 /// A pane's terminal drawn inside a plugin pane's page (`ui.Terminal{pane}`, ADR-0042): its own session and
@@ -159,7 +93,7 @@ final class Slot: NSView {
             }
         })
         let view = DropTerminalView(frame: bounds)
-        view.controller = native.controller(for: native.panes[hostPane]?.space)
+        view.controller = native.embedController
         view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
         self.session = session
         terminal = view
@@ -365,42 +299,12 @@ final class DropTerminalView: AppTerminalView {
 /// given, with the bridge's window id and one JSON object.
 public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
-@MainActor final class Native: NSObject, WKNavigationDelegate {
+@MainActor final class Native: NSObject {
     let root: NSView
     let window: Int32
     let emitter: Emit
-    /// One Ghostty controller per space, so a space's `terminal.*` settings restyle its terminals
-    /// and no other space's (the Swift app's `AppModel.terminalController(for:)`); a terminal keeps
-    /// the controller of the space it was opened in.
-    var controllers: [String: TerminalController] = [:]
-    /// How each space's terminals draw, from its `terminal.*` settings.
-    var looks: [String: TerminalAppearance] = [:]
-    /// What Ghostty answered to each space's last restyle: it took the configuration, the theme.
-    var restyled: [String: [Bool]] = [:]
-    func controller(for space: String?) -> TerminalController {
-        let key = space ?? ""
-        if let held = controllers[key] { return held }
-        let look = looks[key] ?? .standard
-        let made = TerminalStyle.controller(look)
-        controllers[key] = made
-        return made
-    }
-    /// A space's settings arrived (`terminal_look`): restyle its controller in place, so the shells
-    /// keep running and every surface redraws (the Swift app's `restyleTerminals`).
-    func restyle(_ value: [String: Any]) {
-        guard let space = value["space"] as? String, let list = value["settings"],
-              let data = try? JSONSerialization.data(withJSONObject: list),
-              let settings = try? JSONDecoder().decode([SettingInfo].self, from: data) else {
-            errors.append("terminal_look: unreadable settings for \(value["space"] ?? "no space")")
-            return
-        }
-        let look = TerminalAppearance(settings: settings)
-        guard looks[space] != look else { return }
-        looks[space] = look
-        guard let controller = controllers[space] else { return }
-        let took = TerminalStyle.restyle(controller, to: look)
-        restyled[space] = [took.config, took.theme]
-    }
+    /// The one Ghostty controller every embedded terminal uses, in the default look.
+    lazy var embedController: TerminalController = TerminalStyle.controller(.standard)
     var panes: [String: PaneHost] = [:]
     /// Every pane and what it holds, as the Rust side last said (`pane_targets`): `term`, `agent`.
     var paneTargets: [String: [String: String]] = [:]
@@ -442,23 +346,10 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     var pluginBackoff: UInt64 = 1
     var sendTask: Task<Void, Never>?
     var errors: [String] = []
-    /// What the browser models logged, the last 200 lines, for the check's report.
-    var logs: [String] = []
-    func log(_ line: String) {
-        logs.append(line)
-        if logs.count > 200 { logs.removeFirst(logs.count - 200) }
-    }
-    var overlay: CGRect?
-    var mouseNumber = 0
     var heldBeforeKey: String?
-    var mouseTarget: NSView?
-    /// The panes whose WKWebView snapshot has not answered yet.
-    var snapshotsPending: Set<String> = []
     var termOutputs = 0
     var sends: [String] = []
     var monitor: Any?
-    var pressMonitor: Any?
-    var liveResizeObservers: [Any] = []
     /// The chords the GPUI view runs an action for now, in wheeld's spelling (`keymap` op).
     var routed: Set<String> = []
 
@@ -480,41 +371,9 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             self?.routeKey(event)
             return event
         }
-        // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
-        // and closes what a press away closes (its popovers), as a Swift popover closes on one.
-        pressMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            guard let self, event.window === root.window, let superview = root.superview else { return event }
-            let at = superview.convert(event.locationInWindow, from: nil)
-            pressed(root.hitTest(at), at: root.convert(at, from: superview))
-            return event
-        }
-        // A window edge under the pointer holds the terminals' resizes until it is let go, as
-        // AppModel counts `windowResizes` from these notifications. With no queue the block runs
-        // as AppKit posts, before the resize's first frame is laid out.
-        for (name, on) in [(NSWindow.willStartLiveResizeNotification, true), (NSWindow.didEndLiveResizeNotification, false)] {
-            liveResizeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
-                MainActor.assumeIsolated {
-                    guard let self, let window = self.root.window, note.object as? NSWindow === window else { return }
-                    self.liveResizing = on
-                    if !self.holding { self.sendHeld() }
-                }
-            })
-        }
     }
-    /// The pane whose native view `view` is or lies inside.
-    func owner(of view: NSView?) -> PaneHost? {
-        guard let view else { return nil }
-        return panes.values.first { view === $0.content || view.isDescendant(of: $0.content) }
-    }
-    /// A press reached `hit` at `point` (the root's coordinates): when that is a pane's native
-    /// view, say so with the point from the window's top left.
-    func pressed(_ hit: NSView?, at point: NSPoint) {
-        guard let host = owner(of: hit) else { return }
-        let y = root.isFlipped ? point.y : root.bounds.height - point.y
-        emit(["event": "pressed", "pane": host.id, "point": [Double(point.x), Double(y)]])
-    }
-    /// Send one JSON object to the Rust side: a browser pane's state or report, or the answer to a
-    /// daemon request the Rust side relayed.
+    /// Send one JSON object to the Rust side: a plugin pane's state, or the answer to a daemon
+    /// request the Rust side relayed.
     func emit(_ value: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: value), let string = String(data: data, encoding: .utf8) else { return }
         string.withCString { emitter(window, $0) }
@@ -594,10 +453,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     /// The window is closing: drop every view, the socket and the key monitor.
     func detach() {
         if let monitor { NSEvent.removeMonitor(monitor) }
-        if let pressMonitor { NSEvent.removeMonitor(pressMonitor) }
-        liveResizeObservers.forEach { NotificationCenter.default.removeObserver($0) }
         monitor = nil
-        pressMonitor = nil
         for id in Array(panes.keys) { close(id) }
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
@@ -804,16 +660,14 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                    value["ev"] as? String == "term_attached", let term = value["id"] as? String {
                     // wheeld answers every `term_attach` with this event and then replays the whole screen as `term_output`
                     // to every session of the term on this connection, not only the new one. The socket is ordered, so a
-                    // full reset (ESC c, RIS) now leaves every host and embed blank and the replay repaints them from one state.
+                    // full reset (ESC c, RIS) now leaves every embed blank and the replay repaints them from one state.
                     let reset = Data([0x1b, 0x63])
-                    for host in panes.values where host.termID == term { host.session?.receive(reset) }
                     for embed in embeds.values where embed.termID == term { embed.session?.receive(reset) }
                 }
                 if let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                    value["ev"] as? String == "term_output", let term = value["id"] as? String,
                    let encoded = value["data"] as? String, let bytes = Data(base64Encoded: encoded) {
                     termOutputs += 1
-                    for host in panes.values where host.termID == term { host.session?.receive(bytes) }
                     for embed in embeds.values where embed.termID == term { embed.bytes += bytes.count; embed.session?.receive(bytes) }
                 }
                 receive()
@@ -828,25 +682,21 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
     func open(_ value: [String: Any]) {
         let id = value["pane"] as! String
         let kind = value["kind"] as! String
-        let artifact = (value["artifact"] as? String).map { "\(value["scope"] as? String ?? "")/\($0)" }
-        if let existing = panes[id], existing.kind == kind, existing.artifact == artifact, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
-            if kind == "web", let url = value["url"] as? String, url != existing.url { existing.url = url; existing.web?.load(URLRequest(url: URL(string: url)!)) }
-            if kind == "browser", let url = value["url"] as? String { existing.browser?.homeIs(url) }
+        if let existing = panes[id], existing.kind == kind, existing.cwd == value["cwd"] as? String, existing.pluginLabel == value["label"] as? String {
             return
         }
         close(id)
-        let host = PaneHost(id: id, kind: kind)
-        host.artifact = artifact
+        guard let address = value["slot"] as? UInt, let pointer = UnsafeRawPointer(bitPattern: address) else { errors.append("open \(id): no slot"); return }
+        let host = PaneHost(id: id, kind: kind, slot: Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue())
         host.cwd = value["cwd"] as? String
         host.pluginLabel = value["label"] as? String
-        root.addSubview(host.slot)
         if kind == "plugin" {
             let plugin = PluginPane()
-            host.space = value["space"] as? String
+            let space = value["space"] as? String
             let ids = (host.pluginLabel ?? "").split(separator: "/", maxSplits: 1).map(String.init)
             plugin.context = [
                 "pane": .string(id),
-                "space": host.space.map { .string($0) } ?? .null,
+                "space": space.map { .string($0) } ?? .null,
                 "cwd": host.cwd.flatMap { $0.isEmpty ? nil : .string($0) } ?? .null,
                 "plugin": ids.first.map { .string($0) } ?? .null,
                 "plugin_pane": ids.count > 1 ? .string(ids[1]) : .null,
@@ -875,222 +725,53 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             requestSource(host)
             return
         }
-        if kind == "browser" {
-            // The model asks what typed text means and relays the page's console through the Rust
-            // side, which owns the connection to wheeld; it reports no navigation.
-            let browser = BrowserPane(pane: id, url: value["url"] as? String ?? "about:blank", daemonIsRemote: value["remote"] as? Bool == true,
-                log: { [weak self] in self?.log($0) },
-                ask: { [weak self] in self?.emit(["event": "typed", "pane": id, "text": $0]) },
-                console: { [weak self] reset, entries in
-                    let list = entries.map { e -> [String: Any] in
-                        var o: [String: Any] = ["time": e.time, "level": e.level, "text": e.text]
-                        if let url = e.url { o["url"] = url }
-                        if let line = e.line { o["line"] = line }
-                        return o
-                    }
-                    self?.emit(["event": "console", "pane": id, "reset": reset, "entries": list])
-                })
-            host.browser = browser
-            host.web = browser.view
-            host.url = browser.url
-            host.slot.addSubview(browser.view)
-            // Every change of the chrome's state goes to the GPUI view once the change has landed.
-            host.browserChanges = browser.objectWillChange.receive(on: RunLoop.main).sink { [weak self, weak host] _ in
-                guard let self, let host else { return }
-                self.emit(self.browserState(host))
-            }
-            panes[id] = host
-            emit(browserState(host))
-            return
-        }
-        if kind == "web" {
-            let config = WKWebViewConfiguration()
-            let artifact = (value["artifact"] as? String).flatMap { name in (value["scope"] as? String).flatMap(ArtifactScope.init(rawValue:)).map { ArtifactRef(scope: $0, name: name) } }
-            if let artifact {
-                // An artifact's page, as the Swift Mac app opens it (WebPane.swift): its own browser
-                // storage, one store per artifact, and its address under the client's scheme, which
-                // `PageSchemeHandler` fetches from the daemon with the token in a header.
-                let store = WebPanes.store(cwd: value["cwd"] as? String ?? "", artifact: artifact)
-                host.store = store
-                config.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
-                if let ws = value["ws"] as? String { daemonAddress(ws) }
-                let handler = PageSchemeHandler(pane: id, daemon: pageDaemon)
-                handler.onDocument = { [weak host] code in host?.status = code }
-                config.setURLSchemeHandler(handler, forURLScheme: WebPanes.scheme)
-            }
-            let web = WKWebView(frame: .zero, configuration: config)
-            web.navigationDelegate = self
-            host.web = web
-            host.slot.addSubview(web)
-            if artifact != nil, let page = WebPanes.pageURL(pane: id) {
-                host.pageURL = page
-                host.url = page.absoluteString
-                web.load(URLRequest(url: page))
-            } else if let url = value["url"] as? String { host.url = url; web.load(URLRequest(url: URL(string: url)!)) }
-        } else {
-            let term = value["term"] as! String
-            connect(value["ws"] as! String)
-            let terminal = DropTerminalView(frame: .zero)
-            host.termID = term
-            host.space = value["space"] as? String
-            host.session = InMemoryTerminalSession(write: { [weak self, weak host] data in
-                Task { @MainActor in
-                    guard let self, let host else { return }
-                    host.writes.append(String(decoding: data, as: UTF8.self))
-                    self.send(["op": "term_input", "id": term, "data": data.base64EncodedString()])
-                }
-            }, resize: { [weak self, weak host] viewport in
-                Task { @MainActor in
-                    guard let self, let host else { return }
-                    host.grids.append([Int(viewport.columns), Int(viewport.rows)])
-                    self.resized(host, viewport)
-                }
-            })
-            terminal.controller = controller(for: host.space)
-            terminal.configuration = TerminalSurfaceOptions(backend: .inMemory(host.session!))
-            host.terminal = terminal
-            host.slot.addSubview(terminal)
-            send(["op": "term_attach", "id": term])
-        }
-        panes[id] = host
+        errors.append("open \(id): the bridge hosts plugin panes only, not \(kind)")
     }
-    /// What the GPUI view draws a browser pane's chrome from.
-    func browserState(_ host: PaneHost) -> [String: Any] {
-        guard let b = host.browser else { return [:] }
-        var o: [String: Any] = ["event": "browser", "pane": host.id, "url": b.url, "address": b.address, "title": b.title, "loading": b.loading,
-            "progress": b.progress, "can_go_back": b.canGoBack, "can_go_forward": b.canGoForward]
-        if let f = b.failure { o["failure"] = ["address": f.address, "message": f.message] }
-        return o
-    }
-    /// `back`, `forward`, `reload`, `stop`, `clear_failure`, `open` (typed text), `opened` and
-    /// `refused` (the daemon's answers to typed text), `home_is` (the pane's home in the layout) and `go_home`.
-    func browser(_ value: [String: Any]) {
-        guard let host = panes[value["pane"] as! String], let browser = host.browser else { return }
-        switch value["action"] as? String {
-        case "back": browser.back()
-        case "forward": browser.forward()
-        case "reload": browser.reload()
-        case "stop": browser.stop()
-        case "clear_failure": browser.clearFailure()
-        case "open": browser.open(typed: value["text"] as? String ?? "")
-        case "opened": browser.opened(value["url"] as? String ?? "")
-        case "refused": browser.refused(typed: value["text"] as? String ?? "", value["message"] as? String ?? "")
-        case "home_is": browser.homeIs(value["url"] as? String ?? "")
-        case "go_home": browser.goHome()
-        default: break
-        }
-    }
-    /// `render_pane` relayed by the Rust side: the pane as a PNG, answered through `emit` with
-    /// `rendered` or `refused`. A web or browser pane is WebKit's own render of the page (under
-    /// `full`, the whole document); a plugin pane and a terminal are their views' pixels.
-    func render(_ value: [String: Any]) {
-        let id = value["id"] as! UInt64
+    /// `render_pane` relayed by the Rust side for a plugin pane: its view's pixels as a PNG (`png`, base64) with its
+    /// terminals drawn in, or why it has none (`refused`). The Rust pane host draws the WKWebViews inside it over this.
+    func render(_ value: [String: Any]) -> [String: Any] {
         let pane = value["pane"] as! String
-        guard let host = panes[pane] else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
-        if let view = host.pluginView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: rep)
-            // cacheDisplay draws only what AppKit draws (a scroll view's document); SwiftUI content outside one lives in
-            // the layer tree alone, so the layers are rendered over it.
-            if let layer = view.layer, let context = NSGraphicsContext(bitmapImageRep: rep) {
-                let cg = context.cgContext
-                cg.saveGState()
-                if view.isFlipped { cg.translateBy(x: 0, y: view.bounds.height); cg.scaleBy(x: 1, y: -1) }
-                layer.render(in: cg)
-                cg.restoreGState()
-            }
-            // cacheDisplay leaves a WKWebView and a terminal surface blank: each one's own pixels are drawn over its frame.
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                var parts: [(NSRect, NSImage)] = []
-                for web in Self.subviews(of: view, ofType: WKWebView.self) where !web.isHiddenOrHasHiddenAncestor && !web.bounds.isEmpty {
-                    if case let .success(image) = await BrowserInspect.shotPage(web, full: false) { parts.append((view.convert(web.bounds, from: web), image)) }
-                }
-                for terminal in Self.subviews(of: view, ofType: DropTerminalView.self) where !terminal.isHiddenOrHasHiddenAncestor && !terminal.bounds.isEmpty {
-                    if let image = self.terminalPixels(terminal) { parts.append((view.convert(terminal.bounds, from: terminal), image)) }
-                }
-                if !parts.isEmpty, let context = NSGraphicsContext(bitmapImageRep: rep) {
-                    NSGraphicsContext.saveGraphicsState()
-                    NSGraphicsContext.current = context
-                    for (rect, image) in parts {
-                        // The bitmap's origin is bottom-left; a flipped hosting view's frames count from the top.
-                        let y = view.isFlipped ? view.bounds.height - rect.maxY : rect.minY
-                        image.draw(in: NSRect(x: rect.minX, y: y, width: rect.width, height: rect.height))
-                    }
-                    NSGraphicsContext.restoreGraphicsState()
-                }
-                guard let png = rep.representation(using: .png, properties: [:]) else { self.emit(["answer": "refused", "id": id, "message": "the page could not be encoded as a PNG"]); return }
-                self.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-            }
-        } else if let web = host.web {
-            Task { @MainActor [weak self] in
-                switch await BrowserInspect.shotPage(web, full: value["full"] as? Bool == true) {
-                case let .success(image):
-                    guard let png = BrowserInspect.png(image) else { self?.emit(["answer": "refused", "id": id, "message": "the drawing could not be encoded as a PNG"]); return }
-                    self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-                case let .failure(refusal): self?.emit(["answer": "refused", "id": id, "message": refusal.message])
-                }
-            }
-        } else if let terminal = host.terminal, let image = terminalPixels(terminal), let tiff = image.tiffRepresentation,
-                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
-            emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-        } else {
-            emit(["answer": "refused", "id": id, "message": "the GPUI client draws this pane itself; its picture is not served yet"])
+        guard let host = panes[pane] else { return ["refused": RenderRefusal.notShown] }
+        guard let view = host.pluginView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return ["refused": "the GPUI client draws this pane itself; its picture is not served yet"]
         }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        // cacheDisplay draws only what AppKit draws (a scroll view's document); SwiftUI content outside one lives in
+        // the layer tree alone, so the layers are rendered over it.
+        if let layer = view.layer, let context = NSGraphicsContext(bitmapImageRep: rep) {
+            let cg = context.cgContext
+            cg.saveGState()
+            if view.isFlipped { cg.translateBy(x: 0, y: view.bounds.height); cg.scaleBy(x: 1, y: -1) }
+            layer.render(in: cg)
+            cg.restoreGState()
+        }
+        // cacheDisplay leaves a terminal surface blank: each one's own pixels are drawn over its frame.
+        let parts = Self.subviews(of: view, ofType: DropTerminalView.self).filter { !$0.isHiddenOrHasHiddenAncestor && !$0.bounds.isEmpty }
+            .compactMap { terminal in terminalPixels(terminal).map { (view.convert(terminal.bounds, from: terminal), $0) } }
+        if !parts.isEmpty, let context = NSGraphicsContext(bitmapImageRep: rep) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            for (rect, image) in parts {
+                // The bitmap's origin is bottom-left; a flipped hosting view's frames count from the top.
+                let y = view.isFlipped ? view.bounds.height - rect.maxY : rect.minY
+                image.draw(in: NSRect(x: rect.minX, y: y, width: rect.width, height: rect.height))
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        guard let png = rep.representation(using: .png, properties: [:]) else { return ["refused": "the page could not be encoded as a PNG"] }
+        return ["png": png.base64EncodedString()]
     }
     /// Every view of type `T` in `view`'s subview tree.
     static func subviews<T: NSView>(of view: NSView, ofType: T.Type) -> [T] {
         view.subviews.flatMap { ($0 as? T).map { [$0] } ?? subviews(of: $0, ofType: T.self) }
     }
-    /// `inspect_pane` relayed by the Rust side, on a browser pane's page: answered through `emit`
-    /// with `inspected`, `rendered`, `recorded` or `refused`.
-    func inspect(_ value: [String: Any]) {
-        let id = value["id"] as! UInt64
-        let pane = value["pane"] as! String
-        let arg = value["arg"] as? String
-        guard let browser = panes[pane]?.browser else { emit(["answer": "refused", "id": id, "message": RenderRefusal.notShown]); return }
-        // `where` reads the page this browser is on and changes nothing.
-        if value["action"] as? String == "where" {
-            emit(["answer": "inspected", "id": id, "text": BrowserInspect.place(url: browser.url, title: browser.title)])
-            return
-        }
-        // `open` sends this browser to a page; the rest run in the page.
-        if value["action"] as? String == "open" {
-            guard let arg, !arg.isEmpty else { emit(["answer": "refused", "id": id, "message": "open needs a page"]); return }
-            browser.opened(arg)
-            emit(["answer": "inspected", "id": id, "text": ""])
-            return
-        }
-        let web = browser.view
-        Task { @MainActor [weak self] in
-            switch await BrowserInspect.run(value["action"] as? String ?? "", arg: arg, in: web) {
-            case let .text(text): self?.emit(["answer": "inspected", "id": id, "text": text])
-            case let .png(png): self?.emit(["answer": "rendered", "id": id, "png": png.base64EncodedString()])
-            case let .film(film): self?.emit(["answer": "recorded", "id": id, "mov": film.mov.base64EncodedString(), "frames": film.frames, "millis": film.millis])
-            case let .refused(message): self?.emit(["answer": "refused", "id": id, "message": message])
-            }
-        }
-    }
-    /// `pane_reload`: a browser reloads the page it is on, a plugin pane runs its script again from the top, and an
-    /// artifact page opens its address again rather than `WKWebView.reload()`, which does nothing when the first load
-    /// never committed (the daemon was down).
+    /// `pane_reload`: a plugin pane runs its script again from the top.
     func reload(_ id: String) {
-        guard let host = panes[id] else { return }
-        if let browser = host.browser {
-            host.reloads += 1
-            browser.reload()
-            return
-        }
-        if let plugin = host.plugin {
-            host.reloads += 1
-            plugin.restart()
-            requestSource(host)
-            return
-        }
-        guard let page = host.pageURL else { return }
-        host.reloads += 1
-        host.web?.load(URLRequest(url: page))
+        guard let host = panes[id], let plugin = host.plugin else { return }
+        plugin.restart()
+        requestSource(host)
     }
-    /// The daemon's address and token for the scheme handler, from the socket address a pane was given.
+    /// The daemon's address and token for the artifacts plugin pages embed, from the socket address a pane was given.
     func daemonAddress(_ ws: String) {
         guard var parts = URLComponents(string: ws), let token = parts.queryItems?.first(where: { $0.name == "token" })?.value else { return }
         parts.queryItems = nil
@@ -1239,18 +920,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         default: break
         }
     }
-    /// `term` is no longer shown by `except`: detach it when no pane and no other embed shows it.
-    /// A grid pane still holding it gets its own size back: the embed's size was the term's last `term_resize`.
+    /// `term` is no longer shown by `except`: detach it when no other embed shows it.
     func release(_ term: String, except: EmbedTerminal? = nil) {
-        let hosts = panes.values.filter { $0.termID == term }
-        guard hosts.isEmpty else {
-            for host in hosts {
-                guard let grid = host.grids.last else { continue }
-                host.sent.append(grid)
-                send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
-            }
-            return
-        }
         guard !embeds.values.contains(where: { $0 !== except && $0.termID == term }) else { return }
         send(["op": "term_detach", "id": term])
     }
@@ -1260,9 +931,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         let gone = agentEmbeds.filter { $0.value.hostPane == id }
         for key in gone.keys { agentEmbeds[key] = nil }
         for embed in gone.values { embed.drop() }
-        if let term = host.termID { release(term) }
-        if let web = host.web { PageSchemeHandler.close(web) }
-        host.slot.removeFromSuperview()
+        host.slot.subviews.forEach { $0.removeFromSuperview() }
         if let plugin = host.plugin {
             plugin.close()
             pluginReqs = pluginReqs.filter { $0.value != id }
@@ -1303,115 +972,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         pageClient = client
         return client
     }
-    /// While the GPUI view moves the panes (`hold_resizes`: the grid animates or a divider is
-    /// dragged) or a window edge is dragged, a terminal's resizes wait: only the grid it ends at
-    /// goes to wheeld, as AppModel.settle sends a terminal's size when the move ends.
-    var resizesHeld = false
-    var liveResizing = false
-    var holding: Bool { resizesHeld || liveResizing }
-    /// A report can lag its view: the surface reflows a display frame after the view moved, so a
-    /// report whose pixels are not the view's is a grid of an earlier frame and waits for the one
-    /// that follows, sent anyway after `lagLimit` with no newer report (AppModel.settle's rules).
-    static let lagLimit: Duration = .milliseconds(100)
-    static let paddingPoints: CGFloat = 24
-    func resized(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        if holding { host.heldReport = vp; return }
-        host.reports += 1
-        guard fitsView(host, vp) else {
-            host.lagged += 1
-            sendUnlessNewer(host, vp)
-            return
-        }
-        sendSize(host, vp)
-    }
-    /// Send `vp` after `lagLimit` unless a newer report came meanwhile.
-    func sendUnlessNewer(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        let report = host.reports
-        Task { @MainActor [weak self, weak host] in
-            try? await Task.sleep(for: Self.lagLimit)
-            guard let self, let host, host.reports == report else { return }
-            // A motion that began meanwhile holds it, so its end sends it when nothing newer comes.
-            if self.holding { host.heldReport = host.heldReport ?? vp } else { self.sendSize(host, vp) }
-        }
-    }
-    func sendSize(_ host: PaneHost, _ vp: InMemoryTerminalViewport) {
-        let grid = [Int(vp.columns), Int(vp.rows)]
-        guard host.sent.last != grid, let term = host.termID else { return }
-        host.sent.append(grid)
-        send(["op": "term_resize", "id": term, "cols": grid[0], "rows": grid[1]])
-    }
-    /// Whether report `vp` is of the terminal view's present frame: its pixels are the view's
-    /// less the padding and less than a cell.
-    func fitsView(_ host: PaneHost, _ vp: InMemoryTerminalViewport) -> Bool {
-        guard let view = host.terminal, vp.widthPixels > 0, vp.heightPixels > 0, vp.columns > 0, vp.rows > 0 else { return true }
-        let scale = view.window?.backingScaleFactor ?? 2
-        let slack = Self.paddingPoints * scale
-        let cw = max(CGFloat(vp.cellWidthPixels), CGFloat(vp.widthPixels) / CGFloat(vp.columns))
-        let ch = max(CGFloat(vp.cellHeightPixels), CGFloat(vp.heightPixels) / CGFloat(vp.rows))
-        let dw = view.bounds.width * scale - CGFloat(vp.widthPixels)
-        let dh = view.bounds.height * scale - CGFloat(vp.heightPixels)
-        return (0...slack + cw).contains(dw) && (0...slack + ch).contains(dh)
-    }
-    func holdResizes(_ value: [String: Any]) {
-        resizesHeld = value["held"] as? Bool == true
-        if !holding { sendHeld() }
-    }
-    /// The move ended: each terminal's held report goes.
-    func sendHeld() {
-        // The report held last is of a frame before the motion's end, a cell short of its view
-        // or more: the surface reports the grid of its end frame a display frame later, and only
-        // when that grid differs. So it waits for that report, and goes when none comes.
-        for host in panes.values {
-            if let vp = host.heldReport {
-                host.heldReport = nil
-                host.reports += 1
-                sendUnlessNewer(host, vp)
-            }
-        }
-    }
-    func place(_ value: [String: Any]) {
-        guard let host = panes[value["pane"] as! String] else { return }
-        host.slot.isHidden = value["hidden"] as? Bool == true
-        host.slot.alphaValue = CGFloat(value["alpha"] as? Double ?? 1)
-        let a = value["rect"] as! [Double]
-        var frame = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-        if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
-        host.holesTop = (value["holes"] as? [[Double]]) ?? []
-        host.slot.frame = frame
-        host.content.frame = host.slot.bounds
-        host.web?.frame = host.slot.bounds
-        host.terminal?.setSurfaceVisible(!host.slot.isHidden)
-        host.slot.cut(cuts(host))
-    }
-    /// What is cut out of `host`'s view: the overlay's rect and the cards over it, in the root's coordinates.
-    func cuts(_ host: PaneHost) -> [CGRect] {
-        let cards = host.holesTop.map { a -> CGRect in
-            var rect = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-            if !root.isFlipped { rect.origin.y = root.bounds.height - rect.maxY }
-            return rect
-        }
-        return (overlay.map { [$0] } ?? []) + cards
-    }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let host = panes.values.first(where: { $0.web === webView }) else { return }
-        // A browser pane's view answers to its model's delegate, not this one.
-        host.loads.append(webView.title ?? "")
-        webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { [weak host] result, _ in
-            MainActor.assumeIsolated { host?.text = result as? String }
-        }
-    }
-    /// An artifact page stays inside its pane's folder on the daemon; a link anywhere else opens in
-    /// the default browser (WebPane.swift's rules). A browser pane's view navigates freely.
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
-        guard let host = panes.values.first(where: { $0.web === webView }), let page = host.pageURL else { return .allow }
-        guard let target = action.request.url else { return .cancel }
-        if WebPanes.allowsInlineFrame(target, isMainFrame: action.targetFrame?.isMainFrame ?? true) { return .allow }
-        let path = URLComponents(url: target, resolvingAgainstBaseURL: false)?.path ?? target.path
-        if target.scheme == page.scheme, target.host == page.host, target.port == page.port, path.hasPrefix("/artifacts/\(host.id)/") { return .allow }
-        if action.navigationType == .linkActivated { NSWorkspace.shared.open(target) }
-        return .cancel
-    }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) { errors.append(error.localizedDescription) }
 
     // MARK: pixels
     // Ghostty replaces its initial CAMetalLayer with an IOSurfaceLayer. Read the real renderer
@@ -1430,10 +990,6 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
                 provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
         return NSImage(cgImage: cg, size: CGSize(width: width, height: height))
     }
-    func png(_ image: NSImage?, _ path: String) -> Bool {
-        guard let tiff = image?.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-        do { try png.write(to: URL(fileURLWithPath: path)); return true } catch { errors.append(error.localizedDescription); return false }
-    }
 
     // MARK: commands
     func command(_ value: [String: Any]) -> [String: Any] {
@@ -1441,9 +997,7 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "open": open(value)
         case "close": close(value["pane"] as! String)
         case "reload": reload(value["pane"] as! String)
-        case "browser": browser(value)
-        case "render": render(value)
-        case "inspect": inspect(value)
+        case "render": return render(value)
         case "pane_targets":
             var targets: [String: [String: String]] = [:]
             for (pane, held) in value["panes"] as? [String: [String: String]] ?? [:] { targets[pane] = held }
@@ -1504,41 +1058,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             pageClient = nil
             embedPerms.list = []
             agentReqs = [:]; attachReqs = []; taskOutputAsks = [:]
-        case "place": place(value)
-        case "hold_resizes": holdResizes(value)
-        case "live_resize":
-            // The check's stand-in for a person dragging the window's edge: AppKit's own start or
-            // end notification, posted for this window.
-            if let window = root.window {
-                NotificationCenter.default.post(name: value["on"] as? Bool == true ? NSWindow.willStartLiveResizeNotification : NSWindow.didEndLiveResizeNotification, object: window)
-            }
-            return ["held": holding]
-        case "focus":
-            // A pane with no native view is drawn by GPUI: its view takes the keyboard.
-            let target = panes[value["pane"] as! String]?.content ?? root
-            return ["accepted": root.window?.makeFirstResponder(target) ?? false]
-        case "overlay":
-            if value["open"] as? Bool == true {
-                let a = value["rect"] as! [Double]
-                var rect = CGRect(x: a[0], y: a[1], width: a[2], height: a[3])
-                if !root.isFlipped { rect.origin.y = root.bounds.height - rect.maxY }
-                overlay = rect
-                _ = root.window?.makeFirstResponder(root)
-            } else {
-                overlay = nil
-            }
-            panes.values.forEach { $0.slot.cut(cuts($0)) }
-        case "pty":
-            if let host = panes[value["pane"] as! String], let term = host.termID {
-                send(["op": "term_input", "id": term, "data": Data((value["text"] as! String).utf8).base64EncodedString()])
-            }
         case "keymap":
             routed = Set((value["chords"] as? [String]) ?? [])
-        case "terminal_look": restyle(value)
-        case "term_drop":
-            // What a drop of these files does, for the check: the drag itself needs a real pointer.
-            guard let terminal = panes[value["pane"] as! String]?.terminal else { return ["dropped": false] }
-            return ["dropped": terminal.drop(value["paths"] as? [String] ?? [])]
         case "post_key":
             // Real NSEvents to NSWindow.sendEvent: first-responder routing and the views' own key
             // handling run as for hardware events; nothing touches the OS keyboard or focus.
@@ -1573,67 +1094,11 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
         case "menu_key":
             // The main menu's item for a key equivalent, sent as AppKit sends it from the key window:
             // validated, from the first responder. A hidden window is never key, so the menu's own
-            // dispatch (which WebKit hands a key it does not use) finds no target there.
+            // dispatch (which a web view hands a key it does not use) finds no target there.
             let key = value["key"] as! String
             guard let item = Self.menuItem(NSApp.mainMenu, key: key, modifiers: .command), let action = item.action else { return ["sent": false, "item": NSNull()] }
             guard let target = Self.target(for: action, from: root.window), Self.validates(target, item) else { return ["sent": false, "item": item.title] }
             return ["sent": NSApp.sendAction(action, to: target, from: item), "item": item.title, "target": String(describing: type(of: target))]
-        case "post_mouse":
-            let kind = value["kind"] as! String
-            let a = value["point"] as! [Double]
-            var point = NSPoint(x: a[0], y: a[1])
-            if !root.isFlipped { point.y = root.bounds.height - point.y }
-            // A synthesized right press reads as button 0 to GPUI (`NSEvent.buttonNumber` is 0 for
-            // every event made this way), so a context menu is asked for with `control: true` on a
-            // left press, as a Mac control-click asks for one.
-            let eventType: NSEvent.EventType = kind == "down" ? .leftMouseDown : kind == "drag" ? .leftMouseDragged : kind == "move" ? .mouseMoved : .leftMouseUp
-            var flags: NSEvent.ModifierFlags = value["control"] as? Bool == true ? [.control] : []
-            if value["command"] as? Bool == true { flags.insert(.command) }
-            mouseNumber += 1
-            // NSWindow.sendEvent drops mouse events for an unordered window, so route as AppKit
-            // does after its own step: hit test, then the view gets the NSEvent. A drag or release
-            // goes to the view that took the press.
-            if kind == "down" || kind == "move" { mouseTarget = root.hitTest(root.convert(point, to: root.superview)) }
-            if kind == "down" { pressed(mouseTarget, at: point) }
-            if let event = NSEvent.mouseEvent(with: eventType, location: root.convert(point, to: nil), modifierFlags: flags,
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: root.window?.windowNumber ?? 0,
-                context: nil, eventNumber: mouseNumber, clickCount: value["clicks"] as? Int ?? 1, pressure: kind == "up" ? 0 : 1), let target = mouseTarget {
-                switch kind {
-                case "down": target.mouseDown(with: event)
-                case "drag": target.mouseDragged(with: event)
-                case "move": target.mouseMoved(with: event)
-                default: target.mouseUp(with: event)
-                }
-            }
-            return ["target": mouseTarget.map { String(describing: type(of: $0)) } ?? "nil"]
-        case "hit":
-            let a = value["point"] as! [Double]
-            var point = NSPoint(x: a[0], y: a[1])
-            if !root.isFlipped { point.y = root.bounds.height - point.y }
-            let hit = root.hitTest(root.convert(point, to: root.superview))
-            let host = owner(of: hit)
-            return ["class": hit.map { String(describing: type(of: $0)) } ?? "nil", "pane": host?.id ?? NSNull()]
-        case "snapshot":
-            let directory = value["directory"] as! String
-            snapshotsPending = []
-            for host in panes.values where !host.slot.isHidden {
-                if let web = host.web, web.url == nil || web.url?.absoluteString == "about:blank" {
-                    // A view showing no page has nothing for WebKit to snapshot, and its snapshot can
-                    // go unanswered: AppKit draws it instead.
-                    if let rep = web.bitmapImageRepForCachingDisplay(in: web.bounds) {
-                        web.cacheDisplay(in: web.bounds, to: rep)
-                        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: "\(directory)/\(host.id)-web.png")) }
-                    }
-                } else if let web = host.web {
-                    snapshotsPending.insert(host.id)
-                    web.takeSnapshot(with: nil) { image, error in
-                        _ = self.png(image, "\(directory)/\(host.id)-web.png")
-                        if let error { self.errors.append(error.localizedDescription) }
-                        self.snapshotsPending.remove(host.id)
-                    }
-                }
-                if let terminal = host.terminal { _ = png(terminalPixels(terminal), "\(directory)/\(host.id)-terminal.png") }
-            }
         default: break
         }
         return status()
@@ -1641,46 +1106,23 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
 
     func status() -> [String: Any] {
         var out: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "errors": errors,
-            "snapshots_pending": snapshotsPending.count,
-            "snapshots_waiting": snapshotsPending.sorted(),
-            "resizes_held": resizesHeld, "live_resize": liveResizing,
             "root_focused": root.window?.firstResponder === root, "held_before_key": heldBeforeKey ?? "",
             "first_responder": root.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil",
             "key_window": root.window?.isKeyWindow ?? false, "visible": root.window?.isVisible ?? false,
             "app_active": NSApp.isActive, "native_subviews": root.subviews.count,
-            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends, "logs": logs]
+            "socket": socket.map { "state \($0.state.rawValue) code \($0.closeCode.rawValue)" } ?? "none", "term_outputs": termOutputs, "sends": sends]
         var panesOut: [String: Any] = [:]
         for (id, host) in panes {
-            let f = host.slot.frame
-            var entry: [String: Any] = ["kind": host.kind, "hidden": host.slot.isHidden, "alpha": Double(host.slot.alphaValue),
-                "frame_top": [f.minX, root.isFlipped ? f.minY : root.bounds.height - f.maxY, f.width, f.height],
-                "masked": host.slot.layer?.mask != nil, "holes": host.holesTop, "mask_rects": host.slot.shown,
+            // Where the slot sits and what is cut out of it the Rust pane host adds.
+            var entry: [String: Any] = ["kind": host.kind,
                 "focused": root.window?.firstResponder.map { $0 === host.content || (($0 as? NSView)?.isDescendant(of: host.content) ?? false) } ?? false,
                 "view_identity": String(describing: Unmanaged.passUnretained(host.content).toOpaque())]
-            if let b = host.browser {
-                entry["url"] = b.url; entry["title"] = b.title; entry["loading"] = b.loading; entry["can_go_back"] = b.canGoBack
-                entry["can_go_forward"] = b.canGoForward; entry["status"] = b.status ?? NSNull(); entry["text"] = b.text ?? ""
-                entry["failure"] = b.failure.map { ["address": $0.address, "message": $0.message] } ?? NSNull()
-                entry["loads"] = host.loads
-            } else if host.kind == "web" {
-                entry["loads"] = host.loads; entry["url"] = host.url ?? ""; entry["reloads"] = host.reloads
-                entry["status"] = host.status ?? NSNull(); entry["store"] = host.store?.uuidString ?? ""; entry["text"] = host.text ?? ""
-            } else if let p = host.plugin {
+            if let p = host.plugin {
                 entry["plugin"] = ["state": p.stateJSON, "error": p.error ?? NSNull(), "reloads": p.reloads, "restarts": p.restarts, "chunk": p.chunk, "components": p.componentTexts, "feeds": p.feedJSON]
             }
-            else { entry["viewport"] = host.session?.readViewportText() ?? ""; entry["grids"] = host.grids; entry["sent_grids"] = host.sent; entry["lagged_reports"] = host.lagged; entry["writes"] = host.writes
-                   entry["pixels"] = host.terminal?.layer?.contents != nil
-                   let space = host.space ?? ""
-                   entry["space"] = host.space ?? NSNull()
-                   entry["config"] = controllers[space]?.renderedConfig ?? ""
-                   entry["theme"] = (looks[space] ?? .standard).theme.rawValue
-                   entry["restyled"] = restyled[space] ?? NSNull()
-                   entry["font_size"] = host.terminal?.fontSize.map { Double($0) } ?? NSNull() }
             panesOut[id] = entry
         }
         out["panes"] = panesOut
-        // The rect cut out of every pane's view while the palette or a sheet is open, top-left coordinates.
-        out["overlay"] = overlay.map { r -> [Double] in [r.minX, root.isFlipped ? r.minY : root.bounds.height - r.maxY, r.width, r.height] } ?? NSNull()
         return out
     }
 }

@@ -1,0 +1,3072 @@
+{
+  "align" : "start",
+  "children" : [
+    {
+      "component" : "Column"
+    },
+    {
+      "children" : [
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "ChoicePicker",
+              "displayStyle" : "chips",
+              "modifiers" : [
+                {
+                  "fixedSize" : {
+                    "horizontal" : true
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "set_scope"
+              },
+              "options" : [
+                {
+                  "label" : "Uncommitted",
+                  "value" : "uncommitted"
+                },
+                {
+                  "label" : "Aaaaaa aa aaaa",
+                  "value" : "default"
+                },
+                {
+                  "label" : "aa aaaaa\/aaaaaa-aaaa-aaaaa",
+                  "value" : "base0"
+                },
+                {
+                  "label" : "aa aaaaaa\/aaaa\/aaaaa-4aaa.2-aaaa-aaaaaaaa-aaaaaaa",
+                  "value" : "base1"
+                }
+              ],
+              "value" : [
+                "uncommitted"
+              ],
+              "variant" : "mutuallyExclusive"
+            },
+            {
+              "align" : "end",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 12,
+                        "weight" : "medium"
+                      }
+                    },
+                    {
+                      "monospacedDigit" : true
+                    },
+                    {
+                      "multilineTextAlignment" : "trailing"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "trailing",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "12 files  +3 −0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    },
+                    {
+                      "multilineTextAlignment" : "trailing"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "trailing",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "working tree vs HEAD"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "trailing",
+                    "width" : 210
+                  }
+                }
+              ],
+              "spacing" : 1
+            }
+          ],
+          "component" : "Row",
+          "justify" : "spaceBetween",
+          "spacing" : 12
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "ChoicePicker",
+              "displayStyle" : "menu",
+              "modifiers" : [
+                {
+                  "fixedSize" : true
+                }
+              ],
+              "on_change" : {
+                "type" : "set_scope"
+              },
+              "options" : [
+                {
+                  "label" : "Uncommitted",
+                  "value" : "uncommitted"
+                },
+                {
+                  "label" : "Aaaaaa aa aaaa",
+                  "value" : "default"
+                },
+                {
+                  "label" : "aa aaaaa\/aaaaaa-aaaa-aaaaa",
+                  "value" : "base0"
+                },
+                {
+                  "label" : "aa aaaaaa\/aaaa\/aaaaa-4aaa.2-aaaa-aaaaaaaa-aaaaaaa",
+                  "value" : "base1"
+                }
+              ],
+              "value" : [
+                "uncommitted"
+              ],
+              "variant" : "mutuallyExclusive"
+            },
+            {
+              "align" : "end",
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 12,
+                        "weight" : "medium"
+                      }
+                    },
+                    {
+                      "monospacedDigit" : true
+                    },
+                    {
+                      "multilineTextAlignment" : "trailing"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "trailing",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "12 files  +3 −0"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    },
+                    {
+                      "multilineTextAlignment" : "trailing"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "trailing",
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "lineLimit" : 1
+                    }
+                  ],
+                  "text" : "working tree vs HEAD"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "trailing",
+                    "width" : 210
+                  }
+                }
+              ],
+              "spacing" : 1
+            }
+          ],
+          "component" : "Row",
+          "justify" : "spaceBetween",
+          "spacing" : 12
+        }
+      ],
+      "component" : "ViewThatFits",
+      "in" : "horizontal"
+    },
+    {
+      "children" : [
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "children" : [
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "columns" : [
+                        {
+                          "key" : "status",
+                          "label" : "",
+                          "width" : 28
+                        },
+                        {
+                          "key" : "path",
+                          "label" : "File"
+                        }
+                      ],
+                      "component" : "Table",
+                      "empty" : "No files.",
+                      "foldAction" : {
+                        "type" : "select_file"
+                      },
+                      "rowAction" : {
+                        "type" : "select_file"
+                      },
+                      "sections" : [
+                        {
+                          "count" : 12,
+                          "rows" : [
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : ".turnstilerc",
+                                  "tone" : "accent"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : ".turnstilerc",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : ".turnstilerc",
+                              "sel" : true
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa1-aaaa-aaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa3-aaaaaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa3-aaaaaaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa3-aaaaaaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa4-aa-aaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa4-aa-aaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa4-aa-aaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa5-aaaaaaa-aaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa5-aaaaaaa-aaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa5-aaaaaaa-aaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa6-aaaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa6-aaaaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa6-aaaaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaaaa.aaa",
+                              "sel" : false
+                            },
+                            {
+                              "cells" : [
+                                {
+                                  "chip" : true,
+                                  "key" : "status",
+                                  "text" : "?",
+                                  "tone" : "ok"
+                                },
+                                {
+                                  "key" : "path",
+                                  "mono" : true,
+                                  "text" : "aa2-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                                  "tone" : "fg"
+                                }
+                              ],
+                              "collapsed" : false,
+                              "depth" : 0,
+                              "dim" : false,
+                              "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                              "kids" : false,
+                              "menu" : [
+
+                              ],
+                              "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                              "sel" : false
+                            }
+                          ],
+                          "title" : ""
+                        }
+                      ],
+                      "sort" : {
+                        "asc" : true,
+                        "key" : "path"
+                      }
+                    }
+                  ],
+                  "component" : "Column",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "idealWidth" : 170,
+                        "maxHeight" : "infinity",
+                        "maxWidth" : 200,
+                        "minWidth" : 140
+                      }
+                    }
+                  ],
+                  "spacing" : 0
+                },
+                {
+                  "children" : [
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "font" : {
+                                "design" : "monospaced",
+                                "size" : 11,
+                                "weight" : "regular"
+                              }
+                            },
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                2,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            }
+                          ],
+                          "text" : "@@ "
+                        },
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "font" : {
+                                "design" : "monospaced",
+                                "size" : 11,
+                                "weight" : "regular"
+                              }
+                            },
+                            {
+                              "foregroundStyle" : "green"
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            }
+                          ],
+                          "text" : "        1 + {"
+                        },
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "font" : {
+                                "design" : "monospaced",
+                                "size" : 11,
+                                "weight" : "regular"
+                              }
+                            },
+                            {
+                              "foregroundStyle" : "green"
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            }
+                          ],
+                          "text" : "        2 +   \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+                        },
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "font" : {
+                                "design" : "monospaced",
+                                "size" : 11,
+                                "weight" : "regular"
+                              }
+                            },
+                            {
+                              "foregroundStyle" : "green"
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "        3 + }"
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : ".turnstilerc"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+3 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "green"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa3-aaaaaaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa4-aa-aaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa5-aaaaaaa-aaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa6-aaaaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    },
+                    {
+                      "children" : [
+                        {
+                          "component" : "Text",
+                          "modifiers" : [
+                            {
+                              "foregroundStyle" : "secondary"
+                            },
+                            {
+                              "padding" : [
+                                6,
+                                0,
+                                6,
+                                0
+                              ]
+                            },
+                            {
+                              "padding" : {
+                                "horizontal" : 8
+                              }
+                            },
+                            {
+                              "padding" : {
+                                "bottom" : 14
+                              }
+                            }
+                          ],
+                          "text" : "Binary file."
+                        }
+                      ],
+                      "component" : "Section",
+                      "header" : {
+                        "align" : "center",
+                        "children" : [
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 12,
+                                  "weight" : "semibold"
+                                }
+                              },
+                              {
+                                "lineLimit" : 1
+                              },
+                              {
+                                "truncationMode" : "head"
+                              },
+                              {
+                                "frame" : {
+                                  "alignment" : "leading",
+                                  "maxWidth" : "infinity"
+                                }
+                              }
+                            ],
+                            "text" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa"
+                          },
+                          {
+                            "component" : "Text",
+                            "modifiers" : [
+                              {
+                                "font" : {
+                                  "design" : "monospaced",
+                                  "size" : 11,
+                                  "weight" : "regular"
+                                }
+                              },
+                              {
+                                "foregroundStyle" : "secondary"
+                              },
+                              {
+                                "monospacedDigit" : true
+                              },
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "text" : "+0 −0"
+                          },
+                          {
+                            "align" : "center",
+                            "children" : [
+                              {
+                                "component" : "Text",
+                                "modifiers" : [
+                                  {
+                                    "font" : {
+                                      "design" : "default",
+                                      "size" : 9,
+                                      "weight" : "regular"
+                                    }
+                                  },
+                                  {
+                                    "foregroundStyle" : "tertiary"
+                                  }
+                                ],
+                                "text" : "■■■■■"
+                              }
+                            ],
+                            "component" : "Row",
+                            "modifiers" : [
+                              {
+                                "fixedSize" : true
+                              }
+                            ],
+                            "spacing" : 5
+                          }
+                        ],
+                        "component" : "Row",
+                        "modifiers" : [
+                          {
+                            "padding" : [
+                              6,
+                              8
+                            ]
+                          },
+                          {
+                            "background" : "controlBackground"
+                          }
+                        ],
+                        "spacing" : 8
+                      }
+                    }
+                  ],
+                  "component" : "List",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxHeight" : "infinity",
+                        "maxWidth" : "infinity",
+                        "minWidth" : 280
+                      }
+                    }
+                  ],
+                  "pinnedViews" : [
+                    "sectionHeaders"
+                  ],
+                  "scrollTo" : 1,
+                  "spacing" : 0
+                }
+              ],
+              "component" : "HSplitView",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxHeight" : "infinity"
+                  }
+                }
+              ]
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "frame" : {
+                "idealWidth" : 608,
+                "maxHeight" : "infinity",
+                "maxWidth" : "infinity",
+                "minWidth" : 608
+              }
+            }
+          ],
+          "spacing" : 0
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "columns" : [
+                {
+                  "key" : "status",
+                  "label" : "",
+                  "width" : 28
+                },
+                {
+                  "key" : "path",
+                  "label" : "File"
+                },
+                {
+                  "key" : "size",
+                  "label" : "Size",
+                  "width" : 78
+                },
+                {
+                  "key" : "add",
+                  "label" : "+",
+                  "width" : 44
+                },
+                {
+                  "key" : "del",
+                  "label" : "−",
+                  "width" : 44
+                }
+              ],
+              "component" : "Table",
+              "empty" : "No uncommitted changes.",
+              "foldAction" : {
+                "type" : "select_file"
+              },
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "height" : 196
+                  }
+                }
+              ],
+              "rowAction" : {
+                "type" : "select_file"
+              },
+              "sections" : [
+                {
+                  "count" : 12,
+                  "rows" : [
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : ".turnstilerc",
+                          "tone" : "accent"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "▇▇▇▇▇▇▇▇▇▇",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+3",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : ".turnstilerc",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : ".turnstilerc",
+                      "sel" : true
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa1-aaaa-aaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa3-aaaaaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa3-aaaaaaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa3-aaaaaaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa4-aa-aaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa4-aa-aaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa4-aa-aaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa5-aaaaaaa-aaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa5-aaaaaaa-aaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa5-aaaaaaa-aaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa6-aaaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa6-aaaaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa6-aaaaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaa-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa-aaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaaaa.aaa",
+                      "sel" : false
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "chip" : true,
+                          "key" : "status",
+                          "text" : "?",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "path",
+                          "mono" : true,
+                          "text" : "aa2-aaaa.aaa  aaaa\/aaaa-aaaa\/aaaaaa\/",
+                          "tone" : "fg"
+                        },
+                        {
+                          "key" : "size",
+                          "mono" : true,
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "add",
+                          "mono" : true,
+                          "text" : "+0",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "del",
+                          "mono" : true,
+                          "text" : "−0",
+                          "tone" : "bad"
+                        }
+                      ],
+                      "collapsed" : false,
+                      "depth" : 0,
+                      "dim" : false,
+                      "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                      "kids" : false,
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa2-aaaa.aaa",
+                      "sel" : false
+                    }
+                  ],
+                  "title" : ""
+                }
+              ],
+              "sort" : {
+                "asc" : true,
+                "key" : "path"
+              }
+            },
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "action" : {
+                    "id" : "",
+                    "type" : "select_file"
+                  },
+                  "child" : {
+                    "component" : "Icon",
+                    "name" : "chevron.left"
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        2,
+                        5
+                      ]
+                    },
+                    {
+                      "disabled" : true
+                    },
+                    {
+                      "help" : "Previous file"
+                    },
+                    {
+                      "accessibilityLabel" : "Previous file"
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "monospacedDigit" : true
+                    },
+                    {
+                      "frame" : {
+                        "minWidth" : 48
+                      }
+                    }
+                  ],
+                  "text" : "1 \/ 12"
+                },
+                {
+                  "action" : {
+                    "id" : "aaaa\/aaaa-aaaa\/aaaaaa\/aa1-aaaa-aaaaaa.aaa",
+                    "type" : "select_file"
+                  },
+                  "child" : {
+                    "component" : "Icon",
+                    "name" : "chevron.right"
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        2,
+                        5
+                      ]
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "help" : "Next file"
+                    },
+                    {
+                      "accessibilityLabel" : "Next file"
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "monospaced",
+                        "size" : 12,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "lineLimit" : 1
+                    },
+                    {
+                      "truncationMode" : "head"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : ".turnstilerc"
+                }
+              ],
+              "component" : "Row",
+              "modifiers" : [
+                {
+                  "padding" : [
+                    4,
+                    0,
+                    4,
+                    0
+                  ]
+                }
+              ],
+              "spacing" : 6
+            },
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "monospaced",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "secondary"
+                    },
+                    {
+                      "padding" : [
+                        6,
+                        0,
+                        2,
+                        0
+                      ]
+                    }
+                  ],
+                  "text" : "@@ "
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "monospaced",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    }
+                  ],
+                  "text" : "        1 + {"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "monospaced",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    }
+                  ],
+                  "text" : "        2 +   \"aaaaaaaa\": { \"aaaAaaaaaaaaa\": 40, \"aaaAaaAaaa\": \"30a\" }"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "monospaced",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    }
+                  ],
+                  "text" : "        3 + }"
+                }
+              ],
+              "component" : "List",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxHeight" : "infinity"
+                  }
+                }
+              ],
+              "scrollTo" : 1,
+              "spacing" : 0
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "frame" : {
+                "maxHeight" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        }
+      ],
+      "component" : "ViewThatFits",
+      "in" : "horizontal"
+    },
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "font" : {
+            "design" : "default",
+            "size" : 11,
+            "weight" : "regular"
+          }
+        },
+        {
+          "foregroundStyle" : "secondary"
+        },
+        {
+          "lineLimit" : 1
+        }
+      ],
+      "text" : " "
+    }
+  ],
+  "component" : "Column",
+  "modifiers" : [
+    {
+      "padding" : [
+        12,
+        16,
+        10,
+        16
+      ]
+    }
+  ],
+  "spacing" : 10
+}

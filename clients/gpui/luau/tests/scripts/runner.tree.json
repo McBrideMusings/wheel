@@ -1,0 +1,585 @@
+{
+  "children" : [
+    {
+      "children" : [
+        {
+          "component" : "TextField",
+          "label" : "Search commands",
+          "modifiers" : [
+            {
+              "frame" : {
+                "maxWidth" : "infinity",
+                "minWidth" : 120
+              }
+            }
+          ],
+          "on_change" : {
+            "type" : "query"
+          },
+          "value" : "",
+          "variant" : "shortText"
+        }
+      ],
+      "component" : "Row",
+      "modifiers" : [
+        {
+          "padding" : [
+            10,
+            10,
+            4,
+            10
+          ]
+        }
+      ]
+    },
+    {
+      "children" : [
+        {
+          "component" : "Text",
+          "modifiers" : [
+            {
+              "font" : {
+                "design" : "default",
+                "size" : 12,
+                "weight" : "regular"
+              }
+            },
+            {
+              "foregroundStyle" : "red"
+            },
+            {
+              "lineLimit" : 1
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "text" : ""
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            0,
+            10
+          ]
+        },
+        {
+          "frame" : {
+            "alignment" : "leading",
+            "height" : 20,
+            "maxWidth" : "infinity"
+          }
+        }
+      ]
+    },
+    {
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            0,
+            10
+          ]
+        }
+      ],
+      "spacing" : 4
+    },
+    {
+      "children" : [
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "hello"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Icon",
+                      "modifiers" : [
+                        {
+                          "foregroundStyle" : "green"
+                        }
+                      ],
+                      "name" : "checkmark.circle.fill"
+                    },
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        },
+                        {
+                          "foregroundStyle" : "green"
+                        }
+                      ],
+                      "text" : "exit 0 · 14:43:12"
+                    }
+                  ],
+                  "component" : "Row",
+                  "spacing" : 5
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "id" : "1794494592866-aaaaa-37921-5",
+                "type" : "open"
+              },
+              "child" : {
+                "component" : "Text",
+                "text" : "Open"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Open the log of hello"
+                },
+                {
+                  "accessibilityLabel" : "Open the log of hello"
+                }
+              ]
+            },
+            {
+              "action" : {
+                "name" : "hello",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run hello"
+                },
+                {
+                  "accessibilityLabel" : "Run hello"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "aaaaa: aaaaaa"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "name" : "aaaaa: aaaaaa",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run aaaaa: aaaaaa"
+                },
+                {
+                  "accessibilityLabel" : "Run aaaaa: aaaaaa"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "aaaaa: aaaaaaa aaaaaa"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "name" : "aaaaa: aaaaaaa aaaaaa",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run aaaaa: aaaaaaa aaaaaa"
+                },
+                {
+                  "accessibilityLabel" : "Run aaaaa: aaaaaaa aaaaaa"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "aaaaa: aaaaaa aaaaa"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "name" : "aaaaa: aaaaaa aaaaa",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run aaaaa: aaaaaa aaaaa"
+                },
+                {
+                  "accessibilityLabel" : "Run aaaaa: aaaaaa aaaaa"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "aaaaa: aaa aaaaaa"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "name" : "aaaaa: aaa aaaaaa",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run aaaaa: aaa aaaaaa"
+                },
+                {
+                  "accessibilityLabel" : "Run aaaaa: aaa aaaaaa"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "aaaaa: aaa aaaaaaa aaaaaa"
+                }
+              ],
+              "component" : "Column",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "spacing" : 2
+            },
+            {
+              "action" : {
+                "name" : "aaaaa: aaa aaaaaaa aaaaaa",
+                "type" : "run"
+              },
+              "child" : {
+                "component" : "Icon",
+                "name" : "play.fill"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "help" : "Run aaaaa: aaa aaaaaaa aaaaaa"
+                },
+                {
+                  "accessibilityLabel" : "Run aaaaa: aaa aaaaaaa aaaaaa"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "frame" : {
+                "minHeight" : 28
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        }
+      ],
+      "component" : "List",
+      "modifiers" : [
+        {
+          "padding" : [
+            4,
+            10
+          ]
+        }
+      ],
+      "spacing" : 2
+    }
+  ],
+  "component" : "Column",
+  "spacing" : 0
+}

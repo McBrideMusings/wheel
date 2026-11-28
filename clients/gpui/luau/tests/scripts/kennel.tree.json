@@ -1,0 +1,206 @@
+{
+  "children" : [
+    {
+      "component" : "ChoicePicker",
+      "displayStyle" : "chips",
+      "on_change" : {
+        "type" : "view"
+      },
+      "options" : [
+        {
+          "label" : "Routes",
+          "value" : "routes"
+        },
+        {
+          "label" : "Skills",
+          "value" : "skills"
+        },
+        {
+          "label" : "Guidance",
+          "value" : "guidance"
+        },
+        {
+          "label" : "Permissions",
+          "value" : "permissions"
+        },
+        {
+          "label" : "Hooks",
+          "value" : "hooks"
+        },
+        {
+          "label" : "MCP",
+          "value" : "mcp"
+        },
+        {
+          "label" : "Vault",
+          "value" : "vault"
+        },
+        {
+          "label" : "Doctor",
+          "value" : "doctor"
+        }
+      ],
+      "value" : [
+        "routes"
+      ],
+      "variant" : "mutuallyExclusive"
+    },
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "lineLimit" : 2
+        }
+      ],
+      "text" : "This folder (wheel)  aaaaaaa: (aa aaaaa) · aaaaaa: AAAAAA_AAAAAA_AAA aaaaa (aaaaaaa aaaa) · aaaaa: AAAAA_AAAA aaaaa (aaaaaaa aaaa)"
+    },
+    {
+      "children" : [
+        {
+          "component" : "TextField",
+          "label" : "Path",
+          "modifiers" : [
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "on_change" : {
+            "type" : "path"
+          },
+          "value" : "\/Users\/me\/Projects\/wheel"
+        },
+        {
+          "component" : "ChoicePicker",
+          "displayStyle" : "menu",
+          "modifiers" : [
+            {
+              "fixedSize" : {
+                "horizontal" : true
+              }
+            }
+          ],
+          "on_change" : {
+            "type" : "profile"
+          },
+          "options" : [
+
+          ],
+          "value" : [
+            ""
+          ],
+          "variant" : "mutuallyExclusive"
+        },
+        {
+          "component" : "CheckBox",
+          "label" : "Permanent",
+          "on_change" : {
+            "type" : "permanent"
+          },
+          "value" : false
+        },
+        {
+          "action" : {
+            "dir" : "\/Users\/me\/Projects\/wheel",
+            "path" : "\/Users\/me\/Projects\/wheel",
+            "profile" : "",
+            "type" : "add"
+          },
+          "child" : {
+            "component" : "Text",
+            "text" : "Add route"
+          },
+          "component" : "Button"
+        },
+        {
+          "action" : {
+            "dir" : "\/Users\/me\/Projects\/wheel",
+            "type" : "prune"
+          },
+          "child" : {
+            "component" : "Text",
+            "text" : "Prune expired"
+          },
+          "component" : "Button"
+        }
+      ],
+      "component" : "Row"
+    },
+    {
+      "columns" : [
+        {
+          "key" : "path",
+          "label" : "Path",
+          "sortable" : true
+        },
+        {
+          "key" : "profile",
+          "label" : "Profile",
+          "sortable" : true,
+          "width" : 120
+        },
+        {
+          "key" : "status",
+          "label" : "Status",
+          "sortable" : true,
+          "width" : 260
+        }
+      ],
+      "component" : "Table",
+      "empty" : "No routes.",
+      "rowAction" : {
+        "type" : "noop"
+      },
+      "sections" : [
+        {
+          "count" : 0,
+          "rows" : [
+
+          ],
+          "title" : "Routes"
+        },
+        {
+          "count" : 0,
+          "rows" : [
+
+          ],
+          "title" : "Profiles"
+        }
+      ]
+    },
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "lineLimit" : 2
+        }
+      ],
+      "text" : ""
+    },
+    {
+      "buttons" : [
+        {
+          "action" : {
+            "type" : "confirmed"
+          },
+          "role" : "destructive",
+          "title" : ""
+        }
+      ],
+      "component" : "ConfirmationDialog",
+      "dismissAction" : {
+        "type" : "unconfirmed"
+      },
+      "presented" : false,
+      "title" : ""
+    }
+  ],
+  "component" : "Column",
+  "modifiers" : [
+    {
+      "padding" : 12
+    }
+  ],
+  "spacing" : 8
+}

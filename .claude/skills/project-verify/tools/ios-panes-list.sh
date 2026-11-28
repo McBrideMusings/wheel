@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Phone agent sheet (wheel-f6y5.6): the eye button's badge, the sheet's flat tiles sorted by need,
-# Allow and Deny answered from a tile, and a tile tap taking the phone to a backgrounded, a
-# popped-out and another space's agent, driven with real taps by WheelPhoneUITests/AgentSheetUITests
-# against this script's own wheeld. At each step the test writes `$SYNC/step-<name>`; this script
-# changes and checks wheeld, then acknowledges.
+# Phone panes button and list (wheel-v0aj): the button's orange dot, the list's pane rows and flat agent tiles
+# sorted by need with the backgrounded ones behind a toggle, Allow and Deny answered from a tile, and a row or tile
+# tap taking the phone to a popped-out, a backgrounded and another space's pane, driven with real taps by
+# WheelPhoneUITests/PanesListUITests against this script's own wheeld. At each step the test writes
+# `$SYNC/step-<name>`; this script changes and checks wheeld, then acknowledges.
 #
 # Needs WHEEL_IOS_DERIVED_DATA: a build-for-testing of the WheelPhone scheme for the simulator (see
 # project-verify § iOS title menu). Run with `env -u WHEEL_SPACE -u WHEEL_PANE`.
@@ -52,21 +52,24 @@ expect_phone() {
 }
 transcript_has() { w agent read "$1" 2>/dev/null | grep -q -- "$2"; }
 
-ios_ui_start AgentSheetUITests/testAgentSheet "WHEEL_AGENTS=$N1,$N2,$N3,$N4,$N5"
+ios_ui_start PanesListUITests/testPanesList "WHEEL_AGENTS=$N1,$N2,$N3,$N4,$N5"
+noplog() { ! plog "$1"; }
 
 if step quiet; then
-  ok "no agent needs the person: the eye carries no badge (the UI test reads its value)"
+  ok "no agent needs the person: the panes button carries no orange dot (the UI test reads its value)"
   w agent send "$N4" "permission described" >/dev/null &
   wait_status "$P4" needs_you "the backgrounded agent $N4 needs the person"
   PERM4="$(w perm list | jq -r --arg a "$N4" '[.[] | select(.agent == $a)][0].id')"
   ack quiet
 fi
 lines_seen() { ls "$SYNC" | sed -n "s/^step-lines-$1-//p"; }
-if step sheet; then
+if step list; then
   eq "the replied tile's last message is two lines" "$(lines_seen replied)" 2
-  check "phone.log lists the sheet, needs you first" plog "agents sheet all: $N4=Needs you, $N2=Working"
-  check "phone.log has the eye tap" plog "agents sheet: eye tapped, 1 waiting"
-  ack sheet
+  check "phone.log has the button's tap" plog "panes button: open, 1 waiting"
+  check "phone.log has the list opening on three panes" plog "panes list open: 3 panes"
+  check "phone.log lists the panes, then the agents, needs you first" plog "panes list: panes .$P1, $P2, $P3., agents $N4=Needs you(bg), $N2=Working"
+  check "phone.log has the backgrounded toggle" plog "panes list: show 1 backgrounded"
+  ack list
 fi
 if step allowed; then
   check "Allow answered $N4's request ($PERM4)" plog "answering $PERM4: "
@@ -85,16 +88,28 @@ if step denied; then
 fi
 if step open-backgrounded; then
   expect_phone "the backgrounded tile shows $P4 on the last page" "$P4"
-  check "phone.log has the tile tap" plog "agents sheet: open $N4 in $S/$P4"
+  check "phone.log has the tile tap" plog "panes list: open $N4 in $S/$P4"
   ack open-backgrounded
 fi
 if step open-popped; then
-  expect_phone "the popped-out tile shows $P3" "$P3"
+  expect_phone "the popped-out row shows $P3" "$P3"
+  check "phone.log has the row tap" plog "panes list: open $P3"
   ack open-popped
+fi
+if step open-tile; then
+  expect_phone "$N1's tile shows $P1" "$P1"
+  check "phone.log has the tile tap" plog "panes list: open $N1 in $S/$P1"
+  ack open-tile
+fi
+if step closed; then
+  check "phone.log has the second tap closing the list" plog "panes button: close"
+  check "phone.log has the list closed" plog "panes list closed: 3 panes"
+  ack closed
 fi
 if step open-alpha; then
   expect_phone "alpha's tile shows $P5" "$P5"
   eq "the phone shows space alpha" "$(w client ls --json | jq -r '.[].windows[] | select(.window=="phone") | .space')" "$A"
+  check "phone.log has the Agents tab's tap" plog "agents tab: open $N5 in $A/$P5"
   w agent cancel "$N2" >/dev/null
   wait_status "$P2" done "$N2 stopped working (a cancelled turn reads done)"
   ack open-alpha
@@ -105,7 +120,7 @@ if step all-idle; then
   ack all-idle
 fi
 if step empty; then
-  ok "the sheet with no agents says so"
+  ok "the list with no agents says so"
   ack empty
 fi
-ios_ui_finish agents
+ios_ui_finish panes

@@ -737,9 +737,9 @@ impl Client {
         let open = self.name_edit.is_some() || self.command_palette.is_some() || self.shortcuts_open || self.settings_open || self.confirmation.is_some() || self.pairing.open || self.procs.open.is_some() || self.queue.open || self.topic.open || self.conversations.open.is_some() || self.pane_info.is_some() || self.usage_open || self.title_menu.is_some();
         if open {
             let (w, h) = self.viewport;
-            self.native.call(serde_json::json!({"op": "overlay", "open": true, "rect": [0., 0., f64::from(w), f64::from(h)]}));
+            self.native.overlay(Some([0., 0., f64::from(w), f64::from(h)]));
         } else {
-            self.native.call(serde_json::json!({"op": "overlay", "open": false}));
+            self.native.overlay(None);
             if let Some(pane) = self.focus.current.clone() {
                 self.native.focus(if self.native_panes.contains(&pane) { &pane } else { "" });
             }

@@ -1,0 +1,861 @@
+{
+  "children" : [
+    {
+      "children" : [
+        {
+          "component" : "Text",
+          "modifiers" : [
+            {
+              "font" : {
+                "design" : "default",
+                "size" : 13,
+                "weight" : "semibold"
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "text" : "p1"
+        },
+        {
+          "component" : "Text",
+          "modifiers" : [
+            {
+              "font" : {
+                "design" : "default",
+                "size" : 12,
+                "weight" : "regular"
+              }
+            },
+            {
+              "foregroundStyle" : "secondary"
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "minWidth" : 56
+              }
+            }
+          ],
+          "text" : "ready"
+        },
+        {
+          "component" : "Text",
+          "modifiers" : [
+            {
+              "font" : {
+                "design" : "default",
+                "size" : 12,
+                "weight" : "regular"
+              }
+            },
+            {
+              "foregroundStyle" : "secondary"
+            },
+            {
+              "frame" : {
+                "alignment" : "trailing",
+                "minWidth" : 96
+              }
+            }
+          ],
+          "text" : ""
+        }
+      ],
+      "component" : "Row",
+      "modifiers" : [
+        {
+          "padding" : [
+            0,
+            10
+          ]
+        },
+        {
+          "frame" : {
+            "alignment" : "leading",
+            "height" : 28,
+            "maxWidth" : "infinity"
+          }
+        }
+      ],
+      "spacing" : 8
+    },
+    {
+      "children" : [
+        {
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "You"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "A aaa'a aaaaa aaa aaaa aaaaa aaaaaaa. Aaaaa aaaa A aaaa aa aa, aa aaaa aa'a aaaa aaaaaaa aa aaaaaaaaa. Aa aaaaa aa aaaaa aaaaa aa aaaa aaaaaaaa."
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "controlBackground"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "Thinking"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : ""
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "background"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "lineLimit" : 2
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "Aaaa aaaa, aaaa aaaaa aaa aaaa aaaaaaaaa"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    },
+                    {
+                      "fixedSize" : true
+                    }
+                  ],
+                  "text" : "completed"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "execute"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "monospaced",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "a6056 a13397 aaaaa aaaa Aaaaaaa 9aa6: AAAA aaaaaaaa\na6056 a13532 aaaaa aaaa Aaaaa aaaaa aaaaaa\na6056 a13497 aaaaa aaaa aa8a.1: aaaaaa\na6056 a13623 aaaaa aaaa Aaaaaa aaaa-aaaaa aaaaaaa\na6056 a13626 aaaaa aaaa Aaaa aaaa aaaaaaa\na6056 a13158 a"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "controlBackground"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "semibold"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "Thinking"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : ""
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "background"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "lineLimit" : 2
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "Aaaa aaaaaa aaaaa aaa aaaaaa AAA aaaa"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "red"
+                    },
+                    {
+                      "fixedSize" : true
+                    }
+                  ],
+                  "text" : "failed"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "execute"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "monospaced",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "AaaAaaaAaa:Aaaa aaaa aaaaa: [aa-aaaaaa-aaaaaaaaa-aaaaa] Aaaaaaa: aaaa aaaaaaa aaa a aaa aaaaaaa aaaaaaa aaa AAAAAAA — aaaaaa a aaaaa-aaaa aaaaaa (a.a. a --aaaa\/-a aaaaa) aa aaaaaaaa aaaaaaa aaaa a aaaa aaaaaaa. Aaaa aaaaa-aaaa aaaa aa $(aaa"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "controlBackground"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "lineLimit" : 2
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "Aaaa aaaa-aaaa aaaaaaaaaa aaa aaaaaa aaaa"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    },
+                    {
+                      "fixedSize" : true
+                    }
+                  ],
+                  "text" : "completed"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "execute"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "monospaced",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "Aaaaaaa: aaaaaaaa aa Aaaa aaaa aaaaaaa, aaaa a aaaaaa aaaaaaa a aaaaa-aaaaaa.aaaa\n\nAaaaa: aaaaa aaaaaa [AAAAAAA] <AAAAAAA>\n\nAaaaaaaa:\n  aa       Aaaaa aaaaa aaaaaa aaaaaaa a aaaaa aaa aaa, aaaaaaa aaaa aaaaaaa aaaa aaaaa-aa, aaaa aaa aaaaa."
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "controlBackground"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        },
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 13,
+                        "weight" : "semibold"
+                      }
+                    },
+                    {
+                      "lineLimit" : 2
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "text" : "Aaaaaaa aaaa-aaaa aaaaaa aaa aaa aaaa"
+                },
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 11,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "foregroundStyle" : "green"
+                    },
+                    {
+                      "fixedSize" : true
+                    }
+                  ],
+                  "text" : "completed"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "default",
+                    "size" : 11,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "foregroundStyle" : "secondary"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "execute"
+            },
+            {
+              "component" : "Text",
+              "modifiers" : [
+                {
+                  "font" : {
+                    "design" : "monospaced",
+                    "size" : 12,
+                    "weight" : "regular"
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "text" : "aaaaa 16\naaaaa-aa-a@ 6 aaaaaa  aaaaa  192 Aaa 20 16:42 .\naaaaa-aa-a@ 7 aaaaaa  aaaaa  224 Aaa 16 16:48 ..\n-aa-a--a--@ 1 aaaaaa  aaaaa  597 Aaa 20 16:42 Aaaaa.aaaa\naaaaa-aa-a@ 3 aaaaaa  aaaaa   96 Aaa 18 09:19 aaaaa\naaaaa-aa-a@ 4 aaaaaa  aaa"
+            }
+          ],
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "padding" : [
+                6,
+                8
+              ]
+            },
+            {
+              "background" : "controlBackground"
+            },
+            {
+              "clipShape" : {
+                "cornerRadius" : 8
+              }
+            },
+            {
+              "frame" : {
+                "alignment" : "leading",
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 4
+        }
+      ],
+      "component" : "List",
+      "modifiers" : [
+        {
+          "padding" : [
+            4,
+            10
+          ]
+        }
+      ],
+      "scrollTo" : 7,
+      "spacing" : 8
+    },
+    {
+      "children" : [
+        {
+          "component" : "TextField",
+          "label" : "Message",
+          "modifiers" : [
+            {
+              "frame" : {
+                "maxWidth" : "infinity",
+                "minWidth" : 120
+              }
+            }
+          ],
+          "on_change" : {
+            "type" : "draft"
+          },
+          "value" : "",
+          "variant" : "shortText"
+        },
+        {
+          "action" : {
+            "type" : "send"
+          },
+          "child" : {
+            "component" : "Text",
+            "modifiers" : [
+              {
+                "frame" : {
+                  "minWidth" : 48
+                }
+              }
+            ],
+            "text" : "Send"
+          },
+          "component" : "Button"
+        }
+      ],
+      "component" : "Row",
+      "modifiers" : [
+        {
+          "padding" : [
+            8,
+            10,
+            0,
+            10
+          ]
+        }
+      ],
+      "spacing" : 8
+    },
+    {
+      "component" : "Text",
+      "modifiers" : [
+        {
+          "font" : {
+            "design" : "default",
+            "size" : 11,
+            "weight" : "regular"
+          }
+        },
+        {
+          "foregroundStyle" : "secondary"
+        },
+        {
+          "lineLimit" : 1
+        },
+        {
+          "frame" : {
+            "alignment" : "leading",
+            "maxWidth" : "infinity"
+          }
+        },
+        {
+          "padding" : [
+            0,
+            10
+          ]
+        },
+        {
+          "frame" : {
+            "height" : 18
+          }
+        }
+      ],
+      "text" : ""
+    }
+  ],
+  "component" : "Column",
+  "spacing" : 0
+}

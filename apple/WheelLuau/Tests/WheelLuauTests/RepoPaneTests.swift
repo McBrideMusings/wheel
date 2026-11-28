@@ -34,7 +34,7 @@ import WheelKit
             branch("never-pushed", upstream: nil, localOnly: 6),
         ]
         return try W.json("""
-        {"now":400,"name":"p","top":"/p","default":"origin/main","head":"main","branches":[\(rows.joined(separator: ","))],
+        {"now":400,"name":"p","top":"/p","default":"origin/main","remote":"origin","head":"main","branches":[\(rows.joined(separator: ","))],
          "stashes":[],"commits":[],"fetched":280,"pr_error":null,"error":null,"scripts":[],
          "cleanup":{"delete":["squashed","deleted"],"keep":[{"branch":"dirty","why":"blocked: uncommitted changes"}]}}
         """)

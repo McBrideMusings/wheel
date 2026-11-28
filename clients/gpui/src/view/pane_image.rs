@@ -23,6 +23,8 @@ pub struct PaneImages {
     asked: HashMap<u64, String>,
     /// Panes the window draws itself, to be cut from the next frame.
     window_shots: Vec<String>,
+    /// `render_pane` requests from wheeld for panes the window draws itself: the id and the pane.
+    wheeld_shots: Vec<(u64, String)>,
     /// Answers waiting for a render: the pane and its PNG or the reason it was refused.
     ready: Vec<(String, Result<Vec<u8>, String>)>,
     until: Option<u64>,
@@ -31,6 +33,10 @@ pub struct PaneImages {
 }
 
 impl PaneImages {
+    /// Answer wheeld's render `id` of `pane` with a cut of the window's next frame.
+    pub fn render_for_wheeld(&mut self, id: u64, pane: &str) {
+        self.wheeld_shots.push((id, pane.to_owned()));
+    }
     /// Keep the answer to render `id` when it was asked here; false when it is wheeld's.
     pub fn answered(&mut self, id: u64, result: Result<String, String>) -> bool {
         let decode = |result: Result<String, String>| result.and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("the picture was not a PNG ({e})")));
@@ -109,6 +115,20 @@ impl Client {
                     let result = this.cut_pane(&pane, window);
                     this.pane_images.ready.push((pane, result));
                     cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        for (id, pane) in std::mem::take(&mut self.pane_images.wheeld_shots) {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.update(|window, cx| window.draw(cx).clear()).ok();
+                this.update_in(cx, |this, window, _| {
+                    let msg = match this.cut_pane(&pane, window) {
+                        Ok(png) => ClientMsg::Rendered { id, png: base64::engine::general_purpose::STANDARD.encode(png) },
+                        Err(message) => ClientMsg::RenderRefused { id, message },
+                    };
+                    this.send(&msg);
                 })
                 .ok();
             })

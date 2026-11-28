@@ -176,4 +176,21 @@ import WheelKit
         tree = try empty.view(Self.data)
         #expect(Self.texts(tree).first?.hasPrefix("No posts yet from this space's agents. Agents post with: wheel plugin action") == true)
     }
+
+    @Test func theListDrawsThirtyCardsAndShowOlderAddsThirtyMore() throws {
+        let posts = (1...40).map { i in
+            #"{"post":"t\#(i)","agent_pane":"p1","space":"s1","dir":"/p","at":"2026-11-16T16:40:09.123Z","at_local":"4:40pm","title":"Post \#(i)","body":"b","body_blocks":[],"answer":null}"#
+        }
+        let runtime = try Self.pane(posts: #"{"dir":"/p","posts":["# + posts.joined(separator: ",") + "]}", agents: Self.agents)
+        var tree = try runtime.view(Self.data)
+        var titles = Self.texts(tree).filter { $0.hasPrefix("Post ") }
+        #expect(titles.count == 30 && titles.first == "Post 1" && titles.last == "Post 30")
+        let older = try #require(Self.buttons(tree).first { $0.help == "Show 10 older of 10 not shown" })
+        try runtime.send(older.action)
+        tree = try runtime.view(Self.data)
+        titles = Self.texts(tree).filter { $0.hasPrefix("Post ") }
+        #expect(titles.count == 40 && !Self.buttons(tree).contains { $0.help.hasSuffix(" not shown") })
+        try runtime.send(try Self.json(#"{"type":"query","value":""}"#))
+        #expect(Self.texts(try runtime.view(Self.data)).filter { $0.hasPrefix("Post ") }.count == 30)
+    }
 }

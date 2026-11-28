@@ -236,6 +236,32 @@ impl Client {
                 }
                 None
             }
+            "/term/type" => {
+                let (Some(pane), Some(text)) = (q("pane"), q("text")) else { return refuse(BAD, "pane= and text= are required") };
+                if !self.term_type(&pane, &text) {
+                    return refuse(MISSING, "no terminal pane with that id is drawn");
+                }
+                None
+            }
+            // What a drop of these files does, for the check: the drag itself needs a real pointer.
+            "/term/drop" => {
+                let Some(pane) = q("pane") else { return refuse(BAD, "pane= is required") };
+                let Ok(paths) = serde_json::from_str::<Vec<std::path::PathBuf>>(&request.body) else { return refuse(BAD, "the body must be a JSON array of paths") };
+                return ok(json!({"dropped": self.term_drop(&pane, &paths)}));
+            }
+            // The check's stand-in for a window edge held (on=true), let go (on=false) or handed back to AppKit (no on).
+            "/live_resize" => {
+                let set = match q("on").as_deref() {
+                    Some("true") => Some(true),
+                    Some("false") => Some(false),
+                    None => None,
+                    _ => return refuse(BAD, "on must be true or false"),
+                };
+                crate::appkit::live_resize::stand_in(set, cx);
+                // The global's observer reaches this window after the answer; the answer says the hold now.
+                self.set_live_resize(set.unwrap_or(false));
+                return ok(json!({"held": self.terms.hold.held()}));
+            }
             "/ratio" => {
                 let (Some(split), Some(ratio)) = (q("split"), q("ratio").and_then(|r| r.parse::<f64>().ok())) else { return refuse(BAD, "split= and ratio=<0..1> are required") };
                 self.send(&ClientMsg::SplitRatio { req: None, split, ratio });
@@ -690,6 +716,9 @@ impl Client {
                     "bridge": native["panes"][leaf.id.as_str()],
                     "mirror": leaf.mirror.as_ref().map(|m| json!({"source": m.source, "title": m.title})),
                 });
+                if leaf.kind == "terminal" {
+                    entry["terminal"] = self.term_json(&leaf.id);
+                }
                 if leaf.kind == "agent" {
                     entry["agent_view"] = json!(if self.agent_views.contains(&leaf.id) { "luau" } else { "native" });
                 }
@@ -785,6 +814,7 @@ impl Client {
         out["header_layout"] = self.header_layout.borrow().layout.choices_json();
         out["header_settings_kind"] = json!(self.header_settings_kind);
         out["grid_motion"] = self.motion_json();
+        out["live_resize"] = json!(self.terms.hold.live_resize());
         out["card_drag"] = json!(self.card_drag.as_ref().map(|d| json!({"pane": d.pane, "resize": d.resize, "delta": [d.delta.0, d.delta.1],
             "edge": self.card_hot_edge().map(|e| crate::grid_drop::Zone::Edge(e).label())})));
         out["space_menu"] = json!(self.space_menu.as_ref().map(|(space, x, y)| json!({"space": space, "at": [x, y]})));

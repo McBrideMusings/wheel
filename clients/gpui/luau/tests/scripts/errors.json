@@ -1,0 +1,14 @@
+[
+  { "name": "steps", "chunk": "demo/main.luau",
+    "source": "return { view = function() local n = 0 while true do n += 1 end end }" },
+  { "name": "memory", "chunk": "demo/main.luau",
+    "source": "return { view = function() local t = {} for i = 1, 1e8 do t[i] = string.rep('x', 64) .. i end end }" },
+  { "name": "missing-module", "chunk": "demo/main.luau",
+    "source": "local lib = require('lib/none')\nreturn { view = function() return ui.Text('x') end }" },
+  { "name": "unknown-global", "chunk": "demo/main.luau",
+    "source": "return { view = function() return nosuch('x') end }" },
+  { "name": "os-removed", "chunk": "demo/main.luau",
+    "source": "return { view = function() return ui.Text(os.time()) end }" },
+  { "name": "syntax", "chunk": "demo/main.luau",
+    "source": "return { view = function( end }" }
+]

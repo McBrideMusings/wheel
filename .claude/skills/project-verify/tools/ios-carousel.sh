@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phone carousel pages (wheel-f6y5.5): grid panes in reading order, then the popped window's panes
-# with ring dots, then the last page listing only the backgrounded panes, driven with real swipes and
+# with rings, then the last page listing only the backgrounded panes, driven with real swipes and
 # taps by WheelPhoneUITests/CarouselUITests against this script's own wheeld. At each step the test
 # writes `$SYNC/step-<name>`; this script checks wheeld and phone.log, then acknowledges.
 #

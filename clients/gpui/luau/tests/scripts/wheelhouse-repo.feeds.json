@@ -1,0 +1,463 @@
+[
+ {
+  "name": "wheelhouse.repo",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "branches": [
+    {
+     "ahead": 1,
+     "author": "me",
+     "behind": 0,
+     "blocked": null,
+     "branch": "aaaa/aaaaa-4a1a.1-aaaa-aaaaaaa",
+     "dead": null,
+     "finished": false,
+     "local_only": 1,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": null,
+     "subject": "aaaa(aaaa): aaaaa-aaaa aaaa aaaa aaaaaaa aa Aaaa (aaaaa-4a1a.1)",
+     "track": "aaaaa 1",
+     "ts": 1795830809,
+     "unpushed": null,
+     "upstream": "origin/main",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaaaaa-aaaa-aaaaa-9aa6",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 1,
+       "untracked": 14
+      }
+     }
+    },
+    {
+     "ahead": 3,
+     "author": "me",
+     "behind": 252,
+     "blocked": null,
+     "branch": "fix/text-fields-input",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaa/aaaa-aaaaaa-aaaaa",
+     "subject": "aaa: aaaaaaaaaaa aaaa aa aaa/aaaa-aaaaaa-aaaaa, aaaaa aa aaa aaaaa aaaaaaa aaa aaaa aa",
+     "track": "",
+     "ts": 1795723192,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaa/aaaa-aaaaaa-aaaaa",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaa-aaaaaa-aaaaa",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    },
+    {
+     "ahead": 2,
+     "author": "me",
+     "behind": 201,
+     "blocked": null,
+     "branch": "aaaa/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaa/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+     "subject": "aaa: aaaaaaaaaaa aaaa aa aaaa/aaaaa-aa4a.20.1-aaaaaaa-aaaaa, aaaaa aa aaa aaaaa aaaaaaa aaa aaaa aa",
+     "track": "",
+     "ts": 1795723191,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaa/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaaaaa-aaaa-aaaaa-aa4a-19",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    },
+    {
+     "ahead": 2,
+     "author": "me",
+     "behind": 603,
+     "blocked": null,
+     "branch": "aaa/aaaaaa-aaaa-aaaaaaaaaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaa/aaaaaa-aaaa-aaaaaaaaaaaa",
+     "subject": "aaa: aaaaaaaaaaa aaaa aa aaa/aaaaaa-aaaa-aaaaaaaaaaaa, aaaaa aa aaa aaaaa aaaaaaa aaa aaaa aa",
+     "track": "",
+     "ts": 1795723191,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaa/aaaaaa-aaaa-aaaaaaaaaaaa",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaaaa-aaaa-aaaaaaaaaaaa",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    },
+    {
+     "ahead": 1,
+     "author": "me",
+     "behind": 28,
+     "blocked": null,
+     "branch": "chore/remove-read-aloud",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaaa/aaaaaa-aaaa-aaaaa",
+     "subject": "aaaa: aaaaaa aaaa-aaaaa; aaaaa aaaa aa aaa aaaa aaa aaaaaaa aaa aaaaaa",
+     "track": "",
+     "ts": 1795621898,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaaa/aaaaaa-aaaa-aaaaa",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaaaa-aaaa-aaaaa",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    },
+    {
+     "ahead": 19,
+     "author": "me",
+     "behind": 2067,
+     "blocked": null,
+     "branch": "design-refs",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "origin/design-refs",
+     "subject": "aaa aaaaa-a0aa-aaaaaa-aaaaaa.aaa aaaaa-a0aa-aaaaaa-aaaaaa.aaaa",
+     "track": "",
+     "ts": 1795617571,
+     "unpushed": 0,
+     "upstream": "origin/design-refs",
+     "upstream_gone": false,
+     "worktree": null
+    },
+    {
+     "ahead": 3,
+     "author": "me",
+     "behind": 160,
+     "blocked": null,
+     "branch": "aaaa/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaa/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+     "subject": "aaa: aaaaa aaaaaaaa aaaaaa aaa Aaa aaaaa aaaa aaaaaaa aaa aaaaaa (aaaaa-aa4a.19.31, aaaaa-a1aa.11)",
+     "track": "",
+     "ts": 1795545330,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaa/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+     "upstream_gone": false,
+     "worktree": null
+    },
+    {
+     "ahead": 3,
+     "author": "me",
+     "behind": 160,
+     "blocked": null,
+     "branch": "aaa/aaaaaaaa-aaaaa-aaaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaa/aaaaaaaa-aaaaa-aaaaaa",
+     "subject": "aaa: aaaaa aaaaaaaa aaaaaa aaa Aaa aaaaa aaaa aaaaaaa aaa aaaaaa (aaaaa-aa4a.19.31, aaaaa-a1aa.11)",
+     "track": "",
+     "ts": 1795545330,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaa/aaaaaaaa-aaaaa-aaaaaa",
+     "upstream_gone": false,
+     "worktree": null
+    },
+    {
+     "ahead": 1,
+     "author": "me",
+     "behind": 158,
+     "blocked": null,
+     "branch": "aaaaa/aaaaa-a8aa.2-aaaa-aaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaaa/aaaaa-a8aa.2-aaaa-aaaa",
+     "subject": "aaaa(aaaa): aaaa AAAA-aaaa aaaaaaa aa aaaaa-aaaa-aaaa (aaaaa-a8aa.2)",
+     "track": "",
+     "ts": 1795543421,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaaa/aaaaa-a8aa.2-aaaa-aaaa",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa/.aaaaaa/aaaaaaaaa/aaaaa-a18a98a1954aaaa9a",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    },
+    {
+     "ahead": 2,
+     "author": "me",
+     "behind": 170,
+     "blocked": null,
+     "branch": "aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+     "subject": "aaaa(aaaaaaaaaa): aaaaaaa aaa AA aaaaaaaa aaaaaaa aaaa",
+     "track": "",
+     "ts": 1795448926,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+     "upstream_gone": false,
+     "worktree": null
+    },
+    {
+     "ahead": 2,
+     "author": "me",
+     "behind": 193,
+     "blocked": null,
+     "branch": "aaaa/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "aaaaaa/aaaa/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+     "subject": "aaa(aaaaaaaaa): aaaaa aaa aaaaaa'a aaaaaa, aaaa aaa aaaa aaaa, aaaa a aaaaaa aaaaaaaaaa aaaaa (aaaaa-a1aa.2)",
+     "track": "",
+     "ts": 1795415350,
+     "unpushed": 0,
+     "upstream": "aaaaaa/aaaa/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+     "upstream_gone": false,
+     "worktree": null
+    },
+    {
+     "ahead": 1,
+     "author": "me",
+     "behind": 217,
+     "blocked": null,
+     "branch": "feat/phone-ota",
+     "dead": "pushed",
+     "finished": false,
+     "local_only": 0,
+     "merged": null,
+     "pr": null,
+     "pr_merged": false,
+     "remote": "origin/feat/phone-ota",
+     "subject": "aaaa(aaaaaaa): aaaaa aaa aaaaa aaa aaaa aaa aaaaaaa (aaaaa-aa4a)",
+     "track": "",
+     "ts": 1795319103,
+     "unpushed": 0,
+     "upstream": "origin/feat/phone-ota",
+     "upstream_gone": false,
+     "worktree": {
+      "current": false,
+      "op": null,
+      "path": "/Aaaaa/aaaaaa/.aaaaaaaaa/aaaaa/aaaaa-aaa",
+      "primary": false,
+      "status": {
+       "conflicted": 0,
+       "staged": 0,
+       "unstaged": 0,
+       "untracked": 0
+      }
+     }
+    }
+   ],
+   "buttons": [],
+   "cleanup": {
+    "delete": [],
+    "keep": []
+   },
+   "commits": [
+    {
+     "author": "me",
+     "sha": "b84ac3b5",
+     "subject": "aaa(aaaa): a aaaaaaa aaaa aaaaaaa aaaaaa aaa aaaa'a aaaa",
+     "ts": 1795828582
+    },
+    {
+     "author": "me",
+     "sha": "a12db773",
+     "subject": "aaa(aaaa): aaaaa aaa aaaaaa'a aaaa() aaaaa aaa aaaaaa aaaaaa",
+     "ts": 1795828483
+    },
+    {
+     "author": "me",
+     "sha": "b6ba4847",
+     "subject": "aaaa(aaaa): aaaaaaaa aaaaa aaa AAAaaAaaaa aaaa Aaaa (aaaaa-aa6a.3)",
+     "ts": 1795828392
+    },
+    {
+     "author": "me",
+     "sha": "2b63cc25",
+     "subject": "aaaa(aaaa): aaaaaaaa aaaa aaaaa aa aaaa: aaaaa aa, aaaaaa AAA, aaaaaa",
+     "ts": 1795828077
+    },
+    {
+     "author": "me",
+     "sha": "18074645",
+     "subject": "aaaa(aaaa): aaaaa aaa aaaaaaa aaaaaa'a aaaaa aaa aaaa aaaaa aaaaaaa",
+     "ts": 1795827728
+    },
+    {
+     "author": "me",
+     "sha": "2c03d174",
+     "subject": "aaaaaa(aaaa): aaa aaaaaa'a aaaa aaaaa AaaaaAA aaaaa aaaaa aaaaa-a267",
+     "ts": 1795827657
+    },
+    {
+     "author": "me",
+     "sha": "3c74112b",
+     "subject": "aaa(aaaa): aaaa aa aaaaaa aaaa aaaaaa; aaaaaa a aaaaaaaaa'a aaaa aa aaaaaaa",
+     "ts": 1795827526
+    },
+    {
+     "author": "me",
+     "sha": "6d51cd53",
+     "subject": "aaaa(aaaa): aaaaaaa aaa aaaaa aaa aaaaa aaa AAAaaAaaaa aaaa Aaaa (aaaaa-aa6a.2)",
+     "ts": 1795827113
+    },
+    {
+     "author": "me",
+     "sha": "cf2ad616",
+     "subject": "Aaaaa aaaaaa-aaaaaaaa aaaaaa 'aaaaaa/aaaa' aaaa aaaa/aaaaa-aa6a.1-aaaaaa-aaaa-aaaa",
+     "ts": 1795826351
+    },
+    {
+     "author": "me",
+     "sha": "9ddaa12e",
+     "subject": "aaaaaaaa(aaaa): aaaa aaa aaaa aaaa'a aaaa aaaaaaaaaa aaa aaaaaa (aaaaa-aa6a.1)",
+     "ts": 1795826346
+    },
+    {
+     "author": "me",
+     "sha": "0c1f8d8a",
+     "subject": "aaaa(aaaa): aaa aaaaaa aaaa aaaa aaaaa aa Aaaa (aaaaa-aa6a.1)",
+     "ts": 1795825461
+    },
+    {
+     "author": "me",
+     "sha": "f12950ce",
+     "subject": "Aaaaa aaaaaa/aaaa",
+     "ts": 1795825099
+    }
+   ],
+   "default": "origin/main",
+   "error": null,
+   "fetched": 1795831260,
+   "head": "main",
+   "name": "wheel",
+   "now": 1795831263,
+   "pr_error": null,
+   "remote": "origin",
+   "scripts": [],
+   "stashes": [
+    {
+     "ref": "stash@{0}",
+     "subject": "Aa aaaa: aaa-aaaaaaa: Aaaaa aaaaaa-aaaaaa aaaa, A2AA aaaaa aaaaaaaa, aaaa-aaaaa aaaaa",
+     "when": "12 aaaa aaa"
+    },
+    {
+     "ref": "stash@{1}",
+     "subject": "Aa aaaa/aaaaa-aaaa.31-aaaaa-aaaa-aaa-aaaaa: aaaaaaaa aaaa.31 aaaaa (aaaaaa aaaaaaaaaa aa aaaa7a53)",
+     "when": "2 aaaaa aaa"
+    },
+    {
+     "ref": "stash@{2}",
+     "subject": "Aa aaaa: aaaa-aa aaaa",
+     "when": "2 aaaaa aaa"
+    },
+    {
+     "ref": "stash@{3}",
+     "subject": "Aa aaaa: aaaaaaaa-aaaaaaa aaaaaaa 2026-11-06",
+     "when": "3 aaaaa aaa"
+    },
+    {
+     "ref": "stash@{4}",
+     "subject": "Aa aaaa/aaaaa-aaaa-aaaaaaaa-aaa: aaaaaaaa-aaaaaaa aaaaaaaa-aaa 2026-11-06",
+     "when": "3 aaaaa aaa"
+    },
+    {
+     "ref": "stash@{5}",
+     "subject": "Aa aaaa: aaaaaaa aaaaaaaa aaaaa aaaaaaa 2026-11-04 (AAAAAA.aa, AaaaaaaAaaa, aaaaaa/aaaaa aaaaaaaaa, aaaaa.aa, aaaaaaaa.aa, aaaa_aaaa.aa, aaaaa)",
+     "when": "3 aaaaa aaa"
+    }
+   ],
+   "top": "/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa"
+  }
+ }
+]

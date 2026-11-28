@@ -1,0 +1,1807 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "action" : {
+                    "key" : "state",
+                    "type" : "list.filter",
+                    "value" : "dead"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "green"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "11"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Safe to delete"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "state",
+                    "type" : "list.filter",
+                    "value" : "blocked"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "0"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Blocked"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "has",
+                    "type" : "list.filter",
+                    "value" : "worktree"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "primary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "7"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "Worktrees"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                },
+                {
+                  "action" : {
+                    "key" : "has",
+                    "type" : "list.filter",
+                    "value" : "pr"
+                  },
+                  "child" : {
+                    "align" : "start",
+                    "children" : [
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 20,
+                              "weight" : "semibold"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "monospacedDigit" : true
+                          }
+                        ],
+                        "text" : "0"
+                      },
+                      {
+                        "component" : "Text",
+                        "modifiers" : [
+                          {
+                            "font" : {
+                              "design" : "default",
+                              "size" : 11,
+                              "weight" : "regular"
+                            }
+                          },
+                          {
+                            "foregroundStyle" : "secondary"
+                          },
+                          {
+                            "lineLimit" : 1
+                          }
+                        ],
+                        "text" : "With a PR"
+                      }
+                    ],
+                    "component" : "Column",
+                    "spacing" : 2
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "maxWidth" : "infinity"
+                      }
+                    },
+                    {
+                      "padding" : [
+                        7,
+                        8
+                      ]
+                    },
+                    {
+                      "overlay" : {
+                        "cornerRadius" : 8,
+                        "stroke" : "separator"
+                      }
+                    },
+                    {
+                      "pointerStyle" : "link"
+                    },
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "variant" : "borderless"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 8
+            },
+            {
+              "component" : "Column",
+              "spacing" : 0
+            },
+            {
+              "component" : "Column",
+              "spacing" : 0
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 0
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "TextField",
+              "label" : "Search",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity",
+                    "minWidth" : 120
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "list.query"
+              },
+              "value" : "",
+              "variant" : "shortText"
+            },
+            {
+              "children" : [
+                {
+                  "component" : "ChoicePicker",
+                  "displayStyle" : "chips",
+                  "modifiers" : [
+                    {
+                      "fixedSize" : {
+                        "horizontal" : true
+                      }
+                    }
+                  ],
+                  "on_change" : {
+                    "type" : "set_tab"
+                  },
+                  "options" : [
+                    {
+                      "label" : "Branches",
+                      "value" : "branches"
+                    },
+                    {
+                      "label" : "History",
+                      "value" : "history"
+                    }
+                  ],
+                  "value" : [
+                    "branches"
+                  ],
+                  "variant" : "mutuallyExclusive"
+                },
+                {
+                  "component" : "ChoicePicker",
+                  "displayStyle" : "menu",
+                  "modifiers" : [
+                    {
+                      "frame" : {
+                        "alignment" : "leading",
+                        "maxWidth" : "infinity"
+                      }
+                    }
+                  ],
+                  "on_change" : {
+                    "type" : "set_tab"
+                  },
+                  "options" : [
+                    {
+                      "label" : "Branches",
+                      "value" : "branches"
+                    },
+                    {
+                      "label" : "History",
+                      "value" : "history"
+                    }
+                  ],
+                  "value" : [
+                    "branches"
+                  ],
+                  "variant" : "mutuallyExclusive"
+                }
+              ],
+              "component" : "ViewThatFits",
+              "in" : "horizontal",
+              "modifiers" : [
+                {
+                  "layoutPriority" : 1
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                8,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any state ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "state",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "safe to delete  11",
+                          "on_change" : {
+                            "item" : "dead",
+                            "key" : "state",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "blocked  0",
+                          "on_change" : {
+                            "item" : "blocked",
+                            "key" : "state",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "live  1",
+                          "on_change" : {
+                            "item" : "live",
+                            "key" : "state",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any has ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "has",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "worktree  7",
+                          "on_change" : {
+                            "item" : "worktree",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "PR  0",
+                          "on_change" : {
+                            "item" : "pr",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "uncommitted changes  1",
+                          "on_change" : {
+                            "item" : "changes",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "unpushed commits  1",
+                          "on_change" : {
+                            "item" : "local-only",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "upstream gone  0",
+                          "on_change" : {
+                            "item" : "gone",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "merged  0",
+                          "on_change" : {
+                            "item" : "merged",
+                            "key" : "has",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any checks ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "checks",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "failing  0",
+                          "on_change" : {
+                            "item" : "failing",
+                            "key" : "checks",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "pending  0",
+                          "on_change" : {
+                            "item" : "pending",
+                            "key" : "checks",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "passing  0",
+                          "on_change" : {
+                            "item" : "passing",
+                            "key" : "checks",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "none  12",
+                          "on_change" : {
+                            "item" : "none",
+                            "key" : "checks",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "action" : {
+                    "type" : "list.clear"
+                  },
+                  "child" : {
+                    "component" : "Text",
+                    "text" : "Clear"
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        2,
+                        5
+                      ]
+                    },
+                    {
+                      "disabled" : true
+                    },
+                    {
+                      "opacity" : 0
+                    }
+                  ],
+                  "variant" : "borderless"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 6
+            },
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 12,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "Actions ⌄"
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "action" : {
+                        "type" : "cleanup"
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Clean up merged  0"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "disabled" : true
+                        },
+                        {
+                          "help" : "Delete the 0 merged, squash-merged or gone branches, each worktree first"
+                        },
+                        {
+                          "accessibilityLabel" : "Delete the 0 merged, squash-merged or gone branches, each worktree first"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    },
+                    {
+                      "action" : {
+                        "copy" : {
+                          "text" : "fix\/text-fields-input aaa\/aaaaaa-aaaa-aaaaaaaaaaaa aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa chore\/remove-read-aloud design-refs aaa\/aaaaaaaa-aaaaa-aaaaaa aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa aaaaa\/aaaaa-a8aa.2-aaaa-aaaa aaaaaaaaaa-aaaaaaaa-aaaaaaaa aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa feat\/phone-ota aaaa\/aaaaa-4a1a.1-aaaa-aaaaaaa"
+                        }
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Copy IDs"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "pointerStyle" : "link"
+                        },
+                        {
+                          "help" : "Copy the 12 listed branch names, space separated"
+                        },
+                        {
+                          "accessibilityLabel" : "Copy the 12 listed branch names, space separated"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    }
+                  ],
+                  "component" : "Column",
+                  "spacing" : 6
+                }
+              ],
+              "component" : "Popover"
+            }
+          ],
+          "component" : "Row",
+          "justify" : "spaceBetween",
+          "modifiers" : [
+            {
+              "padding" : [
+                4,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 16
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "columns" : [
+                {
+                  "key" : "branch",
+                  "label" : "Branch",
+                  "sortable" : true,
+                  "width" : "flex"
+                },
+                {
+                  "key" : "worktree",
+                  "label" : "Worktree",
+                  "sortable" : true,
+                  "width" : 150
+                },
+                {
+                  "key" : "vs",
+                  "label" : "vs origin\/main",
+                  "sortable" : true,
+                  "width" : 90
+                },
+                {
+                  "key" : "pr",
+                  "label" : "PR",
+                  "sortable" : true,
+                  "width" : 96
+                },
+                {
+                  "key" : "ci",
+                  "label" : "Checks",
+                  "sortable" : true,
+                  "width" : 70
+                },
+                {
+                  "key" : "upstream",
+                  "label" : "Upstream · fetched now",
+                  "sortable" : true,
+                  "width" : 170
+                },
+                {
+                  "key" : "merged",
+                  "label" : "Merged",
+                  "sortable" : true,
+                  "width" : 100
+                },
+                {
+                  "key" : "delete",
+                  "label" : "Delete",
+                  "sortable" : true,
+                  "width" : 120
+                },
+                {
+                  "key" : "updated",
+                  "label" : "Updated",
+                  "sortable" : true,
+                  "width" : 70
+                }
+              ],
+              "component" : "Table",
+              "empty" : "Nothing matches the search and filters.",
+              "foldAction" : {
+                "type" : "select_branch"
+              },
+              "rowAction" : {
+                "type" : "select_branch"
+              },
+              "sections" : [
+                {
+                  "count" : 12,
+                  "rows" : [
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "fix\/text-fields-input",
+                          "text" : "fix\/text-fields-input"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaa-aaaaaa-aaaaa",
+                          "text" : "aaaa-aaaaaa-aaaaa",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 3,
+                          "text" : "+3 -252",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaa\/aaaa-aaaaaa-aaaaa: up to date",
+                          "text" : "aaaaaa\/aaa\/aaaa-aaaaaa-aaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795723192,
+                          "text" : "1d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "fix\/text-fields-input",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "fix\/text-fields-input",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "fix\/text-fields-input"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaa\/aaaaaa-aaaa-aaaaaaaaaaaa",
+                          "text" : "aaa\/aaaaaa-aaaa-aaaaaaaaaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaaa-aaaa-aaaaaaaaaaaa",
+                          "text" : "aaaaaa-aaaa-aaaaaaaaaaaa",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 2,
+                          "text" : "+2 -603",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaa\/aaaaaa-aaaa-aaaaaaaaaaaa: up to date",
+                          "text" : "aaaaaa\/aaa\/aaaaaa-aaaa-aaaaaaaaaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795723191,
+                          "text" : "1d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaa\/aaaaaa-aaaa-aaaaaaaaaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaa\/aaaaaa-aaaa-aaaaaaaaaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaa\/aaaaaa-aaaa-aaaaaaaaaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+                          "text" : "aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaaaa-aaaa-aaaaa-aa4a-19",
+                          "text" : "aaaaaaa-aaaa-aaaaa-aa4a-19",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 2,
+                          "text" : "+2 -201",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa: up to date",
+                          "text" : "aaaaaa\/aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795723191,
+                          "text" : "1d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaaa\/aaaaa-aa4a.20.1-aaaaaaa-aaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "chore\/remove-read-aloud",
+                          "text" : "chore\/remove-read-aloud"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaaa-aaaa-aaaaa",
+                          "text" : "aaaaaa-aaaa-aaaaa",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 1,
+                          "text" : "+1 -28",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaaa\/aaaaaa-aaaa-aaaaa: up to date",
+                          "text" : "aaaaaa\/aaaaa\/aaaaaa-aaaa-aaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795621898,
+                          "text" : "2d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "chore\/remove-read-aloud",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "chore\/remove-read-aloud",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "chore\/remove-read-aloud"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "design-refs",
+                          "text" : "design-refs"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "",
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 19,
+                          "text" : "+19 -2067",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "up to date",
+                          "text" : "up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795617571,
+                          "text" : "2d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "design-refs",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "design-refs",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "design-refs"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaa\/aaaaaaaa-aaaaa-aaaaaa",
+                          "text" : "aaa\/aaaaaaaa-aaaaa-aaaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "",
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 3,
+                          "text" : "+3 -160",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaa\/aaaaaaaa-aaaaa-aaaaaa: up to date",
+                          "text" : "aaaaaa\/aaa\/aaaaaaaa-aaaaa-aaaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795545330,
+                          "text" : "3d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaa\/aaaaaaaa-aaaaa-aaaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaa\/aaaaaaaa-aaaaa-aaaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaa\/aaaaaaaa-aaaaa-aaaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+                          "text" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "",
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 3,
+                          "text" : "+3 -160",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa: up to date",
+                          "text" : "aaaaaa\/aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795545330,
+                          "text" : "3d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaa-aaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaaa\/aaaaa-a8aa.2-aaaa-aaaa",
+                          "text" : "aaaaa\/aaaaa-a8aa.2-aaaa-aaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaa-a18a98a1954aaaa9a",
+                          "text" : "aaaaa-a18a98a1954aaaa9a",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 1,
+                          "text" : "+1 -158",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaaa\/aaaaa-a8aa.2-aaaa-aaaa: up to date",
+                          "text" : "aaaaaa\/aaaaa\/aaaaa-a8aa.2-aaaa-aaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795543421,
+                          "text" : "3d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaaa\/aaaaa-a8aa.2-aaaa-aaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaaaa\/aaaaa-a8aa.2-aaaa-aaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaaaa\/aaaaa-a8aa.2-aaaa-aaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+                          "text" : "aaaaaaaaaa-aaaaaaaa-aaaaaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "",
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 2,
+                          "text" : "+2 -170",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaaaaaaaa-aaaaaaaa-aaaaaaaa: up to date",
+                          "text" : "aaaaaa\/aaaaaaaaaa-aaaaaaaa-aaaaaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795448926,
+                          "text" : "4d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaaaaaaaaa-aaaaaaaa-aaaaaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaaaaaaaaa-aaaaaaaa-aaaaaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+                          "text" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "",
+                          "text" : "",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 2,
+                          "text" : "+2 -193",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "aaaaaa\/aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa: up to date",
+                          "text" : "aaaaaa\/aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa: up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795415350,
+                          "text" : "4d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "aaaa\/aaaaa-a1aa.2-aaaaaaaa-aaaaaaaaa"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "feat\/phone-ota",
+                          "text" : "feat\/phone-ota"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaa-aaa",
+                          "text" : "aaaaa-aaa",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 1,
+                          "text" : "+1 -217",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "up to date",
+                          "text" : "up to date",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "chip" : true,
+                          "key" : "delete",
+                          "text" : "safe",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795319103,
+                          "text" : "5d",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "feat\/phone-ota",
+                      "menu" : [
+                        {
+                          "action" : {
+                            "branch" : "feat\/phone-ota",
+                            "type" : "delete_branch"
+                          },
+                          "label" : "Delete branch"
+                        }
+                      ],
+                      "path" : "feat\/phone-ota"
+                    },
+                    {
+                      "cells" : [
+                        {
+                          "key" : "branch",
+                          "mono" : true,
+                          "sort" : "aaaa\/aaaaa-4a1a.1-aaaa-aaaaaaa",
+                          "text" : "aaaa\/aaaaa-4a1a.1-aaaa-aaaaaaa"
+                        },
+                        {
+                          "key" : "worktree",
+                          "sort" : "aaaaaaa-aaaa-aaaaa-9aa6",
+                          "text" : "aaaaaaa-aaaa-aaaaa-9aa6 (changes)",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "vs",
+                          "mono" : true,
+                          "sort" : 1,
+                          "text" : "+1 -0",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "pr",
+                          "mono" : true,
+                          "sort" : 0,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "ci",
+                          "sort" : 3,
+                          "text" : ""
+                        },
+                        {
+                          "key" : "upstream",
+                          "mono" : true,
+                          "sort" : "origin\/main: aaaaa 1",
+                          "text" : "origin\/main: aaaaa 1",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "merged",
+                          "sort" : "~",
+                          "text" : "",
+                          "tone" : "ok"
+                        },
+                        {
+                          "key" : "delete",
+                          "text" : "1 unpushed",
+                          "tone" : "muted"
+                        },
+                        {
+                          "key" : "updated",
+                          "sort" : 1795830809,
+                          "text" : "7m",
+                          "tone" : "muted"
+                        }
+                      ],
+                      "depth" : 0,
+                      "id" : "aaaa\/aaaaa-4a1a.1-aaaa-aaaaaaa",
+                      "menu" : [
+
+                      ],
+                      "path" : "aaaa\/aaaaa-4a1a.1-aaaa-aaaaaaa"
+                    }
+                  ],
+                  "title" : ""
+                }
+              ],
+              "selectAction" : {
+                "type" : "list.select"
+              },
+              "selected" : [
+
+              ],
+              "sort" : {
+                "asc" : true,
+                "key" : "delete"
+              },
+              "sortAction" : {
+                "type" : "list.sort"
+              }
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 8
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            18,
+            16,
+            48,
+            16
+          ]
+        }
+      ],
+      "spacing" : 8
+    }
+  ],
+  "component" : "Column"
+}

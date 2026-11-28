@@ -11,15 +11,12 @@ struct SpaceCarousel: View {
     @State private var openTray: String?
     @State private var newSpaceOpen = false
     @State private var titleOpen = false
-    /// While the keyboard is up the page handle goes, so the composer sits on the keyboard (wheel-eg4e.19.41).
-    @State private var keyboardUp = false
     @State private var sheetTab = ThumbTab.spaces
     @State private var sheetScope = AgentScope.all
     /// The Thumb sheet's first detent: as tall as its spaces and controls (TitleMenu measures it).
     @State private var sheetFit: CGFloat = 420
-    @State private var paletteOpen = false
-    /// The eye button's sheet: every agent of the shown session.
-    @State private var agentsOpen = false
+    /// The panes button's list, in place of the page: the space's panes, then its agents.
+    @State private var panesOpen = false
     /// The queue tray's sheet, in Orchestrator mode.
     @State private var queueOpen = false
     /// What the title menu asked for, presented once its sheet has closed.
@@ -41,16 +38,21 @@ struct SpaceCarousel: View {
             let landscape = geo.size.width > geo.size.height
             let pages = self.pages
             let panes = pages.panes
-            let dots = Dots(kinds: pages.dotKinds, current: pages.index(of: page), trayNeedsYou: trayNeedsYou(pages.tray))
             let spacesMode = showsPages
             VStack(spacing: 0) {
-                topBar(pages: pages, dots: dots, landscape: landscape)
-                // The sheet lies over the pages and the dots bar, so moving it moves neither. Its header never leaves the
-                // screen, so while a pane is pinned the pages and the dots bar end above it and it covers no control.
+                topBar(pages: pages)
+                // The sheet lies over the pages, so moving it moves none. Its header never leaves the screen, so while a
+                // pane is pinned the pages end above it and it covers no control.
                 ZStack(alignment: .bottom) {
                     VStack(spacing: 0) {
-                        if model.mode == WindowMode.agents {
-                            ModeBody(mode: model.mode)
+                        if panesOpen {
+                            PanesList(model: model, panes: panes, shown: shownPane(pages: pages)) { id in
+                                Log.info("panes list: open \(id)")
+                                panesOpen = false
+                                if let space = model.activeSpace { model.focus(space: space.id, pane: id) }
+                            } done: {
+                                panesOpen = false
+                            }
                         } else if model.mode == WindowMode.orchestrator && model.activeSpace == nil {
                             NoOrchestrator(model: model)
                         } else if panes.isEmpty && pages.tray.isEmpty {
@@ -68,18 +70,14 @@ struct SpaceCarousel: View {
                             }
                             .tabViewStyle(.page(indexDisplayMode: .never))
                         }
-                        // Orchestrator mode has no page handle, so the composer sits on the home indicator.
-                        if !landscape && !keyboardUp && !orchestratorMode {
-                            pageHandle(pages: pages, dots: dots, spacesMode: spacesMode)
-                        }
                     }
-                    .overlay { floatButton(pages: pages, landscape: landscape) }
+                    .overlay { if !panesOpen { floatButton(pages: pages, landscape: landscape) } }
                     // Voice mode shrunk floats over whichever pane is showing.
                     .overlay(alignment: .top) {
                         if model.voice.stage != .off, model.voice.layout == .pill { VoicePill(model: model).padding(.top, 6) }
                     }
-                    .padding(.bottom, spacesMode && !orchestratorMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
-                    if spacesMode, !orchestratorMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
+                    .padding(.bottom, !panesOpen && spacesMode && !orchestratorMode && model.activeSpace.flatMap { model.sheet(in: $0.id) } != nil ? PinSheetView<EmptyView>.headerHeight : 0)
+                    if !panesOpen, spacesMode, !orchestratorMode, let space = model.activeSpace, let sheet = model.sheet(in: space.id),
                        let pane = space.allPanes.first(where: { $0.id == sheet.pane }) {
                         PinSheetView(model: model, space: space, sheet: sheet, pane: pane) { kindView($0) }
                     }
@@ -99,7 +97,15 @@ struct SpaceCarousel: View {
                 if let chat { page = model.orchestratorPage.flatMap { pages.pageIDs.contains($0) ? $0 : nil } ?? chat }
             }
             .onChange(of: shownPageName(pages: pages), initial: true) { _, name in Log.info("page name: \(name ?? "none")") }
+            .onChange(of: panesOpen) { _, open in Log.info("panes list \(open ? "open" : "closed"): \(panes.count) panes") }
         }
+        // Another mode or space shows its pages, never the list.
+        // Back in Spaces, the page the space showed last.
+        .onChange(of: model.mode) { _, _ in
+            panesOpen = false
+            if !orchestratorMode { follow(model.activeSpace?.focus) }
+        }
+        .onChange(of: model.activeSpace?.id) { _, _ in panesOpen = false }
         // Orchestrator mode's pages are the phone's own: no other client's focus moves them.
         .onChange(of: model.activeSpace?.focus, initial: true) { _, focus in if !orchestratorMode { follow(focus) } }
         .onChange(of: model.activeSpace?.id) { _, _ in if !orchestratorMode { follow(model.activeSpace?.focus) } }
@@ -119,11 +125,9 @@ struct SpaceCarousel: View {
         }
         .task { await driveFromEnvironment() }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-            keyboardUp = true
             let top = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.minY ?? 0
             Log.info("keyboard up, top \(Int(top.rounded()))")
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
         .sheet(isPresented: $settingsOpen) {
             SettingsView(model: model, servers: servers, tab: $settingsTab, project: $settingsProject)
         }
@@ -134,14 +138,7 @@ struct SpaceCarousel: View {
             Text(model.menuError ?? "")
         }
         .sheet(isPresented: $newSpaceOpen) { NewSpaceSheet(model: model) }
-        .sheet(isPresented: $paletteOpen) {
-            CommandPaletteSheet(model: model) { request in
-                queued = request
-                paletteOpen = false
-            }
-        }
         .onChange(of: titleOpen) { _, open in presentQueued(whenClosed: !open) }
-        .onChange(of: paletteOpen) { _, open in presentQueued(whenClosed: !open) }
         .alert("Rename space", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: Binding(get: { renaming?.name ?? "" }, set: { renaming?.name = $0 }))
                 .accessibilityIdentifier("rename field")
@@ -299,15 +296,28 @@ struct SpaceCarousel: View {
     private var orchestratorMode: Bool { model.mode == WindowMode.orchestrator }
 
     /// Whether the body shows a space's pages: Spaces mode's space, or the orchestrator's space in Orchestrator mode.
-    private var showsPages: Bool { model.mode != WindowMode.agents && model.activeSpace != nil }
+    private var showsPages: Bool { model.activeSpace != nil }
+
+    /// The page on screen: the pane open in place on the backgrounded panes' page, else the page's pane.
+    private func shownPane(pages: Pages) -> String? {
+        let shown = pages.pageIDs.contains(page ?? "") ? page : pages.pageIDs.first
+        return shown == Pages.trayID ? openTray : shown
+    }
 
     private func trayNeedsYou(_ tray: [(id: String, kind: PaneKind)]) -> Bool {
         tray.contains { if case .needsYou = model.paneStatus($0.id) { true } else { false } }
     }
 
-    private func topBar(pages: Pages, dots: Dots, landscape: Bool) -> some View {
+    private func topBar(pages: Pages) -> some View {
         let panes = pages.panes
         let spacesMode = showsPages
+        let ids = spacesMode ? pages.pageIDs : []
+        let index = pages.index(of: page)
+        let step = { (delta: Int) in
+            let target = index + delta
+            Log.info("top bar: swipe \(delta > 0 ? "left" : "right"), page \(ids.indices.contains(target) ? ids[target] : "none")")
+            if ids.indices.contains(target) { go(ids[target]) }
+        }
         return HStack(alignment: .titleRow) {
             TitleButton(model: model, open: $titleOpen, pageName: shownPageName(pages: pages), detail: orchestratorDetail(pages: pages))
                 // The space switcher is a sheet, not a popover: a popover is as tall as its content and clips it, so a
@@ -323,49 +333,29 @@ struct SpaceCarousel: View {
                 // Leaves the bar's buttons on the right uncovered.
                 .frame(maxWidth: 240, alignment: .leading)
             Spacer()
-            // Left of the right-hand group, so the dots going in another mode move no control.
-            if landscape && spacesMode && !orchestratorMode && dots.kinds.count > 1 {
-                dots
-            }
-            // Orchestrator mode is the one orchestrator: no agents sheet; its queue tray takes the eye's slot, and with no
-            // Queue pane in the orchestrator's space the slot is gone.
-            if orchestratorMode {
-                if let queue = model.orchestratorQueue {
-                    QueueButton(queue: queue) {
-                        Log.info("queue sheet: tray tapped, \(queue.count) waiting")
-                        queueOpen = true
-                    }
-                    .frame(width: 28)
-                    .sheet(isPresented: $queueOpen) {
-                        QueueSheet(queue: model.orchestratorQueue ?? queue) { item in
-                            queueOpen = false
-                            model.ask(about: item)
-                        }
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                    }
-                }
-            } else {
-                AgentsButton(needsYou: model.sessionNeedsYou > 0) {
-                    Log.info("agents sheet: eye tapped, \(model.sessionNeedsYou) waiting")
-                    agentsOpen = true
+            // Orchestrator mode's queue tray, with no Queue pane in the orchestrator's space the slot is gone.
+            if orchestratorMode, let queue = model.orchestratorQueue {
+                QueueButton(queue: queue) {
+                    Log.info("queue sheet: tray tapped, \(queue.count) waiting")
+                    queueOpen = true
                 }
                 .frame(width: 28)
-                .sheet(isPresented: $agentsOpen) {
-                    AgentsList(model: model, scope: .all, place: "agents sheet") { agentsOpen = false }
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
+                .sheet(isPresented: $queueOpen) {
+                    QueueSheet(queue: model.orchestratorQueue ?? queue) { item in
+                        queueOpen = false
+                        model.ask(about: item)
+                    }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
                 }
             }
-            // Orchestrator mode takes the whole screen for the orchestrator: no palette, and no empty slot for it.
-            if !orchestratorMode {
-                Button { paletteOpen = true } label: { Image(systemName: "magnifyingglass") }
-                    .accessibilityLabel("Search")
-                    .accessibilityIdentifier("search")
+            PanesButton(count: panes.count, needsYou: model.sessionNeedsYou > 0, open: panesOpen) {
+                Log.info("panes button: \(panesOpen ? "close" : "open"), \(model.sessionNeedsYou) waiting")
+                panesOpen.toggle()
             }
+            .disabled(!spacesMode)
             // One ⋯ holds the pane's actions and Settings. The pane's logo and status dot are in the
-            // agent header below, once. With no pane to act on (none in the space, or another mode
-            // in place of the pages), the ⋯ holds Settings alone.
+            // agent header below, once. With no pane to act on, the ⋯ holds Settings alone.
             // Orchestrator mode is for talking to the orchestrator: no pane to split, change or close, so Settings alone.
             if spacesMode, !orchestratorMode, let current = panes.first(where: { $0.id == page }) ?? panes.first {
                 PaneMenu(model: model, pane: current.id, kind: current.kind) { openSettings(.global) }
@@ -382,50 +372,29 @@ struct SpaceCarousel: View {
         .padding(.vertical, 6)
         // From the top, so the lines under the title in each mode never move the title row or its buttons.
         .frame(minHeight: 50, alignment: .top)
-    }
-
-    /// The bar under the composer: the page dots on the swipe tint, full width and flush with the
-    /// bottom edge. It sits outside the pager, so a horizontal scroller in a page can never take
-    /// its drag: a drag across it changes page, and a swipe up opens the sheet on the tab last
-    /// used, a long one on Agents. The composer above wears the same tint, since a swipe there
-    /// changes page too.
-    /// In Agents mode the bar keeps its place and its swipe up, with no dots and no page to change. Orchestrator mode has
-    /// no bar.
-    private func pageHandle(pages: Pages, dots: Dots, spacesMode: Bool) -> some View {
-        let ids = spacesMode ? pages.pageIDs : []
-        let index = spacesMode ? pages.index(of: page) : 0
-        let prev = index > 0 ? index - 1 : nil
-        let next = index + 1 < ids.count ? index + 1 : nil
-        return Group {
-            if ids.count > 1 { dots } else { Color.clear.frame(height: 7) }
-        }
-        .frame(maxWidth: .infinity, minHeight: 40)
-        .background(SwipeArea.tint.ignoresSafeArea(edges: .bottom))
+        // A drag across the bar changes page: a web page can take every drag inside it, so the bar is the strip it can
+        // never take.
         .contentShape(Rectangle())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("page handle")
-        .accessibilityAction(named: "Open spaces and agents") { titleOpen = true }
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: if let next { go(ids[next]) }
-            case .decrement: if let prev { go(ids[prev]) }
-            @unknown default: break
-            }
-        }
-        .gesture(DragGesture(minimumDistance: Self.shortSwipe).onEnded { drag in
-            let across = drag.translation.width, up = -drag.translation.height
-            if abs(across) > abs(up) {
-                guard abs(across) > Self.sideSwipe else { return }
-                let target = across < 0 ? next : prev
-                Log.info("page handle: swipe \(across < 0 ? "left" : "right"), page \(target.map { ids[$0] } ?? "none")")
-                if let target { go(ids[target]) }
-                return
-            }
-            guard up > 0 else { return }
-            if up > Self.longSwipe { sheetTab = .agents }
-            Log.info("page handle: swipe up \(Int(up)) pt, sheet on \(sheetTab)")
-            titleOpen = true
+        .simultaneousGesture(DragGesture(minimumDistance: Self.sideSwipe).onEnded { drag in
+            let across = drag.translation.width
+            guard abs(across) > abs(drag.translation.height), abs(across) > Self.sideSwipe else { return }
+            step(across < 0 ? 1 : -1)
         })
+        // The pages' positions for a check, and VoiceOver's swipe up and down through them.
+        .background {
+            Color.clear
+                .accessibilityElement()
+                .accessibilityLabel("Pages")
+                .accessibilityValue(pages.positions(current: index, trayNeedsYou: trayNeedsYou(pages.tray)))
+                .accessibilityIdentifier("pages")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: step(1)
+                    case .decrement: step(-1)
+                    @unknown default: break
+                    }
+                }
+        }
     }
 
     private func go(_ id: String) { withAnimation { page = id } }
@@ -460,10 +429,7 @@ struct SpaceCarousel: View {
         }
     }
 
-    /// A swipe up this far from the dots bar opens the sheet, and one this far opens the Agents tab;
-    /// a swipe sideways this far across the pager changes page.
-    private static let shortSwipe: CGFloat = 24
-    private static let longSwipe: CGFloat = 160
+    /// A swipe sideways this far across the top bar changes page.
     private static let sideSwipe: CGFloat = 24
 
     private func openSettings(_ tab: SettingsTab) {
@@ -655,43 +621,41 @@ struct SpaceCarousel: View {
     }
 }
 
-/// The eye at the top: no text and no number, and one orange dot above it only while an agent in
-/// the shown session needs the person. A tap opens the agent sheet.
-private struct AgentsButton: View {
+/// The panes button at the top: two squares with the number of panes on a grey badge, one orange dot under it while an
+/// agent in the shown session needs the person, filled blue while the panes list is open. A tap opens or closes the list.
+private struct PanesButton: View {
+    let count: Int
     let needsYou: Bool
+    let open: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "eye")
+            Image(systemName: "square.on.square")
+                .font(.body.weight(.medium))
+                .foregroundStyle(open ? Color.white : Color.accentColor)
+                .frame(width: 34, height: 34)
+                .background(open ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(alignment: .topTrailing) {
+                    Text("\(count)")
+                        .font(.caption2.weight(.bold).monospacedDigit())
+                        .foregroundStyle(open ? Color.accentColor : Color(.systemBackground))
+                        .frame(minWidth: 15, minHeight: 15)
+                        .background(open ? Color.white : Color(.systemGray), in: Capsule())
+                        .offset(x: 3, y: -3)
+                        .opacity(count > 0 ? 1 : 0)
+                }
+                .overlay(alignment: .bottomTrailing) {
                     Circle().fill(Color.orange).frame(width: 7, height: 7)
-                        .offset(x: 4, y: -4)
+                        .offset(x: 1, y: 1)
                         .opacity(needsYou ? 1 : 0)
                 }
         }
-        .accessibilityLabel("Agents")
-        .accessibilityValue(needsYou ? "needs you" : "")
-        .accessibilityIdentifier("agents")
-    }
-}
-
-/// What Agents mode shows in place of the pages until that mode draws its own surface.
-private struct ModeBody: View {
-    let mode: String
-
-    var body: some View {
-        let entry = WindowMode.entry(mode)
-        VStack(spacing: 6) {
-            Image(systemName: entry.symbol).font(.system(size: 28)).foregroundStyle(.secondary)
-            Text(entry.title).font(.headline)
-            Text("Every agent of the session will be here.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("mode body")
+        .buttonStyle(.plain)
+        .accessibilityLabel("Panes")
+        .accessibilityValue("\(count) panes\(needsYou ? ", needs you" : "")\(open ? ", open" : "")")
+        .accessibilityAddTraits(open ? .isSelected : [])
+        .accessibilityIdentifier("panes")
     }
 }
 
@@ -872,8 +836,11 @@ private struct Pages {
     var panes: [(id: String, kind: PaneKind)] { grid + popped }
     var count: Int { panes.count + (tray.isEmpty ? 0 : 1) }
 
-    var dotKinds: [Dots.Kind] {
-        grid.map { _ in .grid } + popped.map { _ in .popped } + (tray.isEmpty ? [] : [.tray])
+    /// Each page's place in order, `grid`, `popped` or `tray`, the current one in brackets and the tray's needs-you mark
+    /// as `tray!`: `grid [popped] tray!`.
+    func positions(current: Int, trayNeedsYou: Bool) -> String {
+        let kinds = grid.map { _ in "grid" } + popped.map { _ in "popped" } + (tray.isEmpty ? [] : [trayNeedsYou ? "tray!" : "tray"])
+        return kinds.enumerated().map { i, kind in i == current ? "[\(kind)]" : kind }.joined(separator: " ")
     }
 
     /// Every page's id in order, the tray page last.
@@ -927,7 +894,7 @@ private struct BackgroundedPage<Content: View>: View {
 }
 
 /// The icon a pane of this kind shows wherever a phone lists it.
-private func paneSymbol(_ kind: PaneKind) -> String {
+func paneSymbol(_ kind: PaneKind) -> String {
     switch kind {
     case .terminal: "terminal"
     case .agent: "bubble.left.and.text.bubble.right"
@@ -937,54 +904,8 @@ private func paneSymbol(_ kind: PaneKind) -> String {
     }
 }
 
-/// One mark per page: a filled dot for a grid pane, a ring for a popped-out one, and for the
-/// tray page a rounded square, which carries the needs-you badge when a backgrounded pane needs the person.
-private struct Dots: View {
-    enum Kind: String { case grid, popped, tray }
-
-    let kinds: [Kind]
-    let current: Int
-    let trayNeedsYou: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(kinds.enumerated()), id: \.offset) { i, kind in
-                mark(kind, selected: i == current)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityIdentifier("page dots")
-        .accessibilityLabel("Page \(current + 1) of \(kinds.count)")
-        .accessibilityValue(value)
-    }
-
-    /// Each page's mark in order, `grid`, `popped` or `tray`, the current one in brackets and the
-    /// tray's badge as `tray!`: `grid [popped] tray!`.
-    var value: String {
-        kinds.enumerated().map { i, kind in
-            let name = kind == .tray && trayNeedsYou ? "tray!" : kind.rawValue
-            return i == current ? "[\(name)]" : name
-        }.joined(separator: " ")
-    }
-
-    @ViewBuilder private func mark(_ kind: Kind, selected: Bool) -> some View {
-        let color = selected ? Color.primary : Color.secondary.opacity(0.35)
-        switch kind {
-        case .grid:
-            Circle().fill(color).frame(width: 7, height: 7)
-        case .popped:
-            Circle().strokeBorder(color, lineWidth: 1.5).frame(width: 7, height: 7)
-        case .tray:
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 7, height: 7)
-                .overlay(alignment: .topTrailing) {
-                    if trayNeedsYou { Circle().fill(Color.orange).frame(width: 6, height: 6).offset(x: 3, y: -3) }
-                }
-        }
-    }
-}
-
 /// The colour every area wears where a horizontal swipe changes the pane: the agent and terminal
-/// pages, the terminal's key row, the composer and the dots bar. A web page is not tinted: its
+/// pages, the terminal's key row and the composer. A web page is not tinted: its
 /// horizontal scrollers cannot be told from the rest of it.
 enum SwipeArea {
     static let tint = Color.primary.opacity(0.08)

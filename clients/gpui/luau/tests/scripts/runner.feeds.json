@@ -1,0 +1,108 @@
+[
+ {
+  "name": "runner.commands",
+  "params": {
+   "dir": "/Users/me/Projects/wheel"
+  },
+  "stale": false,
+  "value": {
+   "checks": {},
+   "dir": "/Aaaaa/aaaaaa/Aaaaaaaa/aaaaa",
+   "now": 0,
+   "runners": [
+    {
+     "command": "aaaa aaaaaa-aaaa-aa",
+     "confirm": null,
+     "desc": null,
+     "group": [],
+     "label": "hello",
+     "name": "hello",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    },
+    {
+     "command": "aaaa -A /Aaaaa/aaaaaa/Aaaaaaaa/aaaaa aaaaaa-aaaaaa",
+     "confirm": null,
+     "desc": null,
+     "group": [],
+     "label": "aaaaa: aaaaaa",
+     "name": "aaaaa: aaaaaa",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    },
+    {
+     "command": "aaaa -A /Aaaaa/aaaaaa/Aaaaaaaa/aaaaa aaaaaaa-aaaaaa",
+     "confirm": "Aaaaaaaa aaa aaaaaa: aaaaa aaaaaaaa aaa aaaaa aaaaaaa aaaa.",
+     "desc": null,
+     "group": [],
+     "label": "aaaaa: aaaaaaa aaaaaa",
+     "name": "aaaaa: aaaaaaa aaaaaa",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    },
+    {
+     "command": "aaaa -A /Aaaaa/aaaaaa/Aaaaaaaa/aaaaa aaaaaa-aaaaa",
+     "confirm": null,
+     "desc": null,
+     "group": [],
+     "label": "aaaaa: aaaaaa aaaaa",
+     "name": "aaaaa: aaaaaa aaaaa",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    },
+    {
+     "command": "aaaa -A /Aaaaa/aaaaaa/Aaaaaaaa/aaaaa aaaaaa-aaa",
+     "confirm": null,
+     "desc": null,
+     "group": [],
+     "label": "aaaaa: aaa aaaaaa",
+     "name": "aaaaa: aaa aaaaaa",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    },
+    {
+     "command": "aaaa -A /Aaaaa/aaaaaa/Aaaaaaaa/aaaaa aaaaaaa-aaaaaa-aaa",
+     "confirm": "Aaaaaaaa aaa aaaaaa: aaaaa aaaaaaaa aaa aaaaa aaaaaaa aaaa.",
+     "desc": null,
+     "group": [],
+     "label": "aaaaa: aaa aaaaaaa aaaaaa",
+     "name": "aaaaa: aaa aaaaaaa aaaaaa",
+     "origin": "project",
+     "status": false,
+     "worktree": false
+    }
+   ],
+   "runs": [
+    {
+     "ended": 1794494592,
+     "exit_code": 0,
+     "id": "1794494592866-aaaaa-37921-5",
+     "name": "hello",
+     "started": 1794494592,
+     "state": "exited"
+    },
+    {
+     "ended": 1793989166,
+     "exit_code": 0,
+     "id": "1793989166838-aaaaa-70814-0",
+     "name": "hello",
+     "started": 1793989166,
+     "state": "exited"
+    },
+    {
+     "ended": 1793984100,
+     "exit_code": 0,
+     "id": "1793984099716-aaaaa-35032-0",
+     "name": "hello",
+     "started": 1793984099,
+     "state": "exited"
+    }
+   ]
+  }
+ }
+]

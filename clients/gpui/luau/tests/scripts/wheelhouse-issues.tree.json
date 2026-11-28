@@ -1,0 +1,768 @@
+{
+  "align" : "stretch",
+  "children" : [
+    {
+      "align" : "start",
+      "children" : [
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "action" : {
+                "key" : "state",
+                "type" : "list.filter",
+                "value" : "open"
+              },
+              "child" : {
+                "align" : "start",
+                "children" : [
+                  {
+                    "component" : "Text",
+                    "modifiers" : [
+                      {
+                        "font" : {
+                          "design" : "default",
+                          "size" : 20,
+                          "weight" : "semibold"
+                        }
+                      },
+                      {
+                        "foregroundStyle" : "secondary"
+                      },
+                      {
+                        "monospacedDigit" : true
+                      }
+                    ],
+                    "text" : "0"
+                  },
+                  {
+                    "component" : "Text",
+                    "modifiers" : [
+                      {
+                        "font" : {
+                          "design" : "default",
+                          "size" : 11,
+                          "weight" : "regular"
+                        }
+                      },
+                      {
+                        "foregroundStyle" : "secondary"
+                      },
+                      {
+                        "lineLimit" : 1
+                      }
+                    ],
+                    "text" : "Open"
+                  }
+                ],
+                "component" : "Column",
+                "spacing" : 2
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "pointerStyle" : "link"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "variant" : "borderless"
+            },
+            {
+              "action" : {
+                "key" : "state",
+                "type" : "list.filter",
+                "value" : "closed"
+              },
+              "child" : {
+                "align" : "start",
+                "children" : [
+                  {
+                    "component" : "Text",
+                    "modifiers" : [
+                      {
+                        "font" : {
+                          "design" : "default",
+                          "size" : 20,
+                          "weight" : "semibold"
+                        }
+                      },
+                      {
+                        "foregroundStyle" : "secondary"
+                      },
+                      {
+                        "monospacedDigit" : true
+                      }
+                    ],
+                    "text" : "0"
+                  },
+                  {
+                    "component" : "Text",
+                    "modifiers" : [
+                      {
+                        "font" : {
+                          "design" : "default",
+                          "size" : 11,
+                          "weight" : "regular"
+                        }
+                      },
+                      {
+                        "foregroundStyle" : "secondary"
+                      },
+                      {
+                        "lineLimit" : 1
+                      }
+                    ],
+                    "text" : "Closed"
+                  }
+                ],
+                "component" : "Column",
+                "spacing" : 2
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity"
+                  }
+                },
+                {
+                  "padding" : [
+                    7,
+                    8
+                  ]
+                },
+                {
+                  "overlay" : {
+                    "cornerRadius" : 8,
+                    "stroke" : "separator"
+                  }
+                },
+                {
+                  "pointerStyle" : "link"
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "variant" : "borderless"
+            }
+          ],
+          "component" : "Row",
+          "spacing" : 8
+        },
+        {
+          "align" : "stretch",
+          "component" : "Column",
+          "modifiers" : [
+            {
+              "frame" : {
+                "alignment" : "center",
+                "height" : 56
+              }
+            }
+          ],
+          "spacing" : 0
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "TextField",
+              "label" : "New issue title",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity",
+                    "minWidth" : 120
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "set_draft"
+              },
+              "value" : "",
+              "variant" : "shortText"
+            },
+            {
+              "action" : {
+                "type" : "create_issue"
+              },
+              "child" : {
+                "component" : "Text",
+                "modifiers" : [
+                  {
+                    "frame" : {
+                      "minWidth" : 56
+                    }
+                  }
+                ],
+                "text" : "Create"
+              },
+              "component" : "Button",
+              "modifiers" : [
+                {
+                  "disabled" : true
+                },
+                {
+                  "help" : "Open this issue on GitHub"
+                },
+                {
+                  "accessibilityLabel" : "Open this issue on GitHub"
+                }
+              ]
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                0,
+                0,
+                12,
+                0
+              ]
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "component" : "TextField",
+              "label" : "Search",
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "maxWidth" : "infinity",
+                    "minWidth" : 120
+                  }
+                },
+                {
+                  "frame" : {
+                    "alignment" : "leading",
+                    "maxWidth" : "infinity"
+                  }
+                }
+              ],
+              "on_change" : {
+                "type" : "list.query"
+              },
+              "value" : "",
+              "variant" : "shortText"
+            }
+          ],
+          "component" : "Row",
+          "modifiers" : [
+            {
+              "padding" : [
+                8,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 8
+        },
+        {
+          "align" : "center",
+          "children" : [
+            {
+              "align" : "center",
+              "children" : [
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any state ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "state",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "open  0",
+                          "on_change" : {
+                            "item" : "open",
+                            "key" : "state",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "CheckBox",
+                          "label" : "closed  0",
+                          "on_change" : {
+                            "item" : "closed",
+                            "key" : "state",
+                            "type" : "list.toggle"
+                          },
+                          "value" : false
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any label ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "label",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any assignee ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "who",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "children" : [
+                    {
+                      "component" : "Text",
+                      "modifiers" : [
+                        {
+                          "font" : {
+                            "design" : "default",
+                            "size" : 12,
+                            "weight" : "regular"
+                          }
+                        }
+                      ],
+                      "text" : "Any author ⌄"
+                    },
+                    {
+                      "align" : "start",
+                      "children" : [
+                        {
+                          "component" : "CheckBox",
+                          "label" : "Is not",
+                          "on_change" : {
+                            "key" : "author",
+                            "type" : "list.not"
+                          },
+                          "value" : false
+                        },
+                        {
+                          "component" : "Divider"
+                        }
+                      ],
+                      "component" : "Column",
+                      "spacing" : 6
+                    }
+                  ],
+                  "component" : "Popover"
+                },
+                {
+                  "action" : {
+                    "type" : "list.clear"
+                  },
+                  "child" : {
+                    "component" : "Text",
+                    "text" : "Clear"
+                  },
+                  "component" : "Button",
+                  "modifiers" : [
+                    {
+                      "padding" : [
+                        2,
+                        5
+                      ]
+                    },
+                    {
+                      "disabled" : true
+                    },
+                    {
+                      "opacity" : 0
+                    }
+                  ],
+                  "variant" : "borderless"
+                }
+              ],
+              "component" : "Row",
+              "spacing" : 6
+            },
+            {
+              "children" : [
+                {
+                  "component" : "Text",
+                  "modifiers" : [
+                    {
+                      "font" : {
+                        "design" : "default",
+                        "size" : 12,
+                        "weight" : "regular"
+                      }
+                    },
+                    {
+                      "monospacedDigit" : true
+                    }
+                  ],
+                  "text" : "Actions ⌄"
+                },
+                {
+                  "align" : "start",
+                  "children" : [
+                    {
+                      "action" : {
+                        "copy" : {
+                          "text" : ""
+                        }
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Copy IDs"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "disabled" : true
+                        },
+                        {
+                          "help" : "Copy the 0 listed issue numbers, space separated"
+                        },
+                        {
+                          "accessibilityLabel" : "Copy the 0 listed issue numbers, space separated"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    },
+                    {
+                      "action" : {
+                        "script" : "iterate",
+                        "type" : "list.run"
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Iterate  0"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "disabled" : true
+                        },
+                        {
+                          "help" : "Iterate over the 0 listed issues"
+                        },
+                        {
+                          "accessibilityLabel" : "Iterate over the 0 listed issues"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    },
+                    {
+                      "action" : {
+                        "script" : "swarm",
+                        "type" : "list.run"
+                      },
+                      "child" : {
+                        "component" : "Text",
+                        "text" : "Swarm  0"
+                      },
+                      "component" : "Button",
+                      "modifiers" : [
+                        {
+                          "padding" : [
+                            2,
+                            5
+                          ]
+                        },
+                        {
+                          "disabled" : true
+                        },
+                        {
+                          "help" : "Swarm over the 0 listed issues"
+                        },
+                        {
+                          "accessibilityLabel" : "Swarm over the 0 listed issues"
+                        }
+                      ],
+                      "variant" : "borderless"
+                    }
+                  ],
+                  "component" : "Column",
+                  "spacing" : 6
+                }
+              ],
+              "component" : "Popover"
+            }
+          ],
+          "component" : "Row",
+          "justify" : "spaceBetween",
+          "modifiers" : [
+            {
+              "padding" : [
+                4,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "frame" : {
+                "maxWidth" : "infinity"
+              }
+            }
+          ],
+          "spacing" : 16
+        },
+        {
+          "align" : "start",
+          "children" : [
+            {
+              "columns" : [
+                {
+                  "key" : "number",
+                  "label" : "#",
+                  "sortable" : true,
+                  "width" : 48
+                },
+                {
+                  "key" : "title",
+                  "label" : "Title",
+                  "sortable" : true,
+                  "width" : "flex"
+                },
+                {
+                  "key" : "state",
+                  "label" : "State",
+                  "sortable" : true,
+                  "width" : 56
+                },
+                {
+                  "key" : "labels",
+                  "label" : "Labels",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 100
+                },
+                {
+                  "key" : "who",
+                  "label" : "Assignee",
+                  "sortable" : true,
+                  "wide" : true,
+                  "width" : 80
+                },
+                {
+                  "key" : "author",
+                  "label" : "Author",
+                  "sortable" : true,
+                  "width" : 80
+                },
+                {
+                  "key" : "updated",
+                  "label" : "Updated",
+                  "sortable" : true,
+                  "width" : 84
+                }
+              ],
+              "component" : "Table",
+              "empty" : "No issues on GitHub.",
+              "foldAction" : {
+                "type" : "select_issue"
+              },
+              "modifiers" : [
+                {
+                  "frame" : {
+                    "alignment" : "top",
+                    "height" : 130
+                  }
+                },
+                {
+                  "clipShape" : {
+                    "cornerRadius" : 0
+                  }
+                }
+              ],
+              "rowAction" : {
+                "type" : "select_issue"
+              },
+              "sections" : [
+                {
+                  "count" : 0,
+                  "rows" : [
+
+                  ],
+                  "title" : ""
+                }
+              ],
+              "selectAction" : {
+                "type" : "list.select"
+              },
+              "selected" : [
+
+              ],
+              "sort" : {
+                "asc" : false,
+                "key" : "updated"
+              },
+              "sortAction" : {
+                "type" : "list.sort"
+              }
+            }
+          ],
+          "component" : "Column",
+          "spacing" : 8
+        },
+        {
+          "component" : "Column",
+          "spacing" : 0
+        },
+        {
+          "component" : "Modal",
+          "dismissAction" : {
+            "type" : "close_detail"
+          },
+          "presented" : false
+        }
+      ],
+      "component" : "Column",
+      "modifiers" : [
+        {
+          "padding" : [
+            18,
+            16,
+            48,
+            16
+          ]
+        }
+      ],
+      "spacing" : 0
+    }
+  ],
+  "component" : "Column"
+}

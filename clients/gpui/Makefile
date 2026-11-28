@@ -24,7 +24,7 @@ build-check:
 	python3 tools/build.py release --check
 
 test:
-	cargo +stable test --manifest-path Cargo.toml -p wheel-gpui-core
+	cargo +stable test --manifest-path Cargo.toml -p wheel-gpui-core -p wheel-luau
 
 test-ui:
 	cargo +stable test --manifest-path Cargo.toml --lib -p wheel-gpui
