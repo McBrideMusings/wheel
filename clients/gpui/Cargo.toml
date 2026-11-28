@@ -1,7 +1,7 @@
 # A Rust and GPUI client for wheeld. Its own workspace, so the daemon's workspace
 # and Cargo.lock never pull in GPUI (ADR-0020: the server depends on no client).
 [workspace]
-members = [".", "check", "core"]
+members = [".", "check", "core", "luau"]
 default-members = ["."]
 
 [package]

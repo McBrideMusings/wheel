@@ -4077,6 +4077,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "lua-src"
+version = "551.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc850974ab58b3b4bb65ac2415a077861a1c16b087629ee01cd04ccb9c82be61"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "luajit-src"
+version = "210.7.5+63c8f1a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a98fb6f037124098f4c2283286a0431a4bb0b1d243b90ca1a4d34dd268ea5b96"
+dependencies = [
+ "cc",
+ "which 8.0.6",
+]
+
+[[package]]
+name = "luau0-src"
+version = "0.24.1+luau748"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab2f621c6f730cd6bce953ba86144e1c3acd1e7b4f0032bfac14d31ea2c9fb34"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "lyon"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4219,6 +4247,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
+name = "maybe-dangling"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59dbb09ed53f8e4f314e353dc6c1853ae5b4c480a668a422657804a544ea9f65"
+
+[[package]]
 name = "maybe-rayon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4335,6 +4369,37 @@ dependencies = [
  "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mlua"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9d9ed6deb2d17dbd89b71140f7fb8c6a3e5d897cd1bbc82ffaec1658bed6983"
+dependencies = [
+ "bstr",
+ "either",
+ "libc",
+ "maybe-dangling",
+ "mlua-sys",
+ "num-traits",
+ "parking_lot",
+ "rustc-hash 2.1.3",
+]
+
+[[package]]
+name = "mlua-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8db86de232224cf3909104dd1a2b46eaf94f0f31e137dd15f1ff185a1e54a31f"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "lua-src",
+ "luajit-src",
+ "luau0-src",
+ "pkg-config",
 ]
 
 [[package]]
@@ -4862,6 +4927,16 @@ dependencies = [
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-core-video",
+]
+
+[[package]]
+name = "objc2-core-text"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
+dependencies = [
+ "bitflags 2.13.0",
+ "objc2-core-foundation",
 ]
 
 [[package]]
@@ -8954,6 +9029,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wheel-luau"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "mlua",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "serde_json",
+]
+
+[[package]]
 name = "wheel-proto"
 version = "0.1.0"
 dependencies = [
@@ -8988,6 +9077,15 @@ dependencies = [
  "home",
  "rustix 0.38.44",
  "winsafe",
+]
+
+[[package]]
+name = "which"
+version = "8.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bae2f2b2b816647a1cab1acc91f5bd20812d53cb344382635ec2181940c8034f"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

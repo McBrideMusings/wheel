@@ -1,0 +1,19 @@
+[package]
+name = "wheel-luau"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "wheel_luau"
+
+[dependencies]
+base64 = "0.22"
+# Luau 0.748 compiled from source (luau0-src 0.24.1+luau748), interpreter only: no `luau-jit`.
+mlua = { version = "0.12.3", features = ["luau", "vendored"] }
+serde_json = "1"
+# measureText: the system font the Canvas `font` names, measured by CoreText as Canvas 2D does.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSAttributedString", "NSDictionary", "NSObjCRuntime"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSFont", "NSFontDescriptor", "NSAttributedString"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFAttributedString", "CFString", "CFDictionary", "CFCGTypes"] }
+objc2-core-text = { version = "0.3", default-features = false, features = ["std", "CTFont", "CTLine"] }
