@@ -301,7 +301,7 @@ impl Draw<'_> {
             }
             "Unsupported" | "AudioPlayer" | "Map" => {
                 let name = match n.component.as_str() { "Unsupported" => n.string("name").unwrap_or("?").to_owned(), other => other.to_owned() };
-                // hack: a Map draws as unsupported until MKMapView is ported (wheel-4d1o.9).
+                // hack: a Map draws as unsupported until MKMapView is ported with the embeds (wheel-4d1o.5).
                 div().flex().flex_row().items_center().gap(px(4.)).p(px(6.)).rounded(px(6.)).border_1().border_dashed().border_color(rgba(0xffffff46)).text_size(px(12.)).text_color(rgba(SECONDARY))
                     .children(title::symbol(self.symbols, "questionmark.square.dashed", 12., SECONDARY >> 8))
                     .child(format!("Unsupported component: {name}"))

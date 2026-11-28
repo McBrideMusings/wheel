@@ -191,6 +191,37 @@ def fixture():
             '    return ui.Column({ ui.Text("Count " .. state.count), ui.Button{ child = ui.Text("Add"), action = { type = "add" } } })\n'
             'end\n'
             'return { init = init, update = update, view = view }\n')
+        # A plugin whose script owns its dialogs and its Table's selection, as SwiftUI leaves them
+        # to the page: buttons present an Alert and a ConfirmationDialog, their buttons and
+        # dismissAction close them, and the Table's selectAction and rowAction land in the state.
+        (root / 'plugins/dialogs/panes').mkdir(parents=True)
+        (root / 'plugins/dialogs/wheel-plugin.toml').write_text('[plugin]\nid = "dialogs"\nversion = "0.1.0"\n\n[[pane]]\nid = "dialogs"\ntitle = "Dialogs"\nscript = "panes/dialogs.luau"\n')
+        (root / 'plugins/dialogs/panes/dialogs.luau').write_text(
+            'local function init(previous) return previous or { alert = false, dialog = false, selected = { "a" } } end\n'
+            'local function update(state, msg)\n'
+            '    if msg.type == "show" then state[msg.which] = true\n'
+            '    elseif msg.type == "chose" then state.chose = msg.button\n'
+            '    elseif msg.type == "dismiss" then state[msg.which] = false\n'
+            '    elseif msg.type == "select" then state.selected = msg.ids\n'
+            '    elseif msg.type == "open" then state.opened = msg.id end\n'
+            '    return state\n'
+            'end\n'
+            'local function row(id, title) return { id = id, path = id, depth = 0, cells = { { key = "title", text = title } } } end\n'
+            'local function view(state, data)\n'
+            '    return ui.Column({\n'
+            '        ui.Button{ child = ui.Text("Show alert"), action = { type = "show", which = "alert" } },\n'
+            '        ui.Button{ child = ui.Text("Show dialog"), action = { type = "show", which = "dialog" } },\n'
+            '        ui.Alert{ title = "Delete?", message = "This cannot be undone.", presented = state.alert,\n'
+            '            buttons = { { title = "Delete", role = "destructive", action = { type = "chose", button = "delete" } }, { title = "Cancel", role = "cancel", action = { type = "chose", button = "cancel" } } },\n'
+            '            dismissAction = { type = "dismiss", which = "alert" } },\n'
+            '        ui.ConfirmationDialog{ title = "Discard?", presented = state.dialog,\n'
+            '            buttons = { { title = "Discard", role = "destructive", action = { type = "chose", button = "discard" } } },\n'
+            '            dismissAction = { type = "dismiss", which = "dialog" } },\n'
+            '        ui.Table{ columns = { { key = "title", label = "Title" } }, sections = { { title = "", count = 3, rows = { row("a", "Alpha"), row("b", "Beta"), row("c", "Gamma") } } },\n'
+            '            selected = state.selected, selectAction = { type = "select" }, rowAction = { type = "open" }, modifiers = { { frame = { height = 120 } } } },\n'
+            '    })\n'
+            'end\n'
+            'return { init = init, update = update, view = view }\n')
         # Two plugins whose script fails to load: one with a long error, one with a short one.
         for name, source in [('errlong1', 'error("' + 'a very long script failure, '*12 + '")\n'), ('errshort', 'error("x")\n')]:
             (root / f'plugins/{name}/panes').mkdir(parents=True)

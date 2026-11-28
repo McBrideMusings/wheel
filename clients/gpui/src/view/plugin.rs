@@ -301,7 +301,7 @@ impl Client {
     }
 
     /// Opens or closes Modal sheet or Popover `id`, which SwiftUI keeps in the view's own state.
-    pub(super) fn plugin_toggle_open(&mut self, pane: &str, id: &str) {
+    pub fn plugin_toggle_open(&mut self, pane: &str, id: &str) {
         if let Some(h) = self.plugin_previews.get_mut(pane) && !h.open.remove(id) {
             h.open.insert(id.to_owned());
         }

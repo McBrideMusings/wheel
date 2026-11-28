@@ -5653,6 +5653,8 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
         let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
         ensure!(bytes > 5000, "the {name} plugin pane's picture is missing: {} ({bytes} bytes)", png.display());
         let mut entry = json!({"components": components(&seen).len(), "texts": texts(&seen).into_iter().take(6).collect::<Vec<_>>(), "png_bytes": bytes});
+        // GPUI's own drawing of the pane, before the steps below move the bridge's view away from its first state.
+        entry["gpui_preview"] = plugin_beside_bridge(&mut connection, &mut layouts, window, &native, &output, &pane, &name, cx).await?;
         if name == "beads" {
             // The Table fills the pane, so the pane has no ScrollView of its own to scroll.
             ensure!(seen["fills"] == true && seen["scroll"].is_null(), "the Beads Table should fill its pane: fills {} scroll {}", seen["fills"], seen["scroll"]);
@@ -5884,10 +5886,127 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
     ensure!(seen["restarts"].as_u64().unwrap_or(0) > restarts_before && texts(&seen).iter().any(|t| t == "Count 0") && seen["error"].is_null(),
         "the reload did not run the counter from the top: restarts {} texts {:?} error {}", seen["restarts"], texts(&seen), seen["error"]);
     report.insert("counter_reload".into(), json!({"restarts": seen["restarts"], "texts": texts(&seen)}));
+    // The fixture's `dialogs` plugin keeps its Alert's and ConfirmationDialog's `presented`, its Table's selection and the row it opened in its state.
+    let (ok, _, err) = run_pumped(&["pane", "kind", &pane, "plugin", "--plugin", "dialogs", "--plugin-pane", "dialogs"], &mut connection, &mut layouts, window, cx).await?;
+    ensure!(ok, "pane kind plugin dialogs: {err}");
+    for _ in 0..100 {
+        pump(&mut connection, 100, &mut layouts, window, cx).await?;
+        seen = state(&native);
+        if texts(&seen).iter().any(|t| t == "Show alert") {
+            break;
+        }
+    }
+    ensure!(texts(&seen).iter().any(|t| t == "Show alert"), "the dialogs pane never drew: error {} texts {:?}", seen["error"], texts(&seen));
+    report.insert("dialogs".into(), dialogs_in_gpui(&mut connection, &mut layouts, window, &native, &output, &pane, cx).await?);
     switch_session(window, first_session.as_deref().unwrap(), cx).await?;
     ensure!(shown(window, cx)? == (first_session.clone(), first_space.clone()), "clicking the first session after the plugin panes did not come back");
     wait(&native, "the first space's views shown after the plugin panes", |st| native_panes.iter().all(|(id, _)| st["panes"][id.as_str()]["hidden"] == false), cx).await?;
     Ok((Run { bridge, connection, layouts, window, native, markers, output }, json!({"pane": pane, "panes": report})))
+}
+
+/// One component of a plugin pane's tree as GPUI's preview and the bridge both list it: (id, type, text).
+type PluginEntry = (String, String, String);
+
+fn plugin_entries(s: &Value) -> Vec<PluginEntry> {
+    s["components"].as_array().cloned().unwrap_or_default().iter()
+        .map(|c| (c["id"].as_str().unwrap_or("").to_owned(), c["type"].as_str().unwrap_or("").to_owned(), c["text"].as_str().unwrap_or("").to_owned())).collect()
+}
+
+fn plugin_preview(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    window.update(cx, |c, _, _| c.plugin_preview_json(pane))
+}
+
+/// The script state of GPUI's preview of `pane`, which `plugin_preview_json` carries as JSON text.
+fn plugin_preview_state(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    Ok(serde_json::from_str(plugin_preview(window, pane, cx)?["state"].as_str().unwrap_or("null")).unwrap_or(Value::Null))
+}
+
+/// Where GPUI drew previewed plugin pane `pane`'s page in the last frame (window points).
+fn plugin_body(window: ClientWindow, pane: &str, cx: &mut AsyncApp) -> Result<(f32, f32, f32, f32)> {
+    window.update(cx, |c, _, _| c.control_bounds(pane, "body"))?.ok_or_else(|| anyhow::anyhow!("GPUI drew no page for plugin pane {pane}"))
+}
+
+/// Waits until GPUI's preview of plugin pane `pane` (`what` in messages) holds the components the
+/// bridge's view holds, with no script error. The stream demo's texts move with its frames, so they may differ for a moment.
+async fn plugin_preview_matches(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, pane: &str, what: &str, cx: &mut AsyncApp) -> Result<Vec<PluginEntry>> {
+    let (mut ours, mut theirs) = (vec![], vec![]);
+    for _ in 0..200 {
+        pump(connection, 100, layouts, window, cx).await?;
+        draw(window, None, cx)?;
+        let p = plugin_preview(window, pane, cx)?;
+        (ours, theirs) = (plugin_entries(&p), plugin_entries(&native.call(json!({"op":"plugin","pane":pane,"action":"state"}))));
+        if p["error"].is_null() && !ours.is_empty() && ours == theirs {
+            return Ok(ours);
+        }
+    }
+    let differ: Vec<_> = ours.iter().zip(theirs.iter()).filter(|(a, b)| a != b).take(5).collect();
+    anyhow::bail!("GPUI's {what} tree differs from the bridge's: {} against {} components, first differences {differ:?}; error {}", ours.len(), theirs.len(), plugin_preview(window, pane, cx)?["error"])
+}
+
+/// The window's picture cut to `rect` (window points), clipped to `body`, saved to `path`.
+fn cut_picture(window: ClientWindow, body: (f32, f32, f32, f32), rect: (f32, f32, f32, f32), path: &std::path::Path, cx: &mut AsyncApp) -> Result<()> {
+    let any: gpui::AnyWindowHandle = window.into();
+    any.update(cx, |_, w, cx| -> Result<()> {
+        w.draw(cx).clear();
+        let image = w.render_to_image()?;
+        let scale = image.width() as f32 / f32::from(w.viewport_size().width);
+        let (x0, y0) = (rect.0.max(body.0), rect.1.max(body.1));
+        let (x1, y1) = ((rect.0 + rect.2).min(body.0 + body.2), (rect.1 + rect.3).min(body.1 + body.3));
+        ensure!(x1 > x0 && y1 > y0, "{rect:?} lies outside the body {body:?}");
+        let [x, y] = [x0, y0].map(|v| ((v * scale) as u32).min(image.width() - 1));
+        let (cw, ch) = ((((x1 - x0) * scale) as u32).min(image.width() - x), (((y1 - y0) * scale) as u32).min(image.height() - y));
+        image::imageops::crop_imm(&image, x, y, cw, ch).to_image().save(path)?;
+        Ok(())
+    })?
+}
+
+/// A press and release of `button` at `at` through the window's own dispatch, as the person
+/// clicks GPUI's view; the frame between the move and the press places the hover there.
+fn gpui_click(window: gpui::AnyWindowHandle, at: gpui::Point<gpui::Pixels>, button: gpui::MouseButton, cx: &mut AsyncApp) -> Result<()> {
+    window.update(cx, |_, w, cx| {
+        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
+        w.draw(cx).clear();
+        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
+        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button, position: at, modifiers: Default::default(), click_count: 1 }), cx);
+    })?;
+    Ok(())
+}
+
+/// Clicks the middle of control `id` that previewed plugin pane `pane` recorded in a fresh frame, then draws the result.
+fn press_recorded(window: ClientWindow, pane: &str, id: &str, cx: &mut AsyncApp) -> Result<()> {
+    draw(window, None, cx)?;
+    let r = window.update(cx, |c, _, _| c.control_bounds(pane, id))?.ok_or_else(|| anyhow::anyhow!("plugin pane {pane} drew no {id} to press"))?;
+    gpui_click(window.into(), gpui::point(gpui::px(r.0 + r.2 / 2.), gpui::px(r.1 + r.3 / 2.)), gpui::MouseButton::Left, cx)?;
+    draw(window, None, cx)
+}
+
+/// The components a pane script names that GPUI's preview draws as nothing until the embeds are ported (wheel-4d1o.5).
+const PLUGIN_EMBEDS: [&str; 6] = ["Canvas", "Terminal", "AgentChat", "WebView", "VideoStream", "Map"];
+
+/// Plugin pane `pane`, showing plugin pane `name`, drawn by GPUI beside the bridge's view
+/// (wheel-4d1o.3): previewed, waited on until its tree holds the bridge's components, its page cut
+/// to `gpui-plugin-<name>.png` beside the bridge's `client-plugin-<name>.png`, and the preview
+/// ended. The embeds GPUI does not draw yet are listed, never failed on: their texts still match.
+#[allow(clippy::too_many_arguments)]
+async fn plugin_beside_bridge(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, name: &str, cx: &mut AsyncApp) -> Result<Value> {
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane} for {name}");
+    let matched = plugin_preview_matches(connection, layouts, window, native, pane, name, cx).await;
+    let pictured = matched.and_then(|ours| {
+        let body = plugin_body(window, pane, cx)?;
+        let png = output.join(format!("gpui-plugin-{name}.png"));
+        cut_picture(window, body, body, &png, cx)?;
+        Ok((ours, png))
+    });
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    let (ours, png) = pictured?;
+    let bytes = std::fs::metadata(&png).map(|m| m.len()).unwrap_or(0);
+    ensure!(bytes > 0, "GPUI's picture of the {name} plugin pane is empty: {}", png.display());
+    let mut embeds: Vec<&str> = ours.iter().filter_map(|(_, kind, _)| PLUGIN_EMBEDS.iter().find(|e| **e == kind.as_str()).copied()).collect();
+    embeds.sort_unstable();
+    embeds.dedup();
+    eprintln!("wheel-gpui: {name} in GPUI matches the bridge: {} components, embeds drawn as nothing {embeds:?}", ours.len());
+    Ok(json!({"matched": true, "components": ours.len(), "picture": png, "picture_bytes": bytes, "embeds": embeds}))
 }
 
 /// The gallery drawn by GPUI beside the bridge's SwiftUI (wheel-4d1o.2): the client runs the
@@ -5896,48 +6015,21 @@ async fn plugin_panes(run: Run, first_session: Option<String>, first_space: Opti
 /// hold the same components with the same texts. Then page by page, GPUI's picture beside the
 /// bridge's `pane shot` at the same scroll, and each class's Card cut from GPUI's. Cases 2 to 4: a
 /// TextField's value set through GPUI reaches the script, a Button pressed through GPUI changes
-/// the script's state, and `wheel pane reload` runs the script from the top.
+/// the script's state, and `wheel pane reload` runs the script from the top. Cases 5 to 7
+/// (wheel-4d1o.3) run before the reload: a header click sorts the view-sorted Table and flips
+/// it, and leaves the page-sorted one as sent; the Modal's trigger opens its sheet and Done
+/// closes it; the table rows' ViewThatFits choose their wide child at the pane's width and
+/// their stacked one at 420 points.
 async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
-    let bridge = |native: &Native| native.call(json!({"op":"plugin","pane":pane,"action":"state"}));
-    let preview = |window: ClientWindow, cx: &mut AsyncApp| -> Result<Value> { window.update(cx, |c, _, _| c.plugin_preview_json(pane)) };
-    let entries = |s: &Value| -> Vec<(String, String, String)> {
-        s["components"].as_array().cloned().unwrap_or_default().iter()
-            .map(|c| (c["id"].as_str().unwrap_or("").to_owned(), c["type"].as_str().unwrap_or("").to_owned(), c["text"].as_str().unwrap_or("").to_owned())).collect()
-    };
+    let preview = |window: ClientWindow, cx: &mut AsyncApp| plugin_preview(window, pane, cx);
     ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane}");
-    // Case 1: the same tree. The stream demo's texts move with its frames, so they may differ for a moment.
-    let (mut ours, mut theirs) = (vec![], vec![]);
-    for _ in 0..200 {
-        pump(connection, 100, layouts, window, cx).await?;
-        draw(window, None, cx)?;
-        let p = preview(window, cx)?;
-        (ours, theirs) = (entries(&p), entries(&bridge(native)));
-        if p["error"].is_null() && !ours.is_empty() && ours == theirs {
-            break;
-        }
-    }
-    let differ: Vec<_> = ours.iter().zip(theirs.iter()).filter(|(a, b)| a != b).take(5).collect();
-    ensure!(ours == theirs, "GPUI's gallery tree differs from the bridge's: {} against {} components, first differences {differ:?}; error {}", ours.len(), theirs.len(), preview(window, cx)?["error"]);
-    let body = window.update(cx, |c, _, _| c.control_bounds(pane, "body"))?.ok_or_else(|| anyhow::anyhow!("the GPUI gallery drew no body"))?;
+    // Case 1: the same tree.
+    let ours = plugin_preview_matches(connection, layouts, window, native, pane, "gallery", cx).await?;
+    let body = plugin_body(window, pane, cx)?;
     let root = window.update(cx, |c, _, _| c.control_bounds(pane, "root"))?.ok_or_else(|| anyhow::anyhow!("the GPUI gallery drew no root"))?;
     let (page_h, content_h) = (body.3, root.3);
     ensure!(page_h > 100. && content_h > page_h, "the GPUI gallery should be taller than its pane: body {body:?} root {root:?}");
-    // The window's picture cut to `rect` (window points), clipped to the body.
-    let cut = |window: ClientWindow, rect: (f32, f32, f32, f32), path: &std::path::Path, cx: &mut AsyncApp| -> Result<()> {
-        let any: gpui::AnyWindowHandle = window.into();
-        any.update(cx, |_, w, cx| -> Result<()> {
-            w.draw(cx).clear();
-            let image = w.render_to_image()?;
-            let scale = image.width() as f32 / f32::from(w.viewport_size().width);
-            let (x0, y0) = (rect.0.max(body.0), rect.1.max(body.1));
-            let (x1, y1) = ((rect.0 + rect.2).min(body.0 + body.2), (rect.1 + rect.3).min(body.1 + body.3));
-            ensure!(x1 > x0 && y1 > y0, "{rect:?} lies outside the body {body:?}");
-            let [x, y] = [x0, y0].map(|v| ((v * scale) as u32).min(image.width() - 1));
-            let (cw, ch) = ((((x1 - x0) * scale) as u32).min(image.width() - x), (((y1 - y0) * scale) as u32).min(image.height() - y));
-            image::imageops::crop_imm(&image, x, y, cw, ch).to_image().save(path)?;
-            Ok(())
-        })?
-    };
+    let cut = |window: ClientWindow, rect: (f32, f32, f32, f32), path: &std::path::Path, cx: &mut AsyncApp| cut_picture(window, body, rect, path, cx);
     let scroll_to = |window: ClientWindow, y: f32, cx: &mut AsyncApp| -> Result<()> {
         ensure!(window.update(cx, |c, _, _| c.plugin_preview_scroll(pane, y))?, "the gallery is not previewed");
         draw(window, None, cx)
@@ -5993,6 +6085,88 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         }
     }
     ensure!(pressed.is_some(), "no Button pressed through GPUI changed the gallery's state");
+    // Each row of a gallery table is a ViewThatFits of its columns and the same row stacked, so
+    // every example is in the tree twice; the copy a case drives is the one GPUI drew, which
+    // recorded its bounds in the last frame.
+    let drawn_copy = |window: ClientWindow, id: &str, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.control_bounds(pane, id).is_some());
+    // Case 5: a header click sorts a Table the view sorts and a second flips it; a Table with a
+    // sortAction keeps the page's order. The gallery's view-sorted Table sends rows a to e titled
+    // First row, Second row, Link, Button, ProgressView; its page-sorted one sends b, then a.
+    let rows_of = |p: &Value, table: &str| -> Vec<String> { p["tables"][table].as_array().into_iter().flatten().filter_map(|l| l["row"].as_str().map(str::to_owned)).collect() };
+    draw(window, None, cx)?;
+    let drawn = preview(window, cx)?;
+    let sending = |want: &[&str], cx: &mut AsyncApp| -> Result<String> {
+        for t in drawn["tables"].as_object().into_iter().flatten().map(|(t, _)| t).filter(|t| rows_of(&drawn, t) == want) {
+            if drawn_copy(window, &format!("{t}#rows"), cx)? {
+                return Ok(t.clone());
+            }
+        }
+        anyhow::bail!("the GPUI gallery draws no Table with rows {want:?} in the page's order: {}", drawn["tables"])
+    };
+    let (viewed, paged) = (sending(&["a", "b", "c", "d", "e"], cx)?, sending(&["b", "a"], cx)?);
+    let mut sorted = vec![];
+    for (asc, want) in [(true, ["d", "a", "c", "e", "b"]), (false, ["b", "e", "c", "a", "d"])] {
+        window.update(cx, |c, _, cx| c.plugin_table_sort(pane, &viewed, "title", cx))?;
+        draw(window, None, cx)?;
+        let p = preview(window, cx)?;
+        let rows = rows_of(&p, &viewed);
+        ensure!(rows == want && p["sorts"][&viewed] == json!({"key": "title", "asc": asc}),
+            "a {} header click on Title of {viewed} should draw {want:?} sorted {}: rows {rows:?}, sort {}", if asc { "first" } else { "second" }, if asc { "ascending" } else { "descending" }, p["sorts"][&viewed]);
+        sorted.push(rows);
+    }
+    window.update(cx, |c, _, cx| c.plugin_table_sort(pane, &paged, "title", cx))?;
+    draw(window, None, cx)?;
+    let p = preview(window, cx)?;
+    ensure!(rows_of(&p, &paged) == ["b", "a"] && p["sorts"][&paged].is_null(),
+        "a header click on {paged}, whose page owns the sort and ignores sortAction, should keep its rows as sent: rows {:?}, view sort {}", rows_of(&p, &paged), p["sorts"][&paged]);
+    // Case 6: the Modal's trigger, pressed where GPUI drew it, opens its sheet over the page, and the sheet's Done closes it.
+    let mut modal = None;
+    for (id, ..) in ours.iter().filter(|(_, k, _)| k == "Modal") {
+        if drawn_copy(window, id, cx)? {
+            modal = Some(id.clone());
+            break;
+        }
+    }
+    let modal = modal.ok_or_else(|| anyhow::anyhow!("GPUI drew none of the gallery's Modals"))?;
+    let trigger = format!("{modal}@trigger");
+    ensure!(ours.iter().any(|(id, k, _)| *id == trigger && k == "Button"), "the gallery's Modal {modal} has no trigger Button {trigger}");
+    scroll_to(window, 0., cx)?;
+    let at = window.update(cx, |c, _, _| c.control_bounds(pane, &trigger))?.ok_or_else(|| anyhow::anyhow!("GPUI drew no {trigger}"))?;
+    scroll_to(window, (at.1 - body.1 - 40.).max(0.), cx)?;
+    press_recorded(window, pane, &trigger, cx)?;
+    let open = |p: &Value| p["open"].as_array().is_some_and(|o| o.contains(&json!(modal)));
+    let p = preview(window, cx)?;
+    let sheet = window.update(cx, |c, _, _| c.control_bounds(pane, &format!("{modal}#sheet")))?;
+    ensure!(open(&p) && sheet.is_some(), "pressing {trigger} should open {modal}'s sheet: open {} sheet {sheet:?}", p["open"]);
+    let sheet_png = output.join("gpui-gallery-modal-sheet.png");
+    cut(window, sheet.unwrap(), &sheet_png, cx)?;
+    press_recorded(window, pane, &format!("{modal}#done"), cx)?;
+    let p = preview(window, cx)?;
+    let left = window.update(cx, |c, _, _| c.control_bounds(pane, &format!("{modal}#sheet")))?;
+    ensure!(!open(&p) && left.is_none(), "pressing Done on {modal}'s sheet should close it: open {} sheet {left:?}", p["open"]);
+    // Case 7: every table row of the gallery is a ViewThatFits in horizontal of its columns, then
+    // the same row stacked (the `fits` helper). Those that choose the columns at the pane's width
+    // stack at 420 points, which their fixed column widths alone pass.
+    scroll_to(window, 0., cx)?;
+    let outermost = |id: &str| id.rsplit('/').skip(1).all(|s| !s.starts_with("ViewThatFits"));
+    for _ in 0..3 {
+        draw(window, None, cx)?;
+    }
+    let wide = preview(window, cx)?["fits"].clone();
+    let fit_rows: Vec<String> = wide.as_object().into_iter().flatten().filter(|(id, f)| outermost(id) && f["choice"] == 0).map(|(id, _)| id.clone()).collect();
+    ensure!(!fit_rows.is_empty(), "at the pane's width ({} points) no table row of the GPUI gallery chose its columns: {wide}", body.2);
+    ensure!(window.update(cx, |c, _, _| c.plugin_preview_width(pane, Some(420.)))?, "the gallery is not previewed");
+    for _ in 0..3 {
+        draw(window, None, cx)?;
+    }
+    let narrow = preview(window, cx)?["fits"].clone();
+    let unstacked: Vec<(String, Value)> = fit_rows.iter().filter(|id| !(narrow[id.as_str()]["choice"] == 1 && narrow[id.as_str()]["width"].as_f64().is_some_and(|w| w <= 420.5)))
+        .map(|id| (id.clone(), narrow[id.as_str()].clone())).collect();
+    let fits_png = output.join("gpui-gallery-fits-420.png");
+    cut(window, body, &fits_png, cx)?;
+    window.update(cx, |c, _, _| c.plugin_preview_width(pane, None))?;
+    draw(window, None, cx)?;
+    ensure!(unstacked.is_empty(), "drawn at 420 points every table row should stack: {} of {} did not, first {:?}", unstacked.len(), fit_rows.len(), unstacked.first());
     // Case 4: `wheel pane reload` runs the script from the top.
     let restarts = preview(window, cx)?["restarts"].as_u64().unwrap_or(0);
     let (ok, _, err) = run_pumped(&["pane", "reload", pane], connection, layouts, window, cx).await?;
@@ -6002,7 +6176,7 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
         pump(connection, 100, layouts, window, cx).await?;
         reloaded = preview(window, cx)?;
         // `restart` counts at once; the script runs again only when the new source has loaded.
-        if reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["running"] == true && reloaded["error"].is_null() && !entries(&reloaded).is_empty() {
+        if reloaded["restarts"].as_u64().unwrap_or(0) > restarts && reloaded["running"] == true && reloaded["error"].is_null() && !plugin_entries(&reloaded).is_empty() {
             break;
         }
     }
@@ -6010,7 +6184,49 @@ async fn gallery_in_gpui(connection: &mut Connection, layouts: &mut usize, windo
     window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
     draw(window, None, cx)?;
     eprintln!("wheel-gpui: the gallery in GPUI: {} components, {pages} pages, {} classes", ours.len(), classes.len());
-    Ok(json!({"components": ours.len(), "pages": pages, "classes": classes, "field": field, "pressed": pressed, "restarts": reloaded["restarts"]}))
+    Ok(json!({"components": ours.len(), "pages": pages, "classes": classes, "field": field, "pressed": pressed, "restarts": reloaded["restarts"],
+        "sorted": {"table": viewed, "by_title": sorted, "page_sorted": paged}, "modal": {"id": modal, "trigger": trigger, "sheet": sheet_png},
+        "fits": {"rows": fit_rows.len(), "pane_width": body.2, "at_420": fits_png}}))
+}
+
+/// The fixture's `dialogs` pane drawn by GPUI (wheel-4d1o.3), whose script owns what SwiftUI
+/// leaves to the page. Show alert and Show dialog, pressed where GPUI drew them, present the
+/// Alert and the ConfirmationDialog over the page; each one's first button, pressed where GPUI
+/// drew it, raises its own action and then dismissAction, and the script's state reads that
+/// button chosen and the dialog no longer presented. On its Table, a click raises selectAction
+/// with that row alone, a ⌘-click adds a row, and a double click raises rowAction with the row.
+async fn dialogs_in_gpui(connection: &mut Connection, layouts: &mut usize, window: ClientWindow, native: &Native, output: &std::path::Path, pane: &str, cx: &mut AsyncApp) -> Result<Value> {
+    ensure!(window.update(cx, |c, _, _| c.preview_plugin(pane))?, "preview_plugin found no plugin pane {pane}");
+    let ours = plugin_preview_matches(connection, layouts, window, native, pane, "dialogs", cx).await?;
+    let body = plugin_body(window, pane, cx)?;
+    let find = |kind: &str, text: Option<&str>| ours.iter().find(|(_, k, t)| k == kind && text.is_none_or(|text| t == text)).map(|(id, ..)| id.clone())
+        .ok_or_else(|| anyhow::anyhow!("the dialogs pane has no {kind} {text:?}"));
+    let mut dialogs = vec![];
+    for (show, kind, which, chose) in [("Show alert", "Alert", "alert", "delete"), ("Show dialog", "ConfirmationDialog", "dialog", "discard")] {
+        let (label, node) = (find("Text", Some(show))?, find(kind, None)?);
+        let card_of = |window: ClientWindow, cx: &mut AsyncApp| window.update(cx, |c, _, _| c.control_bounds(pane, &format!("{node}#card")));
+        press_recorded(window, pane, &label, cx)?;
+        let (st, card) = (plugin_preview_state(window, pane, cx)?, card_of(window, cx)?);
+        ensure!(st[which] == true && card.is_some(), "pressing {show} should present the {kind} {node}: state {st}, card {card:?}");
+        let png = output.join(format!("gpui-dialogs-{which}.png"));
+        cut_picture(window, body, card.unwrap(), &png, cx)?;
+        press_recorded(window, pane, &format!("{node}#button0"), cx)?;
+        let (st, left) = (plugin_preview_state(window, pane, cx)?, card_of(window, cx)?);
+        ensure!(st[which] == false && st["chose"] == chose && left.is_none(), "the {kind}'s first button should raise its action ({chose}) and then dismissAction: state {st}, card {left:?}");
+        dialogs.push(json!({"node": node, "chose": st["chose"], "picture": png}));
+    }
+    let table = find("Table", None)?;
+    for (row, clicks, toggle, key, want) in [("b", 1, false, "selected", json!(["b"])), ("c", 1, true, "selected", json!(["b", "c"])), ("c", 2, false, "opened", json!("c"))] {
+        window.update(cx, |c, _, cx| c.plugin_table_click(pane, &table, row, clicks, toggle, cx))?;
+        draw(window, None, cx)?;
+        let st = plugin_preview_state(window, pane, cx)?;
+        ensure!(st[key] == want, "{} on row {row} of {table} should leave {key} {want}: state {st}", match (clicks, toggle) { (2, _) => "a double click", (_, true) => "a ⌘-click", _ => "a click" });
+    }
+    let st = plugin_preview_state(window, pane, cx)?;
+    window.update(cx, |c, _, _| c.end_plugin_preview(pane))?;
+    draw(window, None, cx)?;
+    eprintln!("wheel-gpui: the dialogs pane in GPUI: {dialogs:?}; table state {st}");
+    Ok(json!({"components": ours.len(), "dialogs": dialogs, "table": table, "selected": st["selected"], "opened": st["opened"]}))
 }
 
 /// The command palette, key bindings, Run…, the shortcut sheet and ⌘W.
@@ -8821,17 +9037,7 @@ async fn popover_settle(popover: gpui::AnyWindowHandle, menu: &gpui::Entity<whee
 
 /// Press and release the popover's control `name` at its centre, as the person clicks it.
 fn popover_press(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut AsyncApp) -> Result<()> {
-    let c = &s["popover"]["controls"][name];
-    let r: Vec<f32> = c.as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.) as f32).collect()).unwrap_or_default();
-    ensure!(r.len() == 4, "the popover has no {name} control: {}", s["popover"]["controls"]);
-    let at = gpui::point(gpui::px(r[0] + r[2] / 2.), gpui::px(r[1] + r[3] / 2.));
-    popover.update(cx, |_, w, cx| {
-        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
-        w.draw(cx).clear();
-        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
-        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: at, modifiers: Default::default(), click_count: 1 }), cx);
-    })?;
-    Ok(())
+    gpui_click(popover, popover_centre(s, name)?, gpui::MouseButton::Left, cx)
 }
 
 /// Move the pointer to the centre of the popover's control `name`, as the person hovers it.
@@ -8846,14 +9052,7 @@ fn popover_hover(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut
 
 /// Right-press the popover's control `name` at its centre, as the person opens its menu.
 fn popover_right_press(popover: gpui::AnyWindowHandle, s: &Value, name: &str, cx: &mut AsyncApp) -> Result<()> {
-    let at = popover_centre(s, name)?;
-    popover.update(cx, |_, w, cx| {
-        w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: at, pressed_button: None, modifiers: Default::default() }), cx);
-        w.draw(cx).clear();
-        w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1, first_mouse: false }), cx);
-        w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Right, position: at, modifiers: Default::default(), click_count: 1 }), cx);
-    })?;
-    Ok(())
+    gpui_click(popover, popover_centre(s, name)?, gpui::MouseButton::Right, cx)
 }
 
 fn popover_centre(s: &Value, name: &str) -> Result<gpui::Point<gpui::Pixels>> {
