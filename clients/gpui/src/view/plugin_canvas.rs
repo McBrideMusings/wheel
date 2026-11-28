@@ -99,7 +99,8 @@ fn paint_segs(segs: &[Seg], origin: Point<Pixels>, fill: Option<gpui::Hsla>, str
             o = o.with_line_cap(lyon_tessellation_cap()).with_line_join(lyon_tessellation_join());
         }
         let mut b = PathBuilder::stroke(px(width as f32)).with_style(PathStyle::Stroke(o));
-        if !dash.is_empty() {
+        // GPUI's dasher advances by each length: a zero, negative or sub-point pattern never ends, so it draws solid.
+        if !dash.is_empty() && dash.iter().all(|d| d.is_finite() && *d > 0.) && dash.iter().sum::<f64>() >= 1. {
             b = b.dash_array(&dash.iter().map(|d| px(*d as f32)).collect::<Vec<_>>());
         }
         if let Some(p) = build(b) {
@@ -202,7 +203,7 @@ pub struct CanvasView {
     last_fit: String,
     shown: bool,
     reported_w: Option<f64>,
-    last_tap: Option<usize>,
+    last_tap: Option<cv::Hit>,
     cuts: HashMap<String, String>,
     focus: Option<gpui::FocusHandle>,
     /// For a check: each label drawn, its width as drawn and as `measureText` gives it.
@@ -507,7 +508,7 @@ impl Draw<'_> {
         drop(s);
         let control = |label: &'static str, tag: &str, act: Rc<dyn Fn(&mut CanvasView, &Scene)>| {
             let (state, scene) = (state.clone(), scene.clone());
-            div().id(el_id(self.pane, &n.id, tag)).relative().child(recorded(self.pane, &format!("{}#{tag}", n.id), self.controls)).px(px(8.)).h(px(24.)).flex().items_center().text_size(px(12.)).text_color(rgba(FG))
+            div().id(el_id(self.pane, &n.id, tag)).occlude().relative().child(recorded(self.pane, &format!("{}#{tag}", n.id), self.controls)).px(px(8.)).h(px(24.)).flex().items_center().text_size(px(12.)).text_color(rgba(FG))
                 .bg(rgba(GROUP)).rounded(px(6.)).border_1().border_color(rgba(LINE)).child(label)
                 .on_click(cx.listener(move |_, _, _, cx| {
                     act(&mut state.borrow_mut(), &scene);
@@ -780,26 +781,23 @@ fn scene_events(scene: &Rc<Scene>, state: &Shared, client: &gpui::WeakEntity<Cli
             let p = local(e.position, bounds);
             match scene.hit(f64::from(p.0), f64::from(p.1), start) {
                 Some(i) => {
-                    let h = &scene.hits[i];
-                    let double = (e.click_count >= 2).then(|| s.last_tap.filter(|t| !scene.hits[*t].double_action.is_empty())).flatten();
-                    s.last_tap = Some(i);
+                    let h = scene.hits[i].clone();
+                    // Swift's double tap reads the hit the tap just landed on.
+                    s.last_tap = Some(h.clone());
                     if let Some(f) = h.fit {
                         s.cam = Scene::fitted(f, f64::from(s.size.0), f64::from(s.size.1));
                     } else if !h.action.is_empty() {
                         let mut context = h.context.clone();
                         context.insert("id".into(), json!(h.id));
-                        let key = h.action.clone();
                         drop(s);
-                        fire(&key, Json::Object(context), cx);
-                        s = state.borrow_mut();
+                        fire(&h.action, Json::Object(context), cx);
+                    } else {
+                        drop(s);
                     }
-                    if let Some(t) = double {
-                        let h = &scene.hits[t];
+                    if e.click_count >= 2 && !h.double_action.is_empty() {
                         let mut context = h.double_context.clone();
                         context.insert("id".into(), json!(h.id));
-                        let key = h.double_action.clone();
-                        drop(s);
-                        fire(&key, Json::Object(context), cx);
+                        fire(&h.double_action, Json::Object(context), cx);
                     }
                 }
                 None if !scene.empty_action.is_empty() => {
