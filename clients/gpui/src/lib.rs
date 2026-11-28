@@ -194,6 +194,14 @@ pub fn create_window(
     if !cx.has_global::<appkit::motion::ReduceMotion>() {
         appkit::motion::watch(cx);
     }
+    // A window edge being dragged holds every window's terminal resizes until it is let go.
+    if !cx.has_global::<appkit::live_resize::LiveResize>() {
+        appkit::live_resize::watch(cx);
+        // The terminal's own face, JetBrains Mono, as Ghostty bundles it.
+        if let Err(e) = cx.text_system().add_fonts(view::terminal::fonts()) {
+            eprintln!("terminal fonts: {e}");
+        }
+    }
     let window = view::ClientWindow::open(
         cx,
         WindowOptions {
@@ -229,6 +237,11 @@ pub fn create_window(
                     .detach();
                 }
                 cx.observe_global::<appkit::motion::ReduceMotion>(|client: &mut view::Client, cx| client.set_reduce_motion(appkit::motion::on(cx))).detach();
+                cx.observe_global::<appkit::live_resize::LiveResize>(|client: &mut view::Client, cx| {
+                    client.set_live_resize(appkit::live_resize::on(cx));
+                    cx.notify();
+                })
+                .detach();
                 // Every window's play buttons follow the reply the app's synthesizer reads.
                 cx.observe_global::<appkit::read_aloud::ReadAloud>(|client: &mut view::Client, cx| {
                     if client.set_read_aloud(appkit::read_aloud::playing(cx)) {

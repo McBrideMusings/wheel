@@ -5,9 +5,11 @@
 
 use base64::Engine as _;
 use ghostty_vt::key::{self, Mods, OptionAsAlt};
-use ghostty_vt::render::{CellIterator, CursorVisualStyle, RenderState, RowIterator};
+use ghostty_vt::render::{CellIterator, RenderState, RowIterator};
+pub use ghostty_vt::render::CursorVisualStyle;
+pub use ghostty_vt::style::RgbColor;
 use ghostty_vt::screen::CellWide;
-use ghostty_vt::style::{Palette as VtPalette, RgbColor};
+use ghostty_vt::style::Palette as VtPalette;
 use ghostty_vt::selection::{FormatOptions, Selection};
 use ghostty_vt::terminal::{CursorStyle, Event, Mode, Options, Point, PointCoordinate, ScrollViewport, Terminal};
 use ghostty_vt::{focus, mouse, paste};
@@ -211,6 +213,53 @@ impl CellMetrics {
 pub fn grid_for(width: f64, height: f64, cell: CellMetrics) -> (u16, u16) {
     let fit = |space: f64, size: f64| ((space / size).floor().clamp(1.0, u16::MAX as f64)) as u16;
     (fit(width - 2.0 * PADDING_X, cell.width), fit(height - 2.0 * PADDING_Y, cell.height))
+}
+
+/// `path` with a backslash before each character a shell reads as syntax (Ghostty's `shellEscape` set).
+pub fn shell_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '\\' | ' ' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\'' | '`' | '!' | '#' | '$' | '&' | ';' | '|' | '*' | '?' | '\t') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What dropping `paths` on a terminal types: each path shell-escaped, separated by spaces.
+pub fn drop_text<S: AsRef<str>>(paths: &[S]) -> String {
+    paths.iter().map(|p| shell_escape(p.as_ref())).collect::<Vec<_>>().join(" ")
+}
+
+/// Whether the terminals' resizes wait: while the grid animates, a divider is dragged or a
+/// window edge is dragged, a term's grid changes go to wheeld only once the move ends, as the
+/// grid it ended at.
+#[derive(Debug, Default)]
+pub struct ResizeHold {
+    moving: bool,
+    live_resize: bool,
+}
+
+impl ResizeHold {
+    pub fn held(&self) -> bool {
+        self.moving || self.live_resize
+    }
+    pub fn live_resize(&self) -> bool {
+        self.live_resize
+    }
+    /// The grid animates or a divider is under the pointer; true when this released the hold.
+    pub fn set_moving(&mut self, on: bool) -> bool {
+        let was = self.held();
+        self.moving = on;
+        was && !self.held()
+    }
+    /// A window edge is being dragged; true when this released the hold.
+    pub fn set_live_resize(&mut self, on: bool) -> bool {
+        let was = self.held();
+        self.live_resize = on;
+        was && !self.held()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -509,6 +558,17 @@ impl TermModel {
         self.terminal.mode(mode).unwrap_or(false)
     }
 
+    /// Whether the program asked for mouse reports, which a click then sends in place of selecting.
+    pub fn tracks_mouse(&self) -> bool {
+        self.terminal.is_mouse_tracking().unwrap_or(false)
+    }
+
+    /// Whether the scroll wheel sends arrow keys: on the alternate screen with mode 1007 on, as
+    /// Ghostty's `mouse-scroll` does for a pager or an editor that reads no mouse.
+    pub fn wheel_sends_arrows(&self) -> bool {
+        self.mode(Mode::ALT_SCROLL) && matches!(self.terminal.active_screen(), Ok(ghostty_vt::screen::Screen::Alternate))
+    }
+
     /// The viewport as it draws now; the rows it marks dirty are those changed since the last call.
     pub fn frame(&mut self) -> ghostty_vt::error::Result<Frame> {
         let Self { terminal, render, row_iter, cell_iter, .. } = self;
@@ -688,6 +748,16 @@ impl TermModel {
         Ok(())
     }
 
+    /// Select the whole screen, scrollback included, as Ghostty's `select_all`.
+    pub fn select_all(&mut self) -> ghostty_vt::error::Result<()> {
+        let cols = self.terminal.cols()?;
+        let last = self.terminal.total_rows()?.saturating_sub(1) as u32;
+        let at = |x: u16, y: u32| Point::Screen(PointCoordinate { x, y });
+        let selection = Selection::new(self.terminal.grid_ref(at(0, 0))?, self.terminal.grid_ref(at(cols.saturating_sub(1), last))?, false);
+        self.terminal.set_selection(Some(&selection))?;
+        Ok(())
+    }
+
     pub fn clear_selection(&mut self) {
         let _ = self.terminal.set_selection(None);
     }
@@ -708,6 +778,75 @@ impl TermModel {
         let event = if gained { focus::Event::Gained } else { focus::Event::Lost };
         event.encode(&mut buf).map(|n| buf[..n].to_vec()).unwrap_or_default()
     }
+}
+
+/// A piece of a row drawn as one shaped run of text: cells of one style side by side, or one
+/// wide character alone across its two cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub col: u16,
+    pub cells: u16,
+    pub text: String,
+    pub fg: RgbColor,
+    /// `None` on the page's own background.
+    pub bg: Option<RgbColor>,
+    pub bold: bool,
+    pub italic: bool,
+    pub faint: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub wide: bool,
+}
+
+/// A row as segments, with inverse and selection resolved: an inverse cell swaps its colours
+/// (the page's `background` standing in for none), a selected one takes `selection` as its
+/// background, or is inverted when the theme names no selection colour.
+pub fn segments(row: &[Cell], background: RgbColor, selection: Option<RgbColor>) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    for (col, cell) in row.iter().enumerate() {
+        if cell.width == Width::Spacer {
+            continue;
+        }
+        let (mut fg, mut bg) = (cell.fg, cell.bg);
+        if cell.inverse {
+            (fg, bg) = (bg.unwrap_or(background), Some(fg));
+        }
+        if cell.selected {
+            match selection {
+                Some(colour) => bg = Some(colour),
+                None => (fg, bg) = (bg.unwrap_or(background), Some(fg)),
+            }
+        }
+        let text = if cell.invisible || cell.text.is_empty() { " ".to_owned() } else { cell.text.clone() };
+        let wide = cell.width == Width::Wide;
+        let piece = Segment { col: col as u16, cells: if wide { 2 } else { 1 }, text, fg, bg, bold: cell.bold, italic: cell.italic, faint: cell.faint, underline: cell.underline, strikethrough: cell.strikethrough, wide };
+        if let Some(last) = out.last_mut()
+            && !wide
+            && !last.wide
+            && last.col + last.cells == piece.col
+            && (last.fg, last.bg, last.bold, last.italic, last.faint, last.underline, last.strikethrough) == (piece.fg, piece.bg, piece.bold, piece.italic, piece.faint, piece.underline, piece.strikethrough)
+        {
+            last.text.push_str(&piece.text);
+            last.cells += 1;
+            continue;
+        }
+        out.push(piece);
+    }
+    out
+}
+
+/// The columns a double click at `col` selects: the run of word characters around it, or the
+/// cell alone when it is a space or a separator (Ghostty's `selection-word-chars`).
+pub fn word_at(row: &[Cell], col: u16) -> (u16, u16) {
+    let boundary = |c: &Cell| c.text.is_empty() || c.text.chars().all(|ch| ch.is_whitespace() || "'\"│`|:;,()[]{}<>$".contains(ch));
+    let col = (col as usize).min(row.len().saturating_sub(1));
+    if row.is_empty() || boundary(&row[col]) {
+        return (col as u16, col as u16);
+    }
+    let word = |c: &Cell| !boundary(c) || c.width == Width::Spacer;
+    let start = (0..col).rev().take_while(|&i| word(&row[i])).last().unwrap_or(col);
+    let end = (col + 1..row.len()).take_while(|&i| word(&row[i])).last().unwrap_or(col);
+    (start as u16, end as u16)
 }
 
 #[cfg(test)]
@@ -921,6 +1060,25 @@ mod tests {
     }
 
     #[test]
+    fn dropped_paths_type_shell_escaped_and_space_separated() {
+        assert_eq!(drop_text(&["/tmp/a b(1).txt", "/tmp/c"]), r"/tmp/a\ b\(1\).txt /tmp/c");
+        assert_eq!(shell_escape("x$y;z|w*?!#&<>[]{}`'\"\\\tq"), "x\\$y\\;z\\|w\\*\\?\\!\\#\\&\\<\\>\\[\\]\\{\\}\\`\\'\\\"\\\\\\\tq");
+    }
+
+    #[test]
+    fn a_resize_hold_releases_only_when_every_move_ended() {
+        let mut hold = ResizeHold::default();
+        assert!(!hold.held());
+        assert!(!hold.set_moving(true));
+        assert!(!hold.set_live_resize(true));
+        assert!(!hold.set_moving(false), "the window edge still holds");
+        assert!(hold.held());
+        assert!(hold.set_live_resize(false));
+        assert!(!hold.held());
+        assert!(!hold.set_moving(false), "nothing was held");
+    }
+
+    #[test]
     fn a_resize_is_sent_once_per_grid() {
         let mut m = model(80, 24);
         let cell = CellMetrics { width: 8.0, height: 17.0 };
@@ -946,6 +1104,15 @@ mod tests {
     }
 
     #[test]
+    fn select_all_takes_the_scrollback_too() {
+        let mut m = model(20, 2);
+        m.feed(b"first\r\nsecond\r\nthird\r\nfourth");
+        m.select_all().unwrap();
+        let text = m.selection_text().unwrap();
+        assert!(text.starts_with("first") && text.trim_end().ends_with("fourth"), "{text:?}");
+    }
+
+    #[test]
     fn a_changed_setting_restyles_the_model_without_a_new_attach() {
         let setting = |key: &str, value: &str| -> SettingInfo { serde_json::from_value(serde_json::json!({"key": key, "value": value, "origin": "default", "default": "", "help": ""})).unwrap() };
         let mut m = model(20, 4);
@@ -958,5 +1125,35 @@ mod tests {
         assert_eq!(frame.text(), "kept");
         assert_eq!((frame.background, frame.rows[0][0].fg), (SOLARIZED_DARK.background, SOLARIZED_DARK.ansi[1]));
         assert_eq!((frame.cursor.shape, frame.cursor.blinking), (CursorVisualStyle::Bar, false));
+    }
+
+    fn row_of(text: &str) -> Vec<Cell> {
+        text.chars().map(|c| Cell { text: if c == '_' { String::new() } else { c.to_string() }, fg: hex(0xffffff), bg: None, bold: false, italic: false, faint: false, underline: false, strikethrough: false, inverse: false, invisible: false, width: Width::Narrow, selected: false }).collect()
+    }
+
+    #[test]
+    fn a_row_batches_cells_of_one_style_and_splits_wide_and_styled_cells() {
+        let mut row = row_of("ab_c日_de");
+        row[4].width = Width::Wide;
+        row[5].width = Width::Spacer;
+        row[6].bold = true;
+        row[7].inverse = true;
+        let s = segments(&row, hex(0x212121), None);
+        let shape: Vec<(u16, u16, &str, bool)> = s.iter().map(|g| (g.col, g.cells, g.text.as_str(), g.wide)).collect();
+        assert_eq!(shape, vec![(0, 4, "ab c", false), (4, 2, "日", true), (6, 1, "d", false), (7, 1, "e", false)]);
+        assert_eq!((s[3].fg, s[3].bg), (hex(0x212121), Some(hex(0xffffff))));
+        row[0].selected = true;
+        let s = segments(&row, hex(0x212121), Some(hex(0x444444)));
+        assert_eq!((s[0].text.as_str(), s[0].bg, s[1].text.as_str()), ("a", Some(hex(0x444444)), "b c"));
+    }
+
+    #[test]
+    fn a_double_click_selects_the_word_or_the_separator_alone() {
+        let row = row_of("ls -la /tmp/x.txt;ok");
+        assert_eq!(word_at(&row, 1), (0, 1));
+        assert_eq!(word_at(&row, 9), (7, 16));
+        assert_eq!(word_at(&row, 2), (2, 2));
+        assert_eq!(word_at(&row, 17), (17, 17));
+        assert_eq!(word_at(&row, 40), (18, 19));
     }
 }

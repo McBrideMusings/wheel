@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod dialogs;
 pub mod images;
+pub mod live_resize;
 pub mod motion;
 pub mod read_aloud;
 pub mod status_item;
