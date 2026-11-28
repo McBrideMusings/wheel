@@ -375,6 +375,12 @@ impl Host for PaneHost {
         self.pages.open(pane, &slot, browser, url, remote);
     }
 
+    fn open_artifact(&self, pane: &str, name: &str, scope: &str, cwd: &str, ws: &str) {
+        self.slot(pane);
+        let Some(slot) = self.slots.borrow().get(pane).cloned() else { return };
+        self.pages.open_artifact(pane, &slot, name, scope, cwd, ws);
+    }
+
     fn close_page(&self, pane: &str) {
         self.pages.close(pane);
     }
@@ -385,6 +391,14 @@ impl Host for PaneHost {
 
     fn reload(&self, pane: &str) -> bool {
         self.pages.reload(pane)
+    }
+
+    fn compose(&self, id: u64, pane: &str, base: Result<Vec<u8>, String>) {
+        let view = self.slots.borrow().get(pane).and_then(|s| s.subviews().firstObject());
+        match view {
+            Some(view) => self.pages.compose(id, &view, base),
+            None => self.pages.compose(id, &self.root, Err("the pane is not shown".into())),
+        }
     }
 
     fn render(&self, id: u64, pane: &str, full: bool) -> bool {

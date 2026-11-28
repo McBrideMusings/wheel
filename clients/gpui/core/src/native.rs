@@ -7,6 +7,7 @@
 //! relayed arrive as frames on the window's channel, from the host or through the callback
 //! `attach` is given, each read as a [`Frame`].
 use anyhow::{Context as _, Result};
+use base64::Engine as _;
 use futures::channel::mpsc as fmpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -106,12 +107,17 @@ pub trait Host {
     fn open_page(&self, pane: &str, browser: bool, url: &str, remote: bool);
     /// Drop `pane`'s browser or web page, keeping its slot.
     fn close_page(&self, pane: &str);
+    /// Show artifact `name` (`scope`) of the space at `cwd` in `pane`'s slot, fetched from wheeld at `ws`.
+    fn open_artifact(&self, pane: &str, name: &str, scope: &str, cwd: &str, ws: &str);
     /// One of a browser's actions (see [`Native::browser`]), with its fields in `value`.
     fn browser(&self, pane: &str, action: &str, value: &Value);
     /// `pane_reload` on a browser or web page; false when `pane` holds neither.
     fn reload(&self, pane: &str) -> bool;
     /// `render_pane` `id` when `pane`'s slot holds a WKWebView, answered with a frame; false when it holds none.
     fn render(&self, id: u64, pane: &str, full: bool) -> bool;
+    /// Answer `render_pane` `id` of plugin pane `pane` from `base`, the bridge's PNG of its view (or why it drew none),
+    /// with every WKWebView inside the view drawn over it.
+    fn compose(&self, id: u64, pane: &str, base: Result<Vec<u8>, String>);
     /// `inspect_pane` `id` on a browser's page, answered with a frame.
     fn inspect(&self, id: u64, pane: &str, action: &str, arg: Option<&str>);
     /// The check's snapshot of every shown WKWebView, each written to `<directory>/<pane>-web.png`.
@@ -228,6 +234,12 @@ impl Native {
                     h.open_page(pane, browser, value["url"].as_str().unwrap_or(if browser { "about:blank" } else { "" }), value["remote"] == true);
                     return self.status();
                 }
+                if value["kind"] == "web" {
+                    self.bridge_call(json!({"op":"close","pane":pane}));
+                    let text = |k: &str| value[k].as_str().unwrap_or_default().to_owned();
+                    h.open_artifact(pane, &text("artifact"), &text("scope"), &text("cwd"), &text("ws"));
+                    return self.status();
+                }
                 h.close_page(pane);
                 self.with_facts(self.bridge_call(value))
             }
@@ -240,7 +252,18 @@ impl Native {
                 self.status()
             }
             (Some("reload"), Some(h)) if h.reload(value["pane"].as_str().unwrap_or_default()) => self.status(),
-            (Some("render"), Some(h)) if h.render(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["full"] == true) => self.status(),
+            (Some("render"), Some(h)) => {
+                let (id, pane) = (value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default().to_owned());
+                if !h.render(id, &pane, value["full"] == true) {
+                    let reply = self.bridge_call(value);
+                    let base = match (reply["png"].as_str(), reply["refused"].as_str()) {
+                        (Some(png), _) => base64::engine::general_purpose::STANDARD.decode(png).map_err(|e| e.to_string()),
+                        (None, refused) => Err(refused.unwrap_or("the bridge drew nothing").to_owned()),
+                    };
+                    h.compose(id, &pane, base);
+                }
+                self.status()
+            }
             (Some("inspect"), Some(h)) => {
                 h.inspect(value["id"].as_u64().unwrap_or_default(), value["pane"].as_str().unwrap_or_default(), value["action"].as_str().unwrap_or_default(), value["arg"].as_str());
                 self.status()

@@ -1,10 +1,11 @@
-//! Browser panes and plain web panes (a URL, not an artifact) as WKWebViews made here and put in
-//! the pane host's slots (wheel-kq6t.2, ADR-0056). A browser is an ordinary browser on any http,
+//! Browser panes, plain web panes (a URL) and artifact pages as WKWebViews made here and put in
+//! the pane host's slots (wheel-kq6t.2, wheel-kq6t.3, ADR-0056). An artifact's page opens under the
+//! `wheel-page` scheme `page_scheme` answers, in its own website data store (ADR-0048). A browser is an ordinary browser on any http,
 //! https or file page, with the default website data store, so a login survives a relaunch; its
 //! chrome state, typed text and console go to the GPUI view as frames on the window's channel.
 //! Every WKWebView in a slot (an artifact page's too) is drawn here for `render_pane` and the
 //! check's snapshots; `inspect_pane` runs in a browser's page.
-use super::main_thread;
+use super::{main_thread, page_scheme::PageScheme};
 use base64::Engine as _;
 use block2::{DynBlock, RcBlock};
 use futures::channel::mpsc::UnboundedSender;
@@ -13,16 +14,17 @@ use objc2::{
     rc::Retained,
     runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject},
 };
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSView, NSWorkspace};
+use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSGraphicsContext, NSImage, NSView, NSWorkspace};
 use objc2_foundation::{
-    NSArray, NSDictionary, NSError, NSHTTPURLResponse, NSJSONSerialization, NSJSONWritingOptions, NSKeyValueChangeKey,
-    NSKeyValueObservingOptions, NSNumber, NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPURLResponse, NSJSONSerialization, NSJSONWritingOptions, NSKeyValueChangeKey,
+    NSKeyValueObservingOptions, NSNumber, NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest, NSUUID,
 };
 use objc2_web_kit::{
     WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKNavigationResponse,
     WKNavigationResponsePolicy, WKNavigationType, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration, WKUIDelegate,
-    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWindowFeatures,
+    WKUserContentController, WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore, WKWindowFeatures,
 };
+use wheel_gpui_core::artifact_page;
 use serde_json::{Map, Value, json};
 use std::{
     cell::{Cell, RefCell},
@@ -71,11 +73,21 @@ struct Browser {
     failure: Option<Failure>,
 }
 
+/// An artifact's page: which artifact in which space directory (another of either is another
+/// view, since the store and handler are bound to both), its store and its scheme handler.
+struct Artifact {
+    key: String,
+    store: String,
+    scheme: Retained<PageScheme>,
+}
+
 struct Page {
     view: Retained<WKWebView>,
     delegate: Retained<PageDelegate>,
-    /// A browser's model; None for a web pane on a plain URL.
+    /// A browser's model; None for a web pane.
     browser: Option<Browser>,
+    /// An artifact page's; None for a browser or a web pane on a plain URL.
+    artifact: Option<Artifact>,
     /// The page the view is on, or the one it was given before anything committed.
     url: String,
     /// Each finished load's title.
@@ -97,6 +109,8 @@ pub struct Pages {
     errors: RefCell<Vec<String>>,
     /// The panes whose snapshot has not answered yet.
     waiting: RefCell<BTreeSet<String>>,
+    /// wheeld's socket address and token, as the last artifact open named them, for every page's scheme handler.
+    daemon: RefCell<Option<(String, String)>>,
 }
 
 pub struct DelegateIvars {
@@ -258,6 +272,19 @@ fn evaluate_text(view: &WKWebView, script: &str, done: impl FnOnce(Result<Option
     evaluate(view, script, move |r| done(r.map(|v| v.and_then(|v| v.downcast::<NSString>().ok()).map(|s| s.to_string()))));
 }
 
+/// Every WKWebView shown inside `view`, at any depth.
+fn web_views(view: &NSView, out: &mut Vec<Retained<WKWebView>>) {
+    for sub in view.subviews() {
+        if sub.isHiddenOrHasHiddenAncestor() || sub.bounds().size.width <= 0. || sub.bounds().size.height <= 0. {
+            continue;
+        }
+        match sub.downcast::<WKWebView>() {
+            Ok(web) => out.push(web),
+            Err(sub) => web_views(&sub, out),
+        }
+    }
+}
+
 /// The view's own drawing of the page, or why WebKit drew none.
 pub fn snapshot_image(view: &WKWebView, configuration: Option<&WKSnapshotConfiguration>, done: impl FnOnce(Result<Retained<NSImage>, String>) + 'static) {
     let done = once(done);
@@ -319,10 +346,22 @@ impl Pages {
             logs: RefCell::default(),
             errors: RefCell::default(),
             waiting: RefCell::default(),
+            daemon: RefCell::default(),
         })
     }
 
-    fn log(&self, line: String) {
+    pub(super) fn daemon(&self) -> Option<(String, String)> {
+        self.daemon.borrow().clone()
+    }
+
+    /// The status of the document `pane`'s main frame loaded.
+    pub(super) fn document_status(&self, pane: &str, code: isize) {
+        if let Some(page) = self.pages.borrow_mut().get_mut(pane) {
+            page.status = Some(code);
+        }
+    }
+
+    pub(super) fn log(&self, line: String) {
         let mut logs = self.logs.borrow_mut();
         logs.push_back(line);
         while logs.len() > 200 {
@@ -338,6 +377,10 @@ impl Pages {
         self.pages.borrow().get(pane).map(|p| p.view.clone())
     }
 
+    fn is_artifact(&self, pane: &str) -> bool {
+        self.pages.borrow().get(pane).is_some_and(|p| p.artifact.is_some())
+    }
+
     fn is_browser(&self, pane: &str) -> bool {
         self.pages.borrow().get(pane).is_some_and(|p| p.browser.is_some())
     }
@@ -345,7 +388,10 @@ impl Pages {
     /// A browser on `url`, or a web pane on the plain URL `url`, in `slot`. Opening a browser
     /// again makes `url` its home; opening a web pane again on another URL loads it.
     pub fn open(&self, pane: &str, slot: &NSView, browser: bool, url: &str, remote: bool) {
-        let again = self.pages.borrow().get(pane).map(|p| (p.browser.is_some(), p.url.clone()));
+        let again = self.pages.borrow().get(pane).filter(|p| p.artifact.is_none()).map(|p| (p.browser.is_some(), p.url.clone()));
+        if again.is_none() {
+            self.close(pane);
+        }
         match again {
             Some((true, _)) if browser => {
                 if let Some(b) = self.pages.borrow_mut().get_mut(pane).and_then(|p| p.browser.as_mut()) {
@@ -408,7 +454,9 @@ impl Pages {
             can_go_forward: false,
             failure: None,
         });
-        self.pages.borrow_mut().insert(pane.to_owned(), Page { view, delegate, browser: model, url: url.to_owned(), loads: vec![], reloads: 0, status: None, text: None });
+        self.pages
+            .borrow_mut()
+            .insert(pane.to_owned(), Page { view, delegate, browser: model, artifact: None, url: url.to_owned(), loads: vec![], reloads: 0, status: None, text: None });
         if browser {
             self.go(pane, url);
         } else if let (Some(view), Some(target)) = (self.view(pane), url_of(url)) {
@@ -416,7 +464,48 @@ impl Pages {
         }
     }
 
-    /// Drop `pane`'s page: its observers, console handler and view.
+    /// Artifact `name` (`scope` project or machine) of the space at `cwd` in `slot`: its page at
+    /// `wheel-page://pages/artifacts/<pane>/`, fetched from wheeld at `ws` (its token in the query).
+    /// Opening the same artifact for the same space again keeps the view.
+    pub fn open_artifact(&self, pane: &str, slot: &NSView, name: &str, scope: &str, cwd: &str, ws: &str) {
+        if let Some(daemon) = artifact_page::daemon_of(ws) {
+            *self.daemon.borrow_mut() = Some(daemon);
+        }
+        let key = format!("{scope}/{name}\n{cwd}");
+        if self.pages.borrow().get(pane).and_then(|p| p.artifact.as_ref()).is_some_and(|a| a.key == key) {
+            return;
+        }
+        self.close(pane);
+        let mtm = main_thread();
+        let store = artifact_page::store_id(cwd, scope == "machine", name);
+        let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
+        if let Some(id) = NSUUID::from_string(&NSString::from_str(&store)) {
+            unsafe { configuration.setWebsiteDataStore(&WKWebsiteDataStore::dataStoreForIdentifier(&id, mtm)) };
+        }
+        let scheme = PageScheme::new(pane, self.me.clone());
+        unsafe { configuration.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(&*scheme)), &NSString::from_str(artifact_page::SCHEME)) };
+        let delegate = PageDelegate::new(pane, self.me.clone());
+        let view = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &configuration) };
+        unsafe { view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+        view.setFrame(slot.bounds());
+        slot.addSubview(&view);
+        let url = artifact_page::page_url(pane);
+        self.pages.borrow_mut().insert(
+            pane.to_owned(),
+            Page { view, delegate, browser: None, artifact: Some(Artifact { key, store, scheme }), url: url.clone(), loads: vec![], reloads: 0, status: None, text: None },
+        );
+        self.load_page(pane);
+    }
+
+    /// Open an artifact pane's page address, which also serves as its reload: `WKWebView.reload()`
+    /// does nothing when the first load never committed (wheeld was down).
+    fn load_page(&self, pane: &str) {
+        if let (Some(view), Some(target)) = (self.view(pane), url_of(&artifact_page::page_url(pane))) {
+            unsafe { drop(view.loadRequest(&NSURLRequest::requestWithURL(&target))) };
+        }
+    }
+
+    /// Drop `pane`'s page: its observers, console handler, scheme handler's requests and view.
     pub fn close(&self, pane: &str) {
         let Some(page) = self.pages.borrow_mut().remove(pane) else { return };
         self.waiting.borrow_mut().remove(pane);
@@ -429,6 +518,10 @@ impl Pages {
                 page.view.setUIDelegate(None);
             }
             page.view.setNavigationDelegate(None);
+            if let Some(a) = &page.artifact {
+                page.view.stopLoading();
+                a.scheme.close();
+            }
         }
         page.view.removeFromSuperview();
     }
@@ -578,6 +671,8 @@ impl Pages {
         if self.is_browser(pane) {
             self.reload_browser(pane);
             self.changed(pane);
+        } else if self.is_artifact(pane) {
+            self.load_page(pane);
         } else {
             unsafe { drop(view.reload()) };
         }
@@ -608,6 +703,9 @@ impl Pages {
     /// own scheme) goes to whatever on this Mac handles it, but only when the person clicked it in
     /// the page itself: a script, a redirect or a frame never gets to launch an app.
     fn allows(&self, pane: &str, action: &WKNavigationAction) -> bool {
+        if self.is_artifact(pane) {
+            return self.artifact_allows(pane, action);
+        }
         if !self.is_browser(pane) {
             return true;
         }
@@ -622,6 +720,22 @@ impl Pages {
             NSWorkspace::sharedWorkspace().openURL(&target);
         } else {
             self.log(format!("browser pane {pane} refused a {scheme}: navigation nobody clicked"));
+        }
+        false
+    }
+
+    /// An artifact page stays inside its pane's folder; a link the person clicked anywhere else
+    /// opens in the default browser, and a frame may build its own inline document.
+    fn artifact_allows(&self, pane: &str, action: &WKNavigationAction) -> bool {
+        let Some(target) = (unsafe { action.request() }).URL() else { return false };
+        let main = unsafe { action.targetFrame() }.is_none_or(|f: Retained<WKFrameInfo>| unsafe { f.isMainFrame() });
+        let address = absolute(&target);
+        if artifact_page::allows_inline_frame(&address, main) || artifact_page::in_folder(&address, pane) {
+            return true;
+        }
+        if unsafe { action.navigationType() } == WKNavigationType::LinkActivated {
+            self.log(format!("web pane {pane} handing a link outside its folder to the default browser"));
+            NSWorkspace::sharedWorkspace().openURL(&target);
         }
         false
     }
@@ -840,6 +954,57 @@ impl Pages {
         });
     }
 
+    /// `render_pane` `id` of a plugin pane: `base` is the PNG of `view` as the bridge drew it, in
+    /// which no WKWebView draws, so every WKWebView shown inside `view` is drawn over it here.
+    pub fn compose(&self, id: u64, view: &NSView, base: Result<Vec<u8>, String>) {
+        let refuse = move |me: &Self, message: String| me.emit(json!({"answer": "refused", "id": id, "message": message}));
+        let base = match base {
+            Ok(png) => png,
+            Err(message) => return refuse(self, message),
+        };
+        let mut webs = vec![];
+        web_views(view, &mut webs);
+        let bounds = view.bounds();
+        let flipped = view.isFlipped();
+        let rects: Vec<NSRect> = webs.iter().map(|w| view.convertRect_fromView(w.bounds(), Some(w))).collect();
+        let shots: Rc<RefCell<Vec<Option<Retained<NSImage>>>>> = Rc::new(RefCell::new(vec![None; webs.len()]));
+        let left = Rc::new(Cell::new(webs.len()));
+        let me = self.me.clone();
+        let finish = Rc::new(move |shots: &[Option<Retained<NSImage>>]| {
+            let Some(me) = me.upgrade() else { return };
+            let Some(rep) = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(&base)) else { return refuse(&me, "the bridge's picture could not be read".into()) };
+            rep.setSize(bounds.size);
+            if let Some(context) = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep) {
+                NSGraphicsContext::saveGraphicsState_class();
+                NSGraphicsContext::setCurrentContext(Some(&context));
+                for (rect, image) in rects.iter().zip(shots).filter_map(|(r, s)| s.as_ref().map(|s| (r, s))) {
+                    // The bitmap's origin is bottom-left; a flipped view's frames count from the top.
+                    let y = if flipped { bounds.size.height - rect.origin.y - rect.size.height } else { rect.origin.y };
+                    image.drawInRect(NSRect::new(NSPoint::new(rect.origin.x, y), rect.size));
+                }
+                NSGraphicsContext::restoreGraphicsState_class();
+            }
+            // SAFETY: an empty properties dictionary is what the PNG encoder accepts.
+            match unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) } {
+                Some(png) => me.emit(json!({"answer": "rendered", "id": id, "png": base64::engine::general_purpose::STANDARD.encode(png.to_vec())})),
+                None => refuse(&me, "the page could not be encoded as a PNG".into()),
+            }
+        });
+        if webs.is_empty() {
+            return finish(&[]);
+        }
+        for (i, web) in webs.iter().enumerate() {
+            let (shots, left, finish) = (shots.clone(), left.clone(), finish.clone());
+            snapshot_image(web, None, move |r| {
+                shots.borrow_mut()[i] = r.ok();
+                left.set(left.get() - 1);
+                if left.get() == 0 {
+                    finish(&shots.borrow());
+                }
+            });
+        }
+    }
+
     /// The check's snapshot of WKWebView `view` in `pane`, written to `<directory>/<pane>-web.png`.
     pub fn snapshot_to(&self, pane: &str, view: &WKWebView, directory: &str) {
         let path = format!("{directory}/{pane}-web.png");
@@ -884,6 +1049,9 @@ impl Pages {
                 let mut entry = json!({"kind": if p.browser.is_some() { "browser" } else { "web" }, "focused": focused,
                     "view_identity": format!("{:p}", Retained::as_ptr(&p.view)), "url": p.url, "loads": p.loads, "reloads": p.reloads,
                     "status": p.status, "text": p.text.clone().unwrap_or_default()});
+                if let Some(a) = &p.artifact {
+                    entry["store"] = json!(a.store);
+                }
                 if let Some(b) = &p.browser {
                     entry["title"] = json!(b.title);
                     entry["loading"] = json!(b.loading);

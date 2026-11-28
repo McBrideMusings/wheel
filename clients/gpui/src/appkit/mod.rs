@@ -6,6 +6,7 @@ pub mod film;
 pub mod images;
 pub mod live_resize;
 pub mod motion;
+pub mod page_scheme;
 pub mod pane_host;
 pub mod read_aloud;
 pub mod status_item;
