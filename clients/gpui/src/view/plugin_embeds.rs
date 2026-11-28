@@ -38,10 +38,66 @@ fn is_native_embed(component: &str) -> bool {
 /// One embed's own state, kept by node id on its host while the node keeps its component.
 pub struct Embed {
     pub component: String,
-    /// Where the embed drew in the last frame, in window points: x, y, width, height.
+    /// Where the embed last drew, in window points: x, y, width, height.
     pub bounds: Rc<Cell<[f32; 4]>>,
+    /// The frame (`Client::frames`) whose paint last drew the embed.
+    pub drawn: Rc<Cell<Option<u64>>>,
+    /// Whether the latest frame drew the embed, as counted when this frame began (`count`): an
+    /// embed the page holds but did not draw (an unpicked tab, a closed sheet) shows nothing.
+    pub counted: bool,
+    /// A Terminal's body, a view of its own so every build of the node draws it.
+    pub term: Option<gpui::Entity<EmbedTerm>>,
     /// A `WebView{artifact}`'s page, while the node names that artifact.
     pub artifact: Option<ArtifactEmbed>,
+}
+
+impl Embed {
+    fn new(component: &str) -> Self {
+        Self { component: component.to_owned(), bounds: Rc::new(Cell::new([0.; 4])), drawn: Rc::default(), counted: false, term: None, artifact: None }
+    }
+
+    /// Whether frame `frame`'s paint drew the embed.
+    fn drawn_in(&self, frame: u64) -> bool {
+        self.drawn.get() == Some(frame)
+    }
+
+    /// At the start of a frame, `frame` being the one painted last: count the embed as drawn when that paint drew it.
+    fn count(&mut self, frame: u64) {
+        self.counted = self.drawn_in(frame);
+    }
+
+    /// Where the embed drew in the latest frame, or nothing when that frame did not draw it.
+    pub fn shown(&self) -> [f32; 4] {
+        if self.counted { self.bounds.get() } else { [0.; 4] }
+    }
+}
+
+/// What an embed's place shows, built before the tree draws and turned into an element by every
+/// build of the node (`Draw::embed`): a ViewThatFits builds its children twice.
+#[derive(Clone)]
+pub(super) enum EmbedBody {
+    /// Nothing GPUI draws: a native slot goes over it, or the terminal is not made yet.
+    Empty,
+    Note(String),
+    /// An artifact embed's words while it has no page.
+    Opening(String),
+    Term(gpui::AnyView),
+    /// An AgentChat's agent body, under the embed's key.
+    Agent(String, gpui::AnyView),
+}
+
+/// A Terminal embed's terminal, drawn by the client under the embed's key.
+pub struct EmbedTerm {
+    client: gpui::WeakEntity<Client>,
+    key: String,
+    height: f32,
+}
+
+impl Render for EmbedTerm {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (key, height) = (self.key.clone(), self.height);
+        self.client.update(cx, |c, cx| c.term_element(&key, height, window, cx).into_any_element()).unwrap_or_else(|_| div().into_any_element())
+    }
 }
 
 /// The page wheeld keeps for a `WebView{artifact}` (`plugin_embed`): the request in flight, then
@@ -175,7 +231,7 @@ impl Client {
         for (h, host) in hosts.iter().filter_map(|h| self.plugin_previews.get(h).map(|host| (h, host))) {
             for n in host.pane.tree.all().filter(|n| n.component == "Terminal") {
                 let (Ok(leaf), Some(embed)) = (self.embed_target(n), host.embeds.get(&n.id)) else { continue };
-                let body = embed.bounds.get();
+                let body = embed.shown();
                 if let Some(term) = leaf.term.clone().filter(|_| body[2] > 0. && body[3] > 0.) {
                     out.push((embed_key(h, &n.id), body, term));
                 }
@@ -184,10 +240,37 @@ impl Client {
         out
     }
 
-    /// The agents `hosts`' AgentChat embeds show, which are attached as an agent pane's are.
+    /// The agents `hosts`' drawn AgentChat embeds show, which are attached as an agent pane's are.
     pub(super) fn embed_agents(&self, hosts: &[String]) -> Vec<String> {
-        hosts.iter().filter_map(|h| self.plugin_previews.get(h)).flat_map(|host| host.pane.tree.all().filter(|n| n.component == "AgentChat"))
+        hosts.iter().filter_map(|h| self.plugin_previews.get(h))
+            .flat_map(|host| host.pane.tree.all().filter(|n| n.component == "AgentChat" && host.embeds.get(&n.id).is_some_and(|e| e.counted)))
             .filter_map(|n| self.embed_target(n).ok().and_then(|l| l.agent.clone())).collect()
+    }
+
+    /// At the start of a frame: each embed counts as drawn only when the frame painted last drew it.
+    pub(super) fn count_drawn_embeds(&mut self) {
+        let frame = self.frames;
+        for e in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()) {
+            e.count(frame);
+        }
+    }
+
+    /// After this frame paints: when it drew an embed the count left out, or left out one it
+    /// counted (a tab picked away from it, a sheet closed over it), another frame counts again,
+    /// so that embed's terminal detaches or its native view hides with nothing else to redraw.
+    pub(super) fn recount_embeds_after_paint(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plugin_previews.values().all(|h| h.embeds.is_empty()) {
+            return;
+        }
+        let client = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            client.update(cx, |c, cx| {
+                let frame = c.frames;
+                if c.plugin_previews.values().flat_map(|h| h.embeds.values()).any(|e| e.counted != e.drawn_in(frame)) {
+                    cx.notify();
+                }
+            }).ok();
+        });
     }
 
     /// The pane or embed that holds the keyboard: an embed's key while it does, else the focused pane.
@@ -209,7 +292,7 @@ impl Client {
     /// Plugin pane `pane`'s embeds before its tree draws: each gets its state, and its body (the
     /// terminal, the agent's body or the note) is built here, where the client can be changed,
     /// for `Draw::embed` to place. `page_w` is the page's width, an AgentChat's until it has drawn.
-    pub(super) fn sync_plugin_embeds(&mut self, pane: &str, page_w: f32, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn sync_plugin_embeds(&mut self, pane: &str, page_w: f32, cx: &mut Context<Self>) {
         let Some(host) = self.plugin_previews.get(pane) else { return };
         let nodes: Vec<(String, String, f32, Result<Leaf, String>)> = host.pane.tree.all().filter(|n| is_pane_embed(&n.component))
             .map(|n| (n.id.clone(), n.component.clone(), n.number("height").unwrap_or(f64::from(HEIGHT)) as f32, self.embed_target(n).cloned())).collect();
@@ -218,51 +301,51 @@ impl Client {
         let host = self.plugin_previews.get_mut(pane).unwrap();
         for (id, component) in nodes.iter().map(|(i, c, ..)| (i, c)).chain(natives.iter().map(|(i, c, _)| (i, c))) {
             if host.embeds.get(id).is_none_or(|e| &e.component != component) {
-                host.embeds.insert(id.clone(), Embed { component: component.clone(), bounds: Rc::new(Cell::new([0.; 4])), artifact: None });
+                host.embeds.insert(id.clone(), Embed::new(component));
             }
         }
         let mut els = HashMap::new();
         for (id, _, choice) in natives {
             let el = match choice {
-                Some(WebChoice::Note(text)) => note(&text).into_any_element(),
+                Some(WebChoice::Note(text)) => EmbedBody::Note(text),
                 Some(WebChoice::Artifact(name)) => match self.ask_artifact_embed(pane, &id, &name) {
-                    Some(text) => opening(text).into_any_element(),
-                    None => div().into_any_element(),
+                    Some(text) => EmbedBody::Opening(text),
+                    None => EmbedBody::Empty,
                 },
                 // The native slot is placed over this rect (`sync_embed_slots`).
-                _ => div().into_any_element(),
+                _ => EmbedBody::Empty,
             };
             els.insert(id, el);
         }
+        let client = cx.entity().downgrade();
         for (id, component, height, target) in nodes {
             let key = embed_key(pane, &id);
-            let bounds = self.plugin_previews[pane].embeds[&id].bounds.get();
+            let embed = self.plugin_previews.get_mut(pane).unwrap().embeds.get_mut(&id).unwrap();
+            let bounds = embed.shown();
+            if component != "Terminal" || target.is_err() || !self.terms.panes.contains_key(&key) {
+                embed.term = None;
+            }
             let el = match target {
-                Err(text) => note(&text).into_any_element(),
-                // The terminal pane is made in `sync_terms` once the embed has a size.
+                Err(text) => EmbedBody::Note(text),
+                // The terminal pane is made in `sync_terms` once the embed has drawn.
                 Ok(_) if component == "Terminal" => match self.terms.panes.contains_key(&key) {
-                    true => self.term_element(&key, height, window, cx).into_any_element(),
-                    false => div().into_any_element(),
+                    true => {
+                        let view = embed.term.get_or_insert_with(|| cx.new(|_| EmbedTerm { client: client.clone(), key: key.clone(), height })).clone();
+                        view.update(cx, |v, _| v.height = height);
+                        EmbedBody::Term(view.into())
+                    }
+                    false => EmbedBody::Empty,
                 },
                 Ok(leaf) => {
                     let w = if bounds[2] > 0. { bounds[2] } else { page_w };
                     // The rect an agent pane would have for a body `w` × `height`.
                     let rect = Rect { x: bounds[0], y: bounds[1], w: w + 2. + 2. * PAD, h: height + TITLE + 2. * PAD };
-                    let view = self.bodies.view(&Placed { leaf: Leaf { id: key.clone(), ..leaf }, rect }, (w, height), cx);
-                    div().size_full().overflow_hidden().on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        // The host pane's own press would take the keyboard back from the embed.
-                        cx.stop_propagation();
-                        this.focus_pane(&key);
-                        this.menu = None;
-                        this.selection = None;
-                        this.invalidate_bodies(cx);
-                        cx.notify();
-                    })).child(view).into_any_element()
+                    EmbedBody::Agent(key.clone(), self.bodies.view(&Placed { leaf: Leaf { id: key, ..leaf }, rect }, (w, height), cx))
                 }
             };
             els.insert(id, el);
         }
-        *self.plugin_previews.get_mut(pane).unwrap().embed_els.borrow_mut() = els;
+        self.plugin_previews.get_mut(pane).unwrap().embed_els = els;
     }
 
     /// Previewed pane `pane`'s embeds for a check: each one's component, the pane it names, its note,
@@ -273,7 +356,7 @@ impl Client {
             let key = embed_key(pane, &n.id);
             let embed = host.embeds.get(&n.id);
             let mut e = serde_json::json!({
-                "component": n.component, "key": key, "bounds": embed.map(|e| e.bounds.get()),
+                "component": n.component, "key": key, "bounds": embed.map(Embed::shown), "drawn": embed.is_some_and(|e| e.counted),
                 "slot": self.embed_slots.get(&key).map(|_| self.native.embed_facts(&key)),
                 "placed": self.embed_slots.get(&key).and_then(|(_, p)| p.as_ref()).map(|p| serde_json::json!({"rect": p.0, "hidden": p.1, "holes": p.2})),
             });
@@ -299,10 +382,10 @@ impl Client {
         host.pane.tree.all().filter(|n| is_pane_embed(&n.component)).map(|n| {
             let target = self.embed_target(n);
             let key = embed_key(pane, &n.id);
-            let bounds = host.embeds.get(&n.id).map(|e| e.bounds.get());
+            let bounds = host.embeds.get(&n.id).map(Embed::shown);
             let mut e = serde_json::json!({
                 "component": n.component, "pane": n.string("pane").unwrap_or(""), "key": key,
-                "note": target.as_ref().err(), "bounds": bounds,
+                "note": target.as_ref().err(), "bounds": bounds, "drawn": host.embeds.get(&n.id).is_some_and(|e| e.counted),
                 "focused": self.keyboard_target().as_deref() == Some(key.as_str()),
             });
             match target {
@@ -412,9 +495,9 @@ impl Client {
     }
 
     /// Each previewed page's WebView and Map in its native slot: opened with what it shows, placed
-    /// on the rect it drew at in the last frame within its page's body (hidden while its host is not
-    /// drawn, is hidden, or has a sheet or alert over its page), and closed once its node, its page or
-    /// its host is gone. `hosts` are the previewed panes drawn this frame.
+    /// on the rect it drew at in the last frame within its page's body (hidden while that frame did
+    /// not draw it, while its host is not drawn, is hidden, or has a sheet or alert over its page),
+    /// and closed once its node, its page or its host is gone. `hosts` are the previewed panes drawn this frame.
     pub(super) fn sync_embed_slots(&mut self, hosts: &[String]) {
         let mut wanted: HashMap<String, (Embedded, Placement)> = HashMap::new();
         for (h, host) in &self.plugin_previews {
@@ -441,7 +524,7 @@ impl Client {
                     },
                     _ => continue,
                 };
-                let bounds = host.embeds.get(&n.id).map_or([0.; 4], |e| e.bounds.get());
+                let bounds = host.embeds.get(&n.id).map_or([0.; 4], Embed::shown);
                 let placement = place_embed(bounds, page.map(|p| p.0), page.map_or(&[][..], |p| &p.2), hidden, page.map_or(1., |p| p.3));
                 wanted.insert(embed_key(h, &n.id), (what, placement));
             }
@@ -471,11 +554,29 @@ impl Draw<'_> {
     /// sizes the terminal or the agent to it, or places the native view on it.
     pub(super) fn embed(&self, n: &ViewNode, outer: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         let height = n.number("height").unwrap_or(f64::from(HEIGHT)) as f32;
-        let body = self.host.embed_els.borrow_mut().remove(&n.id).unwrap_or_else(|| div().into_any_element());
-        let cell = self.host.embeds.get(&n.id).map(|e| e.bounds.clone());
+        let body = match self.host.embed_els.get(&n.id).cloned().unwrap_or(EmbedBody::Empty) {
+            EmbedBody::Empty => div().into_any_element(),
+            EmbedBody::Note(text) => note(&text).into_any_element(),
+            EmbedBody::Opening(text) => opening(text).into_any_element(),
+            EmbedBody::Term(view) => view.into_any_element(),
+            EmbedBody::Agent(key, view) => div().size_full().overflow_hidden().on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                // The host pane's own press would take the keyboard back from the embed.
+                cx.stop_propagation();
+                this.focus_pane(&key);
+                this.menu = None;
+                this.selection = None;
+                this.invalidate_bodies(cx);
+                cx.notify();
+            })).child(view).into_any_element(),
+        };
+        let cells = self.host.embeds.get(&n.id).map(|e| (e.bounds.clone(), e.drawn.clone()));
         let client = cx.entity().downgrade();
+        // Only the copy a frame paints gets here: a ViewThatFits' measured copies are laid out, never painted.
         let mark = canvas(move |b, _, cx| {
-            let Some(cell) = cell else { return };
+            let Some((cell, drawn)) = cells else { return };
+            if let Some(c) = client.upgrade() {
+                drawn.set(Some(c.read(cx).frames));
+            }
             let now = [f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height)];
             if cell.get() != now {
                 cell.set(now);
@@ -523,6 +624,25 @@ mod tests {
         assert!(place_embed([0., 0., 0., 0.], body, &[], false, 1.).1);
         assert!(place_embed([10., 150., 200., 100.], body, &[], true, 1.).1);
         assert!(place_embed([10., 150., 200., 100.], None, &[], false, 1.).1);
+    }
+
+    #[test]
+    fn an_embed_shows_only_where_the_latest_frame_drew_it() {
+        let mut e = Embed::new("WebView");
+        e.bounds.set([10., 20., 300., 200.]);
+        // Never painted: nothing, so its slot hides and its terminal does not attach.
+        e.count(1);
+        assert_eq!(e.shown(), [0.; 4]);
+        // Painted in frame 2: its rect, once frame 2's paint is counted.
+        e.drawn.set(Some(2));
+        assert!(e.counted != e.drawn_in(2), "a newly drawn embed asks for another frame");
+        e.count(2);
+        assert_eq!(e.shown(), [10., 20., 300., 200.]);
+        // Frame 3 did not draw it (another tab picked, its sheet closed): it keeps its old rect but shows nothing.
+        assert!(e.counted != e.drawn_in(3), "an embed left undrawn asks for another frame");
+        e.count(3);
+        assert_eq!(e.shown(), [0.; 4]);
+        assert_eq!(e.counted, e.drawn_in(4), "once counted again, nothing more is asked");
     }
 
     #[test]

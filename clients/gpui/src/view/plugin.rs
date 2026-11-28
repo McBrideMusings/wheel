@@ -48,8 +48,8 @@ pub struct PluginHost {
     /// while the pane has it.
     pub(super) embeds: HashMap<String, super::plugin_embeds::Embed>,
     pub(super) focused_embed: Option<String>,
-    /// The embeds' bodies built for this frame's draw (`sync_plugin_embeds`), taken as it places them.
-    pub(super) embed_els: RefCell<HashMap<String, gpui::AnyElement>>,
+    /// The embeds' bodies built for this frame's draw (`sync_plugin_embeds`), which every build of the node draws.
+    pub(super) embed_els: HashMap<String, super::plugin_embeds::EmbedBody>,
 }
 
 /// The child a ViewThatFits drew, at what width, and that child's height there.

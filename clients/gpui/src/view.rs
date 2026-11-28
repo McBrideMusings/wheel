@@ -1524,6 +1524,10 @@ impl Client {
             Frame::Event(BrowserEvent::Console { pane, reset, entries }) => self.send(&ClientMsg::PaneConsole { req: None, pane, reset, entries }),
             // A press in a terminal or page view closes the open popovers, as one on GPUI's drawing does.
             Frame::Event(BrowserEvent::Pressed { pane, point: [x, y] }) => {
+                // A press in an embed's native view gives the keyboard to that view, inside its plugin pane.
+                if self.embed_slots.contains_key(&pane) {
+                    self.native_took_keyboard(&pane);
+                }
                 if self.press_away(x, y) {
                     self.log(format!("a press in {pane}'s view at {x},{y} closed the open popovers"));
                 }
@@ -1806,6 +1810,20 @@ impl Client {
         self.native.focus(if self.native_panes.iter().any(|p| p == pane) { pane } else { "" });
         self.sync_view();
     }
+    /// Native view `held` (a pane's, or an embed slot's `<host>#<node>`) took the keyboard by a
+    /// press GPUI never saw: its pane, or the embed's plugin pane with none of its embeds, holds
+    /// it. The native view keeps the keyboard, so nothing is handed to AppKit.
+    fn native_took_keyboard(&mut self, held: &str) {
+        for host in self.plugin_previews.values_mut() {
+            host.focused_embed = None;
+        }
+        let pane = match held.split_once('#') {
+            Some((host, _)) if self.embed_slots.contains_key(held) => host,
+            _ => held,
+        };
+        self.focus.current = Some(pane.to_owned());
+        self.sync_view();
+    }
     /// An Edit menu action (`edit_menu`), run as the ⌘ key it stands for. When `key` does not take
     /// that key and a composer input holds the keyboard, the input's own Cut, Copy or Paste runs;
     /// otherwise the action goes on along the window as the key would.
@@ -1965,13 +1983,14 @@ impl Client {
             return true;
         }
         // A native view may have taken the keyboard by a click GPUI never saw: an action on
-        // "the" pane means that one.
+        // "the" pane means that one, and an embed's native view means its plugin pane.
         if k.modifiers.platform || k.modifiers.control {
             let status = self.native.status();
-            let held = self.native_panes.iter().find(|p| status["panes"][p.as_str()]["focused"] == true).cloned()
+            let focused = |p: &&String| status["panes"][p.as_str()]["focused"] == true;
+            let held = self.native_panes.iter().find(focused).or_else(|| self.embed_slots.keys().find(focused)).cloned()
                 .or_else(|| status["held_before_key"].as_str().filter(|h| !h.is_empty()).map(str::to_owned));
-            if held.is_some() {
-                self.focus.current = held;
+            if let Some(held) = held {
+                self.native_took_keyboard(&held);
             }
         }
         if self.picker_key(e) {
@@ -2713,6 +2732,8 @@ impl Render for Client {
         self.grid_drawn = layers.first().map(|l| l.leaves.iter().map(|p| (p.leaf.id.clone(), p.rect)).collect()).unwrap_or_default();
         let moving = self.tick_motion(window);
         self.sync_native(&layers);
+        self.count_drawn_embeds();
+        self.recount_embeds_after_paint(window, cx);
         self.sync_terms(&layers, window);
         self.sync_card_views();
         // On the Agents surface every agent of the session is drawn, so each is attached.

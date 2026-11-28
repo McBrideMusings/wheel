@@ -411,6 +411,7 @@ impl Host for PaneHost {
     fn facts(&self) -> (Map<String, Value>, Option<[f64; 4]>) {
         let height = self.root.bounds().size.height;
         let maps = self.maps.borrow();
+        let responder = self.root.window().and_then(|w| w.firstResponder()).and_then(|r| r.downcast::<NSView>().ok());
         let top = |r: NSRect| [r.origin.x, if self.root.isFlipped() { r.origin.y } else { height - r.origin.y - r.size.height }, r.size.width, r.size.height];
         let panes = self
             .slots
@@ -424,6 +425,8 @@ impl Host for PaneHost {
                 let mut facts = facts;
                 if let Some(map) = maps.get(id) {
                     facts["map"] = map.facts();
+                    // A map is no page, so `pages` says nothing of its keyboard; it holds it as a page does.
+                    facts["focused"] = json!(responder.as_deref().is_some_and(|r| s.is_or_holds(r)));
                 }
                 (id.clone(), facts)
             })

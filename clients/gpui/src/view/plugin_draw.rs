@@ -156,7 +156,7 @@ impl Client {
         self.flush_plugin_copies(cx);
         self.sync_plugin_fields(pane, window, cx);
         let w = self.plugin_previews.get(pane)?.width.unwrap_or(w);
-        self.sync_plugin_embeds(pane, w, window, cx);
+        self.sync_plugin_embeds(pane, w, cx);
         let host = self.plugin_previews.get(pane)?;
         host.drawn.set(w);
         host.viewport.set(h);
@@ -383,7 +383,8 @@ impl Draw<'_> {
             }
             s = s.child(self.node(k, Env { in_row: row, ..inner }, cx));
         }
-        if after {
+        // WheelUI's trailing spacer has `layoutPriority(-1)`: a child that takes the width leaves it none.
+        if after && !kids.iter().any(|k| takes_width(k)) {
             s = s.child(spacer());
         }
         s.into_any_element()

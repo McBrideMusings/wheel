@@ -253,6 +253,7 @@ local function layout_class(state)
         table.insert(row_opts, { "justify " .. j, row({ txt("one"), txt("two"), txt("three") }, { justify = j }) })
     end
     table.insert(row_opts, { "spacing 24", row({ txt("one"), txt("two"), txt("three") }, { justify = "start", spacing = 24 }) })
+    table.insert(row_opts, { "justify start with two Dividers, which take the width: they share all of it, half each, and the space after them gets none", row({ put("Divider"), put("Divider") }, { justify = "start" }) })
 
     local col_opts = {}
     for _, a in ipairs(ALIGN) do
