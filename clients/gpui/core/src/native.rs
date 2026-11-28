@@ -132,7 +132,7 @@ pub trait Host {
     fn pages(&self) -> (serde_json::Map<String, Value>, Value);
 }
 
-/// What a plugin page's `WebView` or `Map` shows in a slot of its own (wheel-4d1o.5).
+/// What a plugin page's `WebView`, `Map` or `VideoStream` shows in a slot of its own (wheel-4d1o.5, wheel-4d1o.6).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Embedded {
     /// An http or https address in a WKWebView with the default data store. It navigates only to
@@ -144,6 +144,11 @@ pub enum Embedded {
     /// An MKMapView on the region around `latitude`, `longitude`, `span` degrees across both ways,
     /// with a titled pin per marker: (title, latitude, longitude).
     Map { latitude: f64, longitude: f64, span: f64, markers: Vec<(String, f64, f64)> },
+    /// A plugin backend's video stream `stream` (`<plugin>.<name>`, ADR-0053), read from the unix
+    /// socket `socket` once wheeld has named one. `error` is wheeld's refusal or why the last
+    /// connection ended, shown over the picture; `input` sends the keys, pointer and controllers on
+    /// it to the backend; `fills` crops the picture to fill the slot; `gain` is the audio's, 0 to 1.
+    Stream { stream: String, socket: Option<String>, error: Option<String>, input: bool, fills: bool, gain: f32 },
 }
 
 /// One synthesized pointer event (the check's and the debug route's `post_mouse`). A context menu
@@ -494,6 +499,9 @@ pub enum BrowserEvent {
     /// A press landed in `pane`'s native view at `point` (the window's top-left coordinates),
     /// where the GPUI view never sees it.
     Pressed { pane: String, point: [f32; 2] },
+    /// The connection of video stream embed `pane` to `socket` ended, `why` in the words its note
+    /// shows; `shown` says it showed a picture first.
+    StreamEnded { pane: String, socket: String, why: String, #[serde(default)] shown: bool },
 }
 /// The answer to `render_pane` or `inspect_pane` `id`.
 #[derive(Debug, Deserialize)]
@@ -523,6 +531,8 @@ mod tests {
         assert!(matches!(healthy, Frame::Event(BrowserEvent::Plugin { error: None, .. })));
         let pressed: Frame = serde_json::from_str(r#"{"event":"pressed","pane":"p4","point":[12.5,40]}"#).unwrap();
         assert!(matches!(pressed, Frame::Event(BrowserEvent::Pressed { ref pane, point: [12.5, 40.] }) if pane == "p4"));
+        let ended: Frame = serde_json::from_str(r#"{"event":"stream_ended","pane":"p4#n7","socket":"/tmp/s/demo.sock","why":"The stream ended"}"#).unwrap();
+        assert!(matches!(ended, Frame::Event(BrowserEvent::StreamEnded { ref pane, ref why, .. }) if pane == "p4#n7" && why == "The stream ended"));
         let answer: Frame = serde_json::from_str(r#"{"answer":"recorded","id":7,"mov":"AAAA","frames":12,"millis":1001}"#).unwrap();
         assert!(matches!(answer, Frame::Answer(Answer::Recorded { id: 7, frames: 12, .. })));
         let refused: Frame = serde_json::from_str(r#"{"answer":"refused","id":8,"message":"not shown"}"#).unwrap();

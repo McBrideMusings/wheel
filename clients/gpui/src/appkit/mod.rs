@@ -9,6 +9,7 @@ pub mod motion;
 pub mod page_scheme;
 pub mod pane_host;
 pub mod status_item;
+pub mod video_stream;
 pub mod web;
 pub mod window;
 

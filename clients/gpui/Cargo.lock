@@ -4818,6 +4818,7 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -4911,6 +4912,7 @@ checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
 dependencies = [
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-video",
  "objc2-foundation 0.3.2",
 ]
 
@@ -5002,6 +5004,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-game-controller"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1962c1882c5abcedb18e5f01acffeaad7b3cbd0a9d4cd8f5ca259ba8a64cb9a3"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-io-surface"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5086,6 +5099,21 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-video-toolbox"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
+dependencies = [
+ "bitflags 2.13.0",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
 ]
 
 [[package]]
@@ -8990,6 +9018,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
  "objc2-avf-audio",
+ "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-image 0.3.2",
@@ -8997,8 +9026,10 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-game-controller",
  "objc2-map-kit",
  "objc2-quartz-core 0.3.2",
+ "objc2-video-toolbox",
  "objc2-web-kit",
  "pulldown-cmark",
  "raw-window-handle",

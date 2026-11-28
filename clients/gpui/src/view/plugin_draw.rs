@@ -141,7 +141,7 @@ pub(super) fn greedy(d: gpui::Div, env: Env) -> gpui::Div {
 /// a justify spacer pushes to its edges.
 fn takes_width(n: &ViewNode) -> bool {
     match n.component.as_str() {
-        "Column" | "Card" | "Canvas" | "Terminal" | "AgentChat" | "WebView" | "Map" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
+        "Column" | "Card" | "Canvas" | "Terminal" | "AgentChat" | "WebView" | "Map" | "VideoStream" | "TextField" | "List" | "ViewThatFits" | "Table" | "Form" | "Section" | "LabeledContent" | "Slider" | "Tabs" | "Chart" | "Toolbar" | "NavigationSplitView" | "NavigationStack" | "HSplitView" | "VSplitView" => true,
         "Gauge" => !matches!(n.string("style"), Some("accessoryCircular" | "accessoryCircularCapacity")),
         "Divider" => n.string("axis") != Some("vertical"),
         "ProgressView" => n.number("value").is_some(),
@@ -294,7 +294,7 @@ impl Draw<'_> {
                 greedy(boxed, outer).into_any_element()
             }
             "List" => self.list(n, inner, outer, cx),
-            "Terminal" | "AgentChat" | "WebView" | "Map" => self.embed(n, outer, cx),
+            "Terminal" | "AgentChat" | "WebView" | "Map" | "VideoStream" => self.embed(n, outer, cx),
             "Icon" => {
                 let name = symbol_name(n.string("name").unwrap_or(""));
                 title::symbol(self.symbols, name, inner.size, inner.color >> 8).unwrap_or_else(|| div().into_any_element())

@@ -2,14 +2,18 @@
 //! and `ui.AgentChat` (`EmbedTerminal`, `EmbeddedAgentChat`) show the named pane's live terminal or
 //! agent conversation; `ui.WebView` (`PaneWebViewView`) a WKWebView on an http or https address or
 //! on an artifact's page wheeld keeps for the pane (`ArtifactEmbeds`, ADR-0047); `ui.Map`
-//! (`PaneMapView`) an MKMapView. Each is as wide as it is offered and `height` tall (default 320; a
-//! Map at least 160), or shows a note saying why it shows nothing (`PaneEmbedNote` in WheelUI's
-//! `Embed.swift`). Everything an embed shows goes under its own key, `<host pane>#<node id>`: a
-//! terminal pane and agent body GPUI draws, or the native slot a WebView or Map is placed in on the
-//! embed's drawn rect, cut to the page's visible body.
+//! (`PaneMapView`) an MKMapView; `ui.VideoStream` (`PaneVideoStreamView`, ADR-0053, wheel-4d1o.6)
+//! the live stream wheeld names a socket for (`plugin_stream`), played in its slot by
+//! `appkit::video_stream`. Each is as wide as it is offered and `height` tall (default 320; a Map
+//! at least 160; a VideoStream with none the height the pane leaves), or shows a note saying why it
+//! shows nothing (`PaneEmbedNote` in WheelUI's `Embed.swift`). Everything an embed shows goes under
+//! its own key, `<host pane>#<node id>`: a terminal pane and agent body GPUI draws, or the native
+//! slot a WebView, Map or VideoStream is placed in on the embed's drawn rect, cut to the page's
+//! visible body.
 use super::*;
 use super::plugin_draw::{Draw, Env, SECONDARY, greedy};
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 use wheel_gpui_core::native::Embedded;
 use wheel_luau::tree::ViewNode;
 
@@ -32,7 +36,22 @@ pub(super) fn is_pane_embed(component: &str) -> bool {
 
 /// Whether `component` shows in a native slot of its own.
 fn is_native_embed(component: &str) -> bool {
-    matches!(component, "WebView" | "Map")
+    matches!(component, "WebView" | "Map" | "VideoStream")
+}
+
+/// The gain a `VideoStream`'s audio plays at, as `PaneVideoStreamView.gain`: `volume` held to 0...1
+/// (1 when absent), 0 while `muted`.
+pub(super) fn stream_gain(volume: Option<f64>, muted: Option<bool>) -> f32 {
+    if muted == Some(true) { 0. } else { volume.unwrap_or(1.).clamp(0., 1.) as f32 }
+}
+
+/// Why a `VideoStream` naming `stream` shows only a note, when it does: it names none, or the
+/// running wheeld (`has`: whether it handles `plugin_stream`, None before its offer came) cannot serve one.
+pub(super) fn stream_note(stream: &str, has: Option<bool>) -> Option<String> {
+    if stream.is_empty() {
+        return Some("VideoStream names no stream".into());
+    }
+    (has == Some(false)).then(|| format!("This wheeld cannot serve a video stream; {stream} plays once it is updated"))
 }
 
 /// One embed's own state, kept by node id on its host while the node keeps its component.
@@ -49,11 +68,13 @@ pub struct Embed {
     pub term: Option<gpui::Entity<EmbedTerm>>,
     /// A `WebView{artifact}`'s page, while the node names that artifact.
     pub artifact: Option<ArtifactEmbed>,
+    /// A `VideoStream`'s socket, while the node names that stream.
+    pub stream: Option<StreamAsk>,
 }
 
 impl Embed {
     fn new(component: &str) -> Self {
-        Self { component: component.to_owned(), bounds: Rc::new(Cell::new([0.; 4])), drawn: Rc::default(), counted: false, term: None, artifact: None }
+        Self { component: component.to_owned(), bounds: Rc::new(Cell::new([0.; 4])), drawn: Rc::default(), counted: false, term: None, artifact: None, stream: None }
     }
 
     /// Whether frame `frame`'s paint drew the embed.
@@ -109,6 +130,52 @@ pub struct ArtifactEmbed {
     pub id: Option<String>,
     pub scope: Option<wheel_proto::ArtifactScope>,
     pub error: Option<String>,
+}
+
+/// The socket wheeld names for a `VideoStream`'s stream (`plugin_stream`): the request in flight,
+/// the socket, or wheeld's refusal or why the last connection ended. A refusal is final, as the
+/// bridge's; an ended connection is asked for again after `wait`, which doubles to 30 s and starts
+/// over at 1 s once a connection has shown a picture.
+#[derive(Debug)]
+pub struct StreamAsk {
+    pub name: String,
+    pub req: Option<u64>,
+    pub socket: Option<String>,
+    pub error: Option<String>,
+    /// When an ended connection is asked for again.
+    pub retry_at: Option<Instant>,
+    pub wait: Duration,
+    /// Whether a timer will draw a frame at `retry_at`.
+    pub timer: bool,
+}
+
+impl StreamAsk {
+    fn new(name: &str) -> Self {
+        Self { name: name.to_owned(), req: None, socket: None, error: None, retry_at: None, wait: Duration::from_secs(1), timer: false }
+    }
+
+    /// Whether wheeld should be asked for the socket now.
+    fn due(&self, now: Instant) -> bool {
+        self.socket.is_none() && self.req.is_none() && match self.retry_at {
+            Some(at) => now >= at,
+            None => self.error.is_none(),
+        }
+    }
+
+    /// The connection to `socket` ended for `why`, `shown` whether it showed a picture: wait, then ask again.
+    fn ended(&mut self, socket: &str, why: &str, shown: bool, now: Instant) -> bool {
+        if self.socket.as_deref() != Some(socket) {
+            return false;
+        }
+        if shown {
+            self.wait = Duration::from_secs(1);
+        }
+        self.socket = None;
+        self.error = Some(why.to_owned());
+        self.retry_at = Some(now + self.wait);
+        self.wait = (self.wait * 2).min(Duration::from_secs(30));
+        true
+    }
 }
 
 /// What a `WebView` shows, as `PaneWebViewView` chooses from its `url` and `artifact`.
@@ -296,16 +363,21 @@ impl Client {
         let Some(host) = self.plugin_previews.get(pane) else { return };
         let nodes: Vec<(String, String, f32, Result<Leaf, String>)> = host.pane.tree.all().filter(|n| is_pane_embed(&n.component))
             .map(|n| (n.id.clone(), n.component.clone(), n.number("height").unwrap_or(f64::from(HEIGHT)) as f32, self.embed_target(n).cloned())).collect();
-        let natives: Vec<(String, String, Option<WebChoice>)> = host.pane.tree.all().filter(|n| is_native_embed(&n.component))
-            .map(|n| (n.id.clone(), n.component.clone(), (n.component == "WebView").then(|| web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or(""))))).collect();
+        let natives: Vec<(String, String, Option<WebChoice>, Option<String>)> = host.pane.tree.all().filter(|n| is_native_embed(&n.component))
+            .map(|n| (n.id.clone(), n.component.clone(), (n.component == "WebView").then(|| web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or(""))),
+                (n.component == "VideoStream").then(|| n.string("stream").unwrap_or("").to_owned()))).collect();
         let host = self.plugin_previews.get_mut(pane).unwrap();
-        for (id, component) in nodes.iter().map(|(i, c, ..)| (i, c)).chain(natives.iter().map(|(i, c, _)| (i, c))) {
+        for (id, component) in nodes.iter().map(|(i, c, ..)| (i, c)).chain(natives.iter().map(|(i, c, ..)| (i, c))) {
             if host.embeds.get(id).is_none_or(|e| &e.component != component) {
                 host.embeds.insert(id.clone(), Embed::new(component));
             }
         }
         let mut els = HashMap::new();
-        for (id, _, choice) in natives {
+        for (id, _, choice, stream) in natives {
+            if let Some(stream) = stream {
+                els.insert(id.clone(), self.ask_stream(pane, &id, &stream, cx).map_or(EmbedBody::Empty, EmbedBody::Note));
+                continue;
+            }
             let el = match choice {
                 Some(WebChoice::Note(text)) => EmbedBody::Note(text),
                 Some(WebChoice::Artifact(name)) => match self.ask_artifact_embed(pane, &id, &name) {
@@ -360,6 +432,20 @@ impl Client {
                 "slot": self.embed_slots.get(&key).map(|_| self.native.embed_facts(&key)),
                 "placed": self.embed_slots.get(&key).and_then(|(_, p)| p.as_ref()).map(|p| serde_json::json!({"rect": p.0, "hidden": p.1, "holes": p.2})),
             });
+            if n.component == "VideoStream" {
+                let name = n.string("stream").unwrap_or("");
+                e["stream"] = name.into();
+                e["input"] = n.bool("input").unwrap_or(true).into();
+                e["fit"] = n.string("fit").into();
+                e["gain"] = stream_gain(n.number("volume"), n.bool("muted")).into();
+                e["note"] = stream_note(name, self.server_offer.as_ref().map(|o| o.has("plugin_stream"))).into();
+                if let Some(a) = embed.and_then(|e| e.stream.as_ref()) {
+                    e["socket"] = a.socket.clone().into();
+                    e["error"] = a.error.clone().into();
+                    e["waiting"] = a.req.is_some().into();
+                }
+                return (n.id.clone(), e);
+            }
             if n.component == "Map" {
                 e["asked"] = serde_json::json!({"latitude": n.number("latitude").unwrap_or(0.), "longitude": n.number("longitude").unwrap_or(0.), "span": n.number("span").unwrap_or(10.), "markers": markers(n).len()});
                 return (n.id.clone(), e);
@@ -409,6 +495,53 @@ impl Client {
         }).chain(natives).collect::<serde_json::Map<_, _>>().into()
     }
 
+    /// The socket `VideoStream` node `node` of plugin pane `pane` names (`name`), asked of wheeld
+    /// while the node is drawn and no socket, request or refusal stands (again after a connection
+    /// ended, once its wait is over): Some the note shown in its place instead of the stream.
+    fn ask_stream(&mut self, pane: &str, node: &str, name: &str, cx: &mut Context<Self>) -> Option<String> {
+        let has = self.server_offer.as_ref().map(|o| o.has("plugin_stream"));
+        if let Some(text) = stream_note(name, has) {
+            return Some(text);
+        }
+        let up = self.link == Link::Up;
+        let embed = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?;
+        // Another stream is another session, as `VideoStreamHostView` is identified by its stream.
+        if embed.stream.as_ref().is_none_or(|a| a.name != name) {
+            embed.stream = Some(StreamAsk::new(name));
+        }
+        let counted = embed.counted;
+        let a = embed.stream.as_mut()?;
+        let now = Instant::now();
+        if let Some(at) = a.retry_at.filter(|at| *at > now && !a.timer) {
+            a.timer = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(at - Instant::now().min(at)).await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            }).detach();
+        }
+        // wheeld's offer comes with its first status; the socket is asked for then.
+        if counted && up && has == Some(true) && a.due(now) {
+            a.retry_at = None;
+            a.timer = false;
+            let req = self.req();
+            let a = self.plugin_previews.get_mut(pane)?.embeds.get_mut(node)?.stream.as_mut()?;
+            a.req = Some(req);
+            self.send(&ClientMsg::PluginStream { req: Some(req), pane: pane.to_owned(), stream: name.to_owned() });
+        }
+        None
+    }
+
+    /// The connection of stream embed `key` to `socket` ended for `why` (`shown`: after it showed a
+    /// picture): its socket is asked for again after a wait.
+    pub(super) fn stream_ended(&mut self, key: &str, socket: &str, why: &str, shown: bool) {
+        let Some((host, node)) = key.split_once('#') else { return };
+        if let Some(a) = self.plugin_previews.get_mut(host).and_then(|h| h.embeds.get_mut(node)).and_then(|e| e.stream.as_mut())
+            && a.ended(socket, why, shown, Instant::now())
+        {
+            self.log(format!("video stream {key}: {why}"));
+        }
+    }
+
     /// The artifact page `WebView` node `node` of plugin pane `pane` names (`name`), asked of wheeld
     /// once (again after a refusal only when the name changes): None once it has a page id to show,
     /// else the words shown in its place.
@@ -444,6 +577,29 @@ impl Client {
 
     /// wheeld's answer to a `plugin_embed`: the page to show, or why there is none. Returns whether it was one.
     pub(super) fn on_embed_message(&mut self, message: &ServerMsg) -> bool {
+        let stream_req = match message {
+            ServerMsg::PluginStream { req, .. } => Some(*req),
+            ServerMsg::Error { req: Some(req), .. } => Some(*req),
+            _ => None,
+        };
+        if let Some(req) = stream_req
+            && let Some(a) = self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()).find(|a| a.req == Some(req))
+        {
+            a.req = None;
+            match message {
+                ServerMsg::PluginStream { socket, .. } => {
+                    a.socket = Some(socket.clone());
+                    a.error = None;
+                }
+                ServerMsg::Error { message, .. } => {
+                    a.socket = None;
+                    a.retry_at = None;
+                    a.error = Some(message.clone());
+                }
+                _ => {}
+            }
+            return true;
+        }
         let (req, answer) = match message {
             ServerMsg::PluginEmbed { req, scope, id, .. } => (*req, Ok((id.clone(), *scope))),
             ServerMsg::Error { req: Some(req), message, .. } => (*req, Err(message.clone())),
@@ -467,6 +623,13 @@ impl Client {
 
     /// A new connection: wheeld may have restarted and forgotten every embed's page, so each is asked for again.
     pub(super) fn embeds_link_up(&mut self) {
+        // wheeld may have restarted its backends: every stream asks for its socket again on the next frame.
+        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
+            a.req = None;
+            a.socket = None;
+            a.error = None;
+            a.retry_at = None;
+        }
         let asks: Vec<(String, String, String)> = self.plugin_previews.iter()
             .flat_map(|(h, host)| host.embeds.iter().filter_map(move |(n, e)| e.artifact.as_ref().map(|a| (h.clone(), n.clone(), a.name.clone()))))
             .collect();
@@ -485,6 +648,9 @@ impl Client {
         for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.artifact.as_mut()) {
             a.req = None;
         }
+        for a in self.plugin_previews.values_mut().flat_map(|h| h.embeds.values_mut()).filter_map(|e| e.stream.as_mut()) {
+            a.req = None;
+        }
     }
 
     /// `pane_reload` of page `id`: every embed showing that artifact page opens it again.
@@ -494,10 +660,11 @@ impl Client {
         }
     }
 
-    /// Each previewed page's WebView and Map in its native slot: opened with what it shows, placed
-    /// on the rect it drew at in the last frame within its page's body (hidden while that frame did
-    /// not draw it, while its host is not drawn, is hidden, or has a sheet or alert over its page),
-    /// and closed once its node, its page or its host is gone. `hosts` are the previewed panes drawn this frame.
+    /// Each previewed page's WebView, Map and VideoStream in its native slot: opened with what it
+    /// shows, placed on the rect it drew at in the last frame within its page's body (hidden while
+    /// that frame did not draw it, while its host is not drawn, is hidden, or has a sheet or alert
+    /// over its page), and closed once its node, its page or its host is gone. A VideoStream's slot
+    /// is closed too while the frame did not draw it, as its SwiftUI view disappears, so its sound stops. `hosts` are the previewed panes drawn this frame.
     pub(super) fn sync_embed_slots(&mut self, hosts: &[String]) {
         let mut wanted: HashMap<String, (Embedded, Placement)> = HashMap::new();
         for (h, host) in &self.plugin_previews {
@@ -512,6 +679,21 @@ impl Client {
                         span: n.number("span").unwrap_or(10.),
                         markers: markers(n),
                     },
+                    "VideoStream" => {
+                        let embed = host.embeds.get(&n.id);
+                        let Some(a) = embed.filter(|e| e.counted).and_then(|e| e.stream.as_ref()) else { continue };
+                        if stream_note(&a.name, self.server_offer.as_ref().map(|o| o.has("plugin_stream"))).is_some() {
+                            continue;
+                        }
+                        Embedded::Stream {
+                            stream: a.name.clone(),
+                            socket: a.socket.clone(),
+                            error: a.error.clone(),
+                            input: n.bool("input").unwrap_or(true),
+                            fills: n.string("fit") == Some("cover"),
+                            gain: stream_gain(n.number("volume"), n.bool("muted")),
+                        }
+                    }
                     "WebView" => match web_choice(n.string("url").unwrap_or(""), n.string("artifact").unwrap_or("")) {
                         WebChoice::Url(url) => Embedded::Web { url },
                         WebChoice::Artifact(name) => match host.embeds.get(&n.id).and_then(|e| e.artifact.as_ref()).filter(|a| a.name == name && a.error.is_none()) {
@@ -551,8 +733,9 @@ impl Client {
 }
 
 impl Draw<'_> {
-    /// A Terminal, AgentChat, WebView or Map node: the body `sync_plugin_embeds` built, as wide as it
-    /// is offered and `height` tall (a Map at least 160), recording where it drew so the next frame
+    /// A Terminal, AgentChat, WebView, Map or VideoStream node: the body `sync_plugin_embeds` built,
+    /// as wide as it is offered and `height` tall (a Map at least 160, a VideoStream with no
+    /// `height` the height the pane leaves), recording where it drew so the next frame
     /// sizes the terminal or the agent to it, or places the native view on it.
     pub(super) fn embed(&self, n: &ViewNode, outer: Env, cx: &mut Context<Client>) -> gpui::AnyElement {
         let height = n.number("height").unwrap_or(f64::from(HEIGHT)) as f32;
@@ -588,7 +771,11 @@ impl Draw<'_> {
             }
         }, |_, _, _, _| ()).absolute().top_0().left_0().size_full();
         let frame = greedy(div().relative().flex().flex_col(), outer);
-        let frame = if n.component == "Map" { frame.min_h(px(MAP_HEIGHT)) } else { frame.h(px(height)) };
+        let frame = match (n.component.as_str(), n.number("height")) {
+            ("Map", _) => frame.min_h(px(MAP_HEIGHT)),
+            ("VideoStream", None) => frame.flex_1().min_h_0(),
+            _ => frame.h(px(height)),
+        };
         frame.overflow_hidden().child(mark).child(body).into_any_element()
     }
 }
@@ -612,6 +799,48 @@ mod tests {
         assert_eq!(web_choice("file:///etc/hosts", ""), Note("WebView shows only http and https addresses, not file:///etc/hosts".into()));
         assert_eq!(web_choice("example.com", ""), Note("WebView shows only http and https addresses, not example.com".into()));
         assert_eq!(web_choice("httpx://a", ""), Note("WebView shows only http and https addresses, not httpx://a".into()));
+    }
+
+    #[test]
+    fn a_streams_volume_is_its_gain_held_to_one_and_muted_is_silence() {
+        assert_eq!(stream_gain(None, None), 1.);
+        assert_eq!(stream_gain(Some(0.25), Some(false)), 0.25);
+        assert_eq!(stream_gain(Some(0.25), Some(true)), 0.);
+        assert_eq!(stream_gain(Some(3.), None), 1.);
+        assert_eq!(stream_gain(Some(-1.), None), 0.);
+    }
+
+    #[test]
+    fn a_stream_names_why_it_shows_only_a_note() {
+        assert_eq!(stream_note("", Some(true)).as_deref(), Some("VideoStream names no stream"));
+        assert_eq!(stream_note("gallery.demo", Some(true)), None);
+        // Before wheeld's offer it waits, saying nothing.
+        assert_eq!(stream_note("gallery.demo", None), None);
+        assert!(stream_note("gallery.demo", Some(false)).is_some_and(|t| t.contains("gallery.demo")));
+    }
+
+    #[test]
+    fn an_ended_stream_asks_again_after_a_wait_that_doubles() {
+        let t0 = Instant::now();
+        let mut a = StreamAsk::new("gallery.demo");
+        assert!(a.due(t0));
+        a.socket = Some("/s/demo.sock".into());
+        assert!(!a.due(t0));
+        // Another socket's end is an old connection's: nothing changes.
+        assert!(!a.ended("/s/old.sock", "The stream ended", false, t0));
+        assert!(a.ended("/s/demo.sock", "The stream ended", false, t0));
+        assert!(!a.due(t0) && a.due(t0 + Duration::from_secs(1)));
+        a.socket = Some("/s/demo.sock".into());
+        a.ended("/s/demo.sock", "The stream ended", false, t0);
+        assert_eq!(a.retry_at, Some(t0 + Duration::from_secs(2)));
+        // A connection that showed a picture starts the wait over.
+        a.socket = Some("/s/demo.sock".into());
+        a.ended("/s/demo.sock", "The stream ended", true, t0);
+        assert_eq!(a.retry_at, Some(t0 + Duration::from_secs(1)));
+        // A refusal is final.
+        let mut refused = StreamAsk::new("gallery.demo");
+        refused.error = Some("plugin gallery serves no stream nope".into());
+        assert!(!refused.due(t0 + Duration::from_secs(60)));
     }
 
     #[test]

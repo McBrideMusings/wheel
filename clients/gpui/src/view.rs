@@ -1532,6 +1532,7 @@ impl Client {
                     self.log(format!("a press in {pane}'s view at {x},{y} closed the open popovers"));
                 }
             }
+            Frame::Event(BrowserEvent::StreamEnded { pane, socket, why, shown }) => self.stream_ended(&pane, &socket, &why, shown),
             Frame::Answer(Answer::Rendered { id, png }) => {
                 if !self.pane_images.answered(id, Ok(png.clone())) {
                     self.send(&ClientMsg::Rendered { id, png });

@@ -3,7 +3,7 @@
 //! value controls (ChoicePicker, CheckBox, Stepper, Slider, ColorPicker, DateTimeInput), Tabs,
 //! Menu, Toolbar, the navigation and split views, ViewThatFits, Gauge, Chart, ShareLink,
 //! PasteButton and the Unsupported placeholder, with the defaults `SystemControls.swift`,
-//! `Basics.swift` and `Table.swift` give them. Canvas, the embeds and VideoStream are later slices.
+//! `Basics.swift` and `Table.swift` give them. Canvas and the embeds, VideoStream among them, draw elsewhere.
 use super::plugin::{Entry, Fit, Pick};
 use super::plugin_draw::{ACCENT, BODY, Draw, Env, SECONDARY, el_id, greedy, pane_color};
 use super::*;

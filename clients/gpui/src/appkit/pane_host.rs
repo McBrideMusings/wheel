@@ -3,10 +3,10 @@
 //! (`web.rs`), or what the bridge adds (an artifact page, a plugin view). Here each slot is placed,
 //! hidden, faded and masked around the cards and the overlay drawn over it, given the keyboard,
 //! and reached by the check's synthetic pointer. A plugin page's `WebView` and `Map` get slots of
-//! their own too, keyed `<host pane>#<node>`: a web page or artifact page from `web.rs`, or an
-//! MKMapView made here. A press that lands in a slot reaches the GPUI
+//! their own too, keyed `<host pane>#<node>`: a web page or artifact page from `web.rs`, an
+//! MKMapView made here, or a `VideoStream`'s view (`video_stream`). A press that lands in a slot reaches the GPUI
 //! view as a `pressed` frame, since GPUI never sees it.
-use super::{main_thread, web::Pages};
+use super::{main_thread, video_stream::StreamEmbed, web::Pages};
 use block2::RcBlock;
 use futures::channel::mpsc::UnboundedSender;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::{AnyObject, ProtocolObject}};
@@ -196,6 +196,8 @@ pub struct PaneHost {
     pages: Rc<Pages>,
     /// The maps pages embed, by slot key.
     maps: RefCell<HashMap<String, MapEmbed>>,
+    /// The video streams pages embed, by slot key.
+    streams: RefCell<HashMap<String, Rc<StreamEmbed>>>,
 }
 
 impl PaneHost {
@@ -213,6 +215,7 @@ impl PaneHost {
             mouse_number: Cell::new(0),
             press_monitor: RefCell::default(),
             maps: RefCell::default(),
+            streams: RefCell::default(),
         });
         // A press lands on a native view before GPUI sees it, so the GPUI view hears of it here
         // and closes what a press away closes (its popovers), as a Swift popover closes on one.
@@ -335,6 +338,7 @@ impl Host for PaneHost {
     fn close(&self, pane: &str) {
         self.pages.close(pane);
         self.maps.borrow_mut().remove(pane);
+        self.streams.borrow_mut().remove(pane);
         if let Some(slot) = self.slots.borrow_mut().remove(pane) {
             slot.removeFromSuperview();
         }
@@ -347,6 +351,7 @@ impl Host for PaneHost {
         }
         self.pages.close_all();
         self.maps.borrow_mut().clear();
+        self.streams.borrow_mut().clear();
         for (_, slot) in self.slots.borrow_mut().drain() {
             slot.removeFromSuperview();
         }
@@ -411,6 +416,7 @@ impl Host for PaneHost {
     fn facts(&self) -> (Map<String, Value>, Option<[f64; 4]>) {
         let height = self.root.bounds().size.height;
         let maps = self.maps.borrow();
+        let streams = self.streams.borrow();
         let responder = self.root.window().and_then(|w| w.firstResponder()).and_then(|r| r.downcast::<NSView>().ok());
         let top = |r: NSRect| [r.origin.x, if self.root.isFlipped() { r.origin.y } else { height - r.origin.y - r.size.height }, r.size.width, r.size.height];
         let panes = self
@@ -426,6 +432,10 @@ impl Host for PaneHost {
                 if let Some(map) = maps.get(id) {
                     facts["map"] = map.facts();
                     // A map is no page, so `pages` says nothing of its keyboard; it holds it as a page does.
+                    facts["focused"] = json!(responder.as_deref().is_some_and(|r| s.is_or_holds(r)));
+                }
+                if let Some(stream) = streams.get(id) {
+                    facts["stream"] = stream.facts();
                     facts["focused"] = json!(responder.as_deref().is_some_and(|r| s.is_or_holds(r)));
                 }
                 (id.clone(), facts)
@@ -458,6 +468,9 @@ impl Host for PaneHost {
         {
             map.view.removeFromSuperview();
         }
+        if !matches!(what, Embedded::Stream { .. }) {
+            self.streams.borrow_mut().remove(key);
+        }
         match what {
             Embedded::Web { url } => self.pages.open_embedded(key, &slot, url),
             Embedded::Artifact { id, name, scope, cwd, ws } => self.pages.open_artifact_page(key, id, &slot, name, scope, cwd, ws),
@@ -472,6 +485,16 @@ impl Host for PaneHost {
                 });
                 map.mark(markers);
                 map.look();
+            }
+            Embedded::Stream { .. } => {
+                self.pages.close(key);
+                let stream = self.streams.borrow_mut().entry(key.to_owned()).or_insert_with(|| {
+                    let stream = StreamEmbed::new(key, self.frames.clone());
+                    stream.view.setFrame(slot.bounds());
+                    slot.addSubview(&stream.view);
+                    stream
+                }).clone();
+                stream.open(what);
             }
         }
     }
@@ -514,6 +537,12 @@ impl Host for PaneHost {
         for (key, map) in self.maps.borrow().iter().filter(|(k, _)| slots.get(*k).is_some_and(|s| !s.isHidden())) {
             if let Some(png) = super::web::cached_png(&map.view) {
                 let _ = std::fs::write(format!("{directory}/{}-map.png", key.replace('/', "_")), png);
+            }
+        }
+        // A stream's picture is the layer's last frame, in the video's pixels.
+        for (key, stream) in self.streams.borrow().iter().filter(|(k, _)| slots.get(*k).is_some_and(|s| !s.isHidden())) {
+            if let Some(png) = stream.png() {
+                let _ = std::fs::write(format!("{directory}/{}-stream.png", key.replace('/', "_")), png);
             }
         }
     }
