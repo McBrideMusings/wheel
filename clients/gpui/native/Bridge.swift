@@ -725,7 +725,8 @@ public typealias Emit = @convention(c) (Int32, UnsafePointer<CChar>) -> Void
             requestSource(host)
             return
         }
-
+        errors.append("open \(id): the bridge hosts plugin panes only, not \(kind)")
+    }
     /// `render_pane` relayed by the Rust side for a plugin pane: its view's pixels as a PNG (`png`, base64) with its
     /// terminals drawn in, or why it has none (`refused`). The Rust pane host draws the WKWebViews inside it over this.
     func render(_ value: [String: Any]) -> [String: Any] {
